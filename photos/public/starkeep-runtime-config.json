@@ -9,5 +9,6 @@
   "s3Region": "us-east-1",
   "apiGatewayUrl": "https://1n0grf2bji.execute-api.us-east-1.amazonaws.com",
   "auroraEndpoint": "mbtw533h24o4d4jmni5spamcia.dsql.us-east-1.on.aws",
-  "photosWebUrl": "https://hbaopiondlqtrecvf2zbisj3ty0peedb.lambda-url.us-east-1.on.aws/"
+  "photosWebUrl": "https://olr3dfxd6baoqpdbl3rdz33t5u0tpale.lambda-url.us-east-1.on.aws/",
+  "photosApiGatewayUrl": "https://0lleaiomda.execute-api.us-east-1.amazonaws.com"
 }

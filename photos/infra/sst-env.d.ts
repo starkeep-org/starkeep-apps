@@ -14,6 +14,11 @@ declare module "sst" {
       "type": "sst.aws.ApiGatewayV2"
       "url": string
     }
+    "starkeep-photos-web-starkeep": {
+      "name": string
+      "type": "sst.aws.Function"
+      "url": string
+    }
   }
 }
 

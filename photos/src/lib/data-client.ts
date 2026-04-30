@@ -34,17 +34,21 @@ export async function resolveDataSource(mode: DataSourceMode): Promise<{
   headers: Record<string, string>;
 }> {
   if (mode === "remote") {
-    const config = await readCloudConfig();
-    if (config?.apiGatewayUrl) {
-      console.debug("[data-client] Remote mode, apiGatewayUrl:", config.apiGatewayUrl);
-      const token = await getAccessToken();
-      if (!token) console.warn("[data-client] No access token — request will be unauthenticated");
+    const runtimeConfig = await fetchRuntimeConfig();
+    const apiGatewayUrl = runtimeConfig?.apiGatewayUrl;
+    if (apiGatewayUrl) {
+      // Try to get an auth token (requires the user to be signed in).
+      // If not available yet, still use the remote URL — the API will 401
+      // rather than the app falling back to localhost.
+      const config = await readCloudConfig();
+      const token = config ? await getAccessToken().catch(() => null) : null;
+      if (!token) console.warn("[data-client] Remote mode, no auth token — request will be unauthenticated");
       return {
-        baseUrl: config.apiGatewayUrl.replace(/\/$/, ""),
+        baseUrl: apiGatewayUrl.replace(/\/$/, ""),
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       };
     }
-    console.warn("[data-client] Remote mode but no apiGatewayUrl in cloud config — falling back to local");
+    console.warn("[data-client] Remote mode but no apiGatewayUrl in runtime config — falling back to local");
   }
   const runtimeConfig = await fetchRuntimeConfig();
   const localUrl = runtimeConfig?.localDataServerUrl ?? "http://127.0.0.1:9820";

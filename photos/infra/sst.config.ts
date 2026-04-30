@@ -79,7 +79,10 @@ export default $config({
       auth: { jwt: { authorizer: authorizer.id } },
     });
 
-    const webAssetsFile = resolve(__dirname, "src/web-assets.json");
+    // __dirname is infra/.sst/platform/ (where SST compiles the config).
+    // Go up two levels to reach the infra root.
+    const infraRoot = resolve(__dirname, "..", "..");
+    const webAssetsFile = resolve(infraRoot, "src/web-assets.json");
     const photosWebFn = existsSync(webAssetsFile)
       ? new sst.aws.Function(`starkeep-photos-web-${stage}`, {
           handler: "src/static-server.handler",
@@ -95,7 +98,7 @@ export default $config({
       region: "us-east-1",
     };
 
-    const outputsPath = resolve(__dirname, "photos-cloud-config.json");
+    const outputsPath = resolve(infraRoot, "photos-cloud-config.json");
     $resolve(outputs).apply((resolved) => {
       writeFileSync(outputsPath, JSON.stringify(resolved, null, 2));
     });

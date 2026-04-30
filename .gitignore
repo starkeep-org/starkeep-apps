@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+tsconfig.tsbuildinfo
+
+# Written by admin-web — local artifacts, not part of source
+public/starkeep-runtime-config.json
+starkeep-config.json
+infra/photos-cloud-config.json

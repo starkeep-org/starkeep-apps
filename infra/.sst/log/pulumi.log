@@ -1,0 +1,62 @@
+Updating (starkeep):
+
+@ updating....
+ +  pulumi:pulumi:Stack starkeep-photos-starkeep creating (0s) 
+@ updating.....
+ +  sst:aws:ApiGatewayV2LambdaRoute starkeep-photos-gateway-starkeepRouteTnttsc creating (0s) 
+@ updating......
+ +  sst:aws:Function starkeep-photos-api-starkeep creating (0s) 
+ +  sst:aws:ApiGatewayV2Authorizer starkeep-photos-gateway-starkeepAuthorizerCognitoJwt creating (0s) 
+ +  sst:aws:ApiGatewayV2LambdaRoute starkeep-photos-gateway-starkeepRouteBccoth creating (0s) 
+ +  sst:aws:ApiGatewayV2 starkeep-photos-gateway-starkeep creating (0s) 
+ +  aws:cloudwatch:LogGroup starkeep-photos-api-starkeepLogGroup creating (0s) 
+ +  random:index:RandomBytes LambdaEncryptionKey creating (0s) 
+ +  aws:apigatewayv2:Api starkeep-photos-gateway-starkeepApi creating (0s) 
+ +  aws:cloudwatch:LogGroup starkeep-photos-gateway-starkeepAccessLog creating (0s) 
+ +  random:index:RandomBytes LambdaEncryptionKey created (0.01s) 
+ +  aws:iam:Role starkeep-photos-api-starkeepRole creating (0s) 
+ +  aws:cloudwatch:LogGroup starkeep-photos-gateway-starkeepAccessLog created (0.44s) 
+ +  aws:cloudwatch:LogGroup starkeep-photos-api-starkeepLogGroup created (0.45s) 
+ +  aws:apigatewayv2:Api starkeep-photos-gateway-starkeepApi created (0.55s) 
+ +  sst:sst:LinkRef starkeep-photos-gateway-starkeepLinkRef creating (0s) 
+ +  aws:apigatewayv2:Stage starkeep-photos-gateway-starkeepStage creating (0s) 
+ +  aws:apigatewayv2:Authorizer starkeep-photos-gateway-starkeepAuthorizerCognitoJwtAuthorizer creating (0s) 
+@ updating....
+ +  aws:iam:Role starkeep-photos-api-starkeepRole created (0.87s) 
+ +  aws:apigatewayv2:Stage starkeep-photos-gateway-starkeepStage created (0.85s) 
+ +  aws:apigatewayv2:Authorizer starkeep-photos-gateway-starkeepAuthorizerCognitoJwtAuthorizer created (0.92s) 
+@ updating...........
+ +  aws:s3:BucketObjectv2 starkeep-photos-api-starkeepSourcemap0 creating (0s) 
+ +  aws:s3:BucketObjectv2 starkeep-photos-api-starkeepCode creating (0s) 
+@ updating....
+ +  aws:s3:BucketObjectv2 starkeep-photos-api-starkeepSourcemap0 created (0.83s) 
+@ updating......
+ +  aws:s3:BucketObjectv2 starkeep-photos-api-starkeepCode created (3s) 
+ +  aws:lambda:Function starkeep-photos-api-starkeepFunction creating (0s) 
+@ updating..........
+ +  aws:lambda:Function starkeep-photos-api-starkeepFunction created (6s) 
+ +  sst:sst:LinkRef starkeep-photos-api-starkeepLinkRef creating (0s) 
+ +  aws:lambda:Permission starkeep-photos-gateway-starkeepRouteTnttscPermissions creating (0s) 
+ +  aws:lambda:Permission starkeep-photos-gateway-starkeepRouteBccothPermissions creating (0s) 
+ +  aws:lambda:Permission starkeep-photos-gateway-starkeepRouteTnttscPermissions created (0.23s) 
+@ updating....
+ +  aws:apigatewayv2:Integration starkeep-photos-gateway-starkeepRouteTnttscIntegration creating (0s) 
+ +  aws:lambda:Permission starkeep-photos-gateway-starkeepRouteBccothPermissions created (0.43s) 
+ +  aws:apigatewayv2:Integration starkeep-photos-gateway-starkeepRouteBccothIntegration creating (0s) 
+ +  aws:apigatewayv2:Integration starkeep-photos-gateway-starkeepRouteTnttscIntegration created (0.27s) 
+ +  aws:apigatewayv2:Route starkeep-photos-gateway-starkeepRouteTnttscRoute creating (0s) 
+ +  aws:apigatewayv2:Integration starkeep-photos-gateway-starkeepRouteBccothIntegration created (0.24s) 
+ +  aws:apigatewayv2:Route starkeep-photos-gateway-starkeepRouteBccothRoute creating (0s) 
+ +  aws:apigatewayv2:Route starkeep-photos-gateway-starkeepRouteTnttscRoute created (0.30s) 
+ +  aws:apigatewayv2:Route starkeep-photos-gateway-starkeepRouteBccothRoute created (0.33s) 
+ +  pulumi:pulumi:Stack starkeep-photos-starkeep created (26s) 
+Outputs:
+    _protect           : false
+    photosApiGatewayUrl: "https://0lleaiomda.execute-api.us-east-1.amazonaws.com"
+    region             : "us-east-1"
+
+Resources:
+    + 24 created
+
+Duration: 28s
+

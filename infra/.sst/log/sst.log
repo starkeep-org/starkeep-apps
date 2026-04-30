@@ -1,0 +1,76 @@
+time=2026-04-30T09:34:42.839-04:00 level=INFO msg="checking for pulumi" path="/Users/amkoller/Library/Application Support/sst/bin/pulumi"
+time=2026-04-30T09:34:43.175-04:00 level=INFO msg="checking for bun" path="/Users/amkoller/Library/Application Support/sst/bin/bun"
+time=2026-04-30T09:34:43.188-04:00 level=INFO msg="initializing project" version=4.12.10
+time=2026-04-30T09:34:43.189-04:00 level=INFO msg="esbuild building" out=/Users/amkoller/projects/starkeep/photos/infra/.sst/platform/sst.config.1777556083188.mjs
+time=2026-04-30T09:34:43.203-04:00 level=INFO msg="esbuild built" outfile=/Users/amkoller/projects/starkeep/photos/infra/.sst/platform/sst.config.1777556083188.mjs
+time=2026-04-30T09:34:43.203-04:00 level=INFO msg="evaluating config"
+time=2026-04-30T09:34:43.247-04:00 level=INFO msg="config evaluated"
+time=2026-04-30T09:34:43.248-04:00 level=INFO msg="checking platform"
+time=2026-04-30T09:34:43.248-04:00 level=INFO msg="loading home"
+time=2026-04-30T09:34:43.249-04:00 level=INFO msg="aws credentials found" region=us-east-1 profile=""
+time=2026-04-30T09:34:43.250-04:00 level=INFO msg="fetching bootstrap"
+time=2026-04-30T09:34:43.537-04:00 level=INFO msg="found existing bootstrap" data="{\"version\":5,\"asset\":\"sst-asset-vecwkkbsfasn\",\"assetEcrRegistryId\":\"026090522855\",\"assetEcrUrl\":\"026090522855.dkr.ecr.us-east-1.amazonaws.com/sst-asset\",\"state\":\"sst-state-vecwkkbsfasn\",\"appsyncHttp\":\"\",\"appsyncRealtime\":\"\"}"
+time=2026-04-30T09:34:43.537-04:00 level=INFO msg="loaded config" app=starkeep-photos stage=starkeep
+time=2026-04-30T09:34:43.538-04:00 level=INFO msg="initializing ui" isTTY=false
+time=2026-04-30T09:34:43.539-04:00 level=INFO msg="server port assigned" port=13557
+time=2026-04-30T09:34:43.539-04:00 level=INFO msg="running stack command" service=project.run cmd=deploy
+time=2026-04-30T09:34:43.539-04:00 level=INFO msg="INFO locking app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:34:43.539-04:00 level=INFO msg="INFO getting data key=lock app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:34:43.539-04:00 level=INFO msg=starting service=server
+time=2026-04-30T09:34:43.540-04:00 level=INFO msg=server service=server addr=0.0.0.0:13557
+time=2026-04-30T09:34:43.540-04:00 level=INFO msg="server ready to accept connections" service=server
+time=2026-04-30T09:34:43.936-04:00 level=INFO msg="INFO putting update app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:34:44.191-04:00 level=INFO msg="INFO getting passphrase app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:34:44.383-04:00 level=INFO msg="INFO passphrase not found, setting passphrase app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:34:44.626-04:00 level=INFO msg="INFO pulling state app=starkeep-photos stage=starkeep out=/Users/amkoller/projects/starkeep/photos/infra/.sst/pulumi/fe622166acac2b4ae702c9c0/.pulumi/stacks/starkeep-photos/starkeep.json"
+time=2026-04-30T09:34:45.173-04:00 level=INFO msg="got previous deployment" service=project.run updateID=fe622166acac2b4ae702c9c0
+time=2026-04-30T09:34:45.173-04:00 level=INFO msg="esbuild building" out=/Users/amkoller/projects/starkeep/photos/infra/.sst/platform/sst.config.1777556084625.mjs
+time=2026-04-30T09:34:45.233-04:00 level=INFO msg="esbuild built" outfile=/Users/amkoller/projects/starkeep/photos/infra/.sst/platform/sst.config.1777556084625.mjs
+time=2026-04-30T09:34:45.238-04:00 level=INFO msg="built sst.config.ts" service=project.run updateID=fe622166acac2b4ae702c9c0 to=/Users/amkoller/projects/starkeep/photos/infra/.sst/platform/sst.config.1777556084625.mjs
+time=2026-04-30T09:34:45.241-04:00 level=INFO msg="tracked files" service=project.run updateID=fe622166acac2b4ae702c9c0
+time=2026-04-30T09:34:45.241-04:00 level=INFO msg="INFO getting data key=secret app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:34:45.241-04:00 level=INFO msg="INFO getting data key=secret app=starkeep-photos stage=_fallback"
+time=2026-04-30T09:34:45.418-04:00 level=INFO msg="starting pulumi" service=project.run updateID=fe622166acac2b4ae702c9c0 args="[/Users/amkoller/Library/Application Support/sst/bin/pulumi up --yes -f --stack organization/starkeep-photos/starkeep --non-interactive --event-log /Users/amkoller/projects/starkeep/photos/infra/.sst/pulumi/fe622166acac2b4ae702c9c0/eventlog.json --config aws:region=us-east-1 --config aws:defaultTags={\"tags\":{\"sst:app\":\"starkeep-photos\",\"sst:stage\":\"starkeep\"}}]"
+time=2026-04-30T09:34:50.419-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:51.887-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:52.071-04:00 level=INFO msg="rpc request" method=POST url=/rpc
+time=2026-04-30T09:34:52.090-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:52.340-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:52.540-04:00 level=INFO msg="rpc request" method=POST url=/rpc
+time=2026-04-30T09:34:52.541-04:00 level=INFO msg="building function" runtime=nodejs22.x functionID=starkeep-photos-api-starkeep
+time=2026-04-30T09:34:52.541-04:00 level=INFO msg="loader info" service=runtime.node functionID=starkeep-photos-api-starkeep loader=map[]
+time=2026-04-30T09:34:52.541-04:00 level=INFO msg="running esbuild" service=runtime.node functionID=starkeep-photos-api-starkeep
+time=2026-04-30T09:34:52.574-04:00 level=INFO msg="esbuild finished" service=runtime.node functionID=starkeep-photos-api-starkeep
+time=2026-04-30T09:34:52.574-04:00 level=INFO msg=installing service=runtime.node functionID=starkeep-photos-api-starkeep packages="[pg sharp @aws-sdk/dsql-signer @aws-sdk/client-s3 @aws-sdk/s3-request-presigner @aws-sdk/lib-storage]"
+time=2026-04-30T09:34:52.574-04:00 level=INFO msg="running npm" service=runtime.node functionID=starkeep-photos-api-starkeep cmd="[install --force --platform=linux --os=linux --arch=x64 --cpu=x64 --libc=glibc]"
+time=2026-04-30T09:34:52.596-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:52.868-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:53.161-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:53.602-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:34:59.537-04:00 level=INFO msg="npm output" output="npm warn using --force Recommended protections disabled.\nnpm warn Unknown cli config \"--platform\". This will stop working in the next major version of npm.\nnpm warn Unknown cli config \"--arch\". This will stop working in the next major version of npm.\nnpm warn Unknown env config \"npm-globalconfig\". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.\nnpm warn Unknown env config \"verify-deps-before-run\". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.\nnpm warn Unknown env config \"_jsr-registry\". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.\n\nadded 140 packages, and audited 141 packages in 7s\n\n11 packages are looking for funding\n  run `npm fund` for details\n\nfound 0 vulnerabilities\n"
+time=2026-04-30T09:34:59.537-04:00 level=INFO msg="done installing" service=runtime.node functionID=starkeep-photos-api-starkeep packages="[pg sharp @aws-sdk/dsql-signer @aws-sdk/client-s3 @aws-sdk/s3-request-presigner @aws-sdk/lib-storage]"
+time=2026-04-30T09:34:59.537-04:00 level=INFO msg="function built" runtime=nodejs22.x functionID=starkeep-photos-api-starkeep
+time=2026-04-30T09:35:01.710-04:00 level=INFO msg="rpc request" method=POST url=/rpc
+time=2026-04-30T09:35:02.590-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:05.749-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:11.085-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:12.618-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:12.936-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:13.239-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:13.595-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:13.692-04:00 level=INFO msg="pulumi exited" service=project.run updateID=fe622166acac2b4ae702c9c0 err=<nil>
+time=2026-04-30T09:35:13.692-04:00 level=INFO msg="eof and exited" service=project.run updateID=fe622166acac2b4ae702c9c0 eofs=0
+time=2026-04-30T09:35:13.692-04:00 level=INFO msg="eof and exited" service=project.run updateID=fe622166acac2b4ae702c9c0 eofs=1
+time=2026-04-30T09:35:13.692-04:00 level=INFO msg="breaking out of tail loop" service=project.run updateID=fe622166acac2b4ae702c9c0
+time=2026-04-30T09:35:13.692-04:00 level=INFO msg="parsing state" service=project.run updateID=fe622166acac2b4ae702c9c0
+time=2026-04-30T09:35:13.696-04:00 level=INFO msg="generating types" root=/Users/amkoller/projects/starkeep/photos/infra
+time=2026-04-30T09:35:13.697-04:00 level=INFO msg="canceling partial" service=project.run updateID=fe622166acac2b4ae702c9c0
+time=2026-04-30T09:35:13.697-04:00 level=INFO msg="waiting for partial to exit" service=project.run updateID=fe622166acac2b4ae702c9c0
+time=2026-04-30T09:35:13.957-04:00 level=INFO msg="INFO pushing partial state updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:13.957-04:00 level=INFO msg="INFO pushing snapshot updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:13.957-04:00 level=INFO msg="INFO pushing eventlog updateID=fe622166acac2b4ae702c9c0"
+time=2026-04-30T09:35:14.316-04:00 level=INFO msg="INFO putting update app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:35:14.523-04:00 level=INFO msg="done running stack command" service=project.run updateID=fe622166acac2b4ae702c9c0 resources=26
+time=2026-04-30T09:35:14.526-04:00 level=INFO msg="INFO unlocking app=starkeep-photos stage=starkeep"
+time=2026-04-30T09:35:14.726-04:00 level=INFO msg="shutting down server" service=server
+time=2026-04-30T09:35:14.727-04:00 level=INFO msg="server done" service=server

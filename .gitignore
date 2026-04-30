@@ -1,4 +1,5 @@
 node_modules/
+.sst/
 .next/
 .turbo/
 out/

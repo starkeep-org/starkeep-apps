@@ -1,24 +1,22 @@
 import { serializeHLC, type DataRecord, type StarkeepId } from "@starkeep/core";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
-import type { MetadataRecord } from "@starkeep/core";
 import type { AppImage } from "../../types/app-image";
-import { IMAGE_RECORD_TYPE } from "../../manifest";
-import { EXIF_GENERATOR_ID } from "../../metadata/exif-generator";
-import { PROVENANCE_GENERATOR_ID } from "../../metadata/provenance-generator";
-import { USER_AUTHORED_GENERATOR_ID } from "../../metadata/user-authored-generator";
-import { THUMBNAIL_GENERATOR_ID } from "../../metadata/thumbnail-generator";
 
-const DIMENSIONS_GENERATOR_ID = "@starkeep/metadata-core:image-dimensions";
-
-function assembleFromEntries(record: DataRecord, entries: MetadataRecord[]): AppImage {
-  const find = (gid: string) => entries.find((e) => e.generatorId === gid)?.value ?? {};
-
-  const dims = find(DIMENSIONS_GENERATOR_ID) as {
+function assembleFromRecord(record: DataRecord): AppImage {
+  const c = record.content as {
+    parentId?: string;
+    title?: string;
+    caption?: string;
+    dateTakenOverride?: string | null;
+    googlePhotosId?: string | null;
+    sourceImageId?: string | null;
+    cropX?: number | null;
+    cropY?: number | null;
+    cropWidth?: number | null;
+    cropHeight?: number | null;
     width?: number;
     height?: number;
     format?: string;
-  };
-  const exif = find(EXIF_GENERATOR_ID) as {
     dateTakenRaw?: string | null;
     cameraMake?: string | null;
     cameraModel?: string | null;
@@ -30,35 +28,12 @@ function assembleFromEntries(record: DataRecord, entries: MetadataRecord[]): App
     gpsLon?: number | null;
     orientation?: number | null;
   };
-  const prov = find(PROVENANCE_GENERATOR_ID) as {
-    originalFilename?: string;
-    googlePhotosId?: string | null;
-    sourceImageId?: string | null;
-    cropX?: number | null;
-    cropY?: number | null;
-    cropWidth?: number | null;
-    cropHeight?: number | null;
-  };
-  const authored = find(USER_AUTHORED_GENERATOR_ID) as {
-    caption?: string;
-    title?: string;
-    dateTakenOverride?: string | null;
-  };
-  const thumb = find(THUMBNAIL_GENERATOR_ID) as {
-    thumbnailKey?: string | null;
-    thumbnailWidth?: number;
-    thumbnailHeight?: number;
-  };
 
   const hasCropRect =
-    prov.cropX != null &&
-    prov.cropY != null &&
-    prov.cropWidth != null &&
-    prov.cropHeight != null;
+    c.cropX != null && c.cropY != null && c.cropWidth != null && c.cropHeight != null;
 
   const createdAt = serializeHLC(record.createdAt);
-  const effectiveDateTaken =
-    authored.dateTakenOverride ?? exif.dateTakenRaw ?? createdAt;
+  const effectiveDateTaken = c.dateTakenOverride ?? c.dateTakenRaw ?? createdAt;
 
   return {
     id: record.id,
@@ -67,67 +42,61 @@ function assembleFromEntries(record: DataRecord, entries: MetadataRecord[]): App
     sizeBytes: record.sizeBytes ?? 0,
     createdAt,
     updatedAt: serializeHLC(record.updatedAt),
-    width: dims.width ?? 0,
-    height: dims.height ?? 0,
-    format: dims.format ?? "unknown",
+    parentId: c.parentId ?? "",
+    width: c.width ?? 0,
+    height: c.height ?? 0,
+    format: c.format ?? "unknown",
     exif: {
-      dateTakenRaw: exif.dateTakenRaw ?? null,
-      cameraMake: exif.cameraMake ?? null,
-      cameraModel: exif.cameraModel ?? null,
-      fNumber: exif.fNumber ?? null,
-      exposureTime: exif.exposureTime ?? null,
-      iso: exif.iso ?? null,
-      lensModel: exif.lensModel ?? null,
-      gpsLat: exif.gpsLat ?? null,
-      gpsLon: exif.gpsLon ?? null,
-      orientation: exif.orientation ?? null,
+      dateTakenRaw: c.dateTakenRaw ?? null,
+      cameraMake: c.cameraMake ?? null,
+      cameraModel: c.cameraModel ?? null,
+      fNumber: c.fNumber ?? null,
+      exposureTime: c.exposureTime ?? null,
+      iso: c.iso ?? null,
+      lensModel: c.lensModel ?? null,
+      gpsLat: c.gpsLat ?? null,
+      gpsLon: c.gpsLon ?? null,
+      orientation: c.orientation ?? null,
     },
-    originalFilename: prov.originalFilename ?? "",
-    googlePhotosId: prov.googlePhotosId ?? null,
-    sourceImageId: prov.sourceImageId ?? null,
+    originalFilename: record.originalFilename ?? "",
+    googlePhotosId: c.googlePhotosId ?? null,
+    sourceImageId: c.sourceImageId ?? null,
     cropRect: hasCropRect
-      ? {
-          x: prov.cropX!,
-          y: prov.cropY!,
-          width: prov.cropWidth!,
-          height: prov.cropHeight!,
-        }
+      ? { x: c.cropX!, y: c.cropY!, width: c.cropWidth!, height: c.cropHeight! }
       : null,
-    caption: authored.caption ?? "",
-    title: authored.title ?? "",
-    dateTakenOverride: authored.dateTakenOverride ?? null,
-    thumbnailKey: thumb.thumbnailKey ?? null,
-    thumbnailWidth: thumb.thumbnailWidth ?? 0,
-    thumbnailHeight: thumb.thumbnailHeight ?? 0,
+    caption: c.caption ?? "",
+    title: c.title ?? "",
+    dateTakenOverride: c.dateTakenOverride ?? null,
     effectiveDateTaken,
   };
 }
 
 export async function assembleAppImage(
   record: DataRecord,
-  db: DatabaseAdapter,
+  _db: DatabaseAdapter,
 ): Promise<AppImage> {
-  const metaResult = await db.queryMetadata(IMAGE_RECORD_TYPE, { targetId: record.id });
-  return assembleFromEntries(record, metaResult.entries);
+  return assembleFromRecord(record);
 }
 
 export async function assembleAppImages(
   records: DataRecord[],
-  db: DatabaseAdapter,
+  _db: DatabaseAdapter,
 ): Promise<AppImage[]> {
-  if (records.length === 0) return [];
+  return records.map(assembleFromRecord);
+}
 
-  const ids = records.map((r) => r.id) as StarkeepId[];
-  const metaResult = await db.queryMetadata(IMAGE_RECORD_TYPE, { targetIds: ids });
+export function assembleAppImageSync(record: DataRecord): AppImage {
+  return assembleFromRecord(record);
+}
 
-  const metaByTarget = new Map<string, MetadataRecord[]>();
-  for (const entry of metaResult.entries) {
-    const existing = metaByTarget.get(entry.targetId) ?? [];
-    existing.push(entry);
-    metaByTarget.set(entry.targetId, existing);
-  }
+export { assembleFromRecord as _assembleFromRecord };
 
-  return records.map((record) =>
-    assembleFromEntries(record, metaByTarget.get(record.id) ?? []),
-  );
+// Re-export for callers that import by record alone
+export async function assembleAppImageById(
+  id: StarkeepId,
+  db: DatabaseAdapter,
+): Promise<AppImage | null> {
+  const record = await db.get(id);
+  if (!record) return null;
+  return assembleFromRecord(record);
 }

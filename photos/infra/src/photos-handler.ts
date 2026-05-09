@@ -1,9 +1,9 @@
 /**
- * Photos Lambda handler — remote image thumbnail generation for the photos app.
+ * Photos Lambda handler — server-side thumbnail generation for the photos app.
  *
- * Handles POST /data/generate: fetches a source image from S3, runs sharp to
- * produce a downsize thumbnail, stores the result in S3, and upserts the
- * metadata record in Aurora DSQL so it becomes available via pullMetadata.
+ * POST /data/generate-thumbnail: fetches a source image from S3, runs sharp to
+ * produce a thumbnail, creates a new DataRecord for the thumbnail (with
+ * content.parentId pointing to the original), and stores the record in DSQL.
  *
  * Environment variables (injected by SST):
  *   AURORA_ENDPOINT  — Aurora DSQL cluster hostname
@@ -11,7 +11,6 @@
  *   AWS_REGION       — set automatically by Lambda runtime
  */
 
-import { createHash } from "node:crypto";
 import { DsqlSigner } from "@aws-sdk/dsql-signer";
 import pg from "pg";
 import { AuroraDsqlDatabaseAdapter } from "@starkeep/storage-aurora-dsql";
@@ -23,6 +22,7 @@ import type {
   DatabaseClient,
   AuroraDsqlDatabaseAdapterOptions,
 } from "@starkeep/storage-aurora-dsql";
+import { generateThumbnailRecord } from "../../src/photos-lib/metadata/thumbnail-generator.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -102,7 +102,6 @@ async function getAdapters(): Promise<Adapters> {
   await db.init();
 
   const storage = new S3ObjectStorageAdapter({ bucketName: s3Bucket, region });
-
   const clock = createHLCClock({ nodeId: "cloud-photos-api", wallClockFunction: Date.now });
 
   adapters = { db, storage, clock };
@@ -122,78 +121,68 @@ export async function handler(event: APIGatewayEvent) {
       return { statusCode: 200, body: "" };
     }
 
-    // POST /data/generate — fetch source image from S3, run sharp, store thumbnail.
-    if (method === "POST" && path === "/data/generate") {
+    // POST /data/generate-thumbnail — create a thumbnail DataRecord for an original.
+    if (method === "POST" && path === "/data/generate-thumbnail") {
       const rawBody = event.isBase64Encoded && event.body
         ? Buffer.from(event.body, "base64").toString("utf8")
         : (event.body ?? "{}");
-      const body = JSON.parse(rawBody) as { targetId?: string; generatorId?: string };
-      if (!body.targetId || !body.generatorId) {
-        return clientErr("targetId and generatorId are required", 400);
-      }
+      const body = JSON.parse(rawBody) as { targetId?: string; ownerId?: string };
+      if (!body.targetId) return clientErr("targetId is required", 400);
 
       const { db, storage, clock } = await getAdapters();
+      const ownerId = body.ownerId ?? "unknown";
 
       const record = await db.get(body.targetId as StarkeepId);
       if (!record) return clientErr("Record not found", 404);
       if (!record.objectStorageKey) return clientErr("Record has no attached file", 422);
 
-      const downsizeMatch = body.generatorId.match(/^@starkeep\/image:downsize-(\d+)$/);
-      if (!downsizeMatch) return clientErr(`Unsupported generatorId: ${body.generatorId}`, 400);
-      const maxDimension = parseInt(downsizeMatch[1]!, 10);
-
-      const sourceResult = await storage.get(record.objectStorageKey);
-      if (!sourceResult) return clientErr("Source image not found in storage", 404);
+      // Only generate thumbnails for originals (parentId === "")
+      const parentId = (record.content as { parentId?: string }).parentId ?? "";
+      if (parentId !== "") {
+        return clientErr("Record is already a thumbnail — skipping", 400);
+      }
 
       const { default: sharp } = await import("sharp") as { default: typeof import("sharp") };
-      const inputBuffer = Buffer.from(
-        sourceResult.data instanceof Uint8Array
-          ? sourceResult.data
-          : new Uint8Array(sourceResult.data as ArrayBuffer),
+
+      const thumbnailRecord = await generateThumbnailRecord(
+        record,
+        async (imageBytes, maxWidth) => {
+          const inputBuffer = Buffer.from(imageBytes);
+          const meta = await sharp(inputBuffer).metadata();
+          const hasAlpha = meta.hasAlpha ?? false;
+
+          const resized = await sharp(inputBuffer)
+            .rotate()
+            .resize(maxWidth, maxWidth, {
+              fit: "inside",
+              kernel: "cubic",
+              withoutEnlargement: true,
+            })
+            [hasAlpha ? "webp" : "jpeg"](hasAlpha ? { quality: 76 } : { quality: 85 })
+            .toBuffer();
+
+          const outputMeta = await sharp(resized).metadata();
+          return {
+            data: new Uint8Array(resized),
+            width: outputMeta.width ?? 0,
+            height: outputMeta.height ?? 0,
+          };
+        },
+        { databaseAdapter: db, objectStorageAdapter: storage, clock, ownerId },
       );
 
-      const meta = await sharp(inputBuffer).metadata();
-      const hasAlpha = meta.hasAlpha ?? false;
+      if (!thumbnailRecord) return clientErr("Failed to generate thumbnail", 500);
 
-      const resized = await sharp(inputBuffer)
-        .resize(maxDimension, maxDimension, { fit: "inside", kernel: "cubic", withoutEnlargement: true })
-        [hasAlpha ? "webp" : "jpeg"](hasAlpha ? { quality: 76 } : { quality: 85 })
-        .toBuffer();
-
-      const outputMeta = await sharp(resized).metadata();
-      const format = hasAlpha ? "webp" : "jpeg";
-      const mimeType = hasAlpha ? "image/webp" : "image/jpeg";
-
-      const hash = createHash("sha256").update(new Uint8Array(resized)).digest("hex");
-      const thumbnailKey = `metadata/${hash}`;
-      await storage.put(thumbnailKey, resized, { contentType: mimeType });
-
-      const now = clock.now();
-      const metadataRecord = {
-        targetId: body.targetId as StarkeepId,
-        targetType: record.type,
-        generatorId: body.generatorId,
-        generatorVersion: 1,
-        inputHash: null,
-        updatedAt: now,
-        value: {
-          downsizeWidth: outputMeta.width ?? 0,
-          downsizeHeight: outputMeta.height ?? 0,
-          downsizeFormat: format,
-        },
-        objectStorageKey: thumbnailKey,
-        contentHash: hash,
-        mimeType,
-        sizeBytes: resized.length,
-      };
-      await db.upsertSyncableMetadata(metadataRecord);
-
-      return ok({ ok: true, metadata: metadataRecord });
+      return ok({ ok: true, thumbnailId: thumbnailRecord.id });
     }
 
     return clientErr("Not found", 404);
   } catch (e) {
     console.error("Photos handler error:", e);
-    return { statusCode: 500, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ error: "Internal server error" }) };
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Internal server error" }),
+    };
   }
 }

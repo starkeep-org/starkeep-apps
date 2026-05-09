@@ -1,8 +1,10 @@
 import type { ApiEndpointDefinition, ApiRequest, ApiContext } from "@starkeep/shared-space-api";
-import type { StarkeepId } from "@starkeep/core";
 import { IMAGE_RECORD_TYPE } from "../../manifest";
-import { THUMBNAIL_GENERATOR_ID } from "../../metadata/thumbnail-generator";
 
+/**
+ * Serves the thumbnail image file for a given original image ID.
+ * Looks up the thumbnail record (content.parentId === id) and streams its file.
+ */
 export const getThumbnailHandler: ApiEndpointDefinition = {
   namespace: "photos",
   version: "v1",
@@ -12,23 +14,21 @@ export const getThumbnailHandler: ApiEndpointDefinition = {
     const id = request.query?.["id"];
     if (!id) return { status: 400, body: { error: "id query parameter is required" } };
 
-    const record = await context.databaseAdapter.get(id as StarkeepId);
-    if (!record) return { status: 404, body: { error: "Image not found" } };
-
-    // Look up the thumbnail key from metadata
-    const metaResult = await context.databaseAdapter.queryMetadata(IMAGE_RECORD_TYPE, {
-      targetId: record.id,
-      generatorId: THUMBNAIL_GENERATOR_ID,
+    // Find the thumbnail record whose parentId points to this original
+    const result = await context.databaseAdapter.query({
+      type: IMAGE_RECORD_TYPE,
+      filters: [{ field: "content.parentId", operator: "eq", value: id }],
+      limit: 1,
     });
 
-    const thumbValue = (metaResult.entries[0]?.value ?? {}) as {
-      thumbnailKey?: string | null;
-    };
-    const thumbnailKey = thumbValue.thumbnailKey ?? `images/thumbnails/${id}`;
-
-    const storageResult = await context.objectStorageAdapter.get(thumbnailKey);
-    if (!storageResult) {
+    const thumbnailRecord = result.records[0];
+    if (!thumbnailRecord?.objectStorageKey) {
       return { status: 404, body: { error: "Thumbnail not yet generated" } };
+    }
+
+    const storageResult = await context.objectStorageAdapter.get(thumbnailRecord.objectStorageKey);
+    if (!storageResult) {
+      return { status: 404, body: { error: "Thumbnail file not found in storage" } };
     }
 
     const bytes =
@@ -38,7 +38,10 @@ export const getThumbnailHandler: ApiEndpointDefinition = {
 
     return {
       status: 200,
-      body: { thumbnailBase64: bytesToBase64(bytes), contentType: "image/jpeg" },
+      body: {
+        thumbnailBase64: bytesToBase64(bytes),
+        contentType: thumbnailRecord.mimeType ?? "image/jpeg",
+      },
     };
   },
 };

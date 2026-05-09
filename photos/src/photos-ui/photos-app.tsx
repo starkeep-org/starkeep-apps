@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { PhotoProvider } from "./context/photo-context";
 import { PhotoUrlProvider } from "./context/photo-url-context";
 import { usePhotos } from "./hooks/use-photos";
@@ -6,6 +6,7 @@ import { PhotoGrid } from "./components/grid/photo-grid";
 import { PhotoViewer } from "./components/viewer/photo-viewer";
 import { UploadZone } from "./components/upload/upload-zone";
 import { GoogleImportPanel } from "./components/google/google-import-panel";
+import type { AppImage } from "@/photos-lib";
 
 function PhotosAppInner() {
   const {
@@ -18,15 +19,34 @@ function PhotosAppInner() {
     cropPhoto,
     sharePhoto,
     selectImage,
-    selectedId,
     fetchPhotos,
+    fetchImage,
   } = usePhotos();
 
   const [uploading, setUploading] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showGoogleImport, setShowGoogleImport] = useState(false);
+  // The viewer always shows the original image (parentId === ""), fetched on demand
+  const [viewerImage, setViewerImage] = useState<AppImage | null>(null);
 
-  const selectedImage = selectedId ? images.find((img) => img.id === selectedId) ?? null : null;
+  const handleSelect = async (imageId: string) => {
+    selectImage(imageId);
+    const item = images.find((img) => img.id === imageId);
+    if (!item) return;
+    if (item.parentId !== "") {
+      // It's a thumbnail — fetch the original by parentId
+      const original = await fetchImage(item.parentId);
+      setViewerImage(original);
+    } else {
+      // It's a fallback original (no thumbnail yet) — show it directly
+      setViewerImage(item);
+    }
+  };
+
+  const handleCloseViewer = () => {
+    selectImage(null);
+    setViewerImage(null);
+  };
 
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -41,6 +61,28 @@ function PhotosAppInner() {
     void fetchPhotos();
     setShowGoogleImport(false);
   };
+
+  // Backfill thumbnails for orphan originals. A ref ensures each ID is only
+  // submitted once per session — prevents loops when fetchPhotos refreshes state.
+  const backfilledRef = useRef(new Set<string>());
+  const orphanIds = images
+    .filter((img) => img.parentId === "")
+    .map((img) => img.id)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    if (!orphanIds) return;
+    const newIds = orphanIds.split(",").filter((id) => !backfilledRef.current.has(id));
+    if (newIds.length === 0) return;
+    newIds.forEach((id) => backfilledRef.current.add(id));
+    newIds.forEach((id) => {
+      fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetId: id }),
+      }).catch(() => {});
+    });
+  }, [orphanIds]);
 
   return (
     <div style={{ minHeight: "100vh", background: "#111", color: "#fff", fontFamily: "sans-serif" }}>
@@ -82,28 +124,33 @@ function PhotosAppInner() {
         </div>
       )}
 
-      {/* Grid */}
+      {/* Grid shows thumbnail records */}
       <PhotoGrid
         images={images}
         loading={loading}
         hasMore={!!nextCursor}
         onLoadMore={loadMore}
-        onSelect={selectImage}
+        onSelect={(id) => void handleSelect(id)}
       />
 
-      {/* Viewer overlay */}
-      {selectedImage && (
+      {/* Viewer overlay — receives the original image (parentId === "") */}
+      {viewerImage && (
         <PhotoViewer
-          image={selectedImage}
-          onClose={() => selectImage(null)}
+          image={viewerImage}
+          onClose={handleCloseViewer}
           onUpdateCaption={async (caption) => {
-            await updatePhoto(selectedImage.id, { caption });
+            const updated = await updatePhoto(viewerImage.id, { caption });
+            if (updated) setViewerImage(updated);
           }}
           onCrop={async (cropRect) => {
-            const newImage = await cropPhoto(selectedImage.id, cropRect);
-            if (newImage) selectImage(newImage.id);
+            const newImage = await cropPhoto(viewerImage.id, cropRect);
+            if (newImage) {
+              // newImage is the new original; update viewer to show it
+              setViewerImage(newImage);
+              selectImage(null);
+            }
           }}
-          onShare={async () => sharePhoto(selectedImage.id)}
+          onShare={async () => sharePhoto(viewerImage.id)}
         />
       )}
 

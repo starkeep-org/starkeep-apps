@@ -1,4 +1,3 @@
-import React from "react";
 import type { AppImage } from "@/photos-lib";
 import { usePhotoUrls } from "../../context/photo-url-context";
 
@@ -14,26 +13,34 @@ interface PhotoThumbnailProps {
 }
 
 export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
-  const { getThumbnailSrc } = usePhotoUrls();
-  const transform = image.exif.orientation
-    ? (ORIENTATION_TRANSFORMS[image.exif.orientation] ?? "none")
-    : "none";
-  const src = getThumbnailSrc(image.id);
+  const { getFullSizeSrc } = usePhotoUrls();
+
+  // Only thumbnail records (parentId !== "") have a small image to display.
+  // Originals with parentId === "" are placeholders — their thumbnail is being generated.
+  const isThumbnail = image.parentId !== "";
+  const transform =
+    image.exif.orientation
+      ? (ORIENTATION_TRANSFORMS[image.exif.orientation] ?? "none")
+      : "none";
+  const src = isThumbnail ? getFullSizeSrc(image.id) : null;
 
   return (
     <div
-      onClick={() => onSelect(image.id)}
+      onClick={() => { if (isThumbnail) onSelect(image.id); }}
       style={{
         width: 180,
         height: 120,
         overflow: "hidden",
-        cursor: "pointer",
+        cursor: isThumbnail ? "pointer" : "default",
         borderRadius: 4,
         background: "#222",
         flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
       }}
     >
-      {src && (
+      {src ? (
         <img
           src={src}
           alt={image.title || image.originalFilename}
@@ -44,6 +51,14 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
             objectFit: "cover",
             transform,
             transition: "transform 0.1s ease",
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            background: "repeating-linear-gradient(45deg, #1a1a1a, #1a1a1a 4px, #222 4px, #222 8px)",
           }}
         />
       )}

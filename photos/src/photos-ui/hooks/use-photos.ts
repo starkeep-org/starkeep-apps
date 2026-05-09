@@ -32,6 +32,14 @@ export function usePhotos() {
     if (state.nextCursor) void fetchPhotos(state.nextCursor);
   }, [fetchPhotos, state.nextCursor]);
 
+  /** Fetch a single image by ID (used to load originals from thumbnail.parentId) */
+  const fetchImage = useCallback(async (id: string): Promise<AppImage | null> => {
+    const res = await fetch(`/api/photos/${id}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { image: AppImage };
+    return data.image;
+  }, []);
+
   const uploadPhoto = useCallback(async (file: File, title?: string, caption?: string): Promise<AppImage | null> => {
     const formData = new FormData();
     formData.append("file", file);
@@ -42,9 +50,10 @@ export function usePhotos() {
     const res = await fetch("/api/photos", { method: "POST", body: formData });
     if (!res.ok) return null;
     const data = (await res.json()) as { image: AppImage };
-    dispatch({ type: "APPEND_IMAGES", images: [data.image] });
+    // After upload a thumbnail record will be present; refresh the list
+    void fetchPhotos();
     return data.image;
-  }, [dispatch]);
+  }, [dispatch, fetchPhotos]);
 
   const updatePhoto = useCallback(async (
     id: string,
@@ -57,9 +66,8 @@ export function usePhotos() {
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { image: AppImage };
-    dispatch({ type: "OPTIMISTIC_UPDATE", image: data.image });
     return data.image;
-  }, [dispatch]);
+  }, []);
 
   const deletePhoto = useCallback(async (id: string): Promise<boolean> => {
     const res = await fetch(`/api/photos/${id}`, { method: "DELETE" });
@@ -79,9 +87,10 @@ export function usePhotos() {
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { image: AppImage };
-    dispatch({ type: "APPEND_IMAGES", images: [data.image] });
+    // Refresh list to show the new thumbnail
+    void fetchPhotos();
     return data.image;
-  }, [dispatch]);
+  }, [fetchPhotos]);
 
   const sharePhoto = useCallback(async (imageId: string): Promise<{ token: string; shareUrl: string } | null> => {
     const res = await fetch("/api/share", {
@@ -100,6 +109,7 @@ export function usePhotos() {
     loading: state.loading,
     fetchPhotos,
     loadMore,
+    fetchImage,
     uploadPhoto,
     updatePhoto,
     deletePhoto,

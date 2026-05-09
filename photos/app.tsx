@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import type { AppImage } from "@/photos-lib";
 import {
   PhotoProvider,
   PhotoUrlProvider,
@@ -10,10 +9,6 @@ import {
 import {
   addPhotoFromPath,
   getPhotoFileUrl,
-  postMetadata,
-  uploadFile,
-  getMetadataFileUrl,
-  triggerGeneration,
   triggerSyncNow,
   type PhotoRecord,
 } from "./src/lib/data-server-client";
@@ -57,133 +52,38 @@ function useFullSizeUrlCache(mode: DataSourceMode) {
   );
 }
 
-function useFileUrlCache(mode: DataSourceMode) {
-  const [urlMap, setUrlMap] = useState<ReadonlyMap<string, string>>(new Map());
-  const loadingRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    setUrlMap(new Map());
-    loadingRef.current.clear();
-  }, [mode]);
-
-  const getFileSrc = useCallback(
-    (imageId: string): string | null => {
-      const cached = urlMap.get(imageId);
-      if (cached) return cached;
-      if (loadingRef.current.has(imageId)) return null;
-
-      loadingRef.current.add(imageId);
-
-      const generatorId = "@starkeep/image:downsize-400";
-      const isLocal =
-        typeof window !== "undefined" &&
-        (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-      const generationMode: DataSourceMode = isLocal ? "local" : "remote";
-
-      getMetadataFileUrl(imageId, generatorId, mode)
-        .then(async (thumbnailUrl) => {
-          if (thumbnailUrl) return thumbnailUrl;
-          await triggerGeneration(imageId, generatorId, generationMode);
-          return getMetadataFileUrl(imageId, generatorId, mode);
-        })
-        .then((url) => {
-          loadingRef.current.delete(imageId);
-          if (url) setUrlMap((prev) => new Map(prev).set(imageId, url));
-        })
-        .catch(() => {
-          loadingRef.current.delete(imageId);
-        });
-
-      return null;
-    },
-    [urlMap, mode],
-  );
-
-  return getFileSrc;
-}
 
 type ThumbnailStrategy = "browser" | "local-sharp" | "remote-sharp";
 
-async function runGenerators(
+async function generateThumbnail(
   record: PhotoRecord,
   file: File,
-  fileBytes: Uint8Array,
-  fileName: string,
-  title: string,
-  mode: DataSourceMode,
   thumbnailStrategy: ThumbnailStrategy,
 ): Promise<void> {
-  const targetId = record.id;
-  const targetType = "@starkeep/image";
-
-  await postMetadata(targetId, targetType, "@photos/app:provenance", 1, {
-    originalFilename: fileName,
-    googlePhotosId: null,
-    sourceImageId: null,
-    cropX: null,
-    cropY: null,
-    cropWidth: null,
-    cropHeight: null,
-  }, mode);
-
-  await postMetadata(targetId, targetType, "@photos/app:user-authored", 1, {
-    title,
-    caption: "",
-    dateTakenOverride: null,
-  }, mode);
-
-  try {
-    const { default: Exifr } = await import("exifr");
-    const exif = await Exifr.parse(fileBytes, {
-      pick: ["DateTimeOriginal", "Make", "Model", "FNumber", "ExposureTime", "ISO", "LensModel",
-             "GPSLatitude", "GPSLongitude", "Orientation"],
-    }) as Record<string, unknown> | undefined;
-
-    if (exif) {
-      const dateTakenRaw = exif["DateTimeOriginal"]
-        ? new Date(exif["DateTimeOriginal"] as string).toISOString()
-        : null;
-      await postMetadata(targetId, targetType, "@photos/app:exif", 1, {
-        dateTakenRaw,
-        cameraMake: (exif["Make"] as string) ?? null,
-        cameraModel: (exif["Model"] as string) ?? null,
-        fNumber: (exif["FNumber"] as number) ?? null,
-        exposureTime: exif["ExposureTime"] != null ? String(exif["ExposureTime"]) : null,
-        iso: (exif["ISO"] as number) ?? null,
-        lensModel: (exif["LensModel"] as string) ?? null,
-        gpsLat: (exif["GPSLatitude"] as number) ?? null,
-        gpsLon: (exif["GPSLongitude"] as number) ?? null,
-        orientation: (exif["Orientation"] as number) ?? null,
-      }, mode);
-    }
-  } catch {
-    // EXIF extraction is best-effort
-  }
-
-  const generatorId = "@starkeep/image:downsize-400";
   try {
     if (thumbnailStrategy === "browser") {
-      // Generate in-browser using Canvas API, upload to whichever endpoint the current
-      // mode points at, then kick a sync so the result propagates the other way.
+      // Generate thumbnail in-browser using Canvas, then POST it as a new record
+      // with content.parentId pointing to the original.
       const result = await downsizeImage(file, 400);
-      const fileRef = await uploadFile(result.bytes, result.mimeType, mode);
-      await postMetadata(targetId, targetType, generatorId, 1, {
-        downsizeWidth: result.width,
-        downsizeHeight: result.height,
-        downsizeFormat: "webp",
-      }, mode, fileRef);
-      triggerSyncNow().catch(() => {});
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
+      });
+      if (res.ok) triggerSyncNow().catch(() => {});
+      void result; // generation handled server-side via /api/generate
 
-    } else if (thumbnailStrategy === "local-sharp") {
-      // Ask the local data-server to run sharp. Generation and storage happen
-      // server-side; a push is scheduled automatically after generate.
-      await triggerGeneration(record.id, generatorId, "local");
-
-    } else if (thumbnailStrategy === "remote-sharp") {
-      // Ask the remote Lambda to run sharp. The result lands in DSQL + S3.
-      // A pull cycle brings it to local storage.
-      await triggerGeneration(record.id, generatorId, "remote");
-      triggerSyncNow().catch(() => {});
+    } else {
+      // For local-sharp and remote-sharp, call /api/generate which runs sharp
+      // server-side and creates the thumbnail DataRecord.
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
+      });
+      if (res.ok && thumbnailStrategy === "remote-sharp") {
+        triggerSyncNow().catch(() => {});
+      }
     }
   } catch {
     // Thumbnail generation is best-effort
@@ -214,8 +114,47 @@ function PhotosAppInner() {
     localStorage.setItem("thumbnail-strategy", s);
   };
 
-  const selectedImage = state.selectedId
-    ? state.images.find((img) => img.id === state.selectedId) ?? null
+  // Build the display list. Deduplicate thumbnails per original (keep newest),
+  // then show orphan originals (no thumbnail yet) as empty placeholder boxes.
+  const allThumbnails = state.images.filter((img) => img.parentId !== "");
+  const originals = state.images.filter((img) => img.parentId === "");
+  const newestThumbnailByParent = new Map<string, typeof allThumbnails[0]>();
+  for (const t of allThumbnails) {
+    const existing = newestThumbnailByParent.get(t.parentId);
+    if (!existing || t.createdAt > existing.createdAt) newestThumbnailByParent.set(t.parentId, t);
+  }
+  const thumbnails = Array.from(newestThumbnailByParent.values());
+  const thumbnailedIds = new Set(thumbnails.map((t) => t.parentId));
+  const fallbackOriginals = originals.filter((img) => !thumbnailedIds.has(img.id));
+  const displayImages = [...thumbnails, ...fallbackOriginals];
+
+  // Backfill thumbnails for orphan originals. A ref prevents the same ID from
+  // being submitted more than once per session, even if the effect re-fires.
+  const backfilledRef = useRef(new Set<string>());
+  const orphanIds = fallbackOriginals.map((img) => img.id).sort().join(",");
+  useEffect(() => {
+    if (!orphanIds) return;
+    const newIds = orphanIds.split(",").filter((id) => !backfilledRef.current.has(id));
+    if (newIds.length === 0) return;
+    newIds.forEach((id) => backfilledRef.current.add(id));
+    newIds.forEach((id) => {
+      fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetId: id }),
+      }).catch(() => {});
+    });
+  }, [orphanIds]);
+
+  // For the viewer: if a thumbnail was clicked, show its original.
+  // If a fallback-original was clicked (no thumbnail exists), show it directly.
+  const selectedDisplayImage = state.selectedId
+    ? displayImages.find((img) => img.id === state.selectedId) ?? null
+    : null;
+  const selectedImage = selectedDisplayImage
+    ? (selectedDisplayImage.parentId !== ""
+        ? (state.images.find((img) => img.id === selectedDisplayImage.parentId) ?? selectedDisplayImage)
+        : selectedDisplayImage)
     : null;
 
   usePhotoSync({
@@ -240,7 +179,10 @@ function PhotosAppInner() {
       const record = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName, title, mode);
       dispatch({ type: "APPEND_IMAGES", images: [photoRecordToAppImage(record)] });
 
-      runGenerators(record, file, fileBytes, fileName, title, mode, thumbnailStrategy).catch(() => {});
+      // Mark as submitted before generateThumbnail fires so the backfill effect
+      // never picks up this original and creates a second thumbnail.
+      backfilledRef.current.add(record.id);
+      generateThumbnail(record, file, thumbnailStrategy).catch(() => {});
     } catch (err) {
       console.error("[photos] Upload failed:", err);
       setError(err instanceof Error ? err.message : "Failed to add photo");
@@ -253,11 +195,10 @@ function PhotosAppInner() {
     fileInputRef.current?.click();
   };
 
-  const getFileSrc = useFileUrlCache(mode);
   const getFullSizeSrc = useFullSizeUrlCache(mode);
 
   return (
-    <PhotoUrlProvider getThumbnailSrc={getFileSrc} getFullSizeSrc={getFullSizeSrc}>
+    <PhotoUrlProvider getThumbnailSrc={getFullSizeSrc} getFullSizeSrc={getFullSizeSrc}>
       <div
         style={{
           minHeight: "100vh",
@@ -393,7 +334,7 @@ function PhotosAppInner() {
         )}
 
         <PhotoGrid
-          images={state.images}
+          images={displayImages}
           loading={state.loading}
           hasMore={false}
           onLoadMore={() => {}}

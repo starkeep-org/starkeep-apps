@@ -16,16 +16,9 @@ export {
   decodePalFile,
 } from "./data/album-record";
 
-// Metadata generators
-export { exifGenerator, EXIF_GENERATOR_ID } from "./metadata/exif-generator";
-export { provenanceGenerator, PROVENANCE_GENERATOR_ID } from "./metadata/provenance-generator";
+// Thumbnail generation
 export {
-  userAuthoredGenerator,
-  USER_AUTHORED_GENERATOR_ID,
-} from "./metadata/user-authored-generator";
-export {
-  createThumbnailGenerator,
-  THUMBNAIL_GENERATOR_ID,
+  generateThumbnailRecord,
   THUMBNAIL_MAX_WIDTH,
 } from "./metadata/thumbnail-generator";
 export type { ResizeFunction, ResizeResult } from "./metadata/thumbnail-generator";

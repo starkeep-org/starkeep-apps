@@ -9,9 +9,29 @@ export interface PhotoRecord {
   updated_at: string;
   owner_id: string;
   sync_status: string;
+  // The data-server returns record.content as `payload` in all REST responses.
   payload: {
+    parentId?: string;
     fileName?: string;
     title?: string;
+    caption?: string;
+    width?: number;
+    height?: number;
+    format?: string;
+    dateTakenRaw?: string | null;
+    dateTakenOverride?: string | null;
+    cameraMake?: string | null;
+    cameraModel?: string | null;
+    fNumber?: number | null;
+    exposureTime?: string | null;
+    iso?: number | null;
+    lensModel?: string | null;
+    gpsLat?: number | null;
+    gpsLon?: number | null;
+    orientation?: number | null;
+    googlePhotosId?: string | null;
+    sourceImageId?: string | null;
+    cropRect?: unknown;
     [k: string]: unknown;
   };
   content_hash: string | null;

@@ -20,8 +20,11 @@ export interface AppImageExif {
 }
 
 /**
- * App-layer aggregation built by joining a DataRecord with all its metadata rows.
+ * App-layer aggregation built from a DataRecord's content fields.
  * NOT a DataRecord subtype — it is an assembled view constructed by API handlers.
+ *
+ * parentId is "" for original images and the original's ID for thumbnail records.
+ * Callers can use parentId === "" to distinguish originals from thumbnails.
  */
 export interface AppImage {
   // From DataRecord
@@ -32,29 +35,27 @@ export interface AppImage {
   createdAt: string; // serialized HLC
   updatedAt: string; // serialized HLC
 
-  // From @starkeep/metadata-core:image-dimensions
+  // "" for originals; the original's record ID for thumbnails
+  parentId: string;
+
+  // Image dimensions (stored in content)
   width: number;
   height: number;
-  format: string; // "jpeg" | "png" | "unknown"
+  format: string; // "jpeg" | "png" | "webp" | "unknown"
 
-  // From @photos/app:exif
+  // EXIF (stored in content)
   exif: AppImageExif;
 
-  // From @photos/app:provenance
+  // Provenance (stored in content)
   originalFilename: string;
   googlePhotosId: string | null;
   sourceImageId: string | null;
   cropRect: CropRect | null;
 
-  // From @photos/app:user-authored
+  // User-authored (stored in content)
   caption: string;
   title: string;
   dateTakenOverride: string | null;
-
-  // From @photos/app:thumbnail
-  thumbnailKey: string | null;
-  thumbnailWidth: number;
-  thumbnailHeight: number;
 
   // Computed: dateTakenOverride ?? exif.dateTakenRaw ?? createdAt
   effectiveDateTaken: string;

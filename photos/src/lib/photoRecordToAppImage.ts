@@ -2,6 +2,8 @@ import type { AppImage } from "@/photos-lib";
 import type { PhotoRecord } from "./data-server-client";
 
 export function photoRecordToAppImage(record: PhotoRecord): AppImage {
+  // The data-server returns record.content as `payload` in all REST responses.
+  const p = record.payload ?? {};
   return {
     id: record.id,
     mimeType: record.mime_type ?? "image/jpeg",
@@ -9,31 +11,34 @@ export function photoRecordToAppImage(record: PhotoRecord): AppImage {
     sizeBytes: record.size_bytes ?? 0,
     createdAt: record.created_at ?? new Date().toISOString(),
     updatedAt: record.updated_at ?? new Date().toISOString(),
-    width: 0,
-    height: 0,
-    format: "unknown",
+    parentId: String(p.parentId ?? ""),
+    width: Number(p.width ?? 0),
+    height: Number(p.height ?? 0),
+    format: String(p.format ?? "unknown"),
     exif: {
-      dateTakenRaw: null,
-      cameraMake: null,
-      cameraModel: null,
-      fNumber: null,
-      exposureTime: null,
-      iso: null,
-      lensModel: null,
-      gpsLat: null,
-      gpsLon: null,
-      orientation: null,
+      dateTakenRaw: p.dateTakenRaw ?? null,
+      cameraMake: p.cameraMake ?? null,
+      cameraModel: p.cameraModel ?? null,
+      fNumber: p.fNumber ?? null,
+      exposureTime: p.exposureTime ?? null,
+      iso: p.iso ?? null,
+      lensModel: p.lensModel ?? null,
+      gpsLat: p.gpsLat ?? null,
+      gpsLon: p.gpsLon ?? null,
+      orientation: p.orientation ?? null,
     },
-    originalFilename: String(record.payload?.fileName ?? record.id),
-    googlePhotosId: null,
-    sourceImageId: null,
-    cropRect: (record.payload?.cropRect as AppImage["cropRect"]) ?? null,
-    caption: String(record.payload?.caption ?? ""),
-    title: String(record.payload?.title ?? record.payload?.fileName ?? record.id),
-    dateTakenOverride: (record.payload?.dateTakenOverride as string | null) ?? null,
-    thumbnailKey: null,
-    thumbnailWidth: 0,
-    thumbnailHeight: 0,
-    effectiveDateTaken: record.created_at ?? record.updated_at ?? new Date().toISOString(),
+    originalFilename: record.original_filename ?? String(p.fileName ?? record.id),
+    googlePhotosId: (p.googlePhotosId as string | null) ?? null,
+    sourceImageId: (p.sourceImageId as string | null) ?? null,
+    cropRect: (p.cropRect as AppImage["cropRect"]) ?? null,
+    caption: String(p.caption ?? ""),
+    title: String(p.title ?? p.fileName ?? record.id),
+    dateTakenOverride: p.dateTakenOverride ?? null,
+    effectiveDateTaken:
+      p.dateTakenOverride ??
+      p.dateTakenRaw ??
+      record.created_at ??
+      record.updated_at ??
+      new Date().toISOString(),
   };
 }

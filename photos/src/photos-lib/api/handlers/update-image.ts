@@ -1,7 +1,5 @@
 import type { ApiEndpointDefinition, ApiRequest, ApiContext } from "@starkeep/shared-space-api";
 import type { StarkeepId } from "@starkeep/core";
-import { USER_AUTHORED_GENERATOR_ID } from "../../metadata/user-authored-generator";
-import { IMAGE_RECORD_TYPE } from "../../manifest";
 import { assembleAppImage } from "../helpers/assemble-app-image";
 
 interface UpdateBody {
@@ -12,8 +10,8 @@ interface UpdateBody {
 }
 
 /**
- * Updates user-authored metadata (caption, title, dateTakenOverride) for an image.
- * Merges the provided fields with existing values — unspecified fields are preserved.
+ * Updates user-authored fields (caption, title, dateTakenOverride) for an
+ * original image. Reads existing values from content and merges before writing.
  */
 export const updateImageHandler: ApiEndpointDefinition = {
   namespace: "photos",
@@ -27,37 +25,31 @@ export const updateImageHandler: ApiEndpointDefinition = {
     const record = await context.databaseAdapter.get(body.id as StarkeepId);
     if (!record) return { status: 404, body: { error: "Image not found" } };
 
-    // Read existing user-authored metadata to merge
-    const existing = await context.databaseAdapter.queryMetadata(IMAGE_RECORD_TYPE, {
-      targetId: record.id,
-      generatorId: USER_AUTHORED_GENERATOR_ID,
-    });
-    const existingValue = (existing.entries[0]?.value ?? {}) as {
+    const c = record.content as {
       caption?: string;
       title?: string;
       dateTakenOverride?: string | null;
+      [key: string]: unknown;
     };
 
-    const merged = {
-      caption: body.caption !== undefined ? body.caption : (existingValue.caption ?? ""),
-      title: body.title !== undefined ? body.title : (existingValue.title ?? ""),
-      dateTakenOverride:
-        body.dateTakenOverride !== undefined
-          ? body.dateTakenOverride
-          : (existingValue.dateTakenOverride ?? null),
-    };
-
-    await context.databaseAdapter.upsertSyncableMetadata({
-      targetId: record.id,
-      targetType: IMAGE_RECORD_TYPE,
-      generatorId: USER_AUTHORED_GENERATOR_ID,
-      generatorVersion: 1,
+    const updatedRecord = {
+      ...record,
+      content: {
+        ...c,
+        caption: body.caption !== undefined ? body.caption : (c.caption ?? ""),
+        title: body.title !== undefined ? body.title : (c.title ?? ""),
+        dateTakenOverride:
+          body.dateTakenOverride !== undefined
+            ? body.dateTakenOverride
+            : (c.dateTakenOverride ?? null),
+      },
       updatedAt: context.clock.now(),
-      inputHash: "",
-      value: merged,
-    });
+      version: record.version + 1,
+    };
 
-    const image = await assembleAppImage(record, context.databaseAdapter);
+    await context.databaseAdapter.put(updatedRecord);
+
+    const image = await assembleAppImage(updatedRecord, context.databaseAdapter);
     return { status: 200, body: { image } };
   },
 };

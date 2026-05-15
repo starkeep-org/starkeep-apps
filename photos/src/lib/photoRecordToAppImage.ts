@@ -1,44 +1,38 @@
 import type { AppImage } from "@/photos-lib";
-import type { PhotoRecord } from "./data-server-client";
+import type { PhotoRecord, PhotoMetadataRow } from "./data-server-client";
 
-export function photoRecordToAppImage(record: PhotoRecord): AppImage {
-  // The data-server returns record.content as `payload` in all REST responses.
-  const p = record.payload ?? {};
+/**
+ * Combine a PhotoRecord (records-table row) with its image-metadata row into
+ * the app-layer AppImage. Both shapes come from the data-server's REST surface.
+ */
+export function photoRecordToAppImage(
+  record: PhotoRecord,
+  metadata: PhotoMetadataRow | null,
+): AppImage {
+  const capturedAt = metadata?.captured_at ?? null;
   return {
     id: record.id,
     mimeType: record.mime_type ?? "image/jpeg",
-    objectStorageKey: record.object_storage_key ?? "",
-    sizeBytes: record.size_bytes ?? 0,
-    createdAt: record.created_at ?? new Date().toISOString(),
-    updatedAt: record.updated_at ?? new Date().toISOString(),
-    parentId: String(p.parentId ?? ""),
-    width: Number(p.width ?? 0),
-    height: Number(p.height ?? 0),
-    format: String(p.format ?? "unknown"),
+    objectStorageKey: record.object_storage_key,
+    sizeBytes: record.size_bytes,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    parentId: record.parent_id,
+    width: metadata?.width ?? 0,
+    height: metadata?.height ?? 0,
     exif: {
-      dateTakenRaw: p.dateTakenRaw ?? null,
-      cameraMake: p.cameraMake ?? null,
-      cameraModel: p.cameraModel ?? null,
-      fNumber: p.fNumber ?? null,
-      exposureTime: p.exposureTime ?? null,
-      iso: p.iso ?? null,
-      lensModel: p.lensModel ?? null,
-      gpsLat: p.gpsLat ?? null,
-      gpsLon: p.gpsLon ?? null,
-      orientation: p.orientation ?? null,
+      capturedAt,
+      cameraMake: metadata?.camera_make ?? null,
+      cameraModel: metadata?.camera_model ?? null,
+      fNumber: metadata?.f_number ?? null,
+      exposureTime: metadata?.exposure_time ?? null,
+      iso: metadata?.iso ?? null,
+      lensModel: metadata?.lens_model ?? null,
+      gpsLat: metadata?.gps_lat ?? null,
+      gpsLon: metadata?.gps_lon ?? null,
+      orientation: metadata?.orientation ?? null,
     },
-    originalFilename: record.original_filename ?? String(p.fileName ?? record.id),
-    googlePhotosId: (p.googlePhotosId as string | null) ?? null,
-    sourceImageId: (p.sourceImageId as string | null) ?? null,
-    cropRect: (p.cropRect as AppImage["cropRect"]) ?? null,
-    caption: String(p.caption ?? ""),
-    title: String(p.title ?? p.fileName ?? record.id),
-    dateTakenOverride: p.dateTakenOverride ?? null,
-    effectiveDateTaken:
-      p.dateTakenOverride ??
-      p.dateTakenRaw ??
-      record.created_at ??
-      record.updated_at ??
-      new Date().toISOString(),
+    originalFilename: record.original_filename ?? record.id,
+    effectiveDateTaken: capturedAt ?? record.created_at,
   };
 }

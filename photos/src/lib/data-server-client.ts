@@ -3,40 +3,36 @@ import { resolveDataSource, type DataSourceMode } from "./data-client";
 export interface PhotoRecord {
   id: string;
   type: string;
-  mime_type: string | null;
-  size_bytes: number | null;
+  mime_type: string;
+  size_bytes: number;
   created_at: string;
   updated_at: string;
   owner_id: string;
   sync_status: string;
-  // The data-server returns record.content as `payload` in all REST responses.
-  payload: {
-    parentId?: string;
-    fileName?: string;
-    title?: string;
-    caption?: string;
-    width?: number;
-    height?: number;
-    format?: string;
-    dateTakenRaw?: string | null;
-    dateTakenOverride?: string | null;
-    cameraMake?: string | null;
-    cameraModel?: string | null;
-    fNumber?: number | null;
-    exposureTime?: string | null;
-    iso?: number | null;
-    lensModel?: string | null;
-    gpsLat?: number | null;
-    gpsLon?: number | null;
-    orientation?: number | null;
-    googlePhotosId?: string | null;
-    sourceImageId?: string | null;
-    cropRect?: unknown;
-    [k: string]: unknown;
-  };
-  content_hash: string | null;
-  object_storage_key: string | null;
+  content_hash: string;
+  object_storage_key: string;
   original_filename: string | null;
+  parent_id: string | null;
+}
+
+/**
+ * Image metadata row returned alongside a PhotoRecord (mirrors the columns
+ * on shared_record_image_metadata).
+ */
+export interface PhotoMetadataRow {
+  recordId: string;
+  width?: number;
+  height?: number;
+  captured_at?: string | null;
+  camera_make?: string | null;
+  camera_model?: string | null;
+  f_number?: number | null;
+  exposure_time?: string | null;
+  iso?: number | null;
+  lens_model?: string | null;
+  gps_lat?: number | null;
+  gps_lon?: number | null;
+  orientation?: number | null;
 }
 
 async function request<T>(
@@ -80,43 +76,22 @@ export async function addPhotoFromPath(
   fileBytes: Uint8Array,
   mimeType: string,
   fileName: string,
-  title: string,
   mode: DataSourceMode,
 ): Promise<PhotoRecord> {
   const source = await resolveDataSource(mode);
 
-  let body: Record<string, unknown>;
-  if (mode === "remote") {
-    console.debug(`[data-server-client] Encoding ${fileBytes.length} bytes to base64 for remote upload`);
-    let binary = "";
-    const chunkSize = 8192;
-    for (let i = 0; i < fileBytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...fileBytes.subarray(i, i + chunkSize));
-    }
-    const fileBase64 = btoa(binary);
-    console.debug(`[data-server-client] base64 length: ${fileBase64.length} chars (~${(fileBase64.length / 1024 / 1024).toFixed(1)} MB)`);
-    body = {
-      type: "@starkeep/image",
-      payload: { fileName, title },
-      fileName,
-      contentType: mimeType,
-      fileBase64,
-    };
-  } else {
-    console.debug(`[data-server-client] Local upload via bytes (${fileBytes.length} bytes)`);
-    let binary = "";
-    const chunkSize = 8192;
-    for (let i = 0; i < fileBytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...fileBytes.subarray(i, i + chunkSize));
-    }
-    body = {
-      type: "@starkeep/image",
-      payload: { fileName, title },
-      fileName,
-      contentType: mimeType,
-      fileBase64: btoa(binary),
-    };
+  let binary = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < fileBytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...fileBytes.subarray(i, i + chunkSize));
   }
+  const fileBase64 = btoa(binary);
+  const body: Record<string, unknown> = {
+    type: "image",
+    fileName,
+    contentType: mimeType,
+    fileBase64,
+  };
 
   const result = await request<{ record: PhotoRecord }>("/data/records", source, {
     method: "POST",
@@ -129,7 +104,7 @@ export async function addPhotoFromPath(
 export async function listPhotos(mode: DataSourceMode): Promise<PhotoRecord[]> {
   const source = await resolveDataSource(mode);
   const result = await request<{ records: PhotoRecord[] }>(
-    "/data/records?type=%40starkeep%2Fimage&limit=500",
+    "/data/records?type=image&limit=500",
     source,
   );
   return result.records;
@@ -138,7 +113,7 @@ export async function listPhotos(mode: DataSourceMode): Promise<PhotoRecord[]> {
 export async function listPhotosSince(updatedAfter: string, mode: DataSourceMode): Promise<PhotoRecord[]> {
   const source = await resolveDataSource(mode);
   const result = await request<{ records: PhotoRecord[] }>(
-    `/data/records?type=%40starkeep%2Fimage&limit=500&updated_after=${encodeURIComponent(updatedAfter)}`,
+    `/data/records?type=image&limit=500&updated_after=${encodeURIComponent(updatedAfter)}`,
     source,
   );
   return result.records;
@@ -157,9 +132,14 @@ export interface FileRef {
   sizeBytes: number;
 }
 
-export async function uploadFile(bytes: Uint8Array, mimeType: string, mode: DataSourceMode): Promise<FileRef> {
+export async function uploadFile(
+  bytes: Uint8Array,
+  mimeType: string,
+  typeId: string,
+  mode: DataSourceMode,
+): Promise<FileRef> {
   const source = await resolveDataSource(mode);
-  return request<FileRef>("/data/files", source, {
+  return request<FileRef>(`/data/files?type=${encodeURIComponent(typeId)}`, source, {
     method: "POST",
     headers: { "Content-Type": mimeType },
     body: bytes as unknown as BodyInit,

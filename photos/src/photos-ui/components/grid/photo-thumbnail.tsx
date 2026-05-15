@@ -43,7 +43,7 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
       {src ? (
         <img
           src={src}
-          alt={image.title || image.originalFilename}
+          alt={image.originalFilename}
           loading="lazy"
           style={{
             width: "100%",

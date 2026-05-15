@@ -1,102 +1,86 @@
-import { serializeHLC, type DataRecord, type StarkeepId } from "@starkeep/core";
+import { serializeHLC, type DataRecord, type MetadataRow, type StarkeepId } from "@starkeep/core";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
-import type { AppImage } from "../../types/app-image";
+import type { AppImage, AppImageExif } from "../../types/app-image";
+import { IMAGE_RECORD_TYPE } from "../../manifest";
 
-function assembleFromRecord(record: DataRecord): AppImage {
-  const c = record.content as {
-    parentId?: string;
-    title?: string;
-    caption?: string;
-    dateTakenOverride?: string | null;
-    googlePhotosId?: string | null;
-    sourceImageId?: string | null;
-    cropX?: number | null;
-    cropY?: number | null;
-    cropWidth?: number | null;
-    cropHeight?: number | null;
-    width?: number;
-    height?: number;
-    format?: string;
-    dateTakenRaw?: string | null;
-    cameraMake?: string | null;
-    cameraModel?: string | null;
-    fNumber?: number | null;
-    exposureTime?: string | null;
-    iso?: number | null;
-    lensModel?: string | null;
-    gpsLat?: number | null;
-    gpsLon?: number | null;
-    orientation?: number | null;
+function emptyExif(): AppImageExif {
+  return {
+    capturedAt: null,
+    cameraMake: null,
+    cameraModel: null,
+    fNumber: null,
+    exposureTime: null,
+    iso: null,
+    lensModel: null,
+    gpsLat: null,
+    gpsLon: null,
+    orientation: null,
   };
+}
 
-  const hasCropRect =
-    c.cropX != null && c.cropY != null && c.cropWidth != null && c.cropHeight != null;
+function exifFromMetadata(row: MetadataRow | null): AppImageExif {
+  if (!row) return emptyExif();
+  return {
+    capturedAt: (row["captured_at"] as string | null) ?? null,
+    cameraMake: (row["camera_make"] as string | null) ?? null,
+    cameraModel: (row["camera_model"] as string | null) ?? null,
+    fNumber: (row["f_number"] as number | null) ?? null,
+    exposureTime: (row["exposure_time"] as string | null) ?? null,
+    iso: (row["iso"] as number | null) ?? null,
+    lensModel: (row["lens_model"] as string | null) ?? null,
+    gpsLat: (row["gps_lat"] as number | null) ?? null,
+    gpsLon: (row["gps_lon"] as number | null) ?? null,
+    orientation: (row["orientation"] as number | null) ?? null,
+  };
+}
 
+function assemble(record: DataRecord, metadata: MetadataRow | null): AppImage {
   const createdAt = serializeHLC(record.createdAt);
-  const effectiveDateTaken = c.dateTakenOverride ?? c.dateTakenRaw ?? createdAt;
+  const exif = exifFromMetadata(metadata);
+  const width = (metadata?.["width"] as number | null) ?? 0;
+  const height = (metadata?.["height"] as number | null) ?? 0;
 
   return {
     id: record.id,
-    mimeType: record.mimeType ?? "image/jpeg",
-    objectStorageKey: record.objectStorageKey ?? "",
-    sizeBytes: record.sizeBytes ?? 0,
+    mimeType: record.mimeType,
+    objectStorageKey: record.objectStorageKey,
+    sizeBytes: record.sizeBytes,
     createdAt,
     updatedAt: serializeHLC(record.updatedAt),
-    parentId: c.parentId ?? "",
-    width: c.width ?? 0,
-    height: c.height ?? 0,
-    format: c.format ?? "unknown",
-    exif: {
-      dateTakenRaw: c.dateTakenRaw ?? null,
-      cameraMake: c.cameraMake ?? null,
-      cameraModel: c.cameraModel ?? null,
-      fNumber: c.fNumber ?? null,
-      exposureTime: c.exposureTime ?? null,
-      iso: c.iso ?? null,
-      lensModel: c.lensModel ?? null,
-      gpsLat: c.gpsLat ?? null,
-      gpsLon: c.gpsLon ?? null,
-      orientation: c.orientation ?? null,
-    },
+    parentId: record.parentId ?? null,
+    width,
+    height,
+    exif,
     originalFilename: record.originalFilename ?? "",
-    googlePhotosId: c.googlePhotosId ?? null,
-    sourceImageId: c.sourceImageId ?? null,
-    cropRect: hasCropRect
-      ? { x: c.cropX!, y: c.cropY!, width: c.cropWidth!, height: c.cropHeight! }
-      : null,
-    caption: c.caption ?? "",
-    title: c.title ?? "",
-    dateTakenOverride: c.dateTakenOverride ?? null,
-    effectiveDateTaken,
+    effectiveDateTaken: exif.capturedAt ?? createdAt,
   };
 }
 
 export async function assembleAppImage(
   record: DataRecord,
-  _db: DatabaseAdapter,
+  db: DatabaseAdapter,
 ): Promise<AppImage> {
-  return assembleFromRecord(record);
+  const metadata = await db.getMetadata(IMAGE_RECORD_TYPE, record.id);
+  return assemble(record, metadata);
 }
 
 export async function assembleAppImages(
   records: DataRecord[],
-  _db: DatabaseAdapter,
+  db: DatabaseAdapter,
 ): Promise<AppImage[]> {
-  return records.map(assembleFromRecord);
+  if (records.length === 0) return [];
+  const metadataMap = await db.getMetadataByIds(
+    IMAGE_RECORD_TYPE,
+    records.map((r) => r.id),
+  );
+  return records.map((record) => assemble(record, metadataMap.get(record.id) ?? null));
 }
 
-export function assembleAppImageSync(record: DataRecord): AppImage {
-  return assembleFromRecord(record);
-}
-
-export { assembleFromRecord as _assembleFromRecord };
-
-// Re-export for callers that import by record alone
 export async function assembleAppImageById(
   id: StarkeepId,
   db: DatabaseAdapter,
 ): Promise<AppImage | null> {
   const record = await db.get(id);
   if (!record) return null;
-  return assembleFromRecord(record);
+  return assembleAppImage(record, db);
 }

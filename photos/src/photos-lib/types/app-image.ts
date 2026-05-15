@@ -1,12 +1,5 @@
-export interface CropRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export interface AppImageExif {
-  dateTakenRaw: string | null;
+  capturedAt: string | null;
   cameraMake: string | null;
   cameraModel: string | null;
   fNumber: number | null;
@@ -20,11 +13,10 @@ export interface AppImageExif {
 }
 
 /**
- * App-layer aggregation built from a DataRecord's content fields.
- * NOT a DataRecord subtype — it is an assembled view constructed by API handlers.
+ * App-layer aggregation built from a DataRecord plus the image's metadata row.
  *
- * parentId is "" for original images and the original's ID for thumbnail records.
- * Callers can use parentId === "" to distinguish originals from thumbnails.
+ * `parentId === null` distinguishes originals from thumbnails (whose parent is
+ * the original they were derived from).
  */
 export interface AppImage {
   // From DataRecord
@@ -35,28 +27,16 @@ export interface AppImage {
   createdAt: string; // serialized HLC
   updatedAt: string; // serialized HLC
 
-  // "" for originals; the original's record ID for thumbnails
-  parentId: string;
+  /** null for originals; the original record's ID for thumbnails. */
+  parentId: string | null;
 
-  // Image dimensions (stored in content)
+  // From shared_record_image_metadata
   width: number;
   height: number;
-  format: string; // "jpeg" | "png" | "webp" | "unknown"
-
-  // EXIF (stored in content)
   exif: AppImageExif;
 
-  // Provenance (stored in content)
   originalFilename: string;
-  googlePhotosId: string | null;
-  sourceImageId: string | null;
-  cropRect: CropRect | null;
 
-  // User-authored (stored in content)
-  caption: string;
-  title: string;
-  dateTakenOverride: string | null;
-
-  // Computed: dateTakenOverride ?? exif.dateTakenRaw ?? createdAt
+  /** captured_at metadata (EXIF) when present, falling back to createdAt. */
   effectiveDateTaken: string;
 }

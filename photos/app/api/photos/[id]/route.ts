@@ -112,19 +112,9 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<Respon
             body: JSON.stringify({ where: { image_id: id } }),
           })
         : signedFetch(creds, "/app-data/db/captions", {
-            method: "PATCH",
+            method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ where: { image_id: id }, patch: { caption, updated_at: now } }),
-          }).then(async (updateRes) => {
-            if (updateRes.ok) {
-              const { changes } = (await updateRes.json()) as { changes?: number };
-              if ((changes ?? 0) > 0) return;
-            }
-            await signedFetch(creds, "/app-data/db/captions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ row: { image_id: id, caption, updated_at: now } }),
-            });
+            body: JSON.stringify({ row: { image_id: id, caption } }),
           });
     tasks.push(captionTask);
   }

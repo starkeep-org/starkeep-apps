@@ -68,29 +68,12 @@ export async function PUT(req: NextRequest, ctx: RouteContext): Promise<Response
     return NextResponse.json({ caption: null });
   }
 
-  const now = new Date().toISOString();
-  // Upsert: try update first, fall back to insert if no row matched. Simpler
-  // than INSERT … ON CONFLICT given the generic platform API.
-  const updateBody = JSON.stringify({
-    where: { image_id: id },
-    patch: { caption, updated_at: now },
-  });
-  const updateRes = await signedFetch(creds, "/app-data/db/captions", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: updateBody,
-  });
-  if (updateRes.ok) {
-    const { changes } = (await updateRes.json()) as { changes?: number };
-    if ((changes ?? 0) > 0) return NextResponse.json({ caption });
-  }
-  const insertBody = JSON.stringify({
-    row: { image_id: id, caption, updated_at: now },
-  });
+  // The platform's POST uses INSERT … ON CONFLICT DO UPDATE, so it handles
+  // both first-time inserts and updates in one call.
   const insertRes = await signedFetch(creds, "/app-data/db/captions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: insertBody,
+    body: JSON.stringify({ row: { image_id: id, caption } }),
   });
   if (!insertRes.ok) {
     const errBody = await insertRes.text().catch(() => "");

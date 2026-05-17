@@ -39,4 +39,8 @@ export interface AppImage {
 
   /** captured_at metadata (EXIF) when present, falling back to createdAt. */
   effectiveDateTaken: string;
+
+  // User-authored mutable fields (from app-specific syncable table)
+  title?: string | null;
+  dateTakenOverride?: string | null;
 }

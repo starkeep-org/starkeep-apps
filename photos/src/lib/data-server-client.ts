@@ -125,6 +125,11 @@ export async function getPhotoFileUrl(id: string, mode: DataSourceMode): Promise
   return result.url;
 }
 
+export interface PhotoUserMetadata {
+  title?: string | null;
+  date_taken_override?: string | null;
+}
+
 export interface FileRef {
   key: string;
   contentHash: string;
@@ -146,34 +151,6 @@ export async function uploadFile(
   });
 }
 
-export async function postMetadata(
-  targetId: string,
-  targetType: string,
-  generatorId: string,
-  generatorVersion: number,
-  value: Record<string, unknown>,
-  mode: DataSourceMode,
-  fileRef?: FileRef,
-): Promise<void> {
-  const source = await resolveDataSource(mode);
-  await request<{ ok: true }>("/data/metadata", source, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      targetId,
-      targetType,
-      generatorId,
-      generatorVersion,
-      value,
-      ...(fileRef && {
-        objectStorageKey: fileRef.key,
-        contentHash: fileRef.contentHash,
-        mimeType: fileRef.mimeType,
-        sizeBytes: fileRef.sizeBytes,
-      }),
-    }),
-  });
-}
 
 const LOCAL_BASE = "http://127.0.0.1:9820";
 
@@ -200,51 +177,6 @@ export async function resumeSync(): Promise<void> {
   await fetch(`${LOCAL_BASE}/sync/resume`, { method: "POST" });
 }
 
-export async function triggerGeneration(
-  targetId: string,
-  generatorId: string,
-  mode: DataSourceMode,
-): Promise<void> {
-  if (mode === "local") {
-    // Handled by the photos-web Next.js API route, which runs sharp server-side
-    // and delegates persistence to data-server's storage HTTP APIs.
-    const res = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ targetId, generatorId }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { error?: string };
-      throw new Error(`Generate failed: ${body.error ?? res.statusText}`);
-    }
-    return;
-  }
-  const source = await resolveDataSource(mode);
-  await request<{ ok: true }>("/data/generate", source, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targetId, generatorId }),
-  });
-}
-
 export async function triggerSyncNow(): Promise<void> {
   await fetch(`${LOCAL_BASE}/sync/now`, { method: "POST" });
-}
-
-export async function getMetadataFileUrl(
-  targetId: string,
-  generatorId: string,
-  mode: DataSourceMode,
-): Promise<string | null> {
-  const source = await resolveDataSource(mode);
-  const encodedGeneratorId = encodeURIComponent(generatorId);
-  try {
-    const result = await request<{ url: string }>(
-      `/data/metadata/${targetId}/${encodedGeneratorId}/file-url`,
-      source,
-    );
-    return result.url;
-  } catch {
-    return null;
-  }
 }

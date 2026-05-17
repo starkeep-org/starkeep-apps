@@ -111,38 +111,13 @@ export async function POST(req: NextRequest) {
   const mimeType = hasAlpha ? "image/webp" : "image/jpeg";
   const fileBase64 = resized.toString("base64");
 
-  // Create the thumbnail DataRecord via the data-server REST API.
-  // The server reads `payload` (stored as `content` in the DB) and `fileBase64` for the file.
+  // Create the thumbnail DataRecord.
   const createBody = JSON.stringify({
     type: "image",
     fileName: `thumb_${record.original_filename ?? "image"}`,
     contentType: mimeType,
     fileBase64,
     parentId: targetId,
-    payload: {
-      width: outputMeta.width ?? 0,
-      height: outputMeta.height ?? 0,
-      format: hasAlpha ? "webp" : "jpeg",
-      title: "",
-      caption: "",
-      dateTakenOverride: null,
-      googlePhotosId: null,
-      sourceImageId: null,
-      cropX: null,
-      cropY: null,
-      cropWidth: null,
-      cropHeight: null,
-      dateTakenRaw: null,
-      cameraMake: null,
-      cameraModel: null,
-      fNumber: null,
-      exposureTime: null,
-      iso: null,
-      lensModel: null,
-      gpsLat: null,
-      gpsLon: null,
-      orientation: null,
-    },
   });
   const createRes = await signedFetch(creds, `/data/records`, {
     method: "POST",
@@ -155,6 +130,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Failed to create thumbnail record: ${errBody}` }, { status: 502 });
   }
   const { record: thumbnailRecord } = await createRes.json() as { record: { id: string } };
+
+  // Write image dimensions into the shared metadata table.
+  const metaBody = JSON.stringify({
+    typeId: "image",
+    metadata: { width: outputMeta.width ?? 0, height: outputMeta.height ?? 0 },
+  });
+  const metaRes = await signedFetch(creds, `/data/records/${thumbnailRecord.id}/metadata`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: metaBody,
+  });
+  if (!metaRes.ok) {
+    // Non-fatal: thumbnail exists; metadata write failure shouldn't abort the response.
+    const errBody = await metaRes.text().catch(() => "");
+    console.warn(`[generate] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
+  }
 
   // Trigger sync push (fire-and-forget) — sync endpoints don't require app auth.
   fetch(`${creds.dataServerUrl}/sync/now`, { method: "POST" }).catch(() => {});

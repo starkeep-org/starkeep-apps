@@ -10,16 +10,15 @@ export default $config({
   },
   async run() {
     const { existsSync, readFileSync, writeFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
+    const { join, resolve } = await import("node:path");
+    const { homedir } = await import("node:os");
 
-    // process.cwd() is the infra directory when SST runs sst deploy.
-    // Admin-web writes starkeep-config.json one level up (photos repo root) before deploying.
-    const configPath = resolve(process.cwd(), "../starkeep-config.json");
+    const starkeepDataDir = process.env.STARKEEP_DATA_DIR ?? join(homedir(), ".starkeep");
+    const configPath = join(starkeepDataDir, "config.json");
     if (!existsSync(configPath)) {
-      throw new Error(`starkeep-config.json not found at ${configPath}. Deploy photos-web from admin-web to provision this file.`);
+      throw new Error(`~/.starkeep/config.json not found at ${configPath}. Complete cloud setup in admin-web first.`);
     }
     const config = JSON.parse(readFileSync(configPath, "utf-8")) as {
-      region: string;
       userPoolId: string;
       userPoolClientId: string;
       auroraEndpoint: string;
@@ -95,7 +94,6 @@ export default $config({
     const outputs = {
       photosApiGatewayUrl: gateway.url,
       ...(photosWebFn ? { photosWebUrl: photosWebFn.url } : {}),
-      region: "us-east-1",
     };
 
     const outputsPath = resolve(infraRoot, "photos-cloud-config.json");

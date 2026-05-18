@@ -6,8 +6,8 @@
  *   pnpm run local:deploy   — authenticates with Cognito and deploys photos stack
  *   pnpm run local:remove   — authenticates with Cognito and removes photos stack
  *
- * Reads starkeep-config.json from the photos repo root (one level above infra/).
- * Keep it up to date with core deploy outputs — either manually or via admin-web.
+ * Reads ~/.starkeep/config.json ($STARKEEP_DATA_DIR/config.json). Written by
+ * admin-web; must contain apiGatewayUrl, auroraEndpoint, and s3Bucket.
  *
  * Deploy is two-phase on first run:
  *   1. Deploy photos API lambda → get photosApiGatewayUrl
@@ -17,18 +17,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, resolve, dirname } from "node:path";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import {
-  CognitoIdentityProviderClient,
-  InitiateAuthCommand,
-  RespondToAuthChallengeCommand,
-} from "@aws-sdk/client-cognito-identity-provider";
-import {
-  CognitoIdentityClient,
-  GetIdCommand,
-  GetCredentialsForIdentityCommand,
-} from "@aws-sdk/client-cognito-identity";
 import {
   CloudFormationClient,
   DescribeStacksCommand,
@@ -39,7 +30,6 @@ import {
 // ---------------------------------------------------------------------------
 
 interface StarkeepConfig {
-  region: string;
   stage: string;
   userPoolId: string;
   userPoolClientId: string;
@@ -50,10 +40,16 @@ interface StarkeepConfig {
   s3Bucket: string;
 }
 
+function regionFromUserPoolId(userPoolId: string): string {
+  const parts = userPoolId.split("_");
+  return parts.length > 1 ? parts[0] : "";
+}
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const INFRA_DIR = resolve(SCRIPT_DIR, "..");
 const PHOTOS_DIR = resolve(SCRIPT_DIR, "..", "..");
-const CONFIG_PATH = resolve(PHOTOS_DIR, "starkeep-config.json");
+const STARKEEP_DATA_DIR = process.env.STARKEEP_DATA_DIR ?? join(homedir(), ".starkeep");
+const CONFIG_PATH = join(STARKEEP_DATA_DIR, "config.json");
 const SST_OUTPUTS_PATH = resolve(INFRA_DIR, ".sst", "outputs.json");
 const WEB_ASSETS_PATH = resolve(INFRA_DIR, "src", "web-assets.json");
 
@@ -62,8 +58,8 @@ function loadConfig(): StarkeepConfig {
   try {
     raw = readFileSync(CONFIG_PATH, "utf-8");
   } catch {
-    console.error(`Error: starkeep-config.json not found at ${CONFIG_PATH}`);
-    console.error("Ensure the core infrastructure has been deployed and starkeep-config.json");
+    console.error(`Error: ~/.starkeep/config.json not found at ${CONFIG_PATH}`);
+    console.error("Ensure the core infrastructure has been deployed and ~/.starkeep/config.json");
     console.error("contains apiGatewayUrl, auroraEndpoint, and s3Bucket.");
     process.exit(1);
   }
@@ -72,7 +68,7 @@ function loadConfig(): StarkeepConfig {
   try {
     cfg = JSON.parse(raw) as StarkeepConfig;
   } catch {
-    console.error("Error: starkeep-config.json is not valid JSON");
+    console.error("Error: ~/.starkeep/config.json is not valid JSON");
     process.exit(1);
   }
 
@@ -82,9 +78,8 @@ function loadConfig(): StarkeepConfig {
   if (!cfg.s3Bucket) missing.push("s3Bucket");
   if (missing.length > 0) {
     console.error(
-      `Error: starkeep-config.json is missing required fields: ${missing.join(", ")}\n` +
-      `These are written by the core deploy. Run local:deploy from starkeep-core/infra/user-data/\n` +
-      `first, then copy the updated values into ${CONFIG_PATH}`,
+      `Error: ~/.starkeep/config.json is missing required fields: ${missing.join(", ")}\n` +
+      `These are written by the core deploy. Complete cloud setup in admin-web first.`,
     );
     process.exit(1);
   }
@@ -140,7 +135,10 @@ async function authenticate(
   email: string,
   password: string,
 ): Promise<string> {
-  const client = new CognitoIdentityProviderClient({ region: config.region });
+  const { CognitoIdentityProviderClient, InitiateAuthCommand, RespondToAuthChallengeCommand } =
+    await import("@aws-sdk/client-cognito-identity-provider");
+
+  const client = new CognitoIdentityProviderClient({ region: region });
 
   const initResponse = await client.send(
     new InitiateAuthCommand({
@@ -186,8 +184,11 @@ async function getSTSCredentials(
   config: StarkeepConfig,
   idToken: string,
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const client = new CognitoIdentityClient({ region: config.region });
-  const loginKey = `cognito-idp.${config.region}.amazonaws.com/${config.userPoolId}`;
+  const { CognitoIdentityClient, GetIdCommand, GetCredentialsForIdentityCommand } =
+    await import("@aws-sdk/client-cognito-identity");
+
+  const client = new CognitoIdentityClient({ region: region });
+  const loginKey = `cognito-idp.${region}.amazonaws.com/${config.userPoolId}`;
   const logins = { [loginKey]: idToken };
 
   const idResponse = await client.send(
@@ -254,13 +255,13 @@ function buildPhotosWeb(config: StarkeepConfig, photosApiGatewayUrl: string): vo
   const runtimeConfig = {
     apiGatewayUrl: config.apiGatewayUrl,
     photosApiGatewayUrl,
-    region: config.region,
+    region: region,
     userPoolId: config.userPoolId,
     userPoolClientId: config.userPoolClientId,
     identityPoolId: config.identityPoolId,
     auroraEndpoint: config.auroraEndpoint,
     s3Bucket: config.s3Bucket,
-    s3Region: config.region,
+    s3Region: region,
   };
   writeFileSync(
     resolve(PHOTOS_DIR, "public", "starkeep-runtime-config.json"),
@@ -275,7 +276,7 @@ function buildPhotosWeb(config: StarkeepConfig, photosApiGatewayUrl: string): vo
       NODE_ENV: "production",
       NEXT_PUBLIC_FORCE_REMOTE: "true",
       NEXT_PUBLIC_API_GATEWAY_URL: photosApiGatewayUrl,
-      NEXT_PUBLIC_COGNITO_REGION: config.region,
+      NEXT_PUBLIC_COGNITO_REGION: region,
       NEXT_PUBLIC_COGNITO_USER_POOL_ID: config.userPoolId,
       NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID: config.userPoolClientId,
     },
@@ -311,7 +312,6 @@ function runSst(
   sstCommand: string,
   stage: string,
   creds: { accessKeyId: string; secretAccessKey: string; sessionToken: string },
-  config: StarkeepConfig,
 ): void {
   console.log(`\nRunning: sst ${sstCommand} --stage ${stage}\n`);
   const result = spawnSync(
@@ -325,7 +325,7 @@ function runSst(
         AWS_ACCESS_KEY_ID: creds.accessKeyId,
         AWS_SECRET_ACCESS_KEY: creds.secretAccessKey,
         AWS_SESSION_TOKEN: creds.sessionToken,
-        AWS_REGION: config.region,
+        AWS_REGION: region,
       },
     },
   );
@@ -348,9 +348,10 @@ if (command !== "deploy" && command !== "remove") {
 }
 
 const config = loadConfig();
+const region = regionFromUserPoolId(config.userPoolId);
 
 console.log(`\nStarkeep photos local ${command}`);
-console.log(`  Region : ${config.region}`);
+console.log(`  Region : ${region}`);
 console.log(`  Stage  : ${config.stage}`);
 console.log("");
 
@@ -389,7 +390,7 @@ if (nonInteractive) {
 if (command === "deploy") {
   const permissionsStackName = `${config.stage}-deploy-permissions`;
   console.log(`Checking deploy-permissions stack (${permissionsStackName})...`);
-  const cfn = new CloudFormationClient({ region: config.region, credentials: creds });
+  const cfn = new CloudFormationClient({ region: region, credentials: creds });
   try {
     const resp = await cfn.send(
       new DescribeStacksCommand({ StackName: permissionsStackName }),
@@ -445,7 +446,7 @@ if (command === "deploy") {
     buildPhotosWeb(config, priorPhotosApiUrl);
   }
 
-  runSst("deploy", config.stage, creds, config);
+  runSst("deploy", config.stage, creds);
 
   // Read fresh outputs after deploy.
   let freshPhotosApiUrl: string | undefined;
@@ -459,10 +460,10 @@ if (command === "deploy") {
   if (!priorPhotosApiUrl && freshPhotosApiUrl) {
     console.log("\nphotosApiGatewayUrl is now available — building photos-web and re-deploying...");
     buildPhotosWeb(config, freshPhotosApiUrl);
-    runSst("deploy", config.stage, creds, config);
+    runSst("deploy", config.stage, creds);
   }
 } else {
-  runSst("remove", config.stage, creds, config);
+  runSst("remove", config.stage, creds);
 }
 
 process.exit(0);

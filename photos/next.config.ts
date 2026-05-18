@@ -2,7 +2,10 @@ import type { NextConfig } from "next";
 import { resolve } from "path";
 
 const nextConfig: NextConfig = {
-  output: "export",
+  // Static export is used for the production cloud build (talks to the API
+  // Gateway directly). In dev we need the Node server for /api/local-data
+  // and /api/generate, which proxy/run against the local data-server.
+  output: process.env.NODE_ENV === "production" ? "export" : undefined,
   turbopack: {
     // pnpm puts the virtual store (.pnpm/) at the workspace root, which is the
     // parent of this directory (starkeep-apps/).  Turbopack must include that

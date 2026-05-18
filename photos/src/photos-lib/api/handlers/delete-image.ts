@@ -13,6 +13,7 @@ export const deleteImageHandler: ApiEndpointDefinition = {
     const record = await context.databaseAdapter.get(id as StarkeepId);
     if (!record) return { status: 404, body: { error: "Image not found" } };
 
+    await context.databaseAdapter.deleteMetadata(record.type, id as StarkeepId);
     await context.databaseAdapter.delete(id as StarkeepId);
 
     // Note: object storage files (original + thumbnail) are not deleted here.

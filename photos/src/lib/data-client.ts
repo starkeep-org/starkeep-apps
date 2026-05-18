@@ -50,7 +50,9 @@ export async function resolveDataSource(mode: DataSourceMode): Promise<{
     }
     console.warn("[data-client] Remote mode but no apiGatewayUrl in runtime config — falling back to local");
   }
-  const runtimeConfig = await fetchRuntimeConfig();
-  const localUrl = runtimeConfig?.localDataServerUrl ?? "http://127.0.0.1:9820";
-  return { baseUrl: localUrl.replace(/\/$/, ""), headers: {} };
+  // In local mode the browser hits the photos app's own server-side proxy,
+  // which adds X-Starkeep-App-Id + HMAC headers using the secret persisted
+  // at install time. Same-origin → no CORS. The data-server URL itself
+  // (127.0.0.1:9820 by default) is read server-side from .starkeep-local.json.
+  return { baseUrl: "/api/local-data", headers: {} };
 }

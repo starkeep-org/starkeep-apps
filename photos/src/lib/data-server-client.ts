@@ -125,7 +125,9 @@ export async function getPhotoFileUrl(id: string, mode: DataSourceMode): Promise
   return result.url;
 }
 
-export interface PhotoUserMetadata {
+export interface ImageEnriched {
+  record_id?: string;
+  caption?: string | null;
   title?: string | null;
   date_taken_override?: string | null;
 }

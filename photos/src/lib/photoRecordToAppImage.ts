@@ -1,13 +1,13 @@
 import type { AppImage } from "@/photos-lib";
-import type { PhotoRecord, PhotoMetadataRow, PhotoUserMetadata } from "./data-server-client";
+import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "./data-server-client";
 
 export function photoRecordToAppImage(
   record: PhotoRecord,
   metadata: PhotoMetadataRow | null,
-  userMeta?: PhotoUserMetadata | null,
+  enriched?: ImageEnriched | null,
 ): AppImage {
   const capturedAt = metadata?.captured_at ?? null;
-  const overrideDate = userMeta?.date_taken_override ?? null;
+  const overrideDate = enriched?.date_taken_override ?? null;
   return {
     id: record.id,
     mimeType: record.mime_type ?? "image/jpeg",
@@ -32,7 +32,8 @@ export function photoRecordToAppImage(
     },
     originalFilename: record.original_filename ?? record.id,
     effectiveDateTaken: overrideDate ?? capturedAt ?? record.created_at,
-    title: userMeta?.title ?? null,
+    caption: enriched?.caption ?? null,
+    title: enriched?.title ?? null,
     dateTakenOverride: overrideDate,
   };
 }

@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { loadLocalAppCredentials } from "../../../src/lib/local-app-creds";
 import { signedFetch } from "../../../src/lib/data-server-fetch";
 import { photoRecordToAppImage } from "../../../src/lib/photoRecordToAppImage";
-import type { PhotoRecord, PhotoMetadataRow, PhotoUserMetadata } from "../../../src/lib/data-server-client";
+import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../src/lib/data-server-client";
 import { extractExif } from "../../../src/photos-lib/metadata/exif-reader";
 
 export const runtime = "nodejs";
@@ -40,13 +40,13 @@ export async function GET(req: NextRequest): Promise<Response> {
       }),
     ),
     Promise.all(
-      records.map(async (r): Promise<PhotoUserMetadata | null> => {
-        // Thumbnails (parent_id !== null) don't have user metadata.
+      records.map(async (r): Promise<ImageEnriched | null> => {
+        // Thumbnails (parent_id !== null) don't have enriched metadata.
         if (r.parent_id !== null) return null;
         const q = new URLSearchParams({ record_id: r.id });
-        const umRes = await signedFetch(creds, `/app-data/db/photos_user_metadata?${q.toString()}`);
+        const umRes = await signedFetch(creds, `/app-data/db/image_enriched?${q.toString()}`);
         if (!umRes.ok) return null;
-        const { rows } = (await umRes.json()) as { rows?: PhotoUserMetadata[] };
+        const { rows } = (await umRes.json()) as { rows?: ImageEnriched[] };
         return rows?.[0] ?? null;
       }),
     ),
@@ -158,23 +158,17 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const now = new Date().toISOString();
 
-  // Write user metadata (title) and caption concurrently.
-  await Promise.all([
-    title
-      ? signedFetch(creds, "/app-data/db/photos_user_metadata", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ row: { record_id: record.id, title, updated_at: now } }),
-        })
-      : Promise.resolve(),
-    caption
-      ? signedFetch(creds, "/app-data/db/captions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ row: { image_id: record.id, caption, updated_at: now } }),
-        })
-      : Promise.resolve(),
-  ]);
+  // Write enriched metadata (title, caption) to image_enriched as a single row.
+  if (title || caption) {
+    const enrichedRow: Record<string, unknown> = { record_id: record.id, updated_at: now };
+    if (title) enrichedRow.title = title;
+    if (caption) enrichedRow.caption = caption;
+    await signedFetch(creds, "/app-data/db/image_enriched", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ row: enrichedRow }),
+    });
+  }
 
   // Fire-and-forget thumbnail generation.
   fetch(`${req.nextUrl.origin}/api/generate`, {
@@ -183,6 +177,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     body: JSON.stringify({ targetId: record.id }),
   }).catch(() => {});
 
-  const userMeta: PhotoUserMetadata | null = title ? { title } : null;
-  return NextResponse.json({ image: photoRecordToAppImage(record, photoMeta, userMeta) }, { status: 201 });
+  const enriched: ImageEnriched | null = (title || caption) ? { title, caption } : null;
+  return NextResponse.json({ image: photoRecordToAppImage(record, photoMeta, enriched) }, { status: 201 });
 }

@@ -1,7 +1,10 @@
 import type { ApiEndpointDefinition, ApiRequest, ApiContext } from "@starkeep/shared-space-api";
 import { sha256Hex } from "../helpers/sha256";
-import { createImageRecord } from "../../data/image-record";
+import { createDataRecord, dataRecordObjectKey } from "@starkeep/core";
+import { buildImageMetadataRow } from "../../data/image-record";
+import { extractExif } from "../../metadata/exif-reader";
 import { generateThumbnailRecord, type ResizeFunction } from "../../metadata/thumbnail-generator";
+import { IMAGE_RECORD_TYPE, PHOTOS_APP_ID } from "../../manifest";
 
 interface ImportBody {
   accessToken: string;
@@ -10,9 +13,10 @@ interface ImportBody {
 }
 
 /**
- * Downloads a photo from Google Photos and imports it as a @starkeep/image record.
- * All provenance and user-authored fields are stored directly in content.
- * If resizeFn is provided in the request body, a thumbnail DataRecord is created inline.
+ * Downloads a photo from Google Photos and imports it as an `image` record.
+ * Image metadata is extracted from the downloaded bytes (EXIF + dimensions).
+ * Google Photos-specific provenance (mediaItemId etc.) is not persisted —
+ * that's app-specific data which is out of scope.
  */
 export const importGooglePhotoHandler: ApiEndpointDefinition = {
   namespace: "photos",
@@ -24,7 +28,6 @@ export const importGooglePhotoHandler: ApiEndpointDefinition = {
     if (!body?.accessToken) return { status: 400, body: { error: "accessToken is required" } };
     if (!body.mediaItemId) return { status: 400, body: { error: "mediaItemId is required" } };
 
-    // Fetch media item metadata from Google Photos API
     const metaResponse = await fetch(
       `https://photoslibrary.googleapis.com/v1/mediaItems/${body.mediaItemId}`,
       { headers: { Authorization: `Bearer ${body.accessToken}` } },
@@ -40,10 +43,8 @@ export const importGooglePhotoHandler: ApiEndpointDefinition = {
       filename: string;
       mimeType: string;
       baseUrl: string;
-      mediaMetadata?: { creationTime?: string };
     };
 
-    // Download the full-resolution image bytes
     const downloadResponse = await fetch(`${meta.baseUrl}=d`);
     if (!downloadResponse.ok) {
       return { status: 502, body: { error: "Failed to download image from Google Photos" } };
@@ -51,30 +52,35 @@ export const importGooglePhotoHandler: ApiEndpointDefinition = {
 
     const fileBytes = new Uint8Array(await downloadResponse.arrayBuffer());
     const contentHash = await sha256Hex(fileBytes);
-    const objectStorageKey = `images/${contentHash.slice(0, 2)}/${contentHash}`;
+    const objectStorageKey = dataRecordObjectKey(IMAGE_RECORD_TYPE, contentHash);
 
     await context.objectStorageAdapter.put(objectStorageKey, fileBytes, {
       contentType: meta.mimeType,
     });
 
-    const originalFilename = meta.filename;
-    const record = createImageRecord({
-      mimeType: meta.mimeType,
-      objectStorageKey,
-      contentHash,
-      sizeBytes: fileBytes.length,
-      originalFilename,
-      clock: context.clock,
-      ownerId: context.ownerId,
-      parentId: "",
-      title: originalFilename.replace(/\.[^.]+$/, ""),
-      caption: "",
-      googlePhotosId: meta.id,
-    });
+    const exif = await extractExif(fileBytes);
+
+    const record = createDataRecord(
+      {
+        type: IMAGE_RECORD_TYPE,
+        ownerId: context.ownerId,
+        originAppId: PHOTOS_APP_ID,
+        contentHash,
+        objectStorageKey,
+        mimeType: meta.mimeType,
+        sizeBytes: fileBytes.length,
+        originalFilename: meta.filename,
+        parentId: null,
+      },
+      context.clock,
+    );
 
     await context.databaseAdapter.put(record);
+    await context.databaseAdapter.putMetadata(IMAGE_RECORD_TYPE, {
+      recordId: record.id,
+      ...buildImageMetadataRow({ width: 0, height: 0 }, exif),
+    });
 
-    // Generate thumbnail if a resize function is provided
     if (body.resizeFn) {
       await generateThumbnailRecord(record, body.resizeFn, {
         databaseAdapter: context.databaseAdapter,

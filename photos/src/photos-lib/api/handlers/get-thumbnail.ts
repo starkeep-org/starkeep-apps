@@ -2,8 +2,8 @@ import type { ApiEndpointDefinition, ApiRequest, ApiContext } from "@starkeep/sh
 import { IMAGE_RECORD_TYPE } from "../../manifest";
 
 /**
- * Serves the thumbnail image file for a given original image ID.
- * Looks up the thumbnail record (content.parentId === id) and streams its file.
+ * Serves the thumbnail file for a given original image ID. The thumbnail
+ * record is identified by `parentId === <originalId>` on the records table.
  */
 export const getThumbnailHandler: ApiEndpointDefinition = {
   namespace: "photos",
@@ -14,10 +14,9 @@ export const getThumbnailHandler: ApiEndpointDefinition = {
     const id = request.query?.["id"];
     if (!id) return { status: 400, body: { error: "id query parameter is required" } };
 
-    // Find the thumbnail record whose parentId points to this original
     const result = await context.databaseAdapter.query({
       type: IMAGE_RECORD_TYPE,
-      filters: [{ field: "content.parentId", operator: "eq", value: id }],
+      filters: [{ field: "parentId", operator: "eq", value: id }],
       limit: 1,
     });
 

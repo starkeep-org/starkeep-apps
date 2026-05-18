@@ -1,4 +1,4 @@
-import React from "react";
+import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib";
 
 function formatBytes(bytes: number): string {
@@ -28,6 +28,40 @@ interface PhotoInfoPanelProps {
 }
 
 export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps) {
+  const [caption, setCaption] = useState<string>("");
+  const [savedCaption, setSavedCaption] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/photos/captions/${encodeURIComponent(image.id)}`)
+      .then((r) => (r.ok ? r.json() : { caption: null }))
+      .then((data: { caption: string | null }) => {
+        if (cancelled) return;
+        const existing = data.caption ?? "";
+        setCaption(existing);
+        setSavedCaption(existing);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [image.id]);
+
+  async function saveCaption(): Promise<void> {
+    if (caption === savedCaption) return;
+    await fetch(`/api/photos/captions/${encodeURIComponent(image.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caption }),
+    });
+    setSavedCaption(caption);
+  }
+
   return (
     <div
       style={{
@@ -64,7 +98,7 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
 
       <InfoRow label="Filename" value={image.originalFilename} />
       <InfoRow label="Dimensions" value={`${image.width} × ${image.height}px`} />
-      <InfoRow label="Format" value={image.format} />
+      <InfoRow label="MIME type" value={image.mimeType} />
       <InfoRow label="File size" value={formatBytes(image.sizeBytes)} />
       <InfoRow label="Date taken" value={image.effectiveDateTaken.replace("T", " ").slice(0, 19)} />
 
@@ -90,25 +124,29 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
         />
       )}
 
-      {image.sourceImageId && (
-        <>
-          <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", margin: "12px 0" }} />
-          <InfoRow label="Crop of" value={image.sourceImageId} />
-          {image.cropRect && (
-            <InfoRow
-              label="Crop rect"
-              value={`${image.cropRect.x},${image.cropRect.y} ${image.cropRect.width}×${image.cropRect.height}`}
-            />
-          )}
-        </>
-      )}
-
-      {image.googlePhotosId && (
-        <>
-          <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", margin: "12px 0" }} />
-          <InfoRow label="Source" value="Google Photos" />
-        </>
-      )}
+      <div style={{ marginTop: 20 }}>
+        <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>Caption</div>
+        <textarea
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          onBlur={saveCaption}
+          disabled={loading}
+          placeholder={loading ? "Loading…" : "Add a caption…"}
+          style={{
+            width: "100%",
+            minHeight: 70,
+            boxSizing: "border-box",
+            background: "rgba(0,0,0,0.4)",
+            color: "#ddd",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 4,
+            padding: 8,
+            fontSize: 12,
+            fontFamily: "inherit",
+            resize: "vertical",
+          }}
+        />
+      </div>
     </div>
   );
 }

@@ -1,76 +1,46 @@
-import { createDataRecord, type DataRecord, type HLCClock } from "@starkeep/core";
 import { IMAGE_RECORD_TYPE } from "../manifest";
+import type { ExifFields } from "../metadata/exif-generator";
 
 export { IMAGE_RECORD_TYPE };
 
-export function createImageRecord(options: {
-  mimeType: string;
-  objectStorageKey: string;
-  contentHash: string;
-  sizeBytes: number;
-  originalFilename: string;
-  clock: HLCClock;
-  ownerId: string;
-  /** "" for originals; the original's record ID for thumbnails */
-  parentId?: string;
-  title?: string;
-  caption?: string;
-  dateTakenOverride?: string | null;
-  googlePhotosId?: string | null;
-  sourceImageId?: string | null;
-  cropX?: number | null;
-  cropY?: number | null;
-  cropWidth?: number | null;
-  cropHeight?: number | null;
-  width?: number;
-  height?: number;
-  format?: string;
-  dateTakenRaw?: string | null;
-  cameraMake?: string | null;
-  cameraModel?: string | null;
-  fNumber?: number | null;
-  exposureTime?: string | null;
-  iso?: number | null;
-  lensModel?: string | null;
-  gpsLat?: number | null;
-  gpsLon?: number | null;
-  orientation?: number | null;
-}): DataRecord {
-  return createDataRecord(
-    {
-      type: IMAGE_RECORD_TYPE,
-      ownerId: options.ownerId,
-      contentHash: options.contentHash,
-      objectStorageKey: options.objectStorageKey,
-      mimeType: options.mimeType,
-      sizeBytes: options.sizeBytes,
-      originalFilename: options.originalFilename,
-      content: {
-        parentId: options.parentId ?? "",
-        title: options.title ?? "",
-        caption: options.caption ?? "",
-        dateTakenOverride: options.dateTakenOverride ?? null,
-        googlePhotosId: options.googlePhotosId ?? null,
-        sourceImageId: options.sourceImageId ?? null,
-        cropX: options.cropX ?? null,
-        cropY: options.cropY ?? null,
-        cropWidth: options.cropWidth ?? null,
-        cropHeight: options.cropHeight ?? null,
-        width: options.width ?? 0,
-        height: options.height ?? 0,
-        format: options.format ?? "unknown",
-        dateTakenRaw: options.dateTakenRaw ?? null,
-        cameraMake: options.cameraMake ?? null,
-        cameraModel: options.cameraModel ?? null,
-        fNumber: options.fNumber ?? null,
-        exposureTime: options.exposureTime ?? null,
-        iso: options.iso ?? null,
-        lensModel: options.lensModel ?? null,
-        gpsLat: options.gpsLat ?? null,
-        gpsLon: options.gpsLon ?? null,
-        orientation: options.orientation ?? null,
-      },
-    },
-    options.clock,
-  );
+/**
+ * Per-type metadata row for an image. Maps 1:1 to columns on
+ * shared_record_image_metadata (see @starkeep/core's CORE_TYPES). Every
+ * field is deterministically derivable from the image bytes.
+ *
+ * `recordId` is supplied by the SDK at write time; callers don't set it.
+ */
+export interface ImageMetadataRow {
+  width: number;
+  height: number;
+  captured_at: string | null;
+  camera_make: string | null;
+  camera_model: string | null;
+  f_number: number | null;
+  exposure_time: string | null;
+  iso: number | null;
+  lens_model: string | null;
+  gps_lat: number | null;
+  gps_lon: number | null;
+  orientation: number | null;
+}
+
+export function buildImageMetadataRow(
+  dimensions: { width: number; height: number },
+  exif: ExifFields,
+): ImageMetadataRow {
+  return {
+    width: dimensions.width,
+    height: dimensions.height,
+    captured_at: exif.dateTakenRaw,
+    camera_make: exif.cameraMake,
+    camera_model: exif.cameraModel,
+    f_number: exif.fNumber,
+    exposure_time: exif.exposureTime,
+    iso: exif.iso,
+    lens_model: exif.lensModel,
+    gps_lat: exif.gpsLat,
+    gps_lon: exif.gpsLon,
+    orientation: exif.orientation,
+  };
 }

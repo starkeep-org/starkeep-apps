@@ -136,9 +136,8 @@ export async function handler(event: APIGatewayEvent) {
       if (!record) return clientErr("Record not found", 404);
       if (!record.objectStorageKey) return clientErr("Record has no attached file", 422);
 
-      // Only generate thumbnails for originals (parentId === "")
-      const parentId = (record.content as { parentId?: string }).parentId ?? "";
-      if (parentId !== "") {
+      // Only generate thumbnails for originals (parentId is null).
+      if (record.parentId !== null) {
         return clientErr("Record is already a thumbnail — skipping", 400);
       }
 

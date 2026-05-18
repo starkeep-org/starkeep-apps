@@ -1,56 +1,38 @@
 import type { ApiEndpointDefinition, ApiRequest, ApiContext } from "@starkeep/shared-space-api";
+import type { StarkeepId } from "@starkeep/core";
 import { sha256Hex } from "../helpers/sha256";
-import { createImageRecord } from "../../data/image-record";
+import { buildImageMetadataRow } from "../../data/image-record";
+import { extractExif } from "../../metadata/exif-reader";
 import { generateThumbnailRecord, type ResizeFunction } from "../../metadata/thumbnail-generator";
-import { IMAGE_RECORD_TYPE } from "../../manifest";
+import { IMAGE_RECORD_TYPE, PHOTOS_APP_ID } from "../../manifest";
 import { assembleAppImage } from "../helpers/assemble-app-image";
+import { dataRecordObjectKey, createDataRecord } from "@starkeep/core";
 
 interface UploadBody {
   fileBase64: string;
   mimeType: string;
   provenance: {
     originalFilename: string;
-    googlePhotosId?: string | null;
-    sourceImageId?: string | null;
-    cropX?: number | null;
-    cropY?: number | null;
-    cropWidth?: number | null;
-    cropHeight?: number | null;
   };
-  userAuthored: {
-    title: string;
-    caption: string;
-  };
-  /** Optional: inject a resize function for thumbnail generation */
-  resizeFn?: ResizeFunction;
-  /** Optional: image dimensions pre-computed by the caller */
+  /** Optional pre-computed dimensions (e.g. supplied by Sharp in cloud handler). */
   imageMeta?: {
     width?: number;
     height?: number;
-    format?: string;
-    dateTakenRaw?: string | null;
-    cameraMake?: string | null;
-    cameraModel?: string | null;
-    fNumber?: number | null;
-    exposureTime?: string | null;
-    iso?: number | null;
-    lensModel?: string | null;
-    gpsLat?: number | null;
-    gpsLon?: number | null;
-    orientation?: number | null;
   };
+  /** Optional resize function for thumbnail generation. */
+  resizeFn?: ResizeFunction;
 }
 
 /**
- * Stores raw image bytes and creates a DataRecord for the original image.
- * All metadata (provenance, user-authored, dimensions, EXIF) is stored directly
- * in the record's content field.
+ * Uploads raw image bytes and creates the image DataRecord + image-metadata
+ * row. EXIF + dimensions are extracted from the file bytes — every column in
+ * shared_record_image_metadata is deterministically derivable from the file.
  *
- * If a resizeFn is provided in the request body, a thumbnail DataRecord is
- * generated inline and stored with content.parentId pointing to the original.
- * Images that already have a parentId set are never thumbnailed.
+ * If a resizeFn is supplied, a thumbnail record is generated inline with
+ * `parentId` pointing at the original. The thumbnail also gets its own
+ * image-metadata row (dimensions only — no EXIF).
  *
- * Returns { imageId } of the original record.
+ * Returns the assembled AppImage for the original.
  */
 export const uploadImageHandler: ApiEndpointDefinition = {
   namespace: "photos",
@@ -67,51 +49,38 @@ export const uploadImageHandler: ApiEndpointDefinition = {
 
     const fileBytes = base64ToBytes(body.fileBase64);
     const contentHash = await sha256Hex(fileBytes);
-    const objectStorageKey = `images/${contentHash.slice(0, 2)}/${contentHash}`;
+    const objectStorageKey = dataRecordObjectKey(IMAGE_RECORD_TYPE, contentHash);
 
     await context.objectStorageAdapter.put(objectStorageKey, fileBytes, {
       contentType: body.mimeType,
     });
 
-    const defaultTitle = body.provenance.originalFilename.replace(/\.[^.]+$/, "");
-    const meta = body.imageMeta ?? {};
+    const exif = await extractExif(fileBytes);
+    const dimensions = {
+      width: body.imageMeta?.width ?? 0,
+      height: body.imageMeta?.height ?? 0,
+    };
 
-    const record = createImageRecord({
-      mimeType: body.mimeType,
-      objectStorageKey,
-      contentHash,
-      sizeBytes: fileBytes.length,
-      originalFilename: body.provenance.originalFilename,
-      clock: context.clock,
-      ownerId: context.ownerId,
-      parentId: "",
-      title: body.userAuthored?.title || defaultTitle,
-      caption: body.userAuthored?.caption ?? "",
-      dateTakenOverride: null,
-      googlePhotosId: body.provenance.googlePhotosId ?? null,
-      sourceImageId: body.provenance.sourceImageId ?? null,
-      cropX: body.provenance.cropX ?? null,
-      cropY: body.provenance.cropY ?? null,
-      cropWidth: body.provenance.cropWidth ?? null,
-      cropHeight: body.provenance.cropHeight ?? null,
-      width: meta.width ?? 0,
-      height: meta.height ?? 0,
-      format: meta.format ?? "unknown",
-      dateTakenRaw: meta.dateTakenRaw ?? null,
-      cameraMake: meta.cameraMake ?? null,
-      cameraModel: meta.cameraModel ?? null,
-      fNumber: meta.fNumber ?? null,
-      exposureTime: meta.exposureTime ?? null,
-      iso: meta.iso ?? null,
-      lensModel: meta.lensModel ?? null,
-      gpsLat: meta.gpsLat ?? null,
-      gpsLon: meta.gpsLon ?? null,
-      orientation: meta.orientation ?? null,
+    const record = createDataRecord(
+      {
+        type: IMAGE_RECORD_TYPE,
+        ownerId: context.ownerId,
+        originAppId: PHOTOS_APP_ID,
+        contentHash,
+        objectStorageKey,
+        mimeType: body.mimeType,
+        sizeBytes: fileBytes.length,
+        originalFilename: body.provenance.originalFilename,
+        parentId: null,
+      },
+      context.clock,
+    );
+    await context.databaseAdapter.put(record);
+    await context.databaseAdapter.putMetadata(IMAGE_RECORD_TYPE, {
+      recordId: record.id,
+      ...buildImageMetadataRow(dimensions, exif),
     });
 
-    await context.databaseAdapter.put(record);
-
-    // Generate thumbnail if a resize function is provided
     if (body.resizeFn) {
       await generateThumbnailRecord(record, body.resizeFn, {
         databaseAdapter: context.databaseAdapter,
@@ -121,9 +90,8 @@ export const uploadImageHandler: ApiEndpointDefinition = {
       });
     }
 
-    // Return the assembled original image so callers have full AppImage data
     const image = await assembleAppImage(record, context.databaseAdapter);
-    return { status: 201, body: { imageId: record.id as string, image } };
+    return { status: 201, body: { imageId: record.id as StarkeepId, image } };
   },
 };
 

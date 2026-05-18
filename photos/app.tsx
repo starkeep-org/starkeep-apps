@@ -116,15 +116,16 @@ function PhotosAppInner() {
 
   // Build the display list. Deduplicate thumbnails per original (keep newest),
   // then show orphan originals (no thumbnail yet) as empty placeholder boxes.
-  const allThumbnails = state.images.filter((img) => img.parentId !== "");
-  const originals = state.images.filter((img) => img.parentId === "");
+  const allThumbnails = state.images.filter((img) => img.parentId !== null);
+  const originals = state.images.filter((img) => img.parentId === null);
   const newestThumbnailByParent = new Map<string, typeof allThumbnails[0]>();
   for (const t of allThumbnails) {
-    const existing = newestThumbnailByParent.get(t.parentId);
-    if (!existing || t.createdAt > existing.createdAt) newestThumbnailByParent.set(t.parentId, t);
+    const parentId = t.parentId!;
+    const existing = newestThumbnailByParent.get(parentId);
+    if (!existing || t.createdAt > existing.createdAt) newestThumbnailByParent.set(parentId, t);
   }
   const thumbnails = Array.from(newestThumbnailByParent.values());
-  const thumbnailedIds = new Set(thumbnails.map((t) => t.parentId));
+  const thumbnailedIds = new Set(thumbnails.map((t) => t.parentId!));
   const fallbackOriginals = originals.filter((img) => !thumbnailedIds.has(img.id));
   const displayImages = [...thumbnails, ...fallbackOriginals];
 
@@ -152,7 +153,7 @@ function PhotosAppInner() {
     ? displayImages.find((img) => img.id === state.selectedId) ?? null
     : null;
   const selectedImage = selectedDisplayImage
-    ? (selectedDisplayImage.parentId !== ""
+    ? (selectedDisplayImage.parentId !== null
         ? (state.images.find((img) => img.id === selectedDisplayImage.parentId) ?? selectedDisplayImage)
         : selectedDisplayImage)
     : null;
@@ -170,14 +171,13 @@ function PhotosAppInner() {
     setError(null);
     try {
       const fileName = file.name;
-      const title = fileName.replace(/\.[^.]+$/, "");
       const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
       const mimeType = IMAGE_EXTENSIONS[ext] ?? file.type ?? "application/octet-stream";
 
       const buf = await file.arrayBuffer();
       const fileBytes = new Uint8Array(buf);
-      const record = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName, title, mode);
-      dispatch({ type: "APPEND_IMAGES", images: [photoRecordToAppImage(record)] });
+      const record = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName, mode);
+      dispatch({ type: "APPEND_IMAGES", images: [photoRecordToAppImage(record, null)] });
 
       // Mark as submitted before generateThumbnail fires so the backfill effect
       // never picks up this original and creates a second thumbnail.
@@ -345,9 +345,6 @@ function PhotosAppInner() {
           <PhotoViewer
             image={selectedImage}
             onClose={() => dispatch({ type: "SET_SELECTED_ID", id: null })}
-            onUpdateCaption={async () => {}}
-            onCrop={async () => {}}
-            onShare={async () => null}
           />
         )}
 

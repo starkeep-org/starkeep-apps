@@ -6,6 +6,7 @@ import { PhotoGrid } from "./components/grid/photo-grid";
 import { PhotoViewer } from "./components/viewer/photo-viewer";
 import { UploadZone } from "./components/upload/upload-zone";
 import { GoogleImportPanel } from "./components/google/google-import-panel";
+import { useStyleGraphic } from "./hooks/use-style-graphic";
 import type { AppImage } from "@/photos-lib";
 
 function PhotosAppInner() {
@@ -26,6 +27,8 @@ function PhotosAppInner() {
   const [uploading, setUploading] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showGoogleImport, setShowGoogleImport] = useState(false);
+  const styleGraphic = useStyleGraphic();
+  const styleFileInputRef = useRef<HTMLInputElement>(null);
   // The viewer always shows the original image (parentId === ""), fetched on demand
   const [viewerImage, setViewerImage] = useState<AppImage | null>(null);
 
@@ -33,12 +36,10 @@ function PhotosAppInner() {
     selectImage(imageId);
     const item = images.find((img) => img.id === imageId);
     if (!item) return;
-    if (item.parentId !== "") {
-      // It's a thumbnail — fetch the original by parentId
+    if (item.parentId !== null) {
       const original = await fetchImage(item.parentId);
       setViewerImage(original);
     } else {
-      // It's a fallback original (no thumbnail yet) — show it directly
       setViewerImage(item);
     }
   };
@@ -51,7 +52,7 @@ function PhotosAppInner() {
   const handleUpload = async (file: File) => {
     setUploading(true);
     try {
-      await uploadPhoto(file, file.name.replace(/\.[^.]+$/, ""), "");
+      await uploadPhoto(file, file.name);
     } finally {
       setUploading(false);
     }
@@ -66,7 +67,7 @@ function PhotosAppInner() {
   // submitted once per session — prevents loops when fetchPhotos refreshes state.
   const backfilledRef = useRef(new Set<string>());
   const orphanIds = images
-    .filter((img) => img.parentId === "")
+    .filter((img) => img.parentId === null)
     .map((img) => img.id)
     .sort()
     .join(",");
@@ -124,6 +125,57 @@ function PhotosAppInner() {
         </div>
       )}
 
+      {/* App-syncable style graphic banner */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "10px 20px",
+          borderBottom: "1px solid rgba(255,255,255,0.08)",
+          minHeight: 56,
+        }}
+      >
+        {styleGraphic.url ? (
+          <img
+            src={styleGraphic.url}
+            alt="Style graphic"
+            style={{ height: 36, borderRadius: 4, objectFit: "cover" }}
+          />
+        ) : (
+          <span style={{ color: "#888", fontSize: 12 }}>
+            {styleGraphic.loading ? "Loading style graphic…" : "No style graphic set"}
+          </span>
+        )}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <input
+            ref={styleFileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void styleGraphic.upload(file);
+              e.target.value = "";
+            }}
+          />
+          <button
+            style={toolbarButtonStyle}
+            onClick={() => styleFileInputRef.current?.click()}
+          >
+            {styleGraphic.url ? "Change" : "Set"} style graphic
+          </button>
+          {styleGraphic.url && (
+            <button
+              style={toolbarButtonStyle}
+              onClick={() => void styleGraphic.remove()}
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Grid shows thumbnail records */}
       <PhotoGrid
         images={images}
@@ -138,19 +190,6 @@ function PhotosAppInner() {
         <PhotoViewer
           image={viewerImage}
           onClose={handleCloseViewer}
-          onUpdateCaption={async (caption) => {
-            const updated = await updatePhoto(viewerImage.id, { caption });
-            if (updated) setViewerImage(updated);
-          }}
-          onCrop={async (cropRect) => {
-            const newImage = await cropPhoto(viewerImage.id, cropRect);
-            if (newImage) {
-              // newImage is the new original; update viewer to show it
-              setViewerImage(newImage);
-              selectImage(null);
-            }
-          }}
-          onShare={async () => sharePhoto(viewerImage.id)}
         />
       )}
 

@@ -41,6 +41,7 @@ export interface AppImage {
   effectiveDateTaken: string;
 
   // User-authored mutable fields (from app-specific syncable table)
+  caption?: string | null;
   title?: string | null;
   dateTakenOverride?: string | null;
 }

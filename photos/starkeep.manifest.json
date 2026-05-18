@@ -16,16 +16,10 @@
       "files": true,
       "tables": [
         {
-          "name": "captions",
-          "columns": [
-            { "name": "image_id", "type": "text", "primaryKey": true, "notNull": true },
-            { "name": "caption", "type": "text" }
-          ]
-        },
-        {
-          "name": "photos_user_metadata",
+          "name": "image_enriched",
           "columns": [
             { "name": "record_id", "type": "text", "primaryKey": true, "notNull": true },
+            { "name": "caption", "type": "text" },
             { "name": "title", "type": "text" },
             { "name": "date_taken_override", "type": "text" }
           ]

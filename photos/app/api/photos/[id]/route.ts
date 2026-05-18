@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { loadLocalAppCredentials } from "../../../../src/lib/local-app-creds";
 import { signedFetch } from "../../../../src/lib/data-server-fetch";
 import { photoRecordToAppImage } from "../../../../src/lib/photoRecordToAppImage";
-import type { PhotoRecord, PhotoMetadataRow, PhotoUserMetadata } from "../../../../src/lib/data-server-client";
+import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../../src/lib/data-server-client";
 
 export const runtime = "nodejs";
 
@@ -34,17 +34,17 @@ async function fetchAssembledImage(
     ? ((await metaRes.json()) as { metadata: PhotoMetadataRow | null }).metadata
     : null;
 
-  let userMeta: PhotoUserMetadata | null = null;
+  let enriched: ImageEnriched | null = null;
   if (record.parent_id === null) {
     const q = new URLSearchParams({ record_id: id });
-    const umRes = await signedFetch(creds!, `/app-data/db/photos_user_metadata?${q.toString()}`);
+    const umRes = await signedFetch(creds!, `/app-data/db/image_enriched?${q.toString()}`);
     if (umRes.ok) {
-      const { rows } = (await umRes.json()) as { rows?: PhotoUserMetadata[] };
-      userMeta = rows?.[0] ?? null;
+      const { rows } = (await umRes.json()) as { rows?: ImageEnriched[] };
+      enriched = rows?.[0] ?? null;
     }
   }
 
-  return photoRecordToAppImage(record, metadata, userMeta);
+  return photoRecordToAppImage(record, metadata, enriched);
 }
 
 export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Response> {
@@ -69,57 +69,18 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<Respon
   if (!body) return NextResponse.json({ error: "JSON body required" }, { status: 400 });
 
   const { title, dateTakenOverride, caption } = body;
-  const now = new Date().toISOString();
 
-  const tasks: Promise<unknown>[] = [];
-
-  // Update user metadata (title / dateTakenOverride) via photos_user_metadata table.
-  if (title !== undefined || dateTakenOverride !== undefined) {
-    const patch: Record<string, unknown> = { updated_at: now };
-    if (title !== undefined) patch.title = title;
-    if (dateTakenOverride !== undefined) patch.date_taken_override = dateTakenOverride;
-
-    const updateBody = JSON.stringify({ where: { record_id: id }, patch });
-    const upsert = signedFetch(creds, "/app-data/db/photos_user_metadata", {
-      method: "PATCH",
+  if (title !== undefined || dateTakenOverride !== undefined || caption !== undefined) {
+    const row: Record<string, unknown> = { record_id: id };
+    if (title !== undefined) row.title = title;
+    if (dateTakenOverride !== undefined) row.date_taken_override = dateTakenOverride;
+    if (caption !== undefined) row.caption = caption === "" ? null : caption;
+    await signedFetch(creds, "/app-data/db/image_enriched", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: updateBody,
-    }).then(async (updateRes) => {
-      if (updateRes.ok) {
-        const { changes } = (await updateRes.json()) as { changes?: number };
-        if ((changes ?? 0) > 0) return;
-      }
-      // No existing row — insert.
-      const row: Record<string, unknown> = { record_id: id, updated_at: now };
-      if (title !== undefined) row.title = title;
-      if (dateTakenOverride !== undefined) row.date_taken_override = dateTakenOverride;
-      await signedFetch(creds, "/app-data/db/photos_user_metadata", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ row }),
-      });
+      body: JSON.stringify({ row }),
     });
-    tasks.push(upsert);
   }
-
-  // Update caption via the captions table.
-  if (caption !== undefined) {
-    const captionTask =
-      caption === ""
-        ? signedFetch(creds, "/app-data/db/captions", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ where: { image_id: id } }),
-          })
-        : signedFetch(creds, "/app-data/db/captions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ row: { image_id: id, caption } }),
-          });
-    tasks.push(captionTask);
-  }
-
-  await Promise.all(tasks);
 
   const image = await fetchAssembledImage(creds, id);
   if (!image) return NextResponse.json({ error: "Not found" }, { status: 404 });

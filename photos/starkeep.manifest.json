@@ -25,6 +25,42 @@
           ]
         }
       ]
+    },
+    "compute": {
+      "enabled": true,
+      "handlers": [
+        {
+          "name": "api",
+          "handler": "infra/src/photos-handler.handler",
+          "memoryMb": 512,
+          "timeoutSeconds": 30,
+          "routes": [
+            "POST /generate",
+            "GET /photos",
+            "POST /photos",
+            "GET /photos/{id}",
+            "DELETE /photos/{id}",
+            "POST /photos/crop",
+            "PUT /photos/style-graphic",
+            "GET /photos/style-graphic",
+            "DELETE /photos/style-graphic",
+            "PATCH /photos/captions/{id}"
+          ]
+        },
+        {
+          "name": "static",
+          "handler": "index.handler",
+          "memoryMb": 256,
+          "timeoutSeconds": 10,
+          "routes": ["GET /", "GET /{proxy+}"],
+          "env": {
+            "STARKEEP_API_GATEWAY_URL": "",
+            "STARKEEP_USER_POOL_ID": "",
+            "STARKEEP_USER_POOL_CLIENT_ID": "",
+            "STARKEEP_IDENTITY_POOL_ID": ""
+          }
+        }
+      ]
     }
   }
 }

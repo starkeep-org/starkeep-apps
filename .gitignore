@@ -1,6 +1,7 @@
 node_modules/
 .sst/
 .next/
+.open-next/
 .turbo/
 out/
 dist/

@@ -5,10 +5,11 @@
  * produce a thumbnail, creates a new DataRecord for the thumbnail (with
  * content.parentId pointing to the original), and stores the record in DSQL.
  *
- * Environment variables (injected by SST):
- *   AURORA_ENDPOINT  — Aurora DSQL cluster hostname
- *   S3_BUCKET        — S3 bucket name for object storage
- *   AWS_REGION       — set automatically by Lambda runtime
+ * Environment variables:
+ *   STARKEEP_DSQL_HOSTNAME  — Aurora DSQL cluster hostname
+ *   STARKEEP_FILES_BUCKET   — S3 bucket name for object storage
+ *   STARKEEP_STACK_PREFIX   — stack prefix (e.g. "mystack")
+ *   AWS_REGION              — set automatically by Lambda runtime
  */
 
 import { DsqlSigner } from "@aws-sdk/dsql-signer";
@@ -23,6 +24,7 @@ import type {
   AuroraDsqlDatabaseAdapterOptions,
 } from "@starkeep/storage-aurora-dsql";
 import { generateThumbnailRecord } from "../../src/photos-lib/metadata/thumbnail-generator.js";
+import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -32,15 +34,17 @@ import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 class LambdaDsqlClientFactory implements DatabaseClientFactory {
   async createClient(options: AuroraDsqlDatabaseAdapterOptions): Promise<DatabaseClient> {
     const { hostname, region } = options;
+    const stackPrefix = process.env.STARKEEP_STACK_PREFIX ?? "";
+    const dbUser = `${stackPrefix}_app_photos`;
 
     const createPgClient = async (): Promise<pg.Client> => {
       const signer = new DsqlSigner({ hostname, region });
-      const token = await signer.getDbConnectAdminAuthToken();
+      const token = await signer.getDbConnectAuthToken();
       const client = new pg.Client({
         host: hostname,
         port: 5432,
         database: options.database ?? "postgres",
-        user: "admin",
+        user: dbUser,
         password: token,
         ssl: { rejectUnauthorized: true },
       });
@@ -89,19 +93,19 @@ async function getAdapters(): Promise<Adapters> {
   if (adapters) return adapters;
 
   const region = process.env.AWS_REGION ?? "us-east-1";
-  const auroraEndpoint = process.env.AURORA_ENDPOINT;
-  const s3Bucket = process.env.S3_BUCKET;
+  const dsqlHostname = process.env.STARKEEP_DSQL_HOSTNAME;
+  const filesBucket = process.env.STARKEEP_FILES_BUCKET;
 
-  if (!auroraEndpoint) throw new Error("AURORA_ENDPOINT env var is required");
-  if (!s3Bucket) throw new Error("S3_BUCKET env var is required");
+  if (!dsqlHostname) throw new Error("STARKEEP_DSQL_HOSTNAME env var is required");
+  if (!filesBucket) throw new Error("STARKEEP_FILES_BUCKET env var is required");
 
   const db = new AuroraDsqlDatabaseAdapter(
-    { hostname: auroraEndpoint, region },
+    { hostname: dsqlHostname, region },
     new LambdaDsqlClientFactory(),
   );
   await db.init();
 
-  const storage = new S3ObjectStorageAdapter({ bucketName: s3Bucket, region });
+  const storage = new S3ObjectStorageAdapter({ bucketName: filesBucket, region });
   const clock = createHLCClock({ nodeId: "cloud-photos-api", wallClockFunction: Date.now });
 
   adapters = { db, storage, clock };
@@ -136,37 +140,13 @@ export async function handler(event: APIGatewayEvent) {
       if (!record) return clientErr("Record not found", 404);
       if (!record.objectStorageKey) return clientErr("Record has no attached file", 422);
 
-      // Only generate thumbnails for originals (parentId is null).
       if (record.parentId !== null) {
         return clientErr("Record is already a thumbnail — skipping", 400);
       }
 
-      const { default: sharp } = await import("sharp") as { default: typeof import("sharp") };
-
       const thumbnailRecord = await generateThumbnailRecord(
         record,
-        async (imageBytes, maxWidth) => {
-          const inputBuffer = Buffer.from(imageBytes);
-          const meta = await sharp(inputBuffer).metadata();
-          const hasAlpha = meta.hasAlpha ?? false;
-
-          const resized = await sharp(inputBuffer)
-            .rotate()
-            .resize(maxWidth, maxWidth, {
-              fit: "inside",
-              kernel: "cubic",
-              withoutEnlargement: true,
-            })
-            [hasAlpha ? "webp" : "jpeg"](hasAlpha ? { quality: 76 } : { quality: 85 })
-            .toBuffer();
-
-          const outputMeta = await sharp(resized).metadata();
-          return {
-            data: new Uint8Array(resized),
-            width: outputMeta.width ?? 0,
-            height: outputMeta.height ?? 0,
-          };
-        },
+        resizeForThumbnail,
         { databaseAdapter: db, objectStorageAdapter: storage, clock, ownerId },
       );
 

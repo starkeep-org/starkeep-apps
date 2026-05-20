@@ -95,21 +95,12 @@ export async function POST(req: NextRequest) {
   }
   const inputBuffer = Buffer.from(await sourceRes.arrayBuffer());
 
-  // Resize with sharp
-  const { default: sharp } = await import("sharp") as { default: typeof import("sharp") };
-  const meta = await sharp(inputBuffer).metadata();
-  const hasAlpha = meta.hasAlpha ?? false;
+  const { resizeForThumbnail } = await import("@/photos-lib/image-processing/resize");
   const MAX_WIDTH = 400;
-
-  const resized = await sharp(inputBuffer)
-    .rotate()
-    .resize(MAX_WIDTH, MAX_WIDTH, { fit: "inside", kernel: "cubic", withoutEnlargement: true })
-    [hasAlpha ? "webp" : "jpeg"](hasAlpha ? { quality: 76 } : { quality: 85 })
-    .toBuffer();
-
-  const outputMeta = await sharp(resized).metadata();
-  const mimeType = hasAlpha ? "image/webp" : "image/jpeg";
-  const fileBase64 = resized.toString("base64");
+  const resizeResult = await resizeForThumbnail(inputBuffer, MAX_WIDTH);
+  const mimeType = resizeResult.contentType;
+  const outputMeta = { width: resizeResult.width, height: resizeResult.height };
+  const fileBase64 = Buffer.from(resizeResult.data).toString("base64");
 
   // Create the thumbnail DataRecord.
   const createBody = JSON.stringify({

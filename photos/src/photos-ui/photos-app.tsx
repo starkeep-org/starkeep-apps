@@ -8,6 +8,7 @@ import { UploadZone } from "./components/upload/upload-zone";
 import { GoogleImportPanel } from "./components/google/google-import-panel";
 import { useStyleGraphic } from "./hooks/use-style-graphic";
 import type { AppImage } from "@/photos-lib";
+import { withBasePath } from "@/lib/base-path";
 
 function PhotosAppInner() {
   const {
@@ -77,7 +78,7 @@ function PhotosAppInner() {
     if (newIds.length === 0) return;
     newIds.forEach((id) => backfilledRef.current.add(id));
     newIds.forEach((id) => {
-      fetch("/api/generate", {
+      fetch(withBasePath("/api/generate"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ targetId: id }),

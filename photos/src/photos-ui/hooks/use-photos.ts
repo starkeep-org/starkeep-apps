@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
 import type { AppImage } from "@/photos-lib";
 import { usePhotoContext } from "../context/photo-context";
+import { withBasePath } from "@/lib/base-path";
 
 export function usePhotos() {
   const { state, dispatch } = usePhotoContext();
@@ -10,7 +11,7 @@ export function usePhotos() {
     try {
       const params = new URLSearchParams();
       if (cursor) params.set("cursor", cursor);
-      const res = await fetch(`/api/photos?${params}`);
+      const res = await fetch(withBasePath(`/api/photos?${params}`));
       if (!res.ok) return;
       const data = (await res.json()) as { images: AppImage[]; nextCursor: string | null };
       if (cursor) {
@@ -34,7 +35,7 @@ export function usePhotos() {
 
   /** Fetch a single image by ID (used to load originals from thumbnail.parentId) */
   const fetchImage = useCallback(async (id: string): Promise<AppImage | null> => {
-    const res = await fetch(`/api/photos/${id}`);
+    const res = await fetch(withBasePath(`/api/photos/${id}`));
     if (!res.ok) return null;
     const data = (await res.json()) as { image: AppImage };
     return data.image;
@@ -47,7 +48,7 @@ export function usePhotos() {
     if (title) formData.append("title", title);
     if (caption) formData.append("caption", caption ?? "");
 
-    const res = await fetch("/api/photos", { method: "POST", body: formData });
+    const res = await fetch(withBasePath("/api/photos"), { method: "POST", body: formData });
     if (!res.ok) return null;
     const data = (await res.json()) as { image: AppImage };
     // After upload a thumbnail record will be present; refresh the list
@@ -59,7 +60,7 @@ export function usePhotos() {
     id: string,
     updates: { caption?: string; title?: string; dateTakenOverride?: string | null },
   ): Promise<AppImage | null> => {
-    const res = await fetch(`/api/photos/${id}`, {
+    const res = await fetch(withBasePath(`/api/photos/${id}`), {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updates),
@@ -70,7 +71,7 @@ export function usePhotos() {
   }, []);
 
   const deletePhoto = useCallback(async (id: string): Promise<boolean> => {
-    const res = await fetch(`/api/photos/${id}`, { method: "DELETE" });
+    const res = await fetch(withBasePath(`/api/photos/${id}`), { method: "DELETE" });
     if (!res.ok) return false;
     dispatch({ type: "OPTIMISTIC_DELETE", id });
     return true;
@@ -80,7 +81,7 @@ export function usePhotos() {
     sourceImageId: string,
     cropRect: { x: number; y: number; width: number; height: number },
   ): Promise<AppImage | null> => {
-    const res = await fetch("/api/photos/crop", {
+    const res = await fetch(withBasePath("/api/photos/crop"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sourceImageId, cropRect }),
@@ -93,7 +94,7 @@ export function usePhotos() {
   }, [fetchPhotos]);
 
   const sharePhoto = useCallback(async (imageId: string): Promise<{ token: string; shareUrl: string } | null> => {
-    const res = await fetch("/api/share", {
+    const res = await fetch(withBasePath("/api/share"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageId }),

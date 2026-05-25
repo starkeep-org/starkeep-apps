@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from "react";
 import type { GoogleAlbum, GoogleMediaItem } from "@/photos-lib";
+import { withBasePath } from "@/lib/base-path";
 
 type View = "albums" | "photos";
 
@@ -23,13 +24,13 @@ export function GoogleImportPanel({ onImportComplete, onClose }: GoogleImportPan
   const [connected, setConnected] = useState(false);
 
   const connect = () => {
-    window.location.href = "/api/google/oauth";
+    window.location.href = withBasePath("/api/google/oauth");
   };
 
   const loadAlbums = useCallback(async () => {
     setAlbumsLoading(true);
     try {
-      const res = await fetch("/api/google/albums");
+      const res = await fetch(withBasePath("/api/google/albums"));
       if (res.status === 401 || res.status === 403) { setConnected(false); return; }
       setConnected(true);
       const data = (await res.json()) as { albums: GoogleAlbum[] };
@@ -46,7 +47,7 @@ export function GoogleImportPanel({ onImportComplete, onClose }: GoogleImportPan
       const params = new URLSearchParams();
       if (albumId) params.set("albumId", albumId);
       if (pageToken) params.set("pageToken", pageToken);
-      const res = await fetch(`/api/google/list?${params}`);
+      const res = await fetch(withBasePath(`/api/google/list?${params}`));
       const data = (await res.json()) as { mediaItems: GoogleMediaItem[]; nextPageToken: string | null };
       if (pageToken) {
         setMediaItems((prev) => [...prev, ...data.mediaItems]);
@@ -94,7 +95,7 @@ export function GoogleImportPanel({ onImportComplete, onClose }: GoogleImportPan
 
     let done = 0;
     for (const mediaItemId of ids) {
-      await fetch("/api/google/import", {
+      await fetch(withBasePath("/api/google/import"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mediaItemId }),

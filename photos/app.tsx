@@ -13,6 +13,7 @@ import {
   type PhotoRecord,
 } from "./src/lib/data-server-client";
 import { DataSourceProvider, useDataSource, FORCE_REMOTE } from "./src/lib/data-source-context";
+import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { readCloudConfig } from "./src/lib/cloud-config";
 import { downsizeImage } from "./src/lib/image-utils";
@@ -359,9 +360,11 @@ function PhotosAppInner() {
 export function App() {
   return (
     <DataSourceProvider>
-      <PhotoProvider>
-        <PhotosAppInner />
-      </PhotoProvider>
+      <AuthGate>
+        <PhotoProvider>
+          <PhotosAppInner />
+        </PhotoProvider>
+      </AuthGate>
     </DataSourceProvider>
   );
 }

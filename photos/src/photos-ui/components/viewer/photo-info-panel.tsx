@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib";
+import { withBasePath } from "@/lib/base-path";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -35,7 +36,7 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/photos/captions/${encodeURIComponent(image.id)}`)
+    fetch(withBasePath(`/api/photos/captions/${encodeURIComponent(image.id)}`))
       .then((r) => (r.ok ? r.json() : { caption: null }))
       .then((data: { caption: string | null }) => {
         if (cancelled) return;
@@ -54,7 +55,7 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
 
   async function saveCaption(): Promise<void> {
     if (caption === savedCaption) return;
-    await fetch(`/api/photos/captions/${encodeURIComponent(image.id)}`, {
+    await fetch(withBasePath(`/api/photos/captions/${encodeURIComponent(image.id)}`), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ caption }),

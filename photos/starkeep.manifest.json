@@ -31,20 +31,11 @@
       "handlers": [
         {
           "name": "api",
-          "handler": "infra/src/photos-handler.handler",
+          "handler": "infra/src/resize-handler.handler",
           "memoryMb": 512,
           "timeoutSeconds": 30,
           "routes": [
-            "POST /generate",
-            "GET /photos",
-            "POST /photos",
-            "GET /photos/{id}",
-            "DELETE /photos/{id}",
-            "POST /photos/crop",
-            "PUT /photos/style-graphic",
-            "GET /photos/style-graphic",
-            "DELETE /photos/style-graphic",
-            "PATCH /photos/captions/{id}"
+            "POST /api/resize"
           ]
         },
         {

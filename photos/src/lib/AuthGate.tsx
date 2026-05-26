@@ -1,23 +1,17 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { readCloudConfig } from "./cloud-config";
-import { fetchRuntimeConfig } from "./runtime-config";
 import { SignInForm } from "./SignInForm";
 import { FORCE_REMOTE } from "./data-source-context";
 
 type GateStatus = "checking" | "needs-signin" | "authenticated" | "not-required";
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<GateStatus>("checking");
+  const [status, setStatus] = useState<GateStatus>(FORCE_REMOTE ? "checking" : "not-required");
 
   useEffect(() => {
+    if (!FORCE_REMOTE) return;
     (async () => {
-      const rc = await fetchRuntimeConfig();
-      const gateRequired = FORCE_REMOTE || !rc?.localDataServerUrl;
-      if (!gateRequired) {
-        setStatus("not-required");
-        return;
-      }
       const config = await readCloudConfig();
       setStatus(config?.cognitoRefreshToken ? "authenticated" : "needs-signin");
     })();

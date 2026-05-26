@@ -78,7 +78,7 @@ function PhotosAppInner() {
     if (newIds.length === 0) return;
     newIds.forEach((id) => backfilledRef.current.add(id));
     newIds.forEach((id) => {
-      fetch(withBasePath("/api/generate"), {
+      fetch(withBasePath("/api/resize"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ targetId: id }),

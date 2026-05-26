@@ -6,7 +6,7 @@ import { resolve } from "node:path";
  * Shared loader for the photos app's locally-installed credentials.
  * Read from `.starkeep-local.json` (written by admin-web at install time).
  * Used by every server route that talks to the local-data-server: the
- * /api/local-data proxy and /api/generate.
+ * /api/local-data proxy and /api/resize.
  */
 export interface AppCredentials {
   appId: string;

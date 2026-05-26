@@ -4,7 +4,7 @@ import { loadLocalAppCredentials, signRequest, type AppCredentials } from "../..
 export const runtime = "nodejs";
 
 /**
- * POST /api/generate
+ * POST /api/resize
  * Generates a thumbnail DataRecord for an original image.
  * The data-server REST API uses `payload` (not `content`) for the record's JSON metadata,
  * and requires `fileBase64` to attach a file — not a pre-uploaded objectStorageKey.
@@ -39,13 +39,13 @@ export async function POST(req: NextRequest) {
   if (!targetId) {
     return NextResponse.json({ error: "targetId is required" }, { status: 400 });
   }
-  console.log(`[generate] start targetId=${targetId} appId=${creds.appId}`);
+  console.log(`[resize] start targetId=${targetId} appId=${creds.appId}`);
 
   // Fetch the source record
   const recordRes = await signedFetch(creds, `/data/records/${targetId}`);
   if (!recordRes.ok) {
     const errBody = await recordRes.text().catch(() => "");
-    console.error(`[generate] GET /data/records/${targetId} → ${recordRes.status}: ${errBody}`);
+    console.error(`[resize] GET /data/records/${targetId} → ${recordRes.status}: ${errBody}`);
     return NextResponse.json(
       { error: `Record fetch failed: ${recordRes.status} ${errBody}` },
       { status: recordRes.status === 404 ? 404 : 502 },
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
   const fileUrlRes = await signedFetch(creds, `/data/records/${targetId}/file-url`);
   if (!fileUrlRes.ok) {
     const errBody = await fileUrlRes.text().catch(() => "");
-    console.error(`[generate] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
+    console.error(`[resize] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
     return NextResponse.json({ error: `file-url failed: ${fileUrlRes.status} ${errBody}` }, { status: 502 });
   }
   const { url: sourceUrl } = await fileUrlRes.json() as { url: string };
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
   const sourceRes = await fetch(sourceUrl);
   if (!sourceRes.ok) {
     const errBody = await sourceRes.text().catch(() => "");
-    console.error(`[generate] source fetch ${sourceUrl} → ${sourceRes.status}: ${errBody.slice(0, 300)}`);
+    console.error(`[resize] source fetch ${sourceUrl} → ${sourceRes.status}: ${errBody.slice(0, 300)}`);
     return NextResponse.json({ error: `source fetch failed: ${sourceRes.status}` }, { status: 502 });
   }
   const inputBuffer = Buffer.from(await sourceRes.arrayBuffer());
@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
   });
   if (!createRes.ok) {
     const errBody = await createRes.text().catch(() => "");
-    console.error(`[generate] create thumb → ${createRes.status}: ${errBody}`);
+    console.error(`[resize] create thumb → ${createRes.status}: ${errBody}`);
     return NextResponse.json({ error: `Failed to create thumbnail record: ${errBody}` }, { status: 502 });
   }
   const { record: thumbnailRecord } = await createRes.json() as { record: { id: string } };
@@ -135,11 +135,12 @@ export async function POST(req: NextRequest) {
   if (!metaRes.ok) {
     // Non-fatal: thumbnail exists; metadata write failure shouldn't abort the response.
     const errBody = await metaRes.text().catch(() => "");
-    console.warn(`[generate] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
+    console.warn(`[resize] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
   }
 
-  // Trigger sync push (fire-and-forget) — sync endpoints don't require app auth.
-  fetch(`${creds.dataServerUrl}/sync/now`, { method: "POST" }).catch(() => {});
+  // Trigger sync push (fire-and-forget). /sync/* requires app auth; sign
+  // with empty body to match the server's HMAC scheme.
+  signedFetch(creds, "/sync/now", { method: "POST" }).catch(() => {});
 
   return NextResponse.json({ ok: true, thumbnailId: thumbnailRecord.id });
 }

@@ -1,4 +1,8 @@
-import type { ResizeResult } from "../metadata/thumbnail-generator";
+export interface ResizeResult {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
 
 export async function resizeForThumbnail(
   imageBytes: Uint8Array,

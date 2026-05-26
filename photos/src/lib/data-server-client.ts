@@ -162,7 +162,8 @@ export interface SyncStatus {
   cloudUrl: string | null;
   lastPullAt: string | null;
   lastPushAt: string | null;
-  lastError: string | null;
+  lastPullError: string | null;
+  lastPushError: string | null;
   conflictCount: number;
 }
 

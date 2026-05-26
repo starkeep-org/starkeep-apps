@@ -171,7 +171,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // Fire-and-forget thumbnail generation.
-  fetch(`${req.nextUrl.origin}/api/generate`, {
+  fetch(`${req.nextUrl.origin}/api/resize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ targetId: record.id }),

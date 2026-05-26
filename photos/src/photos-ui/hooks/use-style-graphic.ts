@@ -4,8 +4,9 @@ import { withBasePath } from "@/lib/base-path";
 /**
  * Wraps the photos-owned style-graphic endpoint at /api/photos/style-graphic.
  * That endpoint mediates the platform's generic /app-data/files API — the UI
- * stays unaware of the underlying object-storage key and the bytes are
- * transported as base64 JSON to keep the request body text-only.
+ * stays unaware of the underlying object-storage key. Upload is a raw-bytes
+ * PUT with Content-Type carrying the mime; same-origin so no CORS, no base64
+ * inflation.
  */
 export function useStyleGraphic() {
   const [url, setUrl] = useState<string | null>(null);
@@ -32,12 +33,10 @@ export function useStyleGraphic() {
 
   const upload = useCallback(
     async (file: File): Promise<void> => {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const fileBase64 = arrayBufferToBase64(bytes);
       await fetch(withBasePath("/api/photos/style-graphic"), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileBase64, mimeType: file.type || "application/octet-stream" }),
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
       });
       await refresh();
     },
@@ -50,12 +49,4 @@ export function useStyleGraphic() {
   }, [refresh]);
 
   return { url, loading, upload, remove, refresh };
-}
-
-function arrayBufferToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }

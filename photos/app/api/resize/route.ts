@@ -1,16 +1,20 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { loadLocalAppCredentials, signRequest, type AppCredentials } from "../../../src/lib/local-app-creds";
 
 export const runtime = "nodejs";
 
 /**
  * POST /api/resize
- * Generates a thumbnail DataRecord for an original image.
- * The data-server REST API uses `payload` (not `content`) for the record's JSON metadata,
- * and requires `fileBase64` to attach a file — not a pre-uploaded objectStorageKey.
- *
- * All calls to the data-server are HMAC-signed with the photos app's installed credentials.
+ * Generates a thumbnail DataRecord for an original image. Bytes are uploaded
+ * via presigned S3 PUT and the record is registered by content hash — same
+ * shape as POST /api/photos. All HMAC-signed with the photos app's installed
+ * credentials.
  */
+
+function dataRecordObjectKey(typeId: string, contentHash: string): string {
+  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
+}
 
 async function signedFetch(
   creds: AppCredentials,
@@ -100,20 +104,49 @@ export async function POST(req: NextRequest) {
   const resizeResult = await resizeForThumbnail(inputBuffer, MAX_WIDTH);
   const mimeType = resizeResult.contentType;
   const outputMeta = { width: resizeResult.width, height: resizeResult.height };
-  const fileBase64 = Buffer.from(resizeResult.data).toString("base64");
+  const resizedBytes = new Uint8Array(resizeResult.data);
 
-  // Create the thumbnail DataRecord.
-  const createBody = JSON.stringify({
-    type: "image",
-    fileName: `thumb_${record.original_filename ?? "image"}`,
-    contentType: mimeType,
-    fileBase64,
-    parentId: targetId,
+  // Upload via presigned S3 PUT, then register by content hash — same flow as
+  // POST /api/photos. Avoids the API Gateway 7 MB cap on inline JSON bodies.
+  const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
+  const objectStorageKey = dataRecordObjectKey("image", contentHash);
+
+  const presignRes = await signedFetch(creds, `/files/presign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
   });
+  if (!presignRes.ok) {
+    const errBody = await presignRes.text().catch(() => "");
+    console.error(`[resize] presign → ${presignRes.status}: ${errBody}`);
+    return NextResponse.json({ error: `Failed to presign upload: ${errBody}` }, { status: 502 });
+  }
+  const { url: uploadUrl } = (await presignRes.json()) as { url: string };
+
+  const s3Res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": mimeType },
+    body: resizedBytes,
+  });
+  if (!s3Res.ok) {
+    console.error(`[resize] S3 PUT → ${s3Res.status} ${s3Res.statusText}`);
+    return NextResponse.json(
+      { error: `S3 PUT failed: ${s3Res.status} ${s3Res.statusText}` },
+      { status: 502 },
+    );
+  }
+
   const createRes = await signedFetch(creds, `/data/records`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: createBody,
+    body: JSON.stringify({
+      type: "image",
+      fileName: `thumb_${record.original_filename ?? "image"}`,
+      contentType: mimeType,
+      contentHash,
+      sizeBytes: resizedBytes.byteLength,
+      parentId: targetId,
+    }),
   });
   if (!createRes.ok) {
     const errBody = await createRes.text().catch(() => "");

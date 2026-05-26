@@ -14,10 +14,8 @@ const ALLOWED_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gi
  * whitelist and a size cap, and so the browser doesn't need to know the
  * underlying object-storage key.
  *
- * Upload transport is `{ fileBase64, mimeType }` JSON to keep things text-only
- * across the wire (matches the existing photo upload path). The route decodes
- * to a Buffer and sends raw bytes to the platform, which stores them under the
- * app's syncable file prefix.
+ * Upload transport is a raw-bytes PUT (Content-Type carries the mime; the body
+ * is the file). Same-origin so no CORS / preflight; no base64 inflation.
  */
 
 function notInstalled(): Response {
@@ -44,22 +42,14 @@ export async function GET(): Promise<Response> {
 export async function PUT(req: NextRequest): Promise<Response> {
   const creds = loadLocalAppCredentials();
   if (!creds) return notInstalled();
-  const body = (await req.json().catch(() => null)) as
-    | { fileBase64?: unknown; mimeType?: unknown }
-    | null;
-  if (!body || typeof body.fileBase64 !== "string" || typeof body.mimeType !== "string") {
+  const mimeType = (req.headers.get("content-type") ?? "").split(";")[0]!.trim();
+  if (!ALLOWED_MIME.has(mimeType)) {
     return NextResponse.json(
-      { error: "{fileBase64, mimeType} required" },
+      { error: `Content-Type must be one of: ${[...ALLOWED_MIME].join(", ")}` },
       { status: 400 },
     );
   }
-  if (!ALLOWED_MIME.has(body.mimeType)) {
-    return NextResponse.json(
-      { error: `mimeType must be one of: ${[...ALLOWED_MIME].join(", ")}` },
-      { status: 400 },
-    );
-  }
-  const bytes = Buffer.from(body.fileBase64, "base64");
+  const bytes = Buffer.from(await req.arrayBuffer());
   if (bytes.length === 0) {
     return NextResponse.json({ error: "Empty file" }, { status: 400 });
   }
@@ -71,7 +61,7 @@ export async function PUT(req: NextRequest): Promise<Response> {
   }
   const upstream = await signedFetch(creds, `/app-data/files/${STYLE_GRAPHIC_KEY}`, {
     method: "PUT",
-    headers: { "Content-Type": body.mimeType },
+    headers: { "Content-Type": mimeType },
     body: bytes,
   });
   if (!upstream.ok) {

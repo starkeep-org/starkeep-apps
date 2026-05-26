@@ -1,10 +1,17 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { loadLocalAppCredentials } from "../../../../src/lib/local-app-creds";
 import { signedFetch } from "../../../../src/lib/data-server-fetch";
 import { photoRecordToAppImage } from "../../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord } from "../../../../src/lib/data-server-client";
 
 export const runtime = "nodejs";
+
+// Mirrors dataRecordObjectKey in @starkeep/core. Inlined to keep the route a
+// thin Next runtime layer (matches the convention used in app/api/photos/route.ts).
+function dataRecordObjectKey(typeId: string, contentHash: string): string {
+  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
+}
 
 function notInstalled(): Response {
   return NextResponse.json(
@@ -57,18 +64,47 @@ export async function POST(req: NextRequest): Promise<Response> {
   const mimeType = "image/jpeg";
   const fileName = `crop_${sourceRecord.original_filename ?? "image"}`;
 
-  // Create a new DataRecord for the cropped image, linked to the source via parentId.
-  const createBody = JSON.stringify({
-    type: "image",
-    fileName,
-    contentType: mimeType,
-    fileBase64: cropped.toString("base64"),
-    parentId: sourceImageId,
+  // Upload via presigned S3 PUT, then register the record by content hash —
+  // matches the canonical flow in POST /api/photos. The inline fileBase64 form
+  // 413s on real photos once they go through API Gateway.
+  const croppedBytes = new Uint8Array(cropped);
+  const contentHash = createHash("sha256").update(croppedBytes).digest("hex");
+  const objectStorageKey = dataRecordObjectKey("image", contentHash);
+
+  const presignRes = await signedFetch(creds, "/files/presign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
   });
+  if (!presignRes.ok) {
+    const errBody = await presignRes.text().catch(() => "");
+    return NextResponse.json({ error: `Failed to presign upload: ${errBody}` }, { status: 502 });
+  }
+  const { url: uploadUrl } = (await presignRes.json()) as { url: string };
+
+  const s3Res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": mimeType },
+    body: croppedBytes,
+  });
+  if (!s3Res.ok) {
+    return NextResponse.json(
+      { error: `S3 PUT failed: ${s3Res.status} ${s3Res.statusText}` },
+      { status: 502 },
+    );
+  }
+
   const createRes = await signedFetch(creds, "/data/records", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: createBody,
+    body: JSON.stringify({
+      type: "image",
+      fileName,
+      contentType: mimeType,
+      contentHash,
+      sizeBytes: croppedBytes.byteLength,
+      parentId: sourceImageId,
+    }),
   });
   if (!createRes.ok) {
     const errBody = await createRes.text().catch(() => "");

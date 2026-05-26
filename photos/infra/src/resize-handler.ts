@@ -11,8 +11,13 @@
  * the lambda-originated writes just as it does on browser-originated writes.
  */
 
+import { createHash } from "node:crypto";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
+
+function dataRecordObjectKey(typeId: string, contentHash: string): string {
+  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
+}
 
 interface BrokerPhotoRecord {
   id: string;
@@ -123,10 +128,37 @@ export async function handler(event: APIGatewayEvent) {
 
     const MAX_WIDTH = 400;
     const resizeResult = await resizeForThumbnail(inputBuffer, MAX_WIDTH);
-    const fileBase64 = Buffer.from(resizeResult.data).toString("base64");
+    const resizedBytes = new Uint8Array(resizeResult.data);
 
-    // Create the thumbnail DataRecord — same shape as any other upload, with
-    // parentId set.
+    // Upload via presigned S3 PUT, then register by content hash — same flow
+    // as POST /api/photos. The inline form 413s on real photo bytes once the
+    // request rides through API Gateway.
+    const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
+    const objectStorageKey = dataRecordObjectKey("image", contentHash);
+
+    const presignRes = await brokerFetch(base, auth, `/files/presign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: objectStorageKey, contentType: resizeResult.contentType }),
+    });
+    if (!presignRes.ok) {
+      const errBody = await presignRes.text().catch(() => "");
+      console.error(`[resize] presign → ${presignRes.status}: ${errBody}`);
+      return clientErr(`presign failed: ${presignRes.status}`, 502);
+    }
+    const { url: uploadUrl } = (await presignRes.json()) as { url: string };
+
+    const s3Res = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": resizeResult.contentType },
+      body: resizedBytes,
+    });
+    if (!s3Res.ok) {
+      console.error(`[resize] S3 PUT → ${s3Res.status} ${s3Res.statusText}`);
+      return clientErr(`S3 PUT failed: ${s3Res.status}`, 502);
+    }
+
+    // Create the thumbnail DataRecord — key-ref form, links to source via parentId.
     const createRes = await brokerFetch(base, auth, `/data/records`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -134,7 +166,8 @@ export async function handler(event: APIGatewayEvent) {
         type: "image",
         fileName: `thumb_${record.original_filename ?? "image"}`,
         contentType: resizeResult.contentType,
-        fileBase64,
+        contentHash,
+        sizeBytes: resizedBytes.byteLength,
         parentId: targetId,
       }),
     });

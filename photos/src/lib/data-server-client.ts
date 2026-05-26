@@ -71,6 +71,20 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
+function dataRecordObjectKey(typeId: string, contentHash: string): string {
+  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource);
+  const view = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < view.length; i++) {
+    hex += view[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
 export async function addPhotoFromPath(
   _filePath: string,
   fileBytes: Uint8Array,
@@ -80,23 +94,41 @@ export async function addPhotoFromPath(
 ): Promise<PhotoRecord> {
   const source = await resolveDataSource(mode);
 
-  let binary = "";
-  const chunkSize = 8192;
-  for (let i = 0; i < fileBytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...fileBytes.subarray(i, i + chunkSize));
+  // Upload via presigned S3 PUT, then register by content hash — bypasses the
+  // API Gateway ~7 MB cap on inline JSON bodies. Mirrors the canonical flow in
+  // POST /api/photos.
+  const contentHash = await sha256Hex(fileBytes);
+  const objectStorageKey = dataRecordObjectKey("image", contentHash);
+
+  const { url: uploadUrl } = await request<{ url: string }>(
+    "/files/presign",
+    source,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
+    },
+  );
+
+  const s3Res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": mimeType },
+    body: fileBytes as unknown as BodyInit,
+  });
+  if (!s3Res.ok) {
+    throw new Error(`S3 PUT failed: ${s3Res.status} ${s3Res.statusText}`);
   }
-  const fileBase64 = btoa(binary);
-  const body: Record<string, unknown> = {
-    type: "image",
-    fileName,
-    contentType: mimeType,
-    fileBase64,
-  };
 
   const result = await request<{ record: PhotoRecord }>("/data/records", source, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      type: "image",
+      fileName,
+      contentType: mimeType,
+      contentHash,
+      sizeBytes: fileBytes.byteLength,
+    }),
   });
   return result.record;
 }

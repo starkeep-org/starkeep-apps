@@ -15,9 +15,8 @@ import {
 import { DataSourceProvider, useDataSource, FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
-import { readCloudConfig } from "./src/lib/cloud-config";
 import { downsizeImage } from "./src/lib/image-utils";
-import type { DataSourceMode } from "./src/lib/data-client";
+import { resolveDataSource, type DataSourceMode } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoSync } from "./src/lib/usePhotoSync";
 
@@ -56,33 +55,49 @@ function useFullSizeUrlCache(mode: DataSourceMode) {
 
 type ThumbnailStrategy = "browser" | "local-sharp" | "remote-sharp";
 
+// Resolve where /api/resize lives based on mode. In remote mode the SPA is
+// mounted under /apps/photos on the API Gateway domain and the route is
+// JWT-gated; in local mode the Next.js dev server serves it at the origin.
+async function resolveResizeEndpoint(
+  mode: DataSourceMode,
+): Promise<{ url: string; headers: Record<string, string> }> {
+  if (mode === "remote") {
+    const source = await resolveDataSource(mode);
+    return { url: `${source.baseUrl}/api/resize`, headers: source.headers };
+  }
+  return { url: "/api/resize", headers: {} };
+}
+
 async function generateThumbnail(
   record: PhotoRecord,
   file: File,
   thumbnailStrategy: ThumbnailStrategy,
+  mode: DataSourceMode,
 ): Promise<void> {
   try {
+    const { url, headers: authHeaders } = await resolveResizeEndpoint(mode);
+    const headers = { "Content-Type": "application/json", ...authHeaders };
     if (thumbnailStrategy === "browser") {
       // Generate thumbnail in-browser using Canvas, then POST it as a new record
       // with content.parentId pointing to the original.
       const result = await downsizeImage(file, 400);
-      const res = await fetch("/api/generate", {
+      const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
       });
-      if (res.ok) triggerSyncNow().catch(() => {});
-      void result; // generation handled server-side via /api/generate
+      if (res.ok && mode === "local") triggerSyncNow().catch(() => {});
+      void result; // generation handled server-side via /api/resize
 
     } else {
-      // For local-sharp and remote-sharp, call /api/generate which runs sharp
+      // For local-sharp and remote-sharp, call /api/resize which runs sharp
       // server-side and creates the thumbnail DataRecord.
-      const res = await fetch("/api/generate", {
+      const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
       });
-      if (res.ok && thumbnailStrategy === "remote-sharp") {
+      if (res.ok && thumbnailStrategy === "remote-sharp" && mode === "local") {
         triggerSyncNow().catch(() => {});
       }
     }
@@ -99,7 +114,7 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 
 function PhotosAppInner() {
   const { state, dispatch } = usePhotoContext();
-  const { mode, setMode, remoteAvailable } = useDataSource();
+  const { mode } = useDataSource();
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
@@ -107,8 +122,6 @@ function PhotosAppInner() {
   const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
     () => (localStorage.getItem("thumbnail-strategy") as ThumbnailStrategy) ?? "browser",
   );
-  const isLocalEnv = typeof window !== "undefined" &&
-    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
   const handleStrategyChange = (s: ThumbnailStrategy) => {
     setThumbnailStrategy(s);
@@ -139,14 +152,18 @@ function PhotosAppInner() {
     const newIds = orphanIds.split(",").filter((id) => !backfilledRef.current.has(id));
     if (newIds.length === 0) return;
     newIds.forEach((id) => backfilledRef.current.add(id));
-    newIds.forEach((id) => {
-      fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetId: id }),
-      }).catch(() => {});
-    });
-  }, [orphanIds]);
+    void (async () => {
+      const { url, headers: authHeaders } = await resolveResizeEndpoint(mode);
+      const headers = { "Content-Type": "application/json", ...authHeaders };
+      newIds.forEach((id) => {
+        fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ targetId: id }),
+        }).catch(() => {});
+      });
+    })();
+  }, [orphanIds, mode]);
 
   // For the viewer: if a thumbnail was clicked, show its original.
   // If a fallback-original was clicked (no thumbnail exists), show it directly.
@@ -183,7 +200,7 @@ function PhotosAppInner() {
       // Mark as submitted before generateThumbnail fires so the backfill effect
       // never picks up this original and creates a second thumbnail.
       backfilledRef.current.add(record.id);
-      generateThumbnail(record, file, thumbnailStrategy).catch(() => {});
+      generateThumbnail(record, file, thumbnailStrategy, mode).catch(() => {});
     } catch (err) {
       console.error("[photos] Upload failed:", err);
       setError(err instanceof Error ? err.message : "Failed to add photo");
@@ -237,50 +254,15 @@ function PhotosAppInner() {
         >
           <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Photos</span>
 
-          {/* Local / Remote toggle */}
-          {!FORCE_REMOTE && (
-            <div
-              style={{
-                display: "flex",
-                background: "rgba(255,255,255,0.08)",
-                borderRadius: 4,
-                border: "1px solid rgba(255,255,255,0.15)",
-              }}
-            >
-              {(["local", "remote"] as DataSourceMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={async () => {
-                    if (m === "remote") {
-                      const config = await readCloudConfig();
-                      if (!config) { setShowCloudSetup(true); return; }
-                    }
-                    setMode(m);
-                  }}
-                  disabled={m === "remote" && !remoteAvailable}
-                  style={{
-                    ...toolbarButtonStyle,
-                    background: mode === m ? "rgba(255,255,255,0.2)" : "transparent",
-                    border: "none",
-                    borderRadius: m === "local" ? "3px 0 0 3px" : "0 3px 3px 0",
-                    opacity: m === "remote" && !remoteAvailable ? 0.4 : 1,
-                    cursor: m === "remote" && !remoteAvailable ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {m.charAt(0).toUpperCase() + m.slice(1)}
-                </button>
-              ))}
-            </div>
-          )}
-
           {/* Thumbnail generation strategy */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "#aaa" }}>
             <span style={{ whiteSpace: "nowrap" }}>Thumbnail:</span>
             {(
               [
                 { value: "browser", label: "Browser" },
-                { value: "local-sharp", label: "Local Sharp" },
-                { value: "remote-sharp", label: "Remote Sharp" },
+                ...(FORCE_REMOTE
+                  ? [{ value: "remote-sharp" as const, label: "Remote Sharp" }]
+                  : [{ value: "local-sharp" as const, label: "Local Sharp" }]),
               ] as { value: ThumbnailStrategy; label: string }[]
             ).map(({ value, label }) => (
               <label
@@ -293,7 +275,6 @@ function PhotosAppInner() {
                   value={value}
                   checked={thumbnailStrategy === value}
                   onChange={() => handleStrategyChange(value)}
-                  disabled={(value === "remote-sharp" && !remoteAvailable) || (value === "local-sharp" && !isLocalEnv)}
                   style={{ accentColor: "#888" }}
                 />
                 {label}
@@ -301,13 +282,15 @@ function PhotosAppInner() {
             ))}
           </div>
 
-          <button
-            onClick={() => setShowCloudSetup(true)}
-            title="Cloud setup"
-            style={toolbarButtonStyle}
-          >
-            ⚙
-          </button>
+          {FORCE_REMOTE && (
+            <button
+              onClick={() => setShowCloudSetup(true)}
+              title="Cloud setup"
+              style={toolbarButtonStyle}
+            >
+              ⚙
+            </button>
+          )}
 
           <button
             onClick={handleAddClick}

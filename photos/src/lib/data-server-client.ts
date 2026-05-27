@@ -186,7 +186,10 @@ export async function uploadFile(
 }
 
 
-const LOCAL_BASE = "http://127.0.0.1:9820";
+// Sync endpoints are under /sync/* on the data server and require app auth
+// (X-Starkeep-App-Id + HMAC). The browser routes through the same-origin
+// /api/local-data proxy that adds those headers server-side.
+const LOCAL_BASE = "/api/local-data";
 
 export interface SyncStatus {
   enabled: boolean;

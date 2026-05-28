@@ -1,6 +1,7 @@
 node_modules/
 .sst/
 .next/
+.open-next/
 .turbo/
 out/
 dist/
@@ -11,7 +12,6 @@ tsconfig.tsbuildinfo
 pnpm-workspace.yaml
 pnpm-lock.yaml
 */public/starkeep-runtime-config.json
-starkeep-config.json
 */infra/photos-cloud-config.json
 */infra/src/web-assets.json
 */.starkeep-local.json

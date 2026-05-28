@@ -1,4 +1,5 @@
 import React, { createContext, useContext } from "react";
+import { withBasePath } from "@/lib/base-path";
 
 interface PhotoUrlContextValue {
   getThumbnailSrc: (imageId: string) => string | null;
@@ -6,8 +7,8 @@ interface PhotoUrlContextValue {
 }
 
 const PhotoUrlContext = createContext<PhotoUrlContextValue>({
-  getThumbnailSrc: (id) => `/api/photos/${id}/thumbnail`,
-  getFullSizeSrc: (id) => `/api/photos/${id}/file`,
+  getThumbnailSrc: (id) => withBasePath(`/api/photos/${id}/thumbnail`),
+  getFullSizeSrc: (id) => withBasePath(`/api/photos/${id}/file`),
 });
 
 export function PhotoUrlProvider({
@@ -20,8 +21,8 @@ export function PhotoUrlProvider({
   children: React.ReactNode;
 }) {
   const value: PhotoUrlContextValue = {
-    getThumbnailSrc: getThumbnailSrc ?? ((id) => `/api/photos/${id}/thumbnail`),
-    getFullSizeSrc: getFullSizeSrc ?? ((id) => `/api/photos/${id}/file`),
+    getThumbnailSrc: getThumbnailSrc ?? ((id) => withBasePath(`/api/photos/${id}/thumbnail`)),
+    getFullSizeSrc: getFullSizeSrc ?? ((id) => withBasePath(`/api/photos/${id}/file`)),
   };
   return <PhotoUrlContext.Provider value={value}>{children}</PhotoUrlContext.Provider>;
 }

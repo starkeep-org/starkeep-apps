@@ -25,6 +25,34 @@
           ]
         }
       ]
+    },
+    "compute": {
+      "enabled": true,
+      "handlers": [
+        {
+          "name": "api",
+          "handler": "infra/src/resize-handler.handler",
+          "memoryMb": 512,
+          "timeoutSeconds": 30,
+          "routes": [
+            "POST /api/resize"
+          ]
+        },
+        {
+          "name": "static",
+          "handler": "index.handler",
+          "memoryMb": 256,
+          "timeoutSeconds": 10,
+          "routes": ["GET /", "GET /{proxy+}"],
+          "auth": "public",
+          "env": {
+            "STARKEEP_API_GATEWAY_URL": "",
+            "STARKEEP_USER_POOL_ID": "",
+            "STARKEEP_USER_POOL_CLIENT_ID": "",
+            "STARKEEP_IDENTITY_POOL_ID": ""
+          }
+        }
+      ]
     }
   }
 }

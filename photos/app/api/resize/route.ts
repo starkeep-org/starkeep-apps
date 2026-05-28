@@ -1,16 +1,20 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { loadLocalAppCredentials, signRequest, type AppCredentials } from "../../../src/lib/local-app-creds";
 
 export const runtime = "nodejs";
 
 /**
- * POST /api/generate
- * Generates a thumbnail DataRecord for an original image.
- * The data-server REST API uses `payload` (not `content`) for the record's JSON metadata,
- * and requires `fileBase64` to attach a file — not a pre-uploaded objectStorageKey.
- *
- * All calls to the data-server are HMAC-signed with the photos app's installed credentials.
+ * POST /api/resize
+ * Generates a thumbnail DataRecord for an original image. Bytes are uploaded
+ * via presigned S3 PUT and the record is registered by content hash — same
+ * shape as POST /api/photos. All HMAC-signed with the photos app's installed
+ * credentials.
  */
+
+function dataRecordObjectKey(typeId: string, contentHash: string): string {
+  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
+}
 
 async function signedFetch(
   creds: AppCredentials,
@@ -39,13 +43,13 @@ export async function POST(req: NextRequest) {
   if (!targetId) {
     return NextResponse.json({ error: "targetId is required" }, { status: 400 });
   }
-  console.log(`[generate] start targetId=${targetId} appId=${creds.appId}`);
+  console.log(`[resize] start targetId=${targetId} appId=${creds.appId}`);
 
   // Fetch the source record
   const recordRes = await signedFetch(creds, `/data/records/${targetId}`);
   if (!recordRes.ok) {
     const errBody = await recordRes.text().catch(() => "");
-    console.error(`[generate] GET /data/records/${targetId} → ${recordRes.status}: ${errBody}`);
+    console.error(`[resize] GET /data/records/${targetId} → ${recordRes.status}: ${errBody}`);
     return NextResponse.json(
       { error: `Record fetch failed: ${recordRes.status} ${errBody}` },
       { status: recordRes.status === 404 ? 404 : 502 },
@@ -81,7 +85,7 @@ export async function POST(req: NextRequest) {
   const fileUrlRes = await signedFetch(creds, `/data/records/${targetId}/file-url`);
   if (!fileUrlRes.ok) {
     const errBody = await fileUrlRes.text().catch(() => "");
-    console.error(`[generate] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
+    console.error(`[resize] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
     return NextResponse.json({ error: `file-url failed: ${fileUrlRes.status} ${errBody}` }, { status: 502 });
   }
   const { url: sourceUrl } = await fileUrlRes.json() as { url: string };
@@ -90,43 +94,63 @@ export async function POST(req: NextRequest) {
   const sourceRes = await fetch(sourceUrl);
   if (!sourceRes.ok) {
     const errBody = await sourceRes.text().catch(() => "");
-    console.error(`[generate] source fetch ${sourceUrl} → ${sourceRes.status}: ${errBody.slice(0, 300)}`);
+    console.error(`[resize] source fetch ${sourceUrl} → ${sourceRes.status}: ${errBody.slice(0, 300)}`);
     return NextResponse.json({ error: `source fetch failed: ${sourceRes.status}` }, { status: 502 });
   }
   const inputBuffer = Buffer.from(await sourceRes.arrayBuffer());
 
-  // Resize with sharp
-  const { default: sharp } = await import("sharp") as { default: typeof import("sharp") };
-  const meta = await sharp(inputBuffer).metadata();
-  const hasAlpha = meta.hasAlpha ?? false;
+  const { resizeForThumbnail } = await import("@/photos-lib/image-processing/resize");
   const MAX_WIDTH = 400;
+  const resizeResult = await resizeForThumbnail(inputBuffer, MAX_WIDTH);
+  const mimeType = resizeResult.contentType;
+  const outputMeta = { width: resizeResult.width, height: resizeResult.height };
+  const resizedBytes = new Uint8Array(resizeResult.data);
 
-  const resized = await sharp(inputBuffer)
-    .rotate()
-    .resize(MAX_WIDTH, MAX_WIDTH, { fit: "inside", kernel: "cubic", withoutEnlargement: true })
-    [hasAlpha ? "webp" : "jpeg"](hasAlpha ? { quality: 76 } : { quality: 85 })
-    .toBuffer();
+  // Upload via presigned S3 PUT, then register by content hash — same flow as
+  // POST /api/photos. Avoids the API Gateway 7 MB cap on inline JSON bodies.
+  const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
+  const objectStorageKey = dataRecordObjectKey("image", contentHash);
 
-  const outputMeta = await sharp(resized).metadata();
-  const mimeType = hasAlpha ? "image/webp" : "image/jpeg";
-  const fileBase64 = resized.toString("base64");
-
-  // Create the thumbnail DataRecord.
-  const createBody = JSON.stringify({
-    type: "image",
-    fileName: `thumb_${record.original_filename ?? "image"}`,
-    contentType: mimeType,
-    fileBase64,
-    parentId: targetId,
+  const presignRes = await signedFetch(creds, `/files/presign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
   });
+  if (!presignRes.ok) {
+    const errBody = await presignRes.text().catch(() => "");
+    console.error(`[resize] presign → ${presignRes.status}: ${errBody}`);
+    return NextResponse.json({ error: `Failed to presign upload: ${errBody}` }, { status: 502 });
+  }
+  const { url: uploadUrl } = (await presignRes.json()) as { url: string };
+
+  const s3Res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": mimeType },
+    body: resizedBytes,
+  });
+  if (!s3Res.ok) {
+    console.error(`[resize] S3 PUT → ${s3Res.status} ${s3Res.statusText}`);
+    return NextResponse.json(
+      { error: `S3 PUT failed: ${s3Res.status} ${s3Res.statusText}` },
+      { status: 502 },
+    );
+  }
+
   const createRes = await signedFetch(creds, `/data/records`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: createBody,
+    body: JSON.stringify({
+      type: "image",
+      fileName: `thumb_${record.original_filename ?? "image"}`,
+      contentType: mimeType,
+      contentHash,
+      sizeBytes: resizedBytes.byteLength,
+      parentId: targetId,
+    }),
   });
   if (!createRes.ok) {
     const errBody = await createRes.text().catch(() => "");
-    console.error(`[generate] create thumb → ${createRes.status}: ${errBody}`);
+    console.error(`[resize] create thumb → ${createRes.status}: ${errBody}`);
     return NextResponse.json({ error: `Failed to create thumbnail record: ${errBody}` }, { status: 502 });
   }
   const { record: thumbnailRecord } = await createRes.json() as { record: { id: string } };
@@ -144,11 +168,12 @@ export async function POST(req: NextRequest) {
   if (!metaRes.ok) {
     // Non-fatal: thumbnail exists; metadata write failure shouldn't abort the response.
     const errBody = await metaRes.text().catch(() => "");
-    console.warn(`[generate] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
+    console.warn(`[resize] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
   }
 
-  // Trigger sync push (fire-and-forget) — sync endpoints don't require app auth.
-  fetch(`${creds.dataServerUrl}/sync/now`, { method: "POST" }).catch(() => {});
+  // Trigger sync push (fire-and-forget). /sync/* requires app auth; sign
+  // with empty body to match the server's HMAC scheme.
+  signedFetch(creds, "/sync/now", { method: "POST" }).catch(() => {});
 
   return NextResponse.json({ ok: true, thumbnailId: thumbnailRecord.id });
 }

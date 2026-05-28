@@ -43,8 +43,12 @@ export async function resolveDataSource(mode: DataSourceMode): Promise<{
       const config = await readCloudConfig();
       const token = config ? await getAccessToken().catch(() => null) : null;
       if (!token) console.warn("[data-client] Remote mode, no auth token — request will be unauthenticated");
+      // Cloud data server routes are all under /apps/{appId}/... — the
+      // Lambda's $default integration 404s anything that doesn't match
+      // parseAppPath. Local mode goes through /api/local-data which
+      // already scopes by appId via HMAC, so the prefix is remote-only.
       return {
-        baseUrl: apiGatewayUrl.replace(/\/$/, ""),
+        baseUrl: `${apiGatewayUrl.replace(/\/$/, "")}/apps/photos`,
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       };
     }

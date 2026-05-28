@@ -1,28 +1,23 @@
 import type { NextConfig } from "next";
 import { resolve } from "path";
 
+// When deployed under the shared API Gateway, the app is mounted at
+// /apps/<appId>. The installer sets STARKEEP_APP_BASE_PATH at build time so
+// Next emits all asset URLs and routes under that prefix. Unset in dev → "".
+const basePath = process.env.STARKEEP_APP_BASE_PATH ?? "";
+
 const nextConfig: NextConfig = {
-  // Static export is used for the production cloud build (talks to the API
-  // Gateway directly). In dev we need the Node server for /api/local-data
-  // and /api/generate, which proxy/run against the local data-server.
-  output: process.env.NODE_ENV === "production" ? "export" : undefined,
+  basePath,
   turbopack: {
-    // pnpm puts the virtual store (.pnpm/) at the workspace root, which is the
-    // parent of this directory (starkeep-apps/).  Turbopack must include that
-    // directory in its root so it can follow node_modules symlinks into .pnpm.
     root: resolve(".."),
   },
-  webpack: (config) => {
-    // Deduplicate React across workspace packages — prevents "Cannot read properties
-    // of null (reading 'useContext')" during SSR prerendering of /_global-error, which
-    // is the only page rendered server-side (main page uses ssr:false).
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      react: resolve("node_modules/react"),
-      "react-dom": resolve("node_modules/react-dom"),
-      "react/jsx-runtime": resolve("node_modules/react/jsx-runtime"),
-    };
-    return config;
+  async rewrites() {
+    return [
+      {
+        source: "/starkeep-runtime-config.json",
+        destination: "/starkeep-runtime-config",
+      },
+    ];
   },
 };
 

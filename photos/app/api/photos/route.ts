@@ -1,9 +1,18 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { loadLocalAppCredentials } from "../../../src/lib/local-app-creds";
 import { signedFetch } from "../../../src/lib/data-server-fetch";
 import { photoRecordToAppImage } from "../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../src/lib/data-server-client";
 import { extractExif } from "../../../src/photos-lib/metadata/exif-reader";
+
+// shared/<typeId>/<shard>/<contentHash> — mirrors dataRecordObjectKey in
+// @starkeep/core/storage/object-keys. Inlined here to keep this route a
+// thin Next runtime layer without dragging the core package into the
+// browser-adjacent build.
+function dataRecordObjectKey(typeId: string, contentHash: string): string {
+  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
+}
 
 export const runtime = "nodejs";
 
@@ -97,17 +106,46 @@ export async function POST(req: NextRequest): Promise<Response> {
     height = meta.height ?? 0;
   } catch {}
 
-  // Upload the original image as a DataRecord.
-  const createBody = JSON.stringify({
-    type: "image",
-    fileName: originalFilename,
-    contentType: mimeType,
-    fileBase64: fileBytes.toString("base64"),
+  // Upload via presigned S3 PUT, then register the record by content hash.
+  // The inline /data/records form base64-wraps bytes into the JSON body,
+  // which API Gateway caps at 10 MB. A 7 MB photo is ~9.7 MB once encoded —
+  // so the inline path 413s on real photos.
+  const contentHash = createHash("sha256").update(fileBytes).digest("hex");
+  const objectStorageKey = dataRecordObjectKey("image", contentHash);
+
+  const presignRes = await signedFetch(creds, "/files/presign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
   });
+  if (!presignRes.ok) {
+    const errBody = await presignRes.text().catch(() => "");
+    return NextResponse.json({ error: `Failed to presign upload: ${errBody}` }, { status: 502 });
+  }
+  const { url: uploadUrl } = (await presignRes.json()) as { url: string };
+
+  const s3Res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": mimeType },
+    body: fileBytes,
+  });
+  if (!s3Res.ok) {
+    return NextResponse.json(
+      { error: `S3 PUT failed: ${s3Res.status} ${s3Res.statusText}` },
+      { status: 502 },
+    );
+  }
+
   const createRes = await signedFetch(creds, "/data/records", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: createBody,
+    body: JSON.stringify({
+      type: "image",
+      fileName: originalFilename,
+      contentType: mimeType,
+      contentHash,
+      sizeBytes: fileBytes.length,
+    }),
   });
   if (!createRes.ok) {
     const errBody = await createRes.text().catch(() => "");
@@ -171,7 +209,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // Fire-and-forget thumbnail generation.
-  fetch(`${req.nextUrl.origin}/api/generate`, {
+  fetch(`${req.nextUrl.origin}/api/resize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ targetId: record.id }),

@@ -15,9 +15,9 @@ interface PhotoThumbnailProps {
 export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   const { getFullSizeSrc } = usePhotoUrls();
 
-  // Only thumbnail records (parentId !== "") have a small image to display.
-  // Originals with parentId === "" are placeholders — their thumbnail is being generated.
-  const isThumbnail = image.parentId !== "";
+  // Only thumbnail records (parentId !== null) have a small image to display.
+  // Originals with parentId === null are placeholders — their thumbnail is being generated.
+  const isThumbnail = image.parentId !== null;
   const transform =
     image.exif.orientation
       ? (ORIENTATION_TRANSFORMS[image.exif.orientation] ?? "none")

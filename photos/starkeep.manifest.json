@@ -3,6 +3,7 @@
   "name": "Photos",
   "version": "0.1.0",
   "tier": "official",
+  "targets": ["local", "cloud"],
   "infraRequirements": {
     "fileAccess": [
       {

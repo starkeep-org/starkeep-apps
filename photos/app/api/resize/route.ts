@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Record is already a thumbnail" }, { status: 400 });
   }
 
-  const existingRes = await signedFetch(creds, `/data/records?type=image&limit=1000`);
+  const existingRes = await signedFetch(creds, `/data/records?limit=1000`);
   if (existingRes.ok) {
     const { records } = await existingRes.json() as { records: { id: string; parent_id: string | null }[] };
     const existing = records.find((r) => r.parent_id === targetId);
@@ -140,7 +140,8 @@ export async function POST(req: NextRequest) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: "image",
+      // The thumbnail is re-encoded as JPEG above, so its true extension is "jpg".
+      type: "jpg",
       fileName: `thumb_${record.original_filename ?? "image"}`,
       contentType: mimeType,
       contentHash,

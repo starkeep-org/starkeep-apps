@@ -5,6 +5,7 @@ import { signedFetch } from "../../../src/lib/data-server-fetch";
 import { photoRecordToAppImage } from "../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../src/lib/data-server-client";
 import { extractExif } from "../../../src/photos-lib/metadata/exif-reader";
+import { extensionFromFilename } from "../../../src/lib/file-extension";
 
 // shared/<typeId>/<shard>/<contentHash> — mirrors dataRecordObjectKey in
 // @starkeep/core/storage/object-keys. Inlined here to keep this route a
@@ -28,7 +29,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!creds) return notInstalled();
 
   const cursor = req.nextUrl.searchParams.get("cursor") ?? undefined;
-  const qs = new URLSearchParams({ type: "image", limit: "50" });
+  // No `type` filter: the server scopes a type-less query to the app's granted
+  // extensions (the image extensions), so this lists all images in one call.
+  const qs = new URLSearchParams({ limit: "50" });
   if (cursor) qs.set("updated_after", cursor);
 
   const recordsRes = await signedFetch(creds, `/data/records?${qs.toString()}`);
@@ -140,7 +143,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: "image",
+      type: extensionFromFilename(originalFilename),
       fileName: originalFilename,
       contentType: mimeType,
       contentHash,
@@ -208,12 +211,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Fire-and-forget thumbnail generation.
-  fetch(`${req.nextUrl.origin}/api/resize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targetId: record.id }),
-  }).catch(() => {});
+  // Thumbnail generation is driven by the UI's orphan-backfill effect (see
+  // photos-app.tsx), which fires /api/resize for any original lacking a
+  // thumbnail. We deliberately do NOT also fire it here: two concurrent
+  // triggers for the same upload would both pass the resize route's
+  // check-then-create dedup and register duplicate thumbnails.
 
   const enriched: ImageEnriched | null = (title || caption) ? { title, caption } : null;
   return NextResponse.json({ image: photoRecordToAppImage(record, photoMeta, enriched) }, { status: 201 });

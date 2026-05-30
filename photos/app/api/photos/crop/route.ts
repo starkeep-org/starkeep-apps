@@ -98,7 +98,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: "image",
+      // The crop is re-encoded as JPEG above, so its true extension is "jpg".
+      type: "jpg",
       fileName,
       contentType: mimeType,
       contentHash,

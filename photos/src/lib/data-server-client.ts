@@ -1,4 +1,5 @@
 import { resolveDataSource, type DataSourceMode } from "./data-client";
+import { extensionFromFilename } from "./file-extension";
 
 export interface PhotoRecord {
   id: string;
@@ -123,7 +124,7 @@ export async function addPhotoFromPath(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: "image",
+      type: extensionFromFilename(fileName),
       fileName,
       contentType: mimeType,
       contentHash,
@@ -133,10 +134,14 @@ export async function addPhotoFromPath(
   return result.record;
 }
 
+// No `type` filter: a type-less query is server-scoped to the app's granted
+// extensions, which for Photos are exactly the image extensions — so this
+// returns every image the app can see in one request, across all of jpg/png/
+// heic/… rather than a single hardcoded type.
 export async function listPhotos(mode: DataSourceMode): Promise<PhotoRecord[]> {
   const source = await resolveDataSource(mode);
   const result = await request<{ records: PhotoRecord[] }>(
-    "/data/records?type=image&limit=500",
+    "/data/records?limit=500",
     source,
   );
   return result.records;
@@ -145,7 +150,7 @@ export async function listPhotos(mode: DataSourceMode): Promise<PhotoRecord[]> {
 export async function listPhotosSince(updatedAfter: string, mode: DataSourceMode): Promise<PhotoRecord[]> {
   const source = await resolveDataSource(mode);
   const result = await request<{ records: PhotoRecord[] }>(
-    `/data/records?type=image&limit=500&updated_after=${encodeURIComponent(updatedAfter)}`,
+    `/data/records?limit=500&updated_after=${encodeURIComponent(updatedAfter)}`,
     source,
   );
   return result.records;

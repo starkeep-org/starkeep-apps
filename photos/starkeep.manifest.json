@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "tier": "official",
   "infraRequirements": {
-    "sharedTypeAccess": [
+    "fileAccess": [
       {
-        "typeId": "image",
+        "extensions": ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tiff", "tif"],
         "access": "readwrite",
         "metadataWrite": true,
-        "rationale": "Photos app stores images and writes EXIF/dimensions extracted from uploaded image files into the image metadata table."
+        "rationale": "Photos app stores raster images and writes EXIF/dimensions extracted from uploaded image files into the image metadata table."
       }
     ],
     "appSpecificSyncable": {

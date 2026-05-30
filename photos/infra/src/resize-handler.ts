@@ -98,8 +98,9 @@ export async function handler(event: APIGatewayEvent) {
     if (!record.object_storage_key) return clientErr("Record has no attached file", 422);
     if (record.parent_id) return clientErr("Record is already a thumbnail", 400);
 
-    // Skip if a thumbnail already exists for this original.
-    const existingRes = await brokerFetch(base, auth, `/data/records?type=image&limit=1000`);
+    // Skip if a thumbnail already exists for this original. A type-less list is
+    // server-scoped to the app's granted extensions, returning every image.
+    const existingRes = await brokerFetch(base, auth, `/data/records?limit=1000`);
     if (existingRes.ok) {
       const { records } = (await existingRes.json()) as {
         records: { id: string; parent_id: string | null }[];
@@ -163,7 +164,8 @@ export async function handler(event: APIGatewayEvent) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        type: "image",
+        // The thumbnail is re-encoded as JPEG above, so its true extension is "jpg".
+        type: "jpg",
         fileName: `thumb_${record.original_filename ?? "image"}`,
         contentType: resizeResult.contentType,
         contentHash,

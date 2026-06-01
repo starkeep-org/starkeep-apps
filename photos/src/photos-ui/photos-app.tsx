@@ -28,6 +28,7 @@ function PhotosAppInner() {
   const [uploading, setUploading] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showGoogleImport, setShowGoogleImport] = useState(false);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const styleGraphic = useStyleGraphic();
   const styleFileInputRef = useRef<HTMLInputElement>(null);
   // The viewer always shows the original image (parentId === ""), fetched on demand
@@ -53,11 +54,24 @@ function PhotosAppInner() {
   const handleUpload = async (file: File) => {
     setUploading(true);
     try {
-      await uploadPhoto(file, file.name);
+      const result = await uploadPhoto(file, file.name);
+      if (result?.deduped) {
+        setUploadNotice(`"${file.name}" is already in your photos — nothing was added.`);
+      } else if (result === null) {
+        setUploadNotice(`Upload failed for "${file.name}".`);
+      } else {
+        setUploadNotice(null);
+      }
     } finally {
       setUploading(false);
     }
   };
+
+  useEffect(() => {
+    if (!uploadNotice) return;
+    const timer = setTimeout(() => setUploadNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [uploadNotice]);
 
   const handleImportComplete = (_count: number) => {
     void fetchPhotos();
@@ -123,6 +137,41 @@ function PhotosAppInner() {
       {showUpload && (
         <div style={{ padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
           <UploadZone onUpload={handleUpload} uploading={uploading} />
+        </div>
+      )}
+
+      {uploadNotice && (
+        <div
+          role="status"
+          style={{
+            margin: "12px 20px",
+            padding: "10px 14px",
+            borderRadius: 6,
+            background: "rgba(255, 200, 60, 0.15)",
+            border: "1px solid rgba(255, 200, 60, 0.4)",
+            color: "#ffd86b",
+            fontSize: 14,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span>{uploadNotice}</span>
+          <button
+            onClick={() => setUploadNotice(null)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              fontSize: 16,
+              lineHeight: 1,
+            }}
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 

@@ -92,7 +92,7 @@ export async function addPhotoFromPath(
   mimeType: string,
   fileName: string,
   mode: DataSourceMode,
-): Promise<PhotoRecord> {
+): Promise<{ record: PhotoRecord; deduped: boolean }> {
   const source = await resolveDataSource(mode);
 
   // Upload via presigned S3 PUT, then register by content hash — bypasses the
@@ -120,7 +120,7 @@ export async function addPhotoFromPath(
     throw new Error(`S3 PUT failed: ${s3Res.status} ${s3Res.statusText}`);
   }
 
-  const result = await request<{ record: PhotoRecord }>("/data/records", source, {
+  const result = await request<{ record: PhotoRecord; deduped?: boolean }>("/data/records", source, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -131,7 +131,7 @@ export async function addPhotoFromPath(
       sizeBytes: fileBytes.byteLength,
     }),
   });
-  return result.record;
+  return { record: result.record, deduped: result.deduped === true };
 }
 
 // No `type` filter: a type-less query is server-scoped to the app's granted

@@ -117,6 +117,7 @@ function PhotosAppInner() {
   const { mode } = useDataSource();
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
@@ -187,6 +188,7 @@ function PhotosAppInner() {
   const handleFileSelected = async (file: File) => {
     setAdding(true);
     setError(null);
+    setNotice(null);
     try {
       const fileName = file.name;
       const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
@@ -194,8 +196,14 @@ function PhotosAppInner() {
 
       const buf = await file.arrayBuffer();
       const fileBytes = new Uint8Array(buf);
-      const record = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName, mode);
-      dispatch({ type: "APPEND_IMAGES", images: [photoRecordToAppImage(record, null)] });
+      const { record, deduped } = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName, mode);
+      // UPSERT (not APPEND) so a dedup hit — which returns the already-listed
+      // record — doesn't add a duplicate row to the grid.
+      dispatch({ type: "UPSERT_IMAGES", images: [photoRecordToAppImage(record, null)] });
+
+      if (deduped) {
+        setNotice(`"${fileName}" is already in your photos — nothing was added.`);
+      }
 
       // Mark as submitted before generateThumbnail fires so the backfill effect
       // never picks up this original and creates a second thumbnail.
@@ -208,6 +216,12 @@ function PhotosAppInner() {
       setAdding(false);
     }
   };
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const handleAddClick = () => {
     fileInputRef.current?.click();
@@ -314,6 +328,39 @@ function PhotosAppInner() {
             }}
           >
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div
+            role="status"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "8px 20px",
+              background: "rgba(255,200,60,0.12)",
+              color: "#ffd86b",
+              fontSize: 13,
+              borderBottom: "1px solid rgba(255,200,60,0.3)",
+            }}
+          >
+            <span>{notice}</span>
+            <button
+              onClick={() => setNotice(null)}
+              aria-label="Dismiss"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "inherit",
+                cursor: "pointer",
+                fontSize: 16,
+                lineHeight: 1,
+              }}
+            >
+              ×
+            </button>
           </div>
         )}
 

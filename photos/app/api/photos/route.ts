@@ -154,7 +154,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const errBody = await createRes.text().catch(() => "");
     return NextResponse.json({ error: `Failed to create record: ${errBody}` }, { status: 502 });
   }
-  const { record } = (await createRes.json()) as { record: PhotoRecord };
+  const { record, deduped } = (await createRes.json()) as { record: PhotoRecord; deduped?: boolean };
 
   // Write EXIF + dimensions into shared image metadata.
   const rawMeta: Record<string, unknown> = { width, height };
@@ -218,5 +218,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   // check-then-create dedup and register duplicate thumbnails.
 
   const enriched: ImageEnriched | null = (title || caption) ? { title, caption } : null;
-  return NextResponse.json({ image: photoRecordToAppImage(record, photoMeta, enriched) }, { status: 201 });
+  // Duplicate uploads (same filename + same bytes) are surfaced by the
+  // data-server as `deduped: true` alongside the existing record. We pass
+  // that signal up so the UI can tell the user nothing new was added.
+  return NextResponse.json(
+    { image: photoRecordToAppImage(record, photoMeta, enriched), deduped: deduped === true },
+    { status: deduped ? 200 : 201 },
+  );
 }

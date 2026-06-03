@@ -41,7 +41,11 @@ export function usePhotos() {
     return data.image;
   }, []);
 
-  const uploadPhoto = useCallback(async (file: File, title?: string, caption?: string): Promise<AppImage | null> => {
+  const uploadPhoto = useCallback(async (
+    file: File,
+    title?: string,
+    caption?: string,
+  ): Promise<{ image: AppImage; deduped: boolean } | null> => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("originalFilename", file.name);
@@ -50,10 +54,10 @@ export function usePhotos() {
 
     const res = await fetch(withBasePath("/api/photos"), { method: "POST", body: formData });
     if (!res.ok) return null;
-    const data = (await res.json()) as { image: AppImage };
+    const data = (await res.json()) as { image: AppImage; deduped?: boolean };
     // After upload a thumbnail record will be present; refresh the list
     void fetchPhotos();
-    return data.image;
+    return { image: data.image, deduped: data.deduped === true };
   }, [dispatch, fetchPhotos]);
 
   const updatePhoto = useCallback(async (

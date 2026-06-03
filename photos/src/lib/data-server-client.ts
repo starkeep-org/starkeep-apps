@@ -1,4 +1,4 @@
-import { resolveDataSource, type DataSourceMode } from "./data-client";
+import { resolveDataSource } from "./data-client";
 import { extensionFromFilename } from "./file-extension";
 
 export interface PhotoRecord {
@@ -91,9 +91,8 @@ export async function addPhotoFromPath(
   fileBytes: Uint8Array,
   mimeType: string,
   fileName: string,
-  mode: DataSourceMode,
-): Promise<PhotoRecord> {
-  const source = await resolveDataSource(mode);
+): Promise<{ record: PhotoRecord; deduped: boolean }> {
+  const source = await resolveDataSource();
 
   // Upload via presigned S3 PUT, then register by content hash — bypasses the
   // API Gateway ~7 MB cap on inline JSON bodies. Mirrors the canonical flow in
@@ -120,7 +119,7 @@ export async function addPhotoFromPath(
     throw new Error(`S3 PUT failed: ${s3Res.status} ${s3Res.statusText}`);
   }
 
-  const result = await request<{ record: PhotoRecord }>("/data/records", source, {
+  const result = await request<{ record: PhotoRecord; deduped?: boolean }>("/data/records", source, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -131,15 +130,15 @@ export async function addPhotoFromPath(
       sizeBytes: fileBytes.byteLength,
     }),
   });
-  return result.record;
+  return { record: result.record, deduped: result.deduped === true };
 }
 
 // No `type` filter: a type-less query is server-scoped to the app's granted
 // extensions, which for Photos are exactly the image extensions — so this
 // returns every image the app can see in one request, across all of jpg/png/
 // heic/… rather than a single hardcoded type.
-export async function listPhotos(mode: DataSourceMode): Promise<PhotoRecord[]> {
-  const source = await resolveDataSource(mode);
+export async function listPhotos(): Promise<PhotoRecord[]> {
+  const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
     "/data/records?limit=500",
     source,
@@ -147,8 +146,8 @@ export async function listPhotos(mode: DataSourceMode): Promise<PhotoRecord[]> {
   return result.records;
 }
 
-export async function listPhotosSince(updatedAfter: string, mode: DataSourceMode): Promise<PhotoRecord[]> {
-  const source = await resolveDataSource(mode);
+export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
+  const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
     `/data/records?limit=500&updated_after=${encodeURIComponent(updatedAfter)}`,
     source,
@@ -156,8 +155,8 @@ export async function listPhotosSince(updatedAfter: string, mode: DataSourceMode
   return result.records;
 }
 
-export async function getPhotoFileUrl(id: string, mode: DataSourceMode): Promise<string> {
-  const source = await resolveDataSource(mode);
+export async function getPhotoFileUrl(id: string): Promise<string> {
+  const source = await resolveDataSource();
   const result = await request<{ url: string }>(`/data/records/${id}/file-url`, source);
   return result.url;
 }
@@ -180,9 +179,8 @@ export async function uploadFile(
   bytes: Uint8Array,
   mimeType: string,
   typeId: string,
-  mode: DataSourceMode,
 ): Promise<FileRef> {
-  const source = await resolveDataSource(mode);
+  const source = await resolveDataSource();
   return request<FileRef>(`/data/files?type=${encodeURIComponent(typeId)}`, source, {
     method: "POST",
     headers: { "Content-Type": mimeType },

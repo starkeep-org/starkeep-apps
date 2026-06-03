@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
 import type { AppImage } from "@/photos-lib";
-import type { DataSourceMode } from "./data-client";
 import { fetchRuntimeConfig } from "./runtime-config";
 import { listPhotos, listPhotosSince } from "./data-server-client";
 import { photoRecordToAppImage } from "./photoRecordToAppImage";
@@ -9,20 +8,58 @@ const POLL_INTERVAL_MS = 30_000;
 const RESUME_FETCH_THRESHOLD_MS = 30_000;
 
 interface UsePhotoSyncOptions {
-  mode: DataSourceMode;
   onInitialLoad: (images: AppImage[]) => void;
   onMerge: (images: AppImage[]) => void;
   onLoadingChange: (loading: boolean) => void;
   onError: (message: string) => void;
 }
 
-export function usePhotoSync({ mode, onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoSyncOptions): void {
+/**
+ * Freshness strategy. Decided once at boot from runtime config:
+ *   - sse: the build is paired with a local data server. Subscribe to its
+ *          /events stream and call fetchSince on every kick.
+ *   - poll: the build talks to the cloud data server. Re-fetch every 30 s.
+ * Visibility-handling (tear down on hidden, catch up on resume) applies in
+ * both cases.
+ */
+type FreshnessStrategy =
+  | { kind: "sse"; localUrl: string }
+  | { kind: "poll" };
+
+let strategyPromise: Promise<FreshnessStrategy> | null = null;
+
+function getFreshnessStrategy(): Promise<FreshnessStrategy> {
+  if (strategyPromise) return strategyPromise;
+  strategyPromise = (async () => {
+    const rc = await fetchRuntimeConfig();
+    const hasLocal = !!rc?.localDataServerUrl;
+    const hasRemote = !!rc?.apiGatewayUrl;
+    if (hasLocal && hasRemote) {
+      console.warn(
+        "[usePhotoSync] Both localDataServerUrl and apiGatewayUrl are set — preferring local SSE freshness. Exactly one should be set per deployment build.",
+      );
+    }
+    if (hasLocal) {
+      return { kind: "sse", localUrl: rc!.localDataServerUrl! };
+    }
+    if (hasRemote) {
+      return { kind: "poll" };
+    }
+    // No runtime config served (e.g. dev with no .well-known file): assume
+    // the same-origin local-data proxy and poll. SSE on /events requires a
+    // direct local data server URL, which we don't have here.
+    console.warn("[usePhotoSync] No data server URL in runtime config — falling back to polling");
+    return { kind: "poll" };
+  })();
+  return strategyPromise;
+}
+
+export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoSyncOptions): void {
   const cursorRef = useRef<string | null>(null);
   const hiddenAtRef = useRef<number | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const esRef = useRef<EventSource | null>(null);
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
+  const strategyRef = useRef<FreshnessStrategy | null>(null);
 
   const computeCursor = (images: AppImage[]): string | null => {
     if (images.length === 0) return null;
@@ -32,7 +69,7 @@ export function usePhotoSync({ mode, onInitialLoad, onMerge, onLoadingChange, on
   const fetchAll = useCallback(async () => {
     onLoadingChange(true);
     try {
-      const records = await listPhotos(modeRef.current);
+      const records = await listPhotos();
       const images = records.map((r) => photoRecordToAppImage(r, null));
       const cursor = computeCursor(images);
       if (cursor) cursorRef.current = cursor;
@@ -52,7 +89,7 @@ export function usePhotoSync({ mode, onInitialLoad, onMerge, onLoadingChange, on
       return;
     }
     try {
-      const records = await listPhotosSince(cursor, modeRef.current);
+      const records = await listPhotosSince(cursor);
       if (records.length > 0) {
         const images = records.map((r) => photoRecordToAppImage(r, null));
         const newCursor = computeCursor(images);
@@ -85,22 +122,21 @@ export function usePhotoSync({ mode, onInitialLoad, onMerge, onLoadingChange, on
     esRef.current = null;
   }, []);
 
-  const connectSSE = useCallback(() => {
+  const connectSSE = useCallback((localUrl: string) => {
     disconnectSSE();
-    fetchRuntimeConfig().then((rc) => {
-      const localUrl = rc?.localDataServerUrl ?? "http://127.0.0.1:9820";
-      const es = new EventSource(`${localUrl}/events`);
-      esRef.current = es;
-      es.onmessage = () => { void fetchSince(); };
-      es.onerror = () => { console.warn("[usePhotoSync] SSE error, reconnecting..."); };
-    });
+    const es = new EventSource(`${localUrl}/events`);
+    esRef.current = es;
+    es.onmessage = () => { void fetchSince(); };
+    es.onerror = () => { console.warn("[usePhotoSync] SSE error, reconnecting..."); };
   }, [disconnectSSE, fetchSince]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
+      const strategy = strategyRef.current;
+      if (!strategy) return;
       if (document.hidden) {
         hiddenAtRef.current = Date.now();
-        if (modeRef.current === "remote") {
+        if (strategy.kind === "poll") {
           stopPolling();
         } else {
           disconnectSSE();
@@ -108,11 +144,11 @@ export function usePhotoSync({ mode, onInitialLoad, onMerge, onLoadingChange, on
       } else {
         const hiddenDuration = hiddenAtRef.current != null ? Date.now() - hiddenAtRef.current : Infinity;
         hiddenAtRef.current = null;
-        if (modeRef.current === "remote") {
+        if (strategy.kind === "poll") {
           if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void fetchSince();
           scheduleNextPoll();
         } else {
-          connectSSE();
+          connectSSE(strategy.localUrl);
           if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void fetchSince();
         }
       }
@@ -124,19 +160,26 @@ export function usePhotoSync({ mode, onInitialLoad, onMerge, onLoadingChange, on
 
   useEffect(() => {
     cursorRef.current = null;
+    let cancelled = false;
 
-    void fetchAll().then(() => {
-      if (mode === "local") {
-        connectSSE();
+    void (async () => {
+      const strategy = await getFreshnessStrategy();
+      if (cancelled) return;
+      strategyRef.current = strategy;
+      await fetchAll();
+      if (cancelled) return;
+      if (strategy.kind === "sse") {
+        connectSSE(strategy.localUrl);
       } else {
         scheduleNextPoll();
       }
-    });
+    })();
 
     return () => {
+      cancelled = true;
       stopPolling();
       disconnectSSE();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, []);
 }

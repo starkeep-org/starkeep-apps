@@ -5,7 +5,7 @@ export { IMAGE_RECORD_TYPE };
 
 /**
  * Per-type metadata row for an image. Maps 1:1 to columns on
- * shared_record_image_metadata (see @starkeep/core's CORE_TYPES). Every
+ * shared_record_image_metadata (see @starkeep/protocol-primitives's CORE_TYPES). Every
  * field is deterministically derivable from the image bytes.
  *
  * `recordId` is supplied by the SDK at write time; callers don't set it.

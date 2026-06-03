@@ -3,7 +3,7 @@
 // After which this file should be removed.
 //
 // Extract the lowercase file extension from a filename, or `undefined` when the
-// name has no extension. Inlined here (rather than imported from @starkeep/core)
+// name has no extension. Inlined here (rather than imported from @starkeep/protocol-primitives)
 // for the same reason as `dataRecordObjectKey` in the route files: to keep this
 // client-adjacent lib from dragging the core package into the browser build.
 //

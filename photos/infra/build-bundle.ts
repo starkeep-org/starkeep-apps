@@ -57,7 +57,7 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
     //    app's workspace root (which reaches into core's packages). Their dist/
     //    output must exist before OpenNext/esbuild bundle the app.
     const WS_PACKAGES = [
-      "@starkeep/core",
+      "@starkeep/protocol-primitives",
       "@starkeep/storage-adapter",
       "@starkeep/storage-s3",
       "@starkeep/storage-aurora-dsql",

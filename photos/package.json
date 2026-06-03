@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "open-next build",
+    "bundle": "tsx infra/build-bundle.ts",
     "start": "next start",
     "typecheck": "tsc --noEmit"
   },
@@ -27,6 +28,8 @@
     "@types/node": "^25.4.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
 }

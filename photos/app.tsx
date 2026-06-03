@@ -12,23 +12,18 @@ import {
   triggerSyncNow,
   type PhotoRecord,
 } from "./src/lib/data-server-client";
-import { DataSourceProvider, useDataSource, FORCE_REMOTE } from "./src/lib/data-source-context";
+import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { downsizeImage } from "./src/lib/image-utils";
-import { resolveDataSource, type DataSourceMode } from "./src/lib/data-client";
+import { resolveDataSource, getDataTarget } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoSync } from "./src/lib/usePhotoSync";
 
 
-function useFullSizeUrlCache(mode: DataSourceMode) {
+function useFullSizeUrlCache() {
   const [urlMap, setUrlMap] = useState<ReadonlyMap<string, string>>(new Map());
   const loadingRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    setUrlMap(new Map());
-    loadingRef.current.clear();
-  }, [mode]);
 
   return useCallback(
     (imageId: string): string | null => {
@@ -37,7 +32,7 @@ function useFullSizeUrlCache(mode: DataSourceMode) {
       if (loadingRef.current.has(imageId)) return null;
 
       loadingRef.current.add(imageId);
-      getPhotoFileUrl(imageId, mode)
+      getPhotoFileUrl(imageId)
         .then((url) => {
           loadingRef.current.delete(imageId);
           setUrlMap((prev) => new Map(prev).set(imageId, url));
@@ -48,21 +43,21 @@ function useFullSizeUrlCache(mode: DataSourceMode) {
 
       return null;
     },
-    [urlMap, mode],
+    [urlMap],
   );
 }
 
 
 type ThumbnailStrategy = "browser" | "local-sharp" | "remote-sharp";
 
-// Resolve where /api/resize lives based on mode. In remote mode the SPA is
-// mounted under /apps/photos on the API Gateway domain and the route is
-// JWT-gated; in local mode the Next.js dev server serves it at the origin.
-async function resolveResizeEndpoint(
-  mode: DataSourceMode,
-): Promise<{ url: string; headers: Record<string, string> }> {
-  if (mode === "remote") {
-    const source = await resolveDataSource(mode);
+// Resolve where /api/resize lives based on the configured data target. For a
+// cloud-served build the SPA is mounted under /apps/photos on the API Gateway
+// domain and the route is JWT-gated; for a locally-served build the Next.js
+// server serves it at the origin.
+async function resolveResizeEndpoint(): Promise<{ url: string; headers: Record<string, string> }> {
+  const target = await getDataTarget();
+  if (target.kind === "remote") {
+    const source = await resolveDataSource();
     return { url: `${source.baseUrl}/api/resize`, headers: source.headers };
   }
   return { url: "/api/resize", headers: {} };
@@ -72,10 +67,11 @@ async function generateThumbnail(
   record: PhotoRecord,
   file: File,
   thumbnailStrategy: ThumbnailStrategy,
-  mode: DataSourceMode,
 ): Promise<void> {
   try {
-    const { url, headers: authHeaders } = await resolveResizeEndpoint(mode);
+    const { url, headers: authHeaders } = await resolveResizeEndpoint();
+    const target = await getDataTarget();
+    const isLocal = target.kind === "local";
     const headers = { "Content-Type": "application/json", ...authHeaders };
     if (thumbnailStrategy === "browser") {
       // Generate thumbnail in-browser using Canvas, then POST it as a new record
@@ -86,7 +82,7 @@ async function generateThumbnail(
         headers,
         body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
       });
-      if (res.ok && mode === "local") triggerSyncNow().catch(() => {});
+      if (res.ok && isLocal) triggerSyncNow().catch(() => {});
       void result; // generation handled server-side via /api/resize
 
     } else {
@@ -97,7 +93,7 @@ async function generateThumbnail(
         headers,
         body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
       });
-      if (res.ok && thumbnailStrategy === "remote-sharp" && mode === "local") {
+      if (res.ok && thumbnailStrategy === "remote-sharp" && isLocal) {
         triggerSyncNow().catch(() => {});
       }
     }
@@ -114,9 +110,9 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 
 function PhotosAppInner() {
   const { state, dispatch } = usePhotoContext();
-  const { mode } = useDataSource();
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
@@ -153,7 +149,7 @@ function PhotosAppInner() {
     if (newIds.length === 0) return;
     newIds.forEach((id) => backfilledRef.current.add(id));
     void (async () => {
-      const { url, headers: authHeaders } = await resolveResizeEndpoint(mode);
+      const { url, headers: authHeaders } = await resolveResizeEndpoint();
       const headers = { "Content-Type": "application/json", ...authHeaders };
       newIds.forEach((id) => {
         fetch(url, {
@@ -163,7 +159,7 @@ function PhotosAppInner() {
         }).catch(() => {});
       });
     })();
-  }, [orphanIds, mode]);
+  }, [orphanIds]);
 
   // For the viewer: if a thumbnail was clicked, show its original.
   // If a fallback-original was clicked (no thumbnail exists), show it directly.
@@ -177,7 +173,6 @@ function PhotosAppInner() {
     : null;
 
   usePhotoSync({
-    mode,
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
     onMerge: (images) => dispatch({ type: "UPSERT_IMAGES", images }),
     onLoadingChange: (loading) => dispatch({ type: "SET_LOADING", loading }),
@@ -187,6 +182,7 @@ function PhotosAppInner() {
   const handleFileSelected = async (file: File) => {
     setAdding(true);
     setError(null);
+    setNotice(null);
     try {
       const fileName = file.name;
       const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
@@ -194,13 +190,19 @@ function PhotosAppInner() {
 
       const buf = await file.arrayBuffer();
       const fileBytes = new Uint8Array(buf);
-      const record = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName, mode);
-      dispatch({ type: "APPEND_IMAGES", images: [photoRecordToAppImage(record, null)] });
+      const { record, deduped } = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName);
+      // UPSERT (not APPEND) so a dedup hit — which returns the already-listed
+      // record — doesn't add a duplicate row to the grid.
+      dispatch({ type: "UPSERT_IMAGES", images: [photoRecordToAppImage(record, null)] });
+
+      if (deduped) {
+        setNotice(`"${fileName}" is already in your photos — nothing was added.`);
+      }
 
       // Mark as submitted before generateThumbnail fires so the backfill effect
       // never picks up this original and creates a second thumbnail.
       backfilledRef.current.add(record.id);
-      generateThumbnail(record, file, thumbnailStrategy, mode).catch(() => {});
+      generateThumbnail(record, file, thumbnailStrategy).catch(() => {});
     } catch (err) {
       console.error("[photos] Upload failed:", err);
       setError(err instanceof Error ? err.message : "Failed to add photo");
@@ -209,11 +211,17 @@ function PhotosAppInner() {
     }
   };
 
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
   const handleAddClick = () => {
     fileInputRef.current?.click();
   };
 
-  const getFullSizeSrc = useFullSizeUrlCache(mode);
+  const getFullSizeSrc = useFullSizeUrlCache();
 
   return (
     <PhotoUrlProvider getThumbnailSrc={getFullSizeSrc} getFullSizeSrc={getFullSizeSrc}>
@@ -298,8 +306,8 @@ function PhotosAppInner() {
             style={{ ...toolbarButtonStyle, background: "rgba(255,255,255,0.15)" }}
           >
             {adding
-              ? (mode === "remote" ? "Uploading…" : "Adding…")
-              : (mode === "remote" ? "Upload Photo" : "Add Photo")}
+              ? (FORCE_REMOTE ? "Uploading…" : "Adding…")
+              : (FORCE_REMOTE ? "Upload Photo" : "Add Photo")}
           </button>
         </div>
 
@@ -314,6 +322,39 @@ function PhotosAppInner() {
             }}
           >
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div
+            role="status"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "8px 20px",
+              background: "rgba(255,200,60,0.12)",
+              color: "#ffd86b",
+              fontSize: 13,
+              borderBottom: "1px solid rgba(255,200,60,0.3)",
+            }}
+          >
+            <span>{notice}</span>
+            <button
+              onClick={() => setNotice(null)}
+              aria-label="Dismiss"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "inherit",
+                cursor: "pointer",
+                fontSize: 16,
+                lineHeight: 1,
+              }}
+            >
+              ×
+            </button>
           </div>
         )}
 
@@ -342,13 +383,11 @@ function PhotosAppInner() {
 
 export function App() {
   return (
-    <DataSourceProvider>
-      <AuthGate>
-        <PhotoProvider>
-          <PhotosAppInner />
-        </PhotoProvider>
-      </AuthGate>
-    </DataSourceProvider>
+    <AuthGate>
+      <PhotoProvider>
+        <PhotosAppInner />
+      </PhotoProvider>
+    </AuthGate>
   );
 }
 

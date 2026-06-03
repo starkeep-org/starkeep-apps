@@ -3,6 +3,12 @@
   "name": "Photos",
   "version": "0.1.0",
   "tier": "official",
+  "targets": ["local", "cloud"],
+  "localRun": {
+    "command": "pnpm",
+    "args": ["dev"],
+    "portFlag": "-p"
+  },
   "infraRequirements": {
     "fileAccess": [
       {

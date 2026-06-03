@@ -8,7 +8,7 @@ import { extractExif } from "../../../src/photos-lib/metadata/exif-reader";
 import { extensionFromFilename } from "../../../src/lib/file-extension";
 
 // shared/<typeId>/<shard>/<contentHash> — mirrors dataRecordObjectKey in
-// @starkeep/core/storage/object-keys. Inlined here to keep this route a
+// @starkeep/protocol-primitives/storage/object-keys. Inlined here to keep this route a
 // thin Next runtime layer without dragging the core package into the
 // browser-adjacent build.
 function dataRecordObjectKey(typeId: string, contentHash: string): string {

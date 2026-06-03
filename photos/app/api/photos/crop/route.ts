@@ -7,7 +7,7 @@ import type { PhotoRecord } from "../../../../src/lib/data-server-client";
 
 export const runtime = "nodejs";
 
-// Mirrors dataRecordObjectKey in @starkeep/core. Inlined to keep the route a
+// Mirrors dataRecordObjectKey in @starkeep/protocol-primitives. Inlined to keep the route a
 // thin Next runtime layer (matches the convention used in app/api/photos/route.ts).
 function dataRecordObjectKey(typeId: string, contentHash: string): string {
   return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;

@@ -14,4 +14,3 @@ pnpm-lock.yaml
 */public/starkeep-runtime-config.json
 */infra/photos-cloud-config.json
 */infra/src/web-assets.json
-*/.starkeep-local.json

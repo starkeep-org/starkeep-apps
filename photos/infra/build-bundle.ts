@@ -32,9 +32,6 @@ import { build } from "esbuild";
 
 const INFRA_DIR = dirname(fileURLToPath(import.meta.url)); // .../photos/infra
 const PHOTOS_DIR = resolve(INFRA_DIR, ".."); // .../photos
-// The app's pnpm workspace anchor (the app's parent dir, e.g. starkeep-apps),
-// which reaches into core's packages so @starkeep/* deps resolve and build.
-const WORKSPACE_ROOT = resolve(PHOTOS_DIR, ".."); // .../starkeep-apps
 
 const APP_BASE_PATH = process.env.STARKEEP_APP_BASE_PATH;
 if (!APP_BASE_PATH) {
@@ -53,22 +50,7 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
   try {
     mkdirSync(stagingDir, { recursive: true });
 
-    // 1. Build the @starkeep/* workspace packages the app depends on, from the
-    //    app's workspace root (which reaches into core's packages). Their dist/
-    //    output must exist before OpenNext/esbuild bundle the app.
-    const WS_PACKAGES = [
-      "@starkeep/protocol-primitives",
-      "@starkeep/storage-adapter",
-      "@starkeep/storage-s3",
-      "@starkeep/storage-aurora-dsql",
-    ];
-    console.log("\nBuilding workspace packages…");
-    for (const pkg of WS_PACKAGES) {
-      console.log(`  pnpm build: ${pkg}`);
-      execSync(`pnpm --filter "${pkg}" build`, { cwd: WORKSPACE_ROOT, stdio: "inherit" });
-    }
-
-    // 2. Build with OpenNext (runs `open-next build` via pnpm build script).
+    // 1. Build with OpenNext (runs `open-next build` via pnpm build script).
     //    STARKEEP_APP_BASE_PATH bakes Next's basePath into the build so all
     //    asset URLs and routes are emitted under /apps/<appId>, matching how
     //    the shared API Gateway forwards requests.
@@ -91,7 +73,7 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
       process.exit(buildResult.status ?? 1);
     }
 
-    // 3. Copy the OpenNext server function output to the staging root.
+    // 2. Copy the OpenNext server function output to the staging root.
     //    The server function is the Next.js Lambda handler (index.handler).
     const serverFnDir = resolve(PHOTOS_DIR, ".open-next", "server-functions", "default");
     if (!existsSync(serverFnDir)) {
@@ -106,7 +88,7 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
     // machine, which obviously don't resolve inside the Lambda sandbox.
     cpSync(serverFnDir, stagingDir, { recursive: true, verbatimSymlinks: true });
 
-    // 3b. Bundle Next.js static assets into the Lambda zip and overwrite
+    // 2b. Bundle Next.js static assets into the Lambda zip and overwrite
     //     the OpenNext entry with a wrapper that serves /_next/* and
     //     BUILD_ID from local disk before delegating to OpenNext. OpenNext
     //     normally expects these to live on a CDN/S3 origin (see
@@ -225,7 +207,7 @@ export async function handler(event, context) {
 `;
     writeFileSync(join(stagingDir, "index.mjs"), wrapper, "utf8");
 
-    // 4. Bundle the backend Lambda handler with esbuild. sharp is external —
+    // 3. Bundle the backend Lambda handler with esbuild. sharp is external —
     //    it needs native binaries installed for the Lambda (linux) platform.
     console.log("\nBundling resize-handler with esbuild…");
     const handlersDir = join(stagingDir, "infra", "src");
@@ -244,7 +226,7 @@ export async function handler(event, context) {
       allowOverwrite: true,
     });
 
-    // 5. Install sharp for the Lambda (linux x64 glibc) platform. --libc=glibc
+    // 4. Install sharp for the Lambda (linux x64 glibc) platform. --libc=glibc
     //    is required when installing from a non-glibc host (e.g. macOS): without
     //    it npm's libc filter silently drops @img/sharp-linux-x64 and
     //    @img/sharp-libvips-linux-x64, leaving the bundle with sharp's JS but
@@ -256,7 +238,7 @@ export async function handler(event, context) {
       { cwd: stagingDir, stdio: "inherit" },
     );
 
-    // 6. Zip everything in staging dir.
+    // 5. Zip everything in staging dir.
     console.log("\nCreating dist.zip…");
     // -y preserves symlinks: OpenNext's output uses pnpm's virtual-store layout
     // (e.g. photos/node_modules/next -> ../../node_modules/.pnpm/next@.../...),

@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { loadLocalAppCredentials } from "../../../../src/lib/local-app-creds";
-import { signedFetch } from "../../../../src/lib/data-server-fetch";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 
 export const runtime = "nodejs";
 
@@ -26,7 +25,7 @@ function notInstalled(): Response {
 }
 
 export async function GET(): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const upstream = await signedFetch(creds, `/app-data/files/${STYLE_GRAPHIC_KEY}`);
   if (upstream.status === 404) {
@@ -40,7 +39,7 @@ export async function GET(): Promise<Response> {
 }
 
 export async function PUT(req: NextRequest): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const mimeType = (req.headers.get("content-type") ?? "").split(";")[0]!.trim();
   if (!ALLOWED_MIME.has(mimeType)) {
@@ -72,7 +71,7 @@ export async function PUT(req: NextRequest): Promise<Response> {
 }
 
 export async function DELETE(): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
   await signedFetch(creds, `/app-data/files/${STYLE_GRAPHIC_KEY}`, { method: "DELETE" });
   return NextResponse.json({ ok: true });

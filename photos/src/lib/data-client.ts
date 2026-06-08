@@ -30,8 +30,9 @@ async function resolveTarget(): Promise<DataTarget> {
     return { kind: "remote", apiGatewayUrl: rc!.apiGatewayUrl! };
   }
   // No URL configured. Fall back to local same-origin proxy — the proxy itself
-  // resolves the local data server URL server-side from .starkeep-local.json,
-  // so this default keeps dev (no runtime config served) working.
+  // resolves the local data server URL server-side via @starkeep/app-client
+  // (from $STARKEEP_DATA_DIR/app-creds/photos.json), so this default keeps
+  // dev (no runtime config served) working.
   console.warn("[data-client] No data server URL in runtime config — defaulting to local same-origin proxy");
   return { kind: "local" };
 }
@@ -90,6 +91,7 @@ export async function resolveDataSource(): Promise<{
   // Local target: the browser hits the photos app's own server-side proxy,
   // which adds X-Starkeep-App-Id + HMAC headers using the secret persisted
   // at install time. Same-origin → no CORS. The data-server URL itself
-  // (127.0.0.1:9820 by default) is read server-side from .starkeep-local.json.
+  // (127.0.0.1:9820 by default) is read server-side by @starkeep/app-client
+  // from $STARKEEP_DATA_DIR/app-creds/photos.json.
   return { baseUrl: "/api/local-data", headers: {} };
 }

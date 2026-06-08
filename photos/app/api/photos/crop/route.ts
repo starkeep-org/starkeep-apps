@@ -1,7 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
-import { loadLocalAppCredentials } from "../../../../src/lib/local-app-creds";
-import { signedFetch } from "../../../../src/lib/data-server-fetch";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { photoRecordToAppImage } from "../../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord } from "../../../../src/lib/data-server-client";
 
@@ -21,7 +20,7 @@ function notInstalled(): Response {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   const body = (await req.json().catch(() => null)) as {

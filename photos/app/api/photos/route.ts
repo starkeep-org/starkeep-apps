@@ -1,7 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
-import { loadLocalAppCredentials } from "../../../src/lib/local-app-creds";
-import { signedFetch } from "../../../src/lib/data-server-fetch";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { photoRecordToAppImage } from "../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../src/lib/data-server-client";
 import { extractExif } from "../../../src/photos-lib/metadata/exif-reader";
@@ -25,7 +24,7 @@ function notInstalled(): Response {
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   const cursor = req.nextUrl.searchParams.get("cursor") ?? undefined;
@@ -75,7 +74,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   let formData: FormData;

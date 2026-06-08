@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
-import { loadLocalAppCredentials, signRequest, type AppCredentials } from "../../../src/lib/local-app-creds";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 
 export const runtime = "nodejs";
 
@@ -16,21 +16,8 @@ function dataRecordObjectKey(typeId: string, contentHash: string): string {
   return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
 }
 
-async function signedFetch(
-  creds: AppCredentials,
-  path: string,
-  init?: RequestInit & { body?: string },
-): Promise<Response> {
-  const body = (init?.body as string | undefined) ?? "";
-  const headers: Record<string, string> = {
-    ...(init?.headers as Record<string, string> | undefined),
-    ...signRequest(creds, init?.method && init.method !== "GET" ? body : ""),
-  };
-  return fetch(`${creds.dataServerUrl}${path}`, { ...init, headers });
-}
-
 export async function POST(req: NextRequest) {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) {
     return NextResponse.json(
       { error: "photos has not been installed locally — run install from admin-web first" },

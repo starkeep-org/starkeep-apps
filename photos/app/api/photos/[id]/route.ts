@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { loadLocalAppCredentials } from "../../../../src/lib/local-app-creds";
-import { signedFetch } from "../../../../src/lib/data-server-fetch";
+import { type AppCredentials, loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { photoRecordToAppImage } from "../../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../../src/lib/data-server-client";
 
@@ -18,13 +17,12 @@ function notInstalled(): Response {
 }
 
 async function fetchAssembledImage(
-  creds: Awaited<ReturnType<typeof import("../../../../src/lib/local-app-creds").loadLocalAppCredentials>>,
+  creds: AppCredentials,
   id: string,
 ) {
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const [recordRes, metaRes] = await Promise.all([
-    signedFetch(creds!, `/data/records/${id}`),
-    signedFetch(creds!, `/data/records/${id}/metadata/image`),
+    signedFetch(creds, `/data/records/${id}`),
+    signedFetch(creds, `/data/records/${id}/metadata/image`),
   ]);
 
   if (!recordRes.ok) return null;
@@ -37,7 +35,7 @@ async function fetchAssembledImage(
   let enriched: ImageEnriched | null = null;
   if (record.parent_id === null) {
     const q = new URLSearchParams({ record_id: id });
-    const umRes = await signedFetch(creds!, `/app-data/db/image_enriched?${q.toString()}`);
+    const umRes = await signedFetch(creds, `/app-data/db/image_enriched?${q.toString()}`);
     if (umRes.ok) {
       const { rows } = (await umRes.json()) as { rows?: ImageEnriched[] };
       enriched = rows?.[0] ?? null;
@@ -48,7 +46,7 @@ async function fetchAssembledImage(
 }
 
 export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
   const image = await fetchAssembledImage(creds, id);
@@ -57,7 +55,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Respons
 }
 
 export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
 
@@ -88,7 +86,7 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<Respon
 }
 
 export async function DELETE(_req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = loadLocalAppCredentials();
+  const creds = loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
 

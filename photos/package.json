@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@starkeep/sdk":              "workspace:*",
+    "@starkeep/app-client":       "workspace:*",
     "@starkeep/protocol-primitives":             "workspace:*",
     "@starkeep/shared-space-api": "workspace:*",
     "@starkeep/access-control":   "workspace:*",

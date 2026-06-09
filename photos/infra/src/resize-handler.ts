@@ -25,7 +25,6 @@ interface BrokerPhotoRecord {
   parent_id: string | null;
   mime_type: string | null;
   original_filename: string | null;
-  owner_id: string;
 }
 
 function dataServerBaseUrl(event: APIGatewayEvent): string {

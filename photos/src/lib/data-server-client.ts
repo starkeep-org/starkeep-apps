@@ -8,7 +8,6 @@ export interface PhotoRecord {
   size_bytes: number;
   created_at: string;
   updated_at: string;
-  owner_id: string;
   sync_status: string;
   content_hash: string;
   object_storage_key: string;

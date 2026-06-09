@@ -80,7 +80,7 @@ async function generateThumbnail(
       const res = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
+        body: JSON.stringify({ targetId: record.id }),
       });
       if (res.ok && isLocal) triggerSyncNow().catch(() => {});
       void result; // generation handled server-side via /api/resize
@@ -91,7 +91,7 @@ async function generateThumbnail(
       const res = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ targetId: record.id, ownerId: record.owner_id }),
+        body: JSON.stringify({ targetId: record.id }),
       });
       if (res.ok && thumbnailStrategy === "remote-sharp" && isLocal) {
         triggerSyncNow().catch(() => {});

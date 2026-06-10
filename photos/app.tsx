@@ -67,6 +67,7 @@ async function generateThumbnail(
   record: PhotoRecord,
   file: File,
   thumbnailStrategy: ThumbnailStrategy,
+  onCreated: () => void,
 ): Promise<void> {
   try {
     const { url, headers: authHeaders } = await resolveResizeEndpoint();
@@ -83,6 +84,7 @@ async function generateThumbnail(
         body: JSON.stringify({ targetId: record.id }),
       });
       if (res.ok && isLocal) triggerSyncNow().catch(() => {});
+      if (res.ok) onCreated();
       void result; // generation handled server-side via /api/resize
 
     } else {
@@ -96,6 +98,7 @@ async function generateThumbnail(
       if (res.ok && thumbnailStrategy === "remote-sharp" && isLocal) {
         triggerSyncNow().catch(() => {});
       }
+      if (res.ok) onCreated();
     }
   } catch {
     // Thumbnail generation is best-effort
@@ -156,7 +159,7 @@ function PhotosAppInner() {
           method: "POST",
           headers,
           body: JSON.stringify({ targetId: id }),
-        }).catch(() => {});
+        }).then((res) => { if (res.ok) sync.kick(); }).catch(() => {});
       });
     })();
   }, [orphanIds]);
@@ -172,7 +175,7 @@ function PhotosAppInner() {
         : selectedDisplayImage)
     : null;
 
-  usePhotoSync({
+  const sync = usePhotoSync({
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
     onMerge: (images) => dispatch({ type: "UPSERT_IMAGES", images }),
     onLoadingChange: (loading) => dispatch({ type: "SET_LOADING", loading }),
@@ -202,7 +205,7 @@ function PhotosAppInner() {
       // Mark as submitted before generateThumbnail fires so the backfill effect
       // never picks up this original and creates a second thumbnail.
       backfilledRef.current.add(record.id);
-      generateThumbnail(record, file, thumbnailStrategy).catch(() => {});
+      generateThumbnail(record, file, thumbnailStrategy, sync.kick).catch(() => {});
     } catch (err) {
       console.error("[photos] Upload failed:", err);
       setError(err instanceof Error ? err.message : "Failed to add photo");

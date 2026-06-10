@@ -10,8 +10,7 @@
  *     strategy only when FORCE_REMOTE.
  *
  * The data-plane URL is a separate concern — see data-client.ts, which
- * decides at boot from runtime config (localDataServerUrl vs apiGatewayUrl)
- * which data server to talk to. The hook and the client modules don't see
- * both URLs; they pick one and stick with it.
+ * decides at boot from runtime config (apiGatewayUrl set → cloud; otherwise
+ * the same-origin /api/local-data proxy) which data server to talk to.
  */
 export const FORCE_REMOTE = process.env.NEXT_PUBLIC_FORCE_REMOTE === "true";

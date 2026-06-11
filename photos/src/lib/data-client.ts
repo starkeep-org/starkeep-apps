@@ -4,9 +4,10 @@ import { refreshTokens } from "./cognito-auth";
 
 /**
  * Which data server this build talks to. Decided once at boot from runtime
- * config — exactly one of localDataServerUrl / apiGatewayUrl is expected to
- * be set per deployment build. If both are set (config mistake), we prefer
- * local and log a warning.
+ * config: if apiGatewayUrl is set the build is paired with the cloud data
+ * server; otherwise it talks to the local data server through the
+ * same-origin /api/local-data proxy (which resolves the loopback URL
+ * server-side from $STARKEEP_DATA_DIR/app-creds/photos.json).
  */
 export type DataTarget =
   | { kind: "local" }
@@ -16,24 +17,9 @@ let targetPromise: Promise<DataTarget> | null = null;
 
 async function resolveTarget(): Promise<DataTarget> {
   const rc = await fetchRuntimeConfig();
-  const hasLocal = !!rc?.localDataServerUrl;
-  const hasRemote = !!rc?.apiGatewayUrl;
-  if (hasLocal && hasRemote) {
-    console.warn(
-      "[data-client] Both localDataServerUrl and apiGatewayUrl are set in runtime config — preferring local. This is a configuration mistake; exactly one should be set per deployment build.",
-    );
+  if (rc?.apiGatewayUrl) {
+    return { kind: "remote", apiGatewayUrl: rc.apiGatewayUrl };
   }
-  if (hasLocal) {
-    return { kind: "local" };
-  }
-  if (hasRemote) {
-    return { kind: "remote", apiGatewayUrl: rc!.apiGatewayUrl! };
-  }
-  // No URL configured. Fall back to local same-origin proxy — the proxy itself
-  // resolves the local data server URL server-side via @starkeep/app-client
-  // (from $STARKEEP_DATA_DIR/app-creds/photos.json), so this default keeps
-  // dev (no runtime config served) working.
-  console.warn("[data-client] No data server URL in runtime config — defaulting to local same-origin proxy");
   return { kind: "local" };
 }
 

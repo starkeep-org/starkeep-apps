@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@starkeep/app-client": "^0.1.1",
     "@starkeep/storage-aurora-dsql": "^0.1.0",
     "@starkeep/storage-s3": "^0.1.0",
     "@starkeep/protocol-primitives": "^0.1.0",

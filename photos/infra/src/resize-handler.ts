@@ -5,13 +5,16 @@
  * source record and its bytes via the cloud-data-server broker, runs sharp to
  * resize, then POSTs a new DataRecord with parentId set.
  *
- * Auth is by Cognito JWT forwarded from the incoming request — the same token
- * the browser presented to API Gateway is passed through on every call to the
- * cloud-data-server, so per-app/per-type enforcement runs in the broker on
- * the lambda-originated writes just as it does on browser-originated writes.
+ * Identity to the broker is per-app HMAC via @starkeep/app-client (cloud mode):
+ * the Lambda loads its HMAC secret from SSM via its exec role, then signs each
+ * call to /apps/photos/* with X-Starkeep-App-Id + X-Starkeep-App-Sig. The
+ * broker verifies the signature, assumes the photos app role, and runs the
+ * per-extension grant checks. End-user JWTs are no longer forwarded; the data
+ * plane identifies the app, not the user.
  */
 
 import { createHash } from "node:crypto";
+import { loadAppCredentialsAsync, signedFetch } from "@starkeep/app-client";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
@@ -25,34 +28,6 @@ interface BrokerPhotoRecord {
   parent_id: string | null;
   mime_type: string | null;
   original_filename: string | null;
-}
-
-function dataServerBaseUrl(event: APIGatewayEvent): string {
-  const ctx = event.requestContext as { domainName?: string; stage?: string };
-  if (!ctx.domainName) throw new Error("Cannot determine API Gateway domain from event");
-  return `https://${ctx.domainName}/apps/photos`;
-}
-
-function forwardedAuthHeader(event: APIGatewayEvent): string {
-  const headers = event.headers ?? {};
-  const auth = headers["authorization"] ?? headers["Authorization"];
-  if (!auth) throw new Error("Authorization header missing on incoming request");
-  return auth;
-}
-
-async function brokerFetch(
-  base: string,
-  auth: string,
-  path: string,
-  init?: RequestInit & { body?: string },
-): Promise<Response> {
-  return fetch(`${base}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.headers as Record<string, string> | undefined),
-      Authorization: auth,
-    },
-  });
 }
 
 export async function handler(event: APIGatewayEvent) {
@@ -79,11 +54,13 @@ export async function handler(event: APIGatewayEvent) {
     const targetId = body.targetId;
     console.log(`[resize] start targetId=${targetId}`);
 
-    const base = dataServerBaseUrl(event);
-    const auth = forwardedAuthHeader(event);
+    const creds = await loadAppCredentialsAsync("photos");
+    if (!creds) {
+      return clientErr("photos credentials not available in cloud", 503);
+    }
 
     // Fetch the source record.
-    const recordRes = await brokerFetch(base, auth, `/data/records/${targetId}`);
+    const recordRes = await signedFetch(creds, `/data/records/${targetId}`);
     if (!recordRes.ok) {
       const errBody = await recordRes.text().catch(() => "");
       console.error(`[resize] GET record ${targetId} → ${recordRes.status}: ${errBody}`);
@@ -99,7 +76,7 @@ export async function handler(event: APIGatewayEvent) {
 
     // Skip if a thumbnail already exists for this original. A type-less list is
     // server-scoped to the app's granted extensions, returning every image.
-    const existingRes = await brokerFetch(base, auth, `/data/records?limit=1000`);
+    const existingRes = await signedFetch(creds, `/data/records?limit=1000`);
     if (existingRes.ok) {
       const { records } = (await existingRes.json()) as {
         records: { id: string; parent_id: string | null }[];
@@ -110,7 +87,7 @@ export async function handler(event: APIGatewayEvent) {
 
     // Presigned URL for the source file — direct S3 fetch, no broker hop for
     // the byte transfer.
-    const fileUrlRes = await brokerFetch(base, auth, `/data/records/${targetId}/file-url`);
+    const fileUrlRes = await signedFetch(creds, `/data/records/${targetId}/file-url`);
     if (!fileUrlRes.ok) {
       const errBody = await fileUrlRes.text().catch(() => "");
       console.error(`[resize] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
@@ -136,7 +113,7 @@ export async function handler(event: APIGatewayEvent) {
     const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
     const objectStorageKey = dataRecordObjectKey("image", contentHash);
 
-    const presignRes = await brokerFetch(base, auth, `/files/presign`, {
+    const presignRes = await signedFetch(creds, `/files/presign`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: objectStorageKey, contentType: resizeResult.contentType }),
@@ -159,7 +136,7 @@ export async function handler(event: APIGatewayEvent) {
     }
 
     // Create the thumbnail DataRecord — key-ref form, links to source via parentId.
-    const createRes = await brokerFetch(base, auth, `/data/records`, {
+    const createRes = await signedFetch(creds, `/data/records`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -180,7 +157,7 @@ export async function handler(event: APIGatewayEvent) {
     const { record: thumbnailRecord } = (await createRes.json()) as { record: { id: string } };
 
     // Write image dimensions into shared metadata. Non-fatal.
-    const metaRes = await brokerFetch(base, auth, `/data/records/${thumbnailRecord.id}/metadata`, {
+    const metaRes = await signedFetch(creds, `/data/records/${thumbnailRecord.id}/metadata`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

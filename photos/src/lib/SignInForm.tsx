@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { initiateAuth, respondNewPasswordChallenge } from "./cognito-auth";
 import { storeRefreshToken } from "./cloud-config";
 import { fetchRuntimeConfig } from "./runtime-config";
+import { withBasePath } from "./base-path";
 import type { CognitoConfig } from "./cognito-auth";
 
 interface SignInFormProps {
@@ -38,8 +39,8 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   const finishSignIn = async (idToken: string, refreshToken: string) => {
     await storeRefreshToken(refreshToken);
     const rc = await fetchRuntimeConfig();
-    if (rc?.localDataServerUrl) {
-      fetch(`${rc.localDataServerUrl}/auth/tokens`, {
+    if (!rc?.apiGatewayUrl) {
+      fetch(withBasePath("/api/local-data/auth/tokens"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ idToken, refreshToken }),

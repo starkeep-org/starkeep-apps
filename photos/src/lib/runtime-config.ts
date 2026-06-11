@@ -1,7 +1,6 @@
 import { withBasePath } from "./base-path";
 
 export interface RuntimeConfig {
-  localDataServerUrl?: string;
   region?: string;
   userPoolId?: string;
   userPoolClientId?: string;
@@ -22,7 +21,7 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfig | null> {
     const res = await fetch(withBasePath("/starkeep-runtime-config.json"));
     if (!res.ok) { cached = null; return null; }
     const json = await res.json() as RuntimeConfig;
-    cached = (json.localDataServerUrl || json.apiGatewayUrl) ? json : null;
+    cached = json.apiGatewayUrl ? json : null;
     return cached;
   } catch {
     cached = null;

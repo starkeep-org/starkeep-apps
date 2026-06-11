@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { targetId } = await req.json() as { targetId?: string; ownerId?: string };
+  const { targetId } = await req.json() as { targetId?: string };
 
   if (!targetId) {
     return NextResponse.json({ error: "targetId is required" }, { status: 400 });
@@ -48,7 +48,6 @@ export async function POST(req: NextRequest) {
     parent_id: string | null;
     mime_type: string | null;
     original_filename: string | null;
-    owner_id: string;
   } };
 
   if (!record.object_storage_key) {

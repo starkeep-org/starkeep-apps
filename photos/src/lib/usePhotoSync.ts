@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import type { AppImage } from "@/photos-lib";
 import { fetchRuntimeConfig } from "./runtime-config";
+import { withBasePath } from "./base-path";
 import { listPhotos, listPhotosSince } from "./data-server-client";
 import { photoRecordToAppImage } from "./photoRecordToAppImage";
 
@@ -14,16 +15,29 @@ interface UsePhotoSyncOptions {
   onError: (message: string) => void;
 }
 
+export interface PhotoSyncControls {
+  /**
+   * Force an immediate listPhotosSince and merge. Equivalent to a synthetic
+   * SSE kick — call after any client-driven server mutation (uploads,
+   * thumbnail backfills) so the new record shows up without waiting for the
+   * next poll tick. Safe to call from cloud builds too: in the poll case
+   * it just runs one extra fetchSince now.
+   */
+  kick: () => void;
+}
+
 /**
  * Freshness strategy. Decided once at boot from runtime config:
- *   - sse: the build is paired with a local data server. Subscribe to its
- *          /events stream and call fetchSince on every kick.
+ *   - sse: the build is paired with the local data server. Subscribe to its
+ *          /events stream (through the same-origin /api/local-data proxy,
+ *          which forwards the streaming response from 127.0.0.1:9820) and
+ *          call fetchSince on every kick.
  *   - poll: the build talks to the cloud data server. Re-fetch every 30 s.
  * Visibility-handling (tear down on hidden, catch up on resume) applies in
  * both cases.
  */
 type FreshnessStrategy =
-  | { kind: "sse"; localUrl: string }
+  | { kind: "sse" }
   | { kind: "poll" };
 
 let strategyPromise: Promise<FreshnessStrategy> | null = null;
@@ -32,29 +46,12 @@ function getFreshnessStrategy(): Promise<FreshnessStrategy> {
   if (strategyPromise) return strategyPromise;
   strategyPromise = (async () => {
     const rc = await fetchRuntimeConfig();
-    const hasLocal = !!rc?.localDataServerUrl;
-    const hasRemote = !!rc?.apiGatewayUrl;
-    if (hasLocal && hasRemote) {
-      console.warn(
-        "[usePhotoSync] Both localDataServerUrl and apiGatewayUrl are set — preferring local SSE freshness. Exactly one should be set per deployment build.",
-      );
-    }
-    if (hasLocal) {
-      return { kind: "sse", localUrl: rc!.localDataServerUrl! };
-    }
-    if (hasRemote) {
-      return { kind: "poll" };
-    }
-    // No runtime config served (e.g. dev with no .well-known file): assume
-    // the same-origin local-data proxy and poll. SSE on /events requires a
-    // direct local data server URL, which we don't have here.
-    console.warn("[usePhotoSync] No data server URL in runtime config — falling back to polling");
-    return { kind: "poll" };
+    return rc?.apiGatewayUrl ? { kind: "poll" } : { kind: "sse" };
   })();
   return strategyPromise;
 }
 
-export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoSyncOptions): void {
+export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoSyncOptions): PhotoSyncControls {
   const cursorRef = useRef<string | null>(null);
   const hiddenAtRef = useRef<number | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -122,9 +119,9 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
     esRef.current = null;
   }, []);
 
-  const connectSSE = useCallback((localUrl: string) => {
+  const connectSSE = useCallback(() => {
     disconnectSSE();
-    const es = new EventSource(`${localUrl}/events`);
+    const es = new EventSource(withBasePath("/api/local-data/events"));
     esRef.current = es;
     es.onmessage = () => { void fetchSince(); };
     es.onerror = () => { console.warn("[usePhotoSync] SSE error, reconnecting..."); };
@@ -148,7 +145,7 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
           if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void fetchSince();
           scheduleNextPoll();
         } else {
-          connectSSE(strategy.localUrl);
+          connectSSE();
           if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void fetchSince();
         }
       }
@@ -169,7 +166,7 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
       await fetchAll();
       if (cancelled) return;
       if (strategy.kind === "sse") {
-        connectSSE(strategy.localUrl);
+        connectSSE();
       } else {
         scheduleNextPoll();
       }
@@ -182,4 +179,6 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  return { kick: () => { void fetchSince(); } };
 }

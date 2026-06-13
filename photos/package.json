@@ -8,6 +8,8 @@
     "build": "open-next build",
     "bundle": "tsx infra/build-bundle.ts",
     "start": "next start",
+    "test": "vitest run",
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -22,11 +24,14 @@
     "sharp": "^0.33.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.1",
+    "@starkeep/e2e": "link:../../starkeep-core/e2e",
     "@types/node": "^25.4.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "esbuild": "^0.24.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

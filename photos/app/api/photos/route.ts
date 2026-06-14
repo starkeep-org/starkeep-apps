@@ -24,7 +24,7 @@ function notInstalled(): Response {
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   const cursor = req.nextUrl.searchParams.get("cursor") ?? undefined;
@@ -74,7 +74,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   let formData: FormData;

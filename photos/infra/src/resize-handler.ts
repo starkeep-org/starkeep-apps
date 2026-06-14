@@ -14,7 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { loadAppCredentialsAsync, signedFetch } from "@starkeep/app-client";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
@@ -54,7 +54,7 @@ export async function handler(event: APIGatewayEvent) {
     const targetId = body.targetId;
     console.log(`[resize] start targetId=${targetId}`);
 
-    const creds = await loadAppCredentialsAsync("photos");
+    const creds = await loadAppCredentials("photos");
     if (!creds) {
       return clientErr("photos credentials not available in cloud", 503);
     }

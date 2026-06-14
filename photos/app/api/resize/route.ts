@@ -17,7 +17,7 @@ function dataRecordObjectKey(typeId: string, contentHash: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) {
     return NextResponse.json(
       { error: "photos has not been installed locally — run install from admin-web first" },

@@ -109,11 +109,17 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
   pngRecordId = record.id;
   expect(record.type).toBe("png");
 
-  // Known gap (registered product finding): the live UI uploads through the
-  // generic /api/local-data presign+register proxy and never writes image
-  // metadata — only the (currently unused by the UI) POST /api/photos route
-  // extracts EXIF/dimensions. Pinned so the fix flips this assertion.
-  expect(await imageMetadata(pngRecordId)).toBeNull();
+  // The live UI upload now extracts dimensions (createImageBitmap) + EXIF in
+  // the browser and writes them through the same proxy, so the shared image
+  // metadata row lands for UI uploads too (previously this path wrote none).
+  // The fixture PNG is 8×8.
+  const meta = await eventually(async () => {
+    const m = await imageMetadata(pngRecordId);
+    if (!m) throw new Error("image metadata row not written yet");
+    return m;
+  });
+  expect(meta.width).toBe(8);
+  expect(meta.height).toBe(8);
 });
 
 test("POST /api/photos extracts dimensions and EXIF camera fields into shared image metadata", async () => {

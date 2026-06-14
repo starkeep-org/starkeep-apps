@@ -46,7 +46,7 @@ async function fetchAssembledImage(
 }
 
 export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
   const image = await fetchAssembledImage(creds, id);
@@ -55,7 +55,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Respons
 }
 
 export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
 
@@ -86,7 +86,7 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<Respon
 }
 
 export async function DELETE(_req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
 

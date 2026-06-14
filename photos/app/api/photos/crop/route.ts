@@ -20,7 +20,7 @@ function notInstalled(): Response {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   const body = (await req.json().catch(() => null)) as {

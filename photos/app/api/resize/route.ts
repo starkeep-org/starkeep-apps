@@ -126,8 +126,8 @@ export async function POST(req: NextRequest) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      // The thumbnail is re-encoded as JPEG above, so its true extension is "jpg".
-      type: "jpg",
+      // The thumbnail is re-encoded as JPEG above, so its type is image/jpeg.
+      type: "image/jpeg",
       fileName: `thumb_${record.original_filename ?? "image"}`,
       contentType: mimeType,
       contentHash,

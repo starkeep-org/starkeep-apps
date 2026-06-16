@@ -75,7 +75,7 @@ export async function handler(event: APIGatewayEvent) {
     if (record.parent_id) return clientErr("Record is already a thumbnail", 400);
 
     // Skip if a thumbnail already exists for this original. A type-less list is
-    // server-scoped to the app's granted extensions, returning every image.
+    // server-scoped to the app's granted types, returning every image.
     const existingRes = await signedFetch(creds, `/data/records?limit=1000`);
     if (existingRes.ok) {
       const { records } = (await existingRes.json()) as {

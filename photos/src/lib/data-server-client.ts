@@ -1,5 +1,5 @@
 import { resolveDataSource } from "./data-client";
-import { extensionFromFilename } from "./file-extension";
+import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 
 export interface PhotoRecord {
@@ -123,7 +123,7 @@ export async function addPhotoFromPath(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: extensionFromFilename(fileName),
+      type: starkeepTypeFromFilename(fileName),
       fileName,
       contentType: mimeType,
       contentHash,
@@ -196,9 +196,9 @@ async function extractImageMetadata(
 }
 
 // No `type` filter: a type-less query is server-scoped to the app's granted
-// extensions, which for Photos are exactly the image extensions — so this
-// returns every image the app can see in one request, across all of jpg/png/
-// heic/… rather than a single hardcoded type.
+// types, which for Photos are exactly the image types — so this returns every
+// image the app can see in one request, across all of image/jpeg/png/heic/…
+// rather than a single hardcoded type.
 export async function listPhotos(): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(

@@ -1,0 +1,12 @@
+{
+  // Isolated typecheck for the Playwright e2e specs. They import the
+  // @starkeep/e2e harness (a link: into live starkeep-core source). Checked
+  // on their own they pass; folded into the main program (tsconfig.json) the
+  // live-core source they pull in is checked against this app's *published*
+  // @starkeep deps and trips the version skew. So the specs are excluded from
+  // tsconfig.json (and thus from `next build`) and type-checked here instead,
+  // via the `typecheck:e2e` script. Playwright runs them against live core.
+  "extends": "./tsconfig.json",
+  "include": ["e2e/**/*.ts"],
+  "exclude": ["node_modules"]
+}

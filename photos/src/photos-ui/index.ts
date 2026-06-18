@@ -1,12 +1,6 @@
-// Top-level app components
-export { PhotosApp } from "./photos-app";
-
 // Context
 export { PhotoProvider, usePhotoContext } from "./context/photo-context";
 export { PhotoUrlProvider, usePhotoUrls } from "./context/photo-url-context";
-
-// Hooks
-export { usePhotos } from "./hooks/use-photos";
 
 // Grid
 export { PhotoGrid } from "./components/grid/photo-grid";

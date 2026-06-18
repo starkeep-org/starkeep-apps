@@ -10,11 +10,11 @@
     "start": "next start",
     "test": "vitest run",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@starkeep/sdk": "^0.1.0",
-    "@starkeep/app-client": "^0.1.1",
+    "@starkeep/app-client": "^0.2.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.1031.0",
     "exifr": "^7.1.3",
     "next": "^16.0.0",

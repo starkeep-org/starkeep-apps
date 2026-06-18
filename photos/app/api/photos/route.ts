@@ -4,7 +4,7 @@ import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { photoRecordToAppImage } from "../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "../../../src/lib/data-server-client";
 import { extractExif } from "../../../src/photos-lib/metadata/exif-reader";
-import { extensionFromFilename } from "../../../src/lib/file-extension";
+import { starkeepTypeFromFilename } from "../../../src/lib/file-extension";
 
 // shared/<typeId>/<shard>/<contentHash> — mirrors dataRecordObjectKey in
 // @starkeep/protocol-primitives/storage/object-keys. Inlined here to keep this route a
@@ -24,7 +24,7 @@ function notInstalled(): Response {
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   const cursor = req.nextUrl.searchParams.get("cursor") ?? undefined;
@@ -74,7 +74,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const creds = loadAppCredentials("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
 
   let formData: FormData;
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: extensionFromFilename(originalFilename),
+      type: starkeepTypeFromFilename(originalFilename),
       fileName: originalFilename,
       contentType: mimeType,
       contentHash,

@@ -24,6 +24,19 @@ export async function extractExif(bytes: Uint8Array | Buffer): Promise<ExifField
         ? formatExposureTime(parsed.ExposureTime)
         : null;
 
+    // exifr.parse() with default options *translates* tag values, so
+    // parsed.Orientation comes back as a human string ("Horizontal (normal)")
+    // and never a number — numberOrNull(parsed.Orientation) was always null.
+    // exifr.orientation() returns the raw numeric 1–8 value instead. A separate
+    // pass keeps the translated values (Make/Model/exposure date) the other
+    // fields rely on untouched.
+    let orientation: number | null = null;
+    try {
+      orientation = numberOrNull(await exifr.orientation(bytes as Uint8Array));
+    } catch {
+      orientation = null;
+    }
+
     return {
       dateTakenRaw,
       cameraMake: stringOrNull(parsed.Make),
@@ -34,7 +47,7 @@ export async function extractExif(bytes: Uint8Array | Buffer): Promise<ExifField
       lensModel: stringOrNull(parsed.LensModel),
       gpsLat: numberOrNull(parsed.latitude),
       gpsLon: numberOrNull(parsed.longitude),
-      orientation: numberOrNull(parsed.Orientation),
+      orientation,
     };
   } catch {
     return emptyExif();

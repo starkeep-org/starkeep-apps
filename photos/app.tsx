@@ -15,6 +15,7 @@ import {
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
+import { CoverImageBanner } from "./src/lib/CoverImage";
 import { downsizeImage } from "./src/lib/image-utils";
 import { resolveDataSource, getDataTarget } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
@@ -360,6 +361,8 @@ function PhotosAppInner() {
             </button>
           </div>
         )}
+
+        <CoverImageBanner />
 
         <PhotoGrid
           images={displayImages}

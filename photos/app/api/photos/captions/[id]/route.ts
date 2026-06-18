@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { loadAppCredentialsAsync, signedFetch } from "@starkeep/app-client";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 
 export const runtime = "nodejs";
 
@@ -30,7 +30,7 @@ function notInstalled(): Response {
 }
 
 export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = await loadAppCredentialsAsync("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
   const q = new URLSearchParams({ record_id: id });
@@ -43,7 +43,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Respons
 }
 
 export async function PUT(req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = await loadAppCredentialsAsync("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => null)) as { caption?: unknown } | null;
@@ -77,7 +77,7 @@ export async function PUT(req: NextRequest, ctx: RouteContext): Promise<Response
 }
 
 export async function DELETE(_req: NextRequest, ctx: RouteContext): Promise<Response> {
-  const creds = await loadAppCredentialsAsync("photos");
+  const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
   await signedFetch(creds, "/app-data/db/image_enriched", {

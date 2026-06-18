@@ -1,5 +1,6 @@
 import { resolveDataSource } from "./data-client";
-import { extensionFromFilename } from "./file-extension";
+import { starkeepTypeFromFilename } from "./file-extension";
+import { extractExif } from "../photos-lib/metadata/exif-reader";
 
 export interface PhotoRecord {
   id: string;
@@ -122,20 +123,82 @@ export async function addPhotoFromPath(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: extensionFromFilename(fileName),
+      type: starkeepTypeFromFilename(fileName),
       fileName,
       contentType: mimeType,
       contentHash,
       sizeBytes: fileBytes.byteLength,
     }),
   });
+
+  // Write EXIF + dimensions into the shared image metadata table. Without this
+  // the mounted UI's uploads carried no width/height/EXIF (the metadataWrite
+  // the manifest requests). Extraction runs in the browser — dimensions via
+  // createImageBitmap, EXIF via exifr — so it works through the same `source`
+  // proxy as the rest of this flow (preserving the local/remote selection),
+  // mirroring the columns POST /api/photos writes server-side. Best-effort: a
+  // metadata failure must not fail the upload (the record + bytes are durable).
+  try {
+    const metadata = await extractImageMetadata(fileBytes, mimeType);
+    await request(`/data/records/${result.record.id}/metadata`, source, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ typeId: "image", metadata }),
+    });
+  } catch (err) {
+    console.warn("[data-server-client] image metadata write failed:", err);
+  }
+
   return { record: result.record, deduped: result.deduped === true };
 }
 
+/**
+ * Extract image dimensions + EXIF in the browser and map them to the
+ * shared_record_image_metadata columns. Mirrors the server-side mapping in
+ * POST /api/photos. Null/undefined fields are omitted so the row only carries
+ * what was actually read.
+ */
+async function extractImageMetadata(
+  fileBytes: Uint8Array,
+  mimeType: string,
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+
+  // Dimensions via createImageBitmap (browser-native decode). Best-effort:
+  // formats the browser can't decode (some HEIC) just yield no width/height.
+  try {
+    const blob = new Blob([fileBytes as unknown as BlobPart], { type: mimeType });
+    const bitmap = await createImageBitmap(blob);
+    out.width = bitmap.width;
+    out.height = bitmap.height;
+    bitmap.close();
+  } catch {
+    /* leave width/height unset */
+  }
+
+  const exif = await extractExif(fileBytes);
+  const exifMap: Record<string, unknown> = {
+    captured_at: exif.dateTakenRaw,
+    camera_make: exif.cameraMake,
+    camera_model: exif.cameraModel,
+    f_number: exif.fNumber,
+    exposure_time: exif.exposureTime,
+    iso: exif.iso,
+    lens_model: exif.lensModel,
+    gps_lat: exif.gpsLat,
+    gps_lon: exif.gpsLon,
+    orientation: exif.orientation,
+  };
+  for (const [k, v] of Object.entries(exifMap)) {
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
 // No `type` filter: a type-less query is server-scoped to the app's granted
-// extensions, which for Photos are exactly the image extensions — so this
-// returns every image the app can see in one request, across all of jpg/png/
-// heic/… rather than a single hardcoded type.
+// types, which for Photos are exactly the image types — so this returns every
+// image the app can see in one request, across all of image/jpeg/png/heic/…
+// rather than a single hardcoded type.
 export async function listPhotos(): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(

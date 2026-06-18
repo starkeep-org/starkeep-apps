@@ -43,12 +43,10 @@ describe("extractExif", () => {
     const exif = await extractExif(tiffWithExif({ make: "Acme", model: "Snapper X" }));
     expect(exif.cameraMake).toBe("Acme");
     expect(exif.cameraModel).toBe("Snapper X");
-    // Known gap: exifr's default options translate Orientation to a string
-    // ("Horizontal (normal)"), which numberOrNull discards — orientation is
-    // currently never extracted for any photo. Pinned here; registered as a
-    // product finding. Flip to `.toBe(1)` when the reader passes
-    // translateValues:false (or maps the string).
-    expect(exif.orientation).toBeNull();
+    // exifr.parse() translates Orientation to a string ("Horizontal (normal)");
+    // the reader now reads the raw numeric value via exifr.orientation(). The
+    // fixture's IFD0 carries Orientation=1.
+    expect(exif.orientation).toBe(1);
     // Fields the fixture doesn't carry stay null rather than garbage.
     expect(exif.iso).toBeNull();
     expect(exif.gpsLat).toBeNull();

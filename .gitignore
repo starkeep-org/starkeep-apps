@@ -5,7 +5,7 @@ node_modules/
 .turbo/
 out/
 dist/
-tsconfig.tsbuildinfo
+*.tsbuildinfo
 .DS_Store
 test-results/
 

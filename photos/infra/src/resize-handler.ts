@@ -14,7 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { loadAppCredentialsAsync, signedFetch } from "@starkeep/app-client";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
@@ -54,7 +54,7 @@ export async function handler(event: APIGatewayEvent) {
     const targetId = body.targetId;
     console.log(`[resize] start targetId=${targetId}`);
 
-    const creds = await loadAppCredentialsAsync("photos");
+    const creds = await loadAppCredentials("photos");
     if (!creds) {
       return clientErr("photos credentials not available in cloud", 503);
     }
@@ -75,7 +75,7 @@ export async function handler(event: APIGatewayEvent) {
     if (record.parent_id) return clientErr("Record is already a thumbnail", 400);
 
     // Skip if a thumbnail already exists for this original. A type-less list is
-    // server-scoped to the app's granted extensions, returning every image.
+    // server-scoped to the app's granted types, returning every image.
     const existingRes = await signedFetch(creds, `/data/records?limit=1000`);
     if (existingRes.ok) {
       const { records } = (await existingRes.json()) as {
@@ -140,8 +140,8 @@ export async function handler(event: APIGatewayEvent) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        // The thumbnail is re-encoded as JPEG above, so its true extension is "jpg".
-        type: "jpg",
+        // The thumbnail is re-encoded as JPEG above, so its type is image/jpeg.
+        type: "image/jpeg",
         fileName: `thumb_${record.original_filename ?? "image"}`,
         contentType: resizeResult.contentType,
         contentHash,

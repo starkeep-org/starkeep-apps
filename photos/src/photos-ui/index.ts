@@ -11,8 +11,5 @@ export { PhotoThumbnail } from "./components/grid/photo-thumbnail";
 export { PhotoViewer } from "./components/viewer/photo-viewer";
 export { PhotoInfoPanel } from "./components/viewer/photo-info-panel";
 
-// Upload
-export { UploadZone } from "./components/upload/upload-zone";
-
 // Google import
 export { GoogleImportPanel } from "./components/google/google-import-panel";

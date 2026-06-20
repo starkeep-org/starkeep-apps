@@ -95,8 +95,8 @@ export async function addPhotoFromPath(
   const source = await resolveDataSource();
 
   // Upload via presigned S3 PUT, then register by content hash — bypasses the
-  // API Gateway ~7 MB cap on inline JSON bodies. Mirrors the canonical flow in
-  // POST /api/photos.
+  // API Gateway ~7 MB cap on inline JSON bodies. This is the canonical
+  // client-side add-photo flow.
   const contentHash = await sha256Hex(fileBytes);
   const objectStorageKey = dataRecordObjectKey("image", contentHash);
 
@@ -135,9 +135,9 @@ export async function addPhotoFromPath(
   // the mounted UI's uploads carried no width/height/EXIF (the metadataWrite
   // the manifest requests). Extraction runs in the browser — dimensions via
   // createImageBitmap, EXIF via exifr — so it works through the same `source`
-  // proxy as the rest of this flow (preserving the local/remote selection),
-  // mirroring the columns POST /api/photos writes server-side. Best-effort: a
-  // metadata failure must not fail the upload (the record + bytes are durable).
+  // proxy as the rest of this flow (preserving the local/remote selection).
+  // Best-effort: a metadata failure must not fail the upload (the record +
+  // bytes are durable).
   try {
     const metadata = await extractImageMetadata(fileBytes, mimeType);
     await request(`/data/records/${result.record.id}/metadata`, source, {
@@ -154,9 +154,8 @@ export async function addPhotoFromPath(
 
 /**
  * Extract image dimensions + EXIF in the browser and map them to the
- * shared_record_image_metadata columns. Mirrors the server-side mapping in
- * POST /api/photos. Null/undefined fields are omitted so the row only carries
- * what was actually read.
+ * shared_record_image_metadata columns. Null/undefined fields are omitted so
+ * the row only carries what was actually read.
  */
 async function extractImageMetadata(
   fileBytes: Uint8Array,

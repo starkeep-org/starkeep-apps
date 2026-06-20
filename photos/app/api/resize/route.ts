@@ -8,7 +8,8 @@ export const runtime = "nodejs";
  * POST /api/resize
  * Generates a thumbnail DataRecord for an original image. Bytes are uploaded
  * via presigned S3 PUT and the record is registered by content hash — same
- * shape as POST /api/photos. All HMAC-signed with the photos app's installed
+ * shape as the canonical add-photo flow (addPhotoFromPath in
+ * data-server-client.ts). All HMAC-signed with the photos app's installed
  * credentials.
  */
 
@@ -93,7 +94,8 @@ export async function POST(req: NextRequest) {
   const resizedBytes = new Uint8Array(resizeResult.data);
 
   // Upload via presigned S3 PUT, then register by content hash — same flow as
-  // POST /api/photos. Avoids the API Gateway 7 MB cap on inline JSON bodies.
+  // the canonical add-photo path (addPhotoFromPath). Avoids the API Gateway
+  // 7 MB cap on inline JSON bodies.
   const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
   const objectStorageKey = dataRecordObjectKey("image", contentHash);
 

@@ -2,6 +2,7 @@
   "id": "photos",
   "name": "Photos",
   "version": "0.1.0",
+  "description": "Browse, organize, and caption your photo library.",
   "tier": "official",
   "targets": ["local", "cloud"],
   "localRun": {

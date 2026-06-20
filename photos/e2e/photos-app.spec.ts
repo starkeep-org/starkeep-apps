@@ -107,7 +107,7 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
 
   const record = await eventually(() => findRecord(PNG_NAME));
   pngRecordId = record.id;
-  expect(record.type).toBe("png");
+  expect(record.type).toBe("image/png");
 
   // The live UI upload now extracts dimensions (createImageBitmap) + EXIF in
   // the browser and writes them through the same proxy, so the shared image
@@ -155,7 +155,7 @@ test("POST /api/photos extracts dimensions and EXIF camera fields into shared im
   const { image: tiffImage } = (await tiffRes.json()) as { image: { id: string } };
   const record = await eventually(() => findRecord(TIFF_NAME));
   expect(record.id).toBe(tiffImage.id);
-  expect(record.type).toBe("tif");
+  expect(record.type).toBe("image/tiff");
   const tiffMeta = await eventually(async () => {
     const m = await imageMetadata(tiffImage.id);
     if (!m) throw new Error("EXIF metadata not written yet");
@@ -178,7 +178,7 @@ test("a thumbnail is registered as a shared derived record with parentId", async
     { timeoutMs: 60_000 },
   );
   // Re-encoded as JPEG and named after its original.
-  expect(thumb.type).toBe("jpg");
+  expect(thumb.type).toBe("image/jpeg");
   expect(thumb.original_filename).toBe(`thumb_${PNG_NAME}`);
 
   // Shared semantics: another app with image access (Drive) sees the

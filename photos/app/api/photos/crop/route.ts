@@ -64,8 +64,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const fileName = `crop_${sourceRecord.original_filename ?? "image"}`;
 
   // Upload via presigned S3 PUT, then register the record by content hash —
-  // matches the canonical flow in POST /api/photos. The inline fileBase64 form
-  // 413s on real photos once they go through API Gateway.
+  // matches the canonical add-photo flow (addPhotoFromPath in
+  // data-server-client.ts). The inline fileBase64 form 413s on real photos
+  // once they go through API Gateway.
   const croppedBytes = new Uint8Array(cropped);
   const contentHash = createHash("sha256").update(croppedBytes).digest("hex");
   const objectStorageKey = dataRecordObjectKey("image", contentHash);

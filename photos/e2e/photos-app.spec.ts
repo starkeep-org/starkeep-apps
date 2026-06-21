@@ -27,7 +27,7 @@ import {
   stopAppDaemonViaAdmin,
   type LdsApp,
 } from "@starkeep/e2e";
-import { tiffWithExif } from "../__tests__/tiff-fixture";
+import { jpegWithExif } from "../__tests__/jpeg-fixture";
 
 test.describe.configure({ mode: "serial" });
 
@@ -36,11 +36,11 @@ const ldsUrl = () => process.env.E2E_LDS_URL!;
 
 const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PNG_NAME = "e2e-sunrise.png";
-const TIFF_NAME = "e2e-camera.tif";
+const JPG_NAME = "e2e-camera.jpg";
 const CAPTION = "First light over the ridge";
 
 let pngPath: string;
-let tiffPath: string;
+let jpgPath: string;
 let photosUrl: string;
 /** signedFetch as the photos app — its own view of the data plane. */
 let photosApp: LdsApp;
@@ -80,9 +80,9 @@ async function openViewerCaption(page: Page, altText: string): Promise<Locator> 
 test.beforeAll(async () => {
   const dir = await mkdtemp(join(tmpdir(), "photos-e2e-fixtures-"));
   pngPath = join(dir, PNG_NAME);
-  tiffPath = join(dir, TIFF_NAME);
+  jpgPath = join(dir, JPG_NAME);
   await writeFile(pngPath, solidPng([240, 170, 60], 8));
-  await writeFile(tiffPath, tiffWithExif({ make: "TestMake", model: "TestModel 3000" }));
+  await writeFile(jpgPath, await jpegWithExif({ make: "TestMake", model: "TestModel 3000" }));
 });
 
 test("install photos through the platform and start its dev server", async ({ page }) => {
@@ -122,47 +122,30 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
   expect(meta.height).toBe(8);
 });
 
-test("POST /api/photos extracts dimensions and EXIF camera fields into shared image metadata", async () => {
-  // The app's own upload API (exercised directly — see the pinned UI gap
-  // above): PNG carries dimensions, TIFF carries IFD0 camera fields.
-  const pngForm = new FormData();
-  pngForm.append(
-    "file",
-    new Blob([Uint8Array.from(await readFile(pngPath))], { type: "image/png" }),
-    "api-meta.png",
-  );
-  pngForm.append("originalFilename", "api-meta.png");
-  const pngRes = await fetch(`${photosUrl}/api/photos`, { method: "POST", body: pngForm });
-  expect(pngRes.status).toBe(201);
-  const { image: pngImage } = (await pngRes.json()) as { image: { id: string } };
-  const pngMeta = await eventually(async () => {
-    const m = await imageMetadata(pngImage.id);
-    if (!m) throw new Error("metadata row not written yet");
-    return m;
-  });
-  expect(pngMeta.width).toBe(8);
-  expect(pngMeta.height).toBe(8);
+test("a JPEG upload carries EXIF camera fields into shared image metadata", async ({ page }) => {
+  // Real cameras and phones emit JPEG with EXIF; the app extracts the IFD0
+  // camera fields in the browser (exifr) on upload and writes them to the
+  // shared image metadata. Same client path as the PNG above
+  // (addPhotoFromPath through the /api/local-data proxy) — driven through the
+  // live file input — exercised here for the EXIF fields a camera file carries
+  // that a flat PNG does not.
+  await page.goto(photosUrl);
+  await page.locator('input[type="file"]').first().setInputFiles(jpgPath);
+  await expect(page.getByAltText(JPG_NAME).first()).toBeVisible({ timeout: 60_000 });
 
-  const tiffForm = new FormData();
-  tiffForm.append(
-    "file",
-    new Blob([Uint8Array.from(await readFile(tiffPath))], { type: "image/tiff" }),
-    TIFF_NAME,
-  );
-  tiffForm.append("originalFilename", TIFF_NAME);
-  const tiffRes = await fetch(`${photosUrl}/api/photos`, { method: "POST", body: tiffForm });
-  expect(tiffRes.status).toBe(201);
-  const { image: tiffImage } = (await tiffRes.json()) as { image: { id: string } };
-  const record = await eventually(() => findRecord(TIFF_NAME));
-  expect(record.id).toBe(tiffImage.id);
-  expect(record.type).toBe("image/tiff");
-  const tiffMeta = await eventually(async () => {
-    const m = await imageMetadata(tiffImage.id);
+  const record = await eventually(() => findRecord(JPG_NAME));
+  expect(record.type).toBe("image/jpeg");
+
+  const meta = await eventually(async () => {
+    const m = await imageMetadata(record.id);
     if (!m) throw new Error("EXIF metadata not written yet");
     return m;
   });
-  expect(tiffMeta.camera_make).toBe("TestMake");
-  expect(tiffMeta.camera_model).toBe("TestModel 3000");
+  expect(meta.camera_make).toBe("TestMake");
+  expect(meta.camera_model).toBe("TestModel 3000");
+  // Dimensions ride the same metadata write (8×8 fixture).
+  expect(meta.width).toBe(8);
+  expect(meta.height).toBe(8);
 });
 
 test("a thumbnail is registered as a shared derived record with parentId", async () => {

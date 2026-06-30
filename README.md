@@ -18,7 +18,7 @@ A third-party app is any directory that contains a `starkeep.manifest.json`, sit
 
 2. Write `starkeep.manifest.json` at the app root. The manifest declares `id`, `name`, `version`, `targets` (`local`, `cloud`, or both), and `infraRequirements.fileAccess` — the file-type grants the app needs. See `photos/starkeep.manifest.json` for a worked example. Two grants are reserved and only granted to specific apps: `fileAccessAll` (User-Data-Owner — Drive only) and `brokerPower` (cloud-data-server only).
 
-3. Place the app directory inside any parent dir registered with admin-web. Open the **Apps** page in admin-web and use the **App discovery** card to add `/path/to/your/app-parent-dir`. The default seed is the sibling `starkeep-apps/` directory of `starkeep-core/`, kept only for developer convenience — you can add or remove dirs freely.
+3. Place the app directory inside any parent dir registered with admin-web. Open the **Dashboard** in admin-web and use the **App discovery** card to add `/path/to/your/app-parent-dir`. The default seed is the sibling `starkeep-apps/` directory of `starkeep-core/`, kept only for developer convenience — you can add or remove dirs freely.
 
 4. Click **Install** on the app's card in admin-web. The install path is identical for first-party and third-party apps: admin-web reads the manifest from the scanned location, validates it, prompts for the user's grant approval, and POSTs to `local-data-server` to register the app and provision its per-app HMAC credentials.
 

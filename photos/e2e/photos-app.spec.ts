@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  createRecordWithBytes,
   driveCreds,
   eventually,
   installAppDirect,
@@ -37,6 +38,7 @@ const ldsUrl = () => process.env.E2E_LDS_URL!;
 const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PNG_NAME = "e2e-sunrise.png";
 const JPG_NAME = "e2e-camera.jpg";
+const WATCHER_JPG = "e2e-watcher.jpg";
 const CAPTION = "First light over the ridge";
 
 let pngPath: string;
@@ -214,4 +216,41 @@ test("the caption survives a photos restart — app data is durable, not session
   await expect(page.getByAltText(PNG_NAME).first()).toBeVisible({ timeout: 120_000 });
   const caption = await openViewerCaption(page, PNG_NAME);
   await expect(caption).toHaveValue(CAPTION);
+});
+
+test("opening an image with no metadata row lazily extracts and persists it", async ({ page }) => {
+  // Images can enter the system through paths that don't extract metadata — the
+  // LDS folder watcher, by design. createRecordWithBytes mimics that: it uploads
+  // bytes and registers the shared record, but writes no image metadata row.
+  const { record } = await createRecordWithBytes(photosApp, {
+    type: "image/jpeg",
+    contentType: "image/jpeg",
+    bytes: Buffer.from(await jpegWithExif({ make: "WatchMake", model: "WatchModel 9" })),
+    fileName: WATCHER_JPG,
+  });
+  const watcherId = record.id;
+
+  // Precondition: the record exists on the shared plane with no metadata row.
+  expect(await imageMetadata(watcherId)).toBeNull();
+
+  // Open the image's Info panel in the real UI. The panel sees width 0 (no row)
+  // and runs the lazy backfill in the background, then re-loads — so the
+  // Dimensions row flips from 0 × 0 to the decoded 8 × 8 of the fixture.
+  await page.goto(photosUrl);
+  await page.getByAltText(WATCHER_JPG).first().click({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Info" }).click();
+  await expect(page.getByText("8 × 8px")).toBeVisible();
+
+  // The backfill is a *persistent* write, not just a display patch: the shared
+  // image metadata row now exists, carrying both the decoded dimensions and the
+  // EXIF camera fields extracted from the same bytes.
+  const meta = await eventually(async () => {
+    const m = await imageMetadata(watcherId);
+    if (!m) throw new Error("backfilled metadata row not written yet");
+    return m;
+  });
+  expect(meta.width).toBe(8);
+  expect(meta.height).toBe(8);
+  expect(meta.camera_make).toBe("WatchMake");
+  expect(meta.camera_model).toBe("WatchModel 9");
 });

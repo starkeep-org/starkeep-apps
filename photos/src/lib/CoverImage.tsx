@@ -85,16 +85,12 @@ export function CoverImageBanner(): React.ReactElement {
         }}
       />
 
-      {url ? (
+      {url && (
         <img
           src={url}
           alt="App cover"
           style={{ display: "block", width: "100%", maxHeight: 220, objectFit: "cover" }}
         />
-      ) : (
-        <div style={{ padding: "18px 20px", color: "#888", fontSize: 13 }}>
-          No cover image set.
-        </div>
       )}
 
       <div
@@ -103,9 +99,14 @@ export function CoverImageBanner(): React.ReactElement {
           right: 12,
           bottom: 12,
           display: "flex",
+          alignItems: "center",
           gap: 8,
+          padding: url ? 0 : "18px 20px",
         }}
       >
+        {!url && (
+          <span style={{ color: "#888", fontSize: 13 }}>No cover image set.</span>
+        )}
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={busy}

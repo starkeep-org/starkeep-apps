@@ -45,7 +45,23 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", flexShrink: 0 }}>
-        <span style={{ color: "#aaa", fontSize: 14 }}>{image.originalFilename}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ color: "#aaa", fontSize: 14 }}>{image.originalFilename}</span>
+          <button
+            onClick={() => setInfoVisible(!infoVisible)}
+            style={{
+              background: infoVisible ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
+              border: "1px solid rgba(255,255,255,0.2)",
+              color: "#fff",
+              borderRadius: 4,
+              padding: "6px 14px",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Info
+          </button>
+        </div>
         <button
           onClick={onClose}
           style={{ background: "none", border: "none", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}
@@ -62,25 +78,6 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
         />
 
         <PhotoInfoPanel image={image} visible={infoVisible} onClose={() => setInfoVisible(false)} />
-      </div>
-
-      <div style={{ padding: "12px 16px", flexShrink: 0, maxWidth: 600, margin: "0 auto", width: "100%" }}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            onClick={() => setInfoVisible(!infoVisible)}
-            style={{
-              background: infoVisible ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              color: "#fff",
-              borderRadius: 4,
-              padding: "6px 14px",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
-            Info
-          </button>
-        </div>
       </div>
     </div>
   );

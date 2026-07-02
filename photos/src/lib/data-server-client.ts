@@ -222,6 +222,30 @@ export async function getPhotoFileUrl(id: string): Promise<string> {
   return result.url;
 }
 
+/**
+ * Backfill the shared image metadata for a record that has none. Records can
+ * enter the system through paths that don't extract metadata (notably the LDS
+ * folder watcher, by design), so their width/height/EXIF are absent. This
+ * decodes the stored bytes, runs the same extraction as upload, and writes the
+ * row. Best-effort: any failure is swallowed by the caller. Returns true if a
+ * non-empty metadata row was written.
+ */
+export async function backfillImageMetadata(id: string, mimeType: string): Promise<boolean> {
+  const source = await resolveDataSource();
+  const { url } = await request<{ url: string }>(`/data/records/${id}/file-url`, source);
+  const res = await fetch(url);
+  if (!res.ok) return false;
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const metadata = await extractImageMetadata(bytes, mimeType || "image/jpeg");
+  if (Object.keys(metadata).length === 0) return false;
+  await request(`/data/records/${id}/metadata`, source, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ typeId: "image", metadata }),
+  });
+  return true;
+}
+
 export interface ImageEnriched {
   record_id?: string;
   caption?: string | null;

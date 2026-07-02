@@ -1,12 +1,8 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib";
 import { withBasePath } from "@/lib/base-path";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { backfillImageMetadata } from "@/lib/data-server-client";
+import { formatBytes, formatMegapixels, formatOrientation } from "./info-format";
 
 interface InfoRowProps {
   label: string;
@@ -32,26 +28,72 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
   const [caption, setCaption] = useState<string>("");
   const [savedCaption, setSavedCaption] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
+  // The image passed in from the list carries no dimensions/EXIF (that metadata
+  // isn't loaded for the whole grid). Fetch the fully-assembled record — record
+  // + shared image metadata + enriched fields — when the panel opens, and
+  // render from it once it arrives, falling back to the sparse prop meanwhile.
+  const [details, setDetails] = useState<AppImage | null>(null);
+  const [detailsLoaded, setDetailsLoaded] = useState<boolean>(false);
+
+  function fetchDetails(id: string): Promise<AppImage | null> {
+    return fetch(withBasePath(`/api/photos/${encodeURIComponent(id)}`))
+      .then((r) => (r.ok ? r.json() : { image: null }))
+      .then((data: { image: AppImage | null }) => data.image);
+  }
 
   useEffect(() => {
     let cancelled = false;
+    setDetails(null);
+    setDetailsLoaded(false);
     setLoading(true);
-    fetch(withBasePath(`/api/photos/captions/${encodeURIComponent(image.id)}`))
-      .then((r) => (r.ok ? r.json() : { caption: null }))
-      .then((data: { caption: string | null }) => {
+    fetchDetails(image.id)
+      .then((img) => {
         if (cancelled) return;
-        const existing = data.caption ?? "";
-        setCaption(existing);
-        setSavedCaption(existing);
+        if (img) {
+          setDetails(img);
+          // The assembled record already carries the enriched caption, so seed
+          // the editor from it rather than making a second round trip.
+          const existing = img.caption ?? "";
+          setCaption(existing);
+          setSavedCaption(existing);
+        }
         setLoading(false);
+        setDetailsLoaded(true);
       })
       .catch(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setDetailsLoaded(true);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [image.id]);
+
+  // If the stored metadata resolved with no dimensions, the record was added by
+  // a path that doesn't extract metadata (e.g. the LDS folder watcher). Extract
+  // and persist it in the background, then re-load so the panel reflects the
+  // now-stored dimensions + EXIF. Runs in parallel with the open above.
+  const storedWidth = details?.width ?? image.width;
+  useEffect(() => {
+    if (!detailsLoaded || storedWidth > 0) return;
+    let cancelled = false;
+    backfillImageMetadata(image.id, (details ?? image).mimeType)
+      .then((wrote) => (wrote && !cancelled ? fetchDetails(image.id) : null))
+      .then((img) => {
+        if (!cancelled && img) setDetails(img);
+      })
+      .catch(() => {
+        /* best-effort: leave the panel as-is if extraction/write fails */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // details is intentionally excluded: this should fire once per record, keyed
+    // on the resolved-but-empty state, not on every details update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image.id, detailsLoaded, storedWidth]);
 
   async function saveCaption(): Promise<void> {
     if (caption === savedCaption) return;
@@ -62,6 +104,11 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
     });
     setSavedCaption(caption);
   }
+
+  // Prefer the fully-assembled record once loaded; the prop is a sparse
+  // placeholder whose dimensions/EXIF are zeroed out.
+  const info = details ?? image;
+  const megapixels = formatMegapixels(info.width, info.height);
 
   return (
     <div
@@ -97,31 +144,36 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
         </button>
       </div>
 
-      <InfoRow label="Filename" value={image.originalFilename} />
-      <InfoRow label="Dimensions" value={`${image.width} × ${image.height}px`} />
-      <InfoRow label="MIME type" value={image.mimeType} />
-      <InfoRow label="File size" value={formatBytes(image.sizeBytes)} />
-      <InfoRow label="Date taken" value={image.effectiveDateTaken.replace("T", " ").slice(0, 19)} />
+      <InfoRow label="Filename" value={info.originalFilename} />
+      {info.title && <InfoRow label="Title" value={info.title} />}
+      <InfoRow label="Dimensions" value={`${info.width} × ${info.height}px`} />
+      {megapixels && <InfoRow label="Megapixels" value={megapixels} />}
+      <InfoRow label="MIME type" value={info.mimeType} />
+      <InfoRow label="File size" value={formatBytes(info.sizeBytes)} />
+      <InfoRow label="Date taken" value={info.effectiveDateTaken.replace("T", " ").slice(0, 19)} />
 
-      {image.exif.cameraMake && (
-        <InfoRow label="Camera" value={`${image.exif.cameraMake} ${image.exif.cameraModel ?? ""}`.trim()} />
+      {info.exif.cameraMake && (
+        <InfoRow label="Camera" value={`${info.exif.cameraMake} ${info.exif.cameraModel ?? ""}`.trim()} />
       )}
-      {image.exif.fNumber != null && (
-        <InfoRow label="Aperture" value={`f/${image.exif.fNumber}`} />
+      {info.exif.fNumber != null && (
+        <InfoRow label="Aperture" value={`f/${info.exif.fNumber}`} />
       )}
-      {image.exif.exposureTime && (
-        <InfoRow label="Exposure" value={image.exif.exposureTime} />
+      {info.exif.exposureTime && (
+        <InfoRow label="Exposure" value={info.exif.exposureTime} />
       )}
-      {image.exif.iso != null && (
-        <InfoRow label="ISO" value={image.exif.iso} />
+      {info.exif.iso != null && (
+        <InfoRow label="ISO" value={info.exif.iso} />
       )}
-      {image.exif.lensModel && (
-        <InfoRow label="Lens" value={image.exif.lensModel} />
+      {info.exif.lensModel && (
+        <InfoRow label="Lens" value={info.exif.lensModel} />
       )}
-      {image.exif.gpsLat != null && image.exif.gpsLon != null && (
+      {info.exif.orientation != null && (
+        <InfoRow label="Orientation" value={formatOrientation(info.exif.orientation)} />
+      )}
+      {info.exif.gpsLat != null && info.exif.gpsLon != null && (
         <InfoRow
           label="Location"
-          value={`${image.exif.gpsLat.toFixed(5)}, ${image.exif.gpsLon.toFixed(5)}`}
+          value={`${info.exif.gpsLat.toFixed(5)}, ${info.exif.gpsLon.toFixed(5)}`}
         />
       )}
 

@@ -268,7 +268,7 @@ function PhotosAppInner() {
 
           {/* Thumbnail generation strategy */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "#aaa" }}>
-            <span style={{ whiteSpace: "nowrap" }}>Thumbnail:</span>
+            <span style={{ whiteSpace: "nowrap" }}>Thumbnail generation:</span>
             {(
               [
                 { value: "browser", label: "Browser" },

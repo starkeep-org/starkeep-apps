@@ -22,9 +22,12 @@ interface PhotoInfoPanelProps {
   image: AppImage;
   visible: boolean;
   onClose: () => void;
+  /** Fires with the persisted caption on load and after each save, so callers
+   *  (e.g. the viewer's below-image caption) can stay in sync with edits. */
+  onCaptionChange?: (caption: string | null) => void;
 }
 
-export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps) {
+export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: PhotoInfoPanelProps) {
   const [caption, setCaption] = useState<string>("");
   const [savedCaption, setSavedCaption] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
@@ -56,6 +59,7 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
           const existing = img.caption ?? "";
           setCaption(existing);
           setSavedCaption(existing);
+          onCaptionChange?.(img.caption ?? null);
         }
         setLoading(false);
         setDetailsLoaded(true);
@@ -103,6 +107,7 @@ export function PhotoInfoPanel({ image, visible, onClose }: PhotoInfoPanelProps)
       body: JSON.stringify({ caption }),
     });
     setSavedCaption(caption);
+    onCaptionChange?.(caption === "" ? null : caption);
   }
 
   // Prefer the fully-assembled record once loaded; the prop is a sparse

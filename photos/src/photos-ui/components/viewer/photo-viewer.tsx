@@ -17,6 +17,14 @@ interface PhotoViewerProps {
 export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   const { getFullSizeSrc } = usePhotoUrls();
   const [infoVisible, setInfoVisible] = useState(false);
+  // The grid/sync-supplied `image` carries no enriched fields, so its caption is
+  // always null here. The info panel resolves the assembled record and reports
+  // the persisted caption (and later edits) up via onCaptionChange.
+  const [caption, setCaption] = useState<string | null>(image.caption ?? null);
+
+  useEffect(() => {
+    setCaption(image.caption ?? null);
+  }, [image.id, image.caption]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -70,14 +78,26 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
         </button>
       </div>
 
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
         <img
           src={getFullSizeSrc(image.id) ?? undefined}
           alt={image.originalFilename}
-          style={{ maxWidth: "90vw", maxHeight: "calc(100vh - 200px)", objectFit: "contain", transform, display: "block" }}
+          onClick={() => setInfoVisible((v) => !v)}
+          style={{ maxWidth: "90vw", maxHeight: "calc(100vh - 200px)", objectFit: "contain", transform, display: "block", cursor: "pointer" }}
         />
 
-        <PhotoInfoPanel image={image} visible={infoVisible} onClose={() => setInfoVisible(false)} />
+        {caption && (
+          <div style={{ color: "#ddd", fontSize: 14, marginTop: 16, maxWidth: "90vw", textAlign: "center", padding: "0 16px" }}>
+            {caption}
+          </div>
+        )}
+
+        <PhotoInfoPanel
+          image={image}
+          visible={infoVisible}
+          onClose={() => setInfoVisible(false)}
+          onCaptionChange={setCaption}
+        />
       </div>
     </div>
   );

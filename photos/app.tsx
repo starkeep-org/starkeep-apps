@@ -8,10 +8,11 @@ import {
 } from "@/photos-ui";
 import {
   addPhotoFromPath,
-  getPhotoFileUrl,
+  getPhotoFileUrls,
   triggerSyncNow,
   type PhotoRecord,
 } from "./src/lib/data-server-client";
+import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
@@ -24,24 +25,35 @@ import { usePhotoSync } from "./src/lib/usePhotoSync";
 
 function useFullSizeUrlCache() {
   const [urlMap, setUrlMap] = useState<ReadonlyMap<string, string>>(new Map());
-  const loadingRef = useRef<Set<string>>(new Set());
+
+  // Coalesce per-photo URL lookups into one batch call per flush window —
+  // with lazy thumbnails, a scroll burst becomes a single request instead of
+  // a request per visible photo. Created lazily (not at mount) and nulled on
+  // unmount so StrictMode's dev mount→unmount→mount cycle can't leave a
+  // disposed loader behind.
+  const loaderRef = useRef<UrlBatchLoader | null>(null);
+  useEffect(
+    () => () => {
+      loaderRef.current?.dispose();
+      loaderRef.current = null;
+    },
+    [],
+  );
 
   return useCallback(
     (imageId: string): string | null => {
       const cached = urlMap.get(imageId);
       if (cached) return cached;
-      if (loadingRef.current.has(imageId)) return null;
-
-      loadingRef.current.add(imageId);
-      getPhotoFileUrl(imageId)
-        .then((url) => {
-          loadingRef.current.delete(imageId);
-          setUrlMap((prev) => new Map(prev).set(imageId, url));
-        })
-        .catch(() => {
-          loadingRef.current.delete(imageId);
-        });
-
+      loaderRef.current ??= createUrlBatchLoader({
+        loadBatch: getPhotoFileUrls,
+        onLoaded: (urls) =>
+          setUrlMap((prev) => {
+            const next = new Map(prev);
+            for (const [id, url] of urls) next.set(id, url);
+            return next;
+          }),
+      });
+      loaderRef.current.request(imageId);
       return null;
     },
     [urlMap],

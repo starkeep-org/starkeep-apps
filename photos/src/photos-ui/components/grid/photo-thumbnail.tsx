@@ -1,5 +1,6 @@
 import type { AppImage } from "@/photos-lib";
 import { usePhotoUrls } from "../../context/photo-url-context";
+import { useInView } from "../../hooks/use-in-view";
 
 const ORIENTATION_TRANSFORMS: Record<number, string> = {
   3: "rotate(180deg)",
@@ -14,6 +15,9 @@ interface PhotoThumbnailProps {
 
 export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   const { getFullSizeSrc } = usePhotoUrls();
+  // Only ask for a signed URL once the tile is near the viewport, so a large
+  // gallery doesn't fan out into a URL request per photo on load.
+  const [containerRef, inView] = useInView<HTMLDivElement>();
 
   // Only thumbnail records (parentId !== null) have a small image to display.
   // Originals with parentId === null are placeholders — their thumbnail is being generated.
@@ -22,10 +26,11 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
     image.exif.orientation
       ? (ORIENTATION_TRANSFORMS[image.exif.orientation] ?? "none")
       : "none";
-  const src = isThumbnail ? getFullSizeSrc(image.id) : null;
+  const src = isThumbnail && inView ? getFullSizeSrc(image.id) : null;
 
   return (
     <div
+      ref={containerRef}
       onClick={() => { if (isThumbnail) onSelect(image.id); }}
       style={{
         width: 180,

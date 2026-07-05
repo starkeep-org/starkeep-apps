@@ -37,6 +37,34 @@ export interface PhotoMetadataRow {
   orientation?: number | null;
 }
 
+// Statuses that mean the request was shed before our handler ever ran (API
+// Gateway / Lambda throttling), so retrying is safe for any method — the
+// server never saw the request. Anything else (4xx, 500) reflects an actual
+// handler outcome and is not retried.
+const RETRYABLE_STATUSES = new Set([429, 503]);
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 300;
+const RETRY_CAP_MS = 4000;
+
+/**
+ * Backoff for retry `attempt` (0-based): full jitter, uniform in
+ * [0, min(cap, base * 2^attempt)]. A numeric Retry-After header (seconds)
+ * overrides the jitter, still capped.
+ */
+export function retryDelayMs(attempt: number, retryAfterHeader?: string | null): number {
+  if (retryAfterHeader) {
+    const seconds = Number(retryAfterHeader);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, RETRY_CAP_MS);
+    }
+  }
+  return Math.random() * Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** attempt);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function request<T>(
   path: string,
   source: { baseUrl: string; headers: Record<string, string> },
@@ -48,14 +76,22 @@ async function request<T>(
   console.debug(`[data-server-client] ${method} ${url} (auth: ${hasAuth})`);
 
   let res: Response;
-  try {
-    res = await fetch(url, {
-      ...options,
-      headers: { ...source.headers, ...options?.headers },
-    });
-  } catch (err) {
-    console.error(`[data-server-client] ${method} ${url} — network error:`, err);
-    throw err;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(url, {
+        ...options,
+        headers: { ...source.headers, ...options?.headers },
+      });
+    } catch (err) {
+      console.error(`[data-server-client] ${method} ${url} — network error:`, err);
+      throw err;
+    }
+    if (res.ok || !RETRYABLE_STATUSES.has(res.status) || attempt >= MAX_RETRIES) break;
+    const delay = retryDelayMs(attempt, res.headers?.get?.("retry-after"));
+    console.warn(
+      `[data-server-client] ${method} ${url} → ${res.status} (throttled), retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(delay)}ms`,
+    );
+    await sleep(delay);
   }
 
   console.debug(`[data-server-client] ${method} ${url} → ${res.status}`);
@@ -221,6 +257,37 @@ export async function getPhotoFileUrl(id: string): Promise<string> {
   const source = await resolveDataSource();
   const result = await request<{ url: string }>(`/data/records/${id}/file-url`, source);
   return result.url;
+}
+
+/** Server-side batch cap; chunk client-side so callers can pass any count. */
+export const FILE_URL_BATCH_MAX = 100;
+
+/**
+ * Resolve signed file URLs for many records in one round trip per chunk
+ * (POST /data/records/file-urls) instead of one per record — the per-photo
+ * file-url fan-out is what saturates the cloud Lambda concurrency pool.
+ * Chunks run sequentially on purpose. Ids the server omitted (unknown,
+ * unreadable, no file) are simply absent from the returned map.
+ */
+export async function getPhotoFileUrls(ids: readonly string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)];
+  const out = new Map<string, string>();
+  if (unique.length === 0) return out;
+  const source = await resolveDataSource();
+  for (let i = 0; i < unique.length; i += FILE_URL_BATCH_MAX) {
+    const chunk = unique.slice(i, i + FILE_URL_BATCH_MAX);
+    const result = await request<{ urls: Record<string, { url: string }> }>(
+      "/data/records/file-urls",
+      source,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: chunk }),
+      },
+    );
+    for (const [id, entry] of Object.entries(result.urls)) out.set(id, entry.url);
+  }
+  return out;
 }
 
 /**

@@ -17,7 +17,7 @@ import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { CoverImageBanner } from "./src/lib/CoverImage";
 import { downsizeImage } from "./src/lib/image-utils";
-import { resolveDataSource, getDataTarget } from "./src/lib/data-client";
+import { resolveAppApiSource, getDataTarget } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoSync } from "./src/lib/usePhotoSync";
 
@@ -56,12 +56,8 @@ type ThumbnailStrategy = "browser" | "local-sharp" | "remote-sharp";
 // domain and the route is JWT-gated; for a locally-served build the Next.js
 // server serves it at the origin.
 async function resolveResizeEndpoint(): Promise<{ url: string; headers: Record<string, string> }> {
-  const target = await getDataTarget();
-  if (target.kind === "remote") {
-    const source = await resolveDataSource();
-    return { url: `${source.baseUrl}/api/resize`, headers: source.headers };
-  }
-  return { url: "/api/resize", headers: {} };
+  const source = await resolveAppApiSource();
+  return { url: `${source.baseUrl}/api/resize`, headers: source.headers };
 }
 
 async function generateThumbnail(

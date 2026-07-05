@@ -9,8 +9,8 @@
  *   - The toolbar shows the cloud-setup button and "Remote Sharp" thumbnail
  *     strategy only when FORCE_REMOTE.
  *
- * The data-plane URL is a separate concern — see data-client.ts, which
- * decides at boot from runtime config (apiGatewayUrl set → cloud; otherwise
- * the same-origin /api/local-data proxy) which data server to talk to.
+ * The data-plane URL is a separate concern — see data-client.ts. The browser
+ * always talks to the same-origin /api/local-data proxy; that proxy decides
+ * server-side (local creds file vs. cloud SSM) which data server to sign for.
  */
 export const FORCE_REMOTE = process.env.NEXT_PUBLIC_FORCE_REMOTE === "true";

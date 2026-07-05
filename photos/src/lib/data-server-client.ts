@@ -1,4 +1,5 @@
 import { resolveDataSource } from "./data-client";
+import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 
@@ -277,7 +278,9 @@ export async function uploadFile(
 // Sync endpoints are under /sync/* on the data server and require app auth
 // (X-Starkeep-App-Id + HMAC). The browser routes through the same-origin
 // /api/local-data proxy that adds those headers server-side.
-const LOCAL_BASE = "/api/local-data";
+// Same-origin proxy path; must carry the app basePath in cloud (see
+// withBasePath). No-op in local dev where BASE_PATH is empty.
+const LOCAL_BASE = withBasePath("/api/local-data");
 
 export interface SyncStatus {
   enabled: boolean;

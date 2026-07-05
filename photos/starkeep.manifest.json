@@ -50,7 +50,7 @@
           "handler": "index.handler",
           "memoryMb": 256,
           "timeoutSeconds": 10,
-          "routes": ["GET /", "GET /{proxy+}"],
+          "routes": ["GET /", "ANY /{proxy+}"],
           "auth": "public",
           "env": {
             "STARKEEP_API_GATEWAY_URL": "",

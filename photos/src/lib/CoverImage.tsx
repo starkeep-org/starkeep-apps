@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { withBasePath } from "./base-path";
 
 /**
  * App-level cover image banner — the user-facing proving client for the
@@ -15,7 +16,7 @@ export function CoverImageBanner(): React.ReactElement {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/photos/cover");
+      const res = await fetch(withBasePath("/api/photos/cover"));
       if (!res.ok) return;
       const { url: next } = (await res.json()) as { url: string | null };
       setUrl(next);
@@ -33,7 +34,7 @@ export function CoverImageBanner(): React.ReactElement {
       setBusy(true);
       setError(null);
       try {
-        const res = await fetch("/api/photos/cover", {
+        const res = await fetch(withBasePath("/api/photos/cover"), {
           method: "PUT",
           headers: { "Content-Type": file.type || "application/octet-stream" },
           body: file,
@@ -56,7 +57,7 @@ export function CoverImageBanner(): React.ReactElement {
     setBusy(true);
     setError(null);
     try {
-      await fetch("/api/photos/cover", { method: "DELETE" });
+      await fetch(withBasePath("/api/photos/cover"), { method: "DELETE" });
       setUrl(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

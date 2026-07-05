@@ -60,7 +60,7 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.92)",
+        background: "rgba(0,0,0,1)",
         zIndex: 1000,
         display: "flex",
         flexDirection: "column",

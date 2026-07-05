@@ -160,9 +160,9 @@ export async function POST(req: NextRequest) {
     console.warn(`[resize] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
   }
 
-  // Trigger sync push (fire-and-forget). /sync/* requires app auth; sign
-  // with empty body to match the server's HMAC scheme.
-  signedFetch(creds, "/sync/now", { method: "POST" }).catch(() => {});
+  // No explicit sync kick: the shared-record write above emits
+  // `local-change-recorded`, and core's sync supervisor auto-schedules the
+  // Drive-channel push. Sync scheduling is core-owned; the app just writes.
 
   return NextResponse.json({ ok: true, thumbnailId: thumbnailRecord.id });
 }

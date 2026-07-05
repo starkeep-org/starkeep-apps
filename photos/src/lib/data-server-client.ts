@@ -1,5 +1,4 @@
 import { resolveDataSource } from "./data-client";
-import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 
@@ -347,40 +346,4 @@ export async function uploadFile(
     headers: { "Content-Type": mimeType },
     body: bytes as unknown as BodyInit,
   });
-}
-
-
-// Sync endpoints are under /sync/* on the data server and require app auth
-// (X-Starkeep-App-Id + HMAC). The browser routes through the same-origin
-// /api/local-data proxy that adds those headers server-side.
-// Same-origin proxy path; must carry the app basePath in cloud (see
-// withBasePath). No-op in local dev where BASE_PATH is empty.
-const LOCAL_BASE = withBasePath("/api/local-data");
-
-export interface SyncStatus {
-  enabled: boolean;
-  syncPaused: boolean;
-  cloudUrl: string | null;
-  lastPullAt: string | null;
-  lastPushAt: string | null;
-  lastPullError: string | null;
-  lastPushError: string | null;
-  conflictCount: number;
-}
-
-export async function getSyncStatus(): Promise<SyncStatus> {
-  const res = await fetch(`${LOCAL_BASE}/sync/status`);
-  return res.json() as Promise<SyncStatus>;
-}
-
-export async function pauseSync(): Promise<void> {
-  await fetch(`${LOCAL_BASE}/sync/pause`, { method: "POST" });
-}
-
-export async function resumeSync(): Promise<void> {
-  await fetch(`${LOCAL_BASE}/sync/resume`, { method: "POST" });
-}
-
-export async function triggerSyncNow(): Promise<void> {
-  await fetch(`${LOCAL_BASE}/sync/now`, { method: "POST" });
 }

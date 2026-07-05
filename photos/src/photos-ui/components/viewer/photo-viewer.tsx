@@ -104,14 +104,14 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
             position: "relative",
             ...(ratio
               ? {
-                  width: `min(90vw, calc((100vh - 96px) * ${ratio}))`,
+                  width: `min(90vw, calc((100vh - 120px) * ${ratio}))`,
                   aspectRatio: ratio,
                   maxWidth: "90vw",
-                  maxHeight: "calc(100vh - 96px)",
+                  maxHeight: "calc(100vh - 120px)",
                 }
               : {
                   width: "min(90vw, 900px)",
-                  height: "calc(100vh - 96px)",
+                  height: "calc(100vh - 120px)",
                 }),
             overflow: "hidden",
           }}

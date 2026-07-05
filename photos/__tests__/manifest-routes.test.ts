@@ -59,7 +59,6 @@ const REQUIRED: ReadonlyArray<{ method: string; path: string; why: string }> = [
   { method: "POST", path: "/api/local-data/files/presign", why: "upload presign" },
   { method: "POST", path: "/api/local-data/data/records/rec1/metadata", why: "image metadata write" },
   { method: "GET", path: "/api/local-data/data/records/rec1/file-url", why: "getPhotoFileUrl" },
-  { method: "POST", path: "/api/local-data/sync/now", why: "triggerSyncNow" },
   { method: "POST", path: "/api/resize", why: "server-side thumbnail generation" },
   { method: "POST", path: "/api/share", why: "share API route" },
 ];

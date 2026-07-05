@@ -10,15 +10,16 @@
  * hit /api/local-data/* (the data plane) and /api/photos/cover.
  *
  * The invariant: every root-absolute same-origin path in browser code goes
- * through withBasePath() (src/lib/base-path.ts). This has two guards:
- *   1. a static scan that fails if any un-wrapped absolute client call reappears;
- *   2. a behavioral check that the wrapped calls actually resolve under the
- *      basePath when NEXT_PUBLIC_STARKEEP_APP_BASE_PATH is set.
+ * through withBasePath() (src/lib/base-path.ts). This file is the static guard:
+ * a scan that fails if any un-wrapped absolute client call reappears. The
+ * behavioral counterpart — that wrapped calls actually resolve under the
+ * basePath when NEXT_PUBLIC_STARKEEP_APP_BASE_PATH is set — lives in
+ * data-client.test.ts (resolveDataSource).
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC_DIR = join(PKG_DIR, "src");
@@ -63,47 +64,5 @@ describe("no root-absolute same-origin client call escapes withBasePath", () => 
       violations,
       `Root-absolute client calls must use withBasePath() or they 404 under /apps/photos in cloud:\n${violations.join("\n")}`,
     ).toEqual([]);
-  });
-});
-
-describe("data-server-client sync endpoints carry the app basePath", () => {
-  const savedBasePath = process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
-  let fetchMock: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.resetModules();
-    if (savedBasePath === undefined) delete process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
-    else process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = savedBasePath;
-  });
-
-  it("prefixes /api/local-data/sync/* with /apps/photos in cloud", async () => {
-    process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = "/apps/photos";
-    vi.resetModules(); // re-read basePath into LOCAL_BASE at import time
-    const { getSyncStatus, triggerSyncNow } = await import("../src/lib/data-server-client");
-
-    await getSyncStatus();
-    await triggerSyncNow();
-
-    expect(fetchMock).toHaveBeenCalledWith("/apps/photos/api/local-data/sync/status");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/apps/photos/api/local-data/sync/now",
-      { method: "POST" },
-    );
-  });
-
-  it("leaves paths un-prefixed in local dev (empty basePath)", async () => {
-    delete process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
-    vi.resetModules();
-    const { getSyncStatus } = await import("../src/lib/data-server-client");
-
-    await getSyncStatus();
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/local-data/sync/status");
   });
 });

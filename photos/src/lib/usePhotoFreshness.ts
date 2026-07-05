@@ -8,14 +8,14 @@ import { photoRecordToAppImage } from "./photoRecordToAppImage";
 const POLL_INTERVAL_MS = 30_000;
 const RESUME_FETCH_THRESHOLD_MS = 30_000;
 
-interface UsePhotoSyncOptions {
+interface UsePhotoFreshnessOptions {
   onInitialLoad: (images: AppImage[]) => void;
   onMerge: (images: AppImage[]) => void;
   onLoadingChange: (loading: boolean) => void;
   onError: (message: string) => void;
 }
 
-export interface PhotoSyncControls {
+export interface PhotoFreshnessControls {
   /**
    * Force an immediate listPhotosSince and merge. Equivalent to a synthetic
    * SSE kick — call after any client-driven server mutation (uploads,
@@ -51,7 +51,7 @@ function getFreshnessStrategy(): Promise<FreshnessStrategy> {
   return strategyPromise;
 }
 
-export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoSyncOptions): PhotoSyncControls {
+export function usePhotoFreshness({ onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoFreshnessOptions): PhotoFreshnessControls {
   const cursorRef = useRef<string | null>(null);
   const hiddenAtRef = useRef<number | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -124,7 +124,7 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
     const es = new EventSource(withBasePath("/api/local-data/events"));
     esRef.current = es;
     es.onmessage = () => { void fetchSince(); };
-    es.onerror = () => { console.warn("[usePhotoSync] SSE error, reconnecting..."); };
+    es.onerror = () => { console.warn("[usePhotoFreshness] SSE error, reconnecting..."); };
   }, [disconnectSSE, fetchSince]);
 
   useEffect(() => {

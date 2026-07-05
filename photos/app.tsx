@@ -9,7 +9,6 @@ import {
 import {
   addPhotoFromPath,
   getPhotoFileUrls,
-  triggerSyncNow,
   type PhotoRecord,
 } from "./src/lib/data-server-client";
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
@@ -18,9 +17,9 @@ import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { CoverImageBanner } from "./src/lib/CoverImage";
 import { downsizeImage } from "./src/lib/image-utils";
-import { resolveAppApiSource, getDataTarget } from "./src/lib/data-client";
+import { resolveAppApiSource } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
-import { usePhotoSync } from "./src/lib/usePhotoSync";
+import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
 
 
 function useFullSizeUrlCache() {
@@ -80,8 +79,6 @@ async function generateThumbnail(
 ): Promise<void> {
   try {
     const { url, headers: authHeaders } = await resolveResizeEndpoint();
-    const target = await getDataTarget();
-    const isLocal = target.kind === "local";
     const headers = { "Content-Type": "application/json", ...authHeaders };
     if (thumbnailStrategy === "browser") {
       // Generate thumbnail in-browser using Canvas, then POST it as a new record
@@ -92,7 +89,8 @@ async function generateThumbnail(
         headers,
         body: JSON.stringify({ targetId: record.id }),
       });
-      if (res.ok && isLocal) triggerSyncNow().catch(() => {});
+      // Thumbnail is a shared-record write; core's sync supervisor
+      // auto-schedules the push. onCreated() just refreshes the local view.
       if (res.ok) onCreated();
       void result; // generation handled server-side via /api/resize
 
@@ -104,9 +102,6 @@ async function generateThumbnail(
         headers,
         body: JSON.stringify({ targetId: record.id }),
       });
-      if (res.ok && thumbnailStrategy === "remote-sharp" && isLocal) {
-        triggerSyncNow().catch(() => {});
-      }
       if (res.ok) onCreated();
     }
   } catch {
@@ -168,7 +163,7 @@ function PhotosAppInner() {
           method: "POST",
           headers,
           body: JSON.stringify({ targetId: id }),
-        }).then((res) => { if (res.ok) sync.kick(); }).catch(() => {});
+        }).then((res) => { if (res.ok) freshness.kick(); }).catch(() => {});
       });
     })();
   }, [orphanIds]);
@@ -184,7 +179,7 @@ function PhotosAppInner() {
         : selectedDisplayImage)
     : null;
 
-  const sync = usePhotoSync({
+  const freshness = usePhotoFreshness({
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
     onMerge: (images) => dispatch({ type: "UPSERT_IMAGES", images }),
     onLoadingChange: (loading) => dispatch({ type: "SET_LOADING", loading }),
@@ -214,7 +209,7 @@ function PhotosAppInner() {
       // Mark as submitted before generateThumbnail fires so the backfill effect
       // never picks up this original and creates a second thumbnail.
       backfilledRef.current.add(record.id);
-      generateThumbnail(record, file, thumbnailStrategy, sync.kick).catch(() => {});
+      generateThumbnail(record, file, thumbnailStrategy, freshness.kick).catch(() => {});
     } catch (err) {
       console.error("[photos] Upload failed:", err);
       setError(err instanceof Error ? err.message : "Failed to add photo");

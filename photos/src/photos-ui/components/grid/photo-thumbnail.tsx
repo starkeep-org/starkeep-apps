@@ -2,12 +2,6 @@ import type { AppImage } from "@/photos-lib";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { useInView } from "../../hooks/use-in-view";
 
-const ORIENTATION_TRANSFORMS: Record<number, string> = {
-  3: "rotate(180deg)",
-  6: "rotate(90deg)",
-  8: "rotate(270deg)",
-};
-
 interface PhotoThumbnailProps {
   image: AppImage;
   onSelect: (id: string) => void;
@@ -22,10 +16,6 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // Only thumbnail records (parentId !== null) have a small image to display.
   // Originals with parentId === null are placeholders — their thumbnail is being generated.
   const isThumbnail = image.parentId !== null;
-  const transform =
-    image.exif.orientation
-      ? (ORIENTATION_TRANSFORMS[image.exif.orientation] ?? "none")
-      : "none";
   const src = isThumbnail && inView ? getFullSizeSrc(image.id) : null;
 
   return (
@@ -54,8 +44,12 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
             width: "100%",
             height: "100%",
             objectFit: "cover",
-            transform,
-            transition: "transform 0.1s ease",
+            // Let the browser apply EXIF orientation (the default; set
+            // explicitly so a global reset can't leave a rotated image
+            // sideways). Never also rotate via CSS transform — that would
+            // double-apply the rotation. Normalized thumbnails carry no
+            // orientation anyway, so this is a defensive no-op for them.
+            imageOrientation: "from-image",
           }}
         />
       ) : (

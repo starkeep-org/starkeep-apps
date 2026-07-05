@@ -3,11 +3,10 @@ import type { AppImage } from "@/photos-lib";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { usePhotoUrls } from "../../context/photo-url-context";
 
-const ORIENTATION_TRANSFORMS: Record<number, string> = {
-  3: "rotate(180deg)",
-  6: "rotate(90deg)",
-  8: "rotate(270deg)",
-};
+// EXIF orientations 5–8 rotate the image by ±90°, so the *displayed* image
+// swaps width and height relative to the stored (un-oriented) pixel
+// dimensions. We use this to proportion the container to what's actually shown.
+const ORIENTATION_SWAPS_AXES: Record<number, true> = { 5: true, 6: true, 7: true, 8: true };
 
 interface PhotoViewerProps {
   image: AppImage;
@@ -31,7 +30,14 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // ?include=metadata), so the placeholder box is proportioned from real
   // width/height rather than a fixed rectangle. Null only when metadata hasn't
   // been extracted/backfilled yet — then we fall back to a neutral box.
-  const ratio = image.width > 0 && image.height > 0 ? image.width / image.height : null;
+  // Proportion the placeholder/box to the image as the browser will *display*
+  // it. The browser auto-applies EXIF orientation (image-orientation defaults
+  // to from-image), so for a rotated original the displayed width/height are
+  // swapped relative to the stored pixel dimensions.
+  const swapAxes = image.exif.orientation ? ORIENTATION_SWAPS_AXES[image.exif.orientation] ?? false : false;
+  const displayWidth = swapAxes ? image.height : image.width;
+  const displayHeight = swapAxes ? image.width : image.height;
+  const ratio = displayWidth > 0 && displayHeight > 0 ? displayWidth / displayHeight : null;
   // The grid/sync-supplied `image` carries no enriched fields, so its caption is
   // always null here. The info panel resolves the assembled record and reports
   // the persisted caption (and later edits) up via onCaptionChange.
@@ -48,10 +54,6 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
-
-  const transform = image.exif.orientation
-    ? ORIENTATION_TRANSFORMS[image.exif.orientation] ?? "none"
-    : "none";
 
   return (
     <div
@@ -139,7 +141,11 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
                 width: "100%",
                 height: "100%",
                 objectFit: "contain",
-                transform,
+                // Let the browser apply EXIF orientation (this is the default,
+                // but set explicitly so a global reset can't turn it off and
+                // leave rotated originals sideways). We deliberately do NOT
+                // also rotate via CSS transform, which would double-apply.
+                imageOrientation: "from-image",
                 opacity: loaded ? 1 : 0,
                 transition: "opacity 0.3s ease",
                 cursor: "pointer",

@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 /**
- * Full-size viewer loading state: when a photo is opened, its signed URL is a
- * guaranteed cache miss (the grid only prefetched thumbnail-record URLs, the
- * viewer resolves the original), so getFullSizeSrc first returns null and the
- * large original then has to download. PhotoViewer must show a skeleton across
- * both gaps and never render a bare <img> with an absent/unloaded src — that
- * would flash the browser's broken-image glyph.
+ * Full-size viewer loading state. The list is fetched with ?include=metadata,
+ * so records carry real width/height — the loader box is proportioned from those
+ * dimensions (not a fixed rectangle, and no thumbnail-measurement hack). While
+ * the full-size original downloads the viewer shows a plain gray pulse skeleton
+ * that shares the exact same box as the image, then cross-fades the image in.
+ * The viewer never renders a bare <img> with an absent/unloaded src, which would
+ * flash the browser's broken-image glyph. When dimensions are absent (metadata
+ * not yet backfilled) it falls back to a fixed-height box.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, cleanup, fireEvent } from "@testing-library/react";
@@ -61,52 +63,65 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("PhotoViewer loading skeleton", () => {
-  // The <img> is display:none until loaded, so it's absent from the a11y tree
-  // and getByRole("img") can't see it — query the DOM directly.
-  const img = (c: HTMLElement) => c.querySelector("img") as HTMLImageElement | null;
+describe("PhotoViewer proportioning from record dimensions", () => {
+  it("shapes the loader box to the record's real aspect ratio — no thumbnail measurement", () => {
+    // Portrait 600x800 → ratio 0.75, taken straight from width/height.
+    const getSrc = vi.fn().mockReturnValue("https://signed/full");
+    renderViewer(appImage({ width: 600, height: 800 }), getSrc);
 
-  it("shows the skeleton and no <img> while the signed URL is still resolving", () => {
-    const getSrc = vi.fn().mockReturnValue(null);
-    const { container } = renderViewer(appImage(), getSrc);
-
-    expect(getSrc).toHaveBeenCalledWith("orig-1");
-    expect(screen.getByTestId("photo-skeleton")).toBeTruthy();
-    // No bare <img> with an absent src — that's what flashed the broken glyph.
-    expect(img(container)).toBeNull();
+    const wrapper = screen.getByTestId("photo-skeleton").parentElement as HTMLElement;
+    // CSS normalizes the numeric ratio to "<n> / 1".
+    expect(wrapper.style.aspectRatio).toMatch(/^0\.75\b/);
   });
 
-  it("keeps the <img> hidden behind the skeleton until it finishes loading", () => {
+  it("is a plain gray pulse div (never a blurred thumbnail image)", () => {
     const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    const { container } = renderViewer(appImage(), getSrc);
+    renderViewer(appImage({ width: 800, height: 600 }), getSrc);
 
-    const el = img(container)!;
-    expect(el.src).toBe("https://signed/full");
-    // Present in the DOM (so the browser downloads it) but not yet visible.
-    expect(el.style.display).toBe("none");
-    expect(screen.getByTestId("photo-skeleton")).toBeTruthy();
+    const skeleton = screen.getByTestId("photo-skeleton");
+    expect(skeleton.tagName).toBe("DIV");
+    expect(skeleton.style.animation).toContain("starkeep-skeleton-pulse");
+    // No blur-up: the loader carries no image src and no blur filter.
+    expect(skeleton.getAttribute("src")).toBeNull();
+    expect(skeleton.style.filter).toBe("");
+
+    const wrapper = skeleton.parentElement as HTMLElement;
+    expect(wrapper.style.aspectRatio).toMatch(/^1\.3333/);
+  });
+});
+
+describe("PhotoViewer skeleton → image cross-fade", () => {
+  // The skeleton is aria-hidden, so getByRole("img") returns only the real
+  // full-size image.
+  const skeleton = () => screen.getByTestId("photo-skeleton");
+  const fullImg = () => screen.getByRole("img") as HTMLImageElement;
+
+  it("shows the gray skeleton with the full image faded out over it while downloading", () => {
+    const getSrc = vi.fn().mockReturnValue("https://signed/full");
+    renderViewer(appImage(), getSrc);
+
+    expect(skeleton()).toBeTruthy();
+    // Full image is mounted (downloading) but transparent until it loads.
+    expect(fullImg().src).toBe("https://signed/full");
+    expect(fullImg().style.opacity).toBe("0");
   });
 
-  it("reveals the image and drops the skeleton once onLoad fires", () => {
+  it("cross-fades the full image in and removes the skeleton once it loads", () => {
     const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    const { container } = renderViewer(appImage(), getSrc);
+    renderViewer(appImage(), getSrc);
 
-    const el = img(container)!;
-    act(() => fireEvent.load(el));
+    act(() => fireEvent.load(fullImg()));
 
-    expect(el.style.display).toBe("block");
+    expect(fullImg().style.opacity).toBe("1");
     expect(screen.queryByTestId("photo-skeleton")).toBeNull();
   });
 
-  it("re-shows the skeleton when the resolved src changes (opening a different photo)", () => {
-    // First render resolves to a real URL and loads.
+  it("resets to the faded-out state when the resolved src changes (opening a different photo)", () => {
     const getSrc = vi.fn().mockReturnValue("https://signed/a");
-    const { container, rerender } = renderViewer(appImage({ id: "orig-a" }), getSrc);
-    act(() => fireEvent.load(img(container)!));
-    expect(screen.queryByTestId("photo-skeleton")).toBeNull();
+    const { rerender } = renderViewer(appImage({ id: "orig-a" }), getSrc);
+    act(() => fireEvent.load(fullImg()));
+    expect(fullImg().style.opacity).toBe("1");
 
-    // A new photo resolves to a different URL — skeleton must return until that
-    // image loads, rather than showing the previous (stale) frame as "loaded".
     getSrc.mockReturnValue("https://signed/b");
     rerender(
       <PhotoUrlProvider getThumbnailSrc={getSrc} getFullSizeSrc={getSrc}>
@@ -114,9 +129,41 @@ describe("PhotoViewer loading skeleton", () => {
       </PhotoUrlProvider>,
     );
 
-    const el = img(container)!;
-    expect(el.src).toBe("https://signed/b");
-    expect(el.style.display).toBe("none");
+    // New photo: full image transparent again until it loads, skeleton shown.
+    expect(fullImg().src).toBe("https://signed/b");
+    expect(fullImg().style.opacity).toBe("0");
     expect(screen.getByTestId("photo-skeleton")).toBeTruthy();
+  });
+});
+
+describe("PhotoViewer without dimensions (metadata pending)", () => {
+  const img = (c: HTMLElement) => c.querySelector("img") as HTMLImageElement | null;
+
+  it("shows a fixed-height box and no <img> while the signed URL is still resolving", () => {
+    const getSrc = vi.fn().mockReturnValue(null);
+    const { container } = renderViewer(appImage({ width: 0, height: 0 }), getSrc);
+
+    const skeleton = screen.getByTestId("photo-skeleton");
+    expect(skeleton).toBeTruthy();
+    // Box keeps a fixed height when there's no aspect ratio to shape it.
+    const wrapper = skeleton.parentElement as HTMLElement;
+    expect(wrapper.style.aspectRatio).toBe("");
+    expect(wrapper.style.height).toContain("100vh");
+    // No bare <img> with an absent src — that's what flashed the broken glyph.
+    expect(img(container)).toBeNull();
+  });
+
+  it("keeps the <img> hidden behind the box until it finishes loading, then reveals it", () => {
+    const getSrc = vi.fn().mockReturnValue("https://signed/full");
+    const { container } = renderViewer(appImage({ width: 0, height: 0 }), getSrc);
+
+    const el = img(container)!;
+    expect(el.src).toBe("https://signed/full");
+    expect(el.style.opacity).toBe("0");
+    expect(screen.getByTestId("photo-skeleton")).toBeTruthy();
+
+    act(() => fireEvent.load(el));
+    expect(el.style.opacity).toBe("1");
+    expect(screen.queryByTestId("photo-skeleton")).toBeNull();
   });
 });

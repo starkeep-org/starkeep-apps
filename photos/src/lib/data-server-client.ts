@@ -15,6 +15,14 @@ export interface PhotoRecord {
   object_storage_key: string;
   original_filename: string | null;
   parent_id: string | null;
+  /**
+   * Per-category metadata (dimensions, EXIF, …) embedded by the data server
+   * when the list is fetched with ?include=metadata. `undefined` when the field
+   * wasn't requested; `null` when requested but the record has no metadata row
+   * yet (e.g. bytes ingested by a path that doesn't extract metadata, pending
+   * backfill).
+   */
+  metadata?: PhotoMetadataRow | null;
 }
 
 /**
@@ -238,7 +246,7 @@ async function extractImageMetadata(
 export async function listPhotos(): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
-    "/data/records?limit=500",
+    "/data/records?limit=500&include=metadata",
     source,
   );
   return result.records;
@@ -247,7 +255,7 @@ export async function listPhotos(): Promise<PhotoRecord[]> {
 export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
-    `/data/records?limit=500&updated_after=${encodeURIComponent(updatedAfter)}`,
+    `/data/records?limit=500&include=metadata&updated_after=${encodeURIComponent(updatedAfter)}`,
     source,
   );
   return result.records;

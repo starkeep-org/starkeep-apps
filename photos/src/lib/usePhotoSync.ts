@@ -67,7 +67,7 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
     onLoadingChange(true);
     try {
       const records = await listPhotos();
-      const images = records.map((r) => photoRecordToAppImage(r, null));
+      const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
       const cursor = computeCursor(images);
       if (cursor) cursorRef.current = cursor;
       onInitialLoad(images);
@@ -88,7 +88,7 @@ export function usePhotoSync({ onInitialLoad, onMerge, onLoadingChange, onError 
     try {
       const records = await listPhotosSince(cursor);
       if (records.length > 0) {
-        const images = records.map((r) => photoRecordToAppImage(r, null));
+        const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
         const newCursor = computeCursor(images);
         if (newCursor && newCursor > cursor) cursorRef.current = newCursor;
         onMerge(images);

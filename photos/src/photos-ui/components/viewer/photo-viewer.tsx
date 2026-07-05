@@ -18,7 +18,7 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   const { getFullSizeSrc } = usePhotoUrls();
   const [infoVisible, setInfoVisible] = useState(false);
   // Track whether the full-size image has actually finished downloading. Until
-  // then we show a skeleton instead of a bare <img>, which would otherwise
+  // then we show a placeholder instead of a bare <img>, which would otherwise
   // render the browser's broken-image glyph while its signed URL is still being
   // fetched (a cache miss on open) and while the original downloads.
   const fullSizeSrc = getFullSizeSrc(image.id) ?? undefined;
@@ -26,6 +26,12 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   useEffect(() => {
     setLoaded(false);
   }, [fullSizeSrc]);
+
+  // Dimensions come with the record now (the list is fetched with
+  // ?include=metadata), so the placeholder box is proportioned from real
+  // width/height rather than a fixed rectangle. Null only when metadata hasn't
+  // been extracted/backfilled yet — then we fall back to a neutral box.
+  const ratio = image.width > 0 && image.height > 0 ? image.width / image.height : null;
   // The grid/sync-supplied `image` carries no enriched fields, so its caption is
   // always null here. The info panel resolves the assembled record and reports
   // the persisted caption (and later edits) up via onCaptionChange.
@@ -88,38 +94,60 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
-        {!loaded && (
-          <div
-            aria-hidden
-            data-testid="photo-skeleton"
-            style={{
-              width: "min(90vw, 900px)",
-              height: "calc(100vh - 200px)",
-              borderRadius: 8,
-              background:
-                "linear-gradient(100deg, rgba(255,255,255,0.04) 30%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.04) 70%)",
-              backgroundSize: "200% 100%",
-              animation: "starkeep-skeleton-shimmer 1.4s ease-in-out infinite",
-            }}
-          />
-        )}
-        {fullSizeSrc && (
-          <img
-            src={fullSizeSrc}
-            alt={image.originalFilename}
-            onClick={() => setInfoVisible((v) => !v)}
-            onLoad={() => setLoaded(true)}
-            style={{
-              maxWidth: "90vw",
-              maxHeight: "calc(100vh - 200px)",
-              objectFit: "contain",
-              transform,
-              display: loaded ? "block" : "none",
-              cursor: "pointer",
-            }}
-          />
-        )}
-        <style>{`@keyframes starkeep-skeleton-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }`}</style>
+        {/* One box holds both the skeleton and the image, sharing the exact same
+            footprint so the photo never renders smaller than its loader. When
+            dimensions are known the box is proportioned to the real aspect
+            ratio; when they're not (metadata pending) the box keeps a fixed
+            height and the image letterboxes into it. */}
+        <div
+          style={{
+            position: "relative",
+            ...(ratio
+              ? {
+                  width: `min(90vw, calc((100vh - 96px) * ${ratio}))`,
+                  aspectRatio: ratio,
+                  maxWidth: "90vw",
+                  maxHeight: "calc(100vh - 96px)",
+                }
+              : {
+                  width: "min(90vw, 900px)",
+                  height: "calc(100vh - 96px)",
+                }),
+            overflow: "hidden",
+          }}
+        >
+          {!loaded && (
+            <div
+              aria-hidden
+              data-testid="photo-skeleton"
+              style={{
+                position: "absolute",
+                inset: 0,
+                animation: "starkeep-skeleton-pulse 1.5s ease-in-out infinite",
+              }}
+            />
+          )}
+          {fullSizeSrc && (
+            <img
+              src={fullSizeSrc}
+              alt={image.originalFilename}
+              onClick={() => setInfoVisible((v) => !v)}
+              onLoad={() => setLoaded(true)}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+                transform,
+                opacity: loaded ? 1 : 0,
+                transition: "opacity 0.3s ease",
+                cursor: "pointer",
+              }}
+            />
+          )}
+        </div>
+        <style>{`@keyframes starkeep-skeleton-pulse { 0%, 100% { background-color: rgba(255, 255, 255, 0.07); } 50% { background-color: rgba(255, 255, 255, 0.16); } }`}</style>
 
         {caption && (
           <div style={{ color: "#ddd", fontSize: 14, marginTop: 16, maxWidth: "90vw", textAlign: "center", padding: "0 16px" }}>

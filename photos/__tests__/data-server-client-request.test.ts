@@ -11,6 +11,8 @@ import { resolveDataSource } from "../src/lib/data-client";
 import {
   getPhotoFileUrl,
   getPhotoFileUrls,
+  listPhotos,
+  listPhotosSince,
   retryDelayMs,
   FILE_URL_BATCH_MAX,
 } from "../src/lib/data-server-client";
@@ -193,5 +195,30 @@ describe("getPhotoFileUrls batching", () => {
     expect(result.size).toBe(ids.length);
     expect(result.get("id-0")).toBe("https://signed/id-0");
     expect(result.get(`id-${FILE_URL_BATCH_MAX + 4}`)).toBe(`https://signed/id-${FILE_URL_BATCH_MAX + 4}`);
+  });
+});
+
+describe("listPhotos enrichment", () => {
+  it("requests ?include=metadata and passes embedded metadata through", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response(200, { records: [{ id: "r1", metadata: { recordId: "r1", width: 3, height: 4 } }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const records = await settle(listPhotos());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain("/data/records");
+    expect(url).toContain("include=metadata");
+    expect(records[0]!.metadata).toMatchObject({ width: 3, height: 4 });
+  });
+
+  it("listPhotosSince also requests enrichment alongside the cursor", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response(200, { records: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await settle(listPhotosSince("2026-01-01T00:00:00.000Z"));
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain("include=metadata");
+    expect(url).toContain("updated_after=");
   });
 });

@@ -15,3 +15,8 @@ pnpm-lock.yaml
 */public/starkeep-runtime-config.json
 */infra/photos-cloud-config.json
 */infra/src/web-assets.json
+
+# Environment files
+.env
+.env.*
+!.env.example

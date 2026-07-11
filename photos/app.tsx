@@ -144,7 +144,18 @@ function PhotosAppInner() {
   const thumbnails = Array.from(newestThumbnailByParent.values());
   const thumbnailedIds = new Set(thumbnails.map((t) => t.parentId!));
   const fallbackOriginals = originals.filter((img) => !thumbnailedIds.has(img.id));
-  const displayImages = [...thumbnails, ...fallbackOriginals];
+  // Sort client-side so display order is deterministic and identical across the
+  // local and cloud backends, independent of each server's query order and of
+  // the incremental-merge append drift in UPSERT_IMAGES. Newest first by
+  // effectiveDateTaken (the same field the grid groups days by), with id as a
+  // stable tiebreak. effectiveDateTaken is an ISO-8601 string, so lexical
+  // comparison is chronological.
+  const displayImages = [...thumbnails, ...fallbackOriginals].sort((a, b) => {
+    if (a.effectiveDateTaken !== b.effectiveDateTaken) {
+      return a.effectiveDateTaken < b.effectiveDateTaken ? 1 : -1;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 
   // Backfill thumbnails for orphan originals. A ref prevents the same ID from
   // being submitted more than once per session, even if the effect re-fires.

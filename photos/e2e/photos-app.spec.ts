@@ -54,6 +54,8 @@ interface SharedRecord {
   type: string;
   parent_id: string | null;
   original_filename: string | null;
+  /** Advisory `<appId>/<purpose>` interest-filter marker; null for originals. */
+  label: string | null;
   [k: string]: unknown;
 }
 
@@ -110,6 +112,9 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
   const record = await eventually(() => findRecord(PNG_NAME));
   pngRecordId = record.id;
   expect(record.type).toBe("image/png");
+  // An uploaded original is general-interest shared data — no advisory label.
+  // (Only derived thumbnails carry photos/thumbnail; see the thumbnail test.)
+  expect(record.label).toBeNull();
 
   // The live UI upload now extracts dimensions (createImageBitmap) + EXIF in
   // the browser and writes them through the same proxy, so the shared image
@@ -165,12 +170,21 @@ test("a thumbnail is registered as a shared derived record with parentId", async
   // Re-encoded as JPEG and named after its original.
   expect(thumb.type).toBe("image/jpeg");
   expect(thumb.original_filename).toBe(`thumb_${PNG_NAME}`);
+  // The thumbnail carries the advisory label so other image-declaring apps can
+  // filter it out — that's the whole point of the label. Photos sets it on the
+  // /api/resize write path (see app/api/resize/route.ts).
+  expect(thumb.label).toBe("photos/thumbnail");
 
   // Shared semantics: another app with image access (Drive) sees the
-  // thumbnail and its parent link — it's platform data, not photos-private.
+  // thumbnail, its parent link, AND the advisory label — it's platform data,
+  // not photos-private, and the label rides the shared-record sync.
   const drive = await driveCreds(ldsUrl());
   const driveView = (await listRecords(drive)) as unknown as SharedRecord[];
-  expect(driveView.find((r) => r.id === thumb.id)?.parent_id).toBe(pngRecordId);
+  const driveThumb = driveView.find((r) => r.id === thumb.id);
+  expect(driveThumb?.parent_id).toBe(pngRecordId);
+  expect(driveThumb?.label).toBe("photos/thumbnail");
+  // …and the original stays unlabeled in the cross-app view.
+  expect(driveView.find((r) => r.id === pngRecordId)?.label).toBeNull();
 });
 
 test("captions live in the app-private image_enriched table, not in shared data", async ({

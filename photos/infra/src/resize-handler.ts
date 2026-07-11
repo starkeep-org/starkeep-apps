@@ -147,6 +147,10 @@ export async function handler(event: APIGatewayEvent) {
         contentHash,
         sizeBytes: resizedBytes.byteLength,
         parentId: targetId,
+        // Advisory interest-filter marker: this is a derived thumbnail, not a
+        // photo the user uploaded. Other image-declaring apps can filter it out
+        // via the `<appId>/<purpose>` label convention. Originals stay unlabeled.
+        label: "photos/thumbnail",
       }),
     });
     if (!createRes.ok) {

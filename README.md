@@ -1,6 +1,6 @@
 # Starkeep apps
 
-First-party apps built on the public Starkeep SDK. Everything here installs through the same path a third-party app would — there is no privileged build wiring against `starkeep-core`.
+First-party apps built on the public Starkeep SDK. 
 
 The shipping app today is `photos/` (Next.js, deployable both locally and to a per-user AWS account via OpenNext).
 

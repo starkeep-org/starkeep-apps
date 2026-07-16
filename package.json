@@ -1,4 +1,10 @@
 {
   "private": true,
-  "name": "starkeep-workspace"
+  "name": "starkeep-workspace",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
+  }
 }

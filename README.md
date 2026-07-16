@@ -4,6 +4,8 @@ First-party apps built on the public Starkeep SDK.
 
 The shipping app today is `photos/` (Next.js, deployable both locally and to a per-user AWS account via OpenNext).
 
+Run `pnpm install` at the repo root before installing or starting any app from admin-web — locally installed apps run directly out of this checkout, so their dependencies must be present.
+
 ## Authoring a third-party app
 
 A third-party app is any directory that contains a `starkeep.manifest.json`, sits inside a parent directory that admin-web is configured to scan, and depends on the published `@starkeep/*` packages.

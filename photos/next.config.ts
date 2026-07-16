@@ -9,7 +9,9 @@ const basePath = process.env.STARKEEP_APP_BASE_PATH ?? "";
 const nextConfig: NextConfig = {
   basePath,
   turbopack: {
-    root: resolve(".."),
+    // Anchor to this file, not the process cwd — the app can be launched from
+    // outside the package dir (IDE runners, direct `next dev <dir>`).
+    root: resolve(import.meta.dirname, ".."),
   },
   async rewrites() {
     return [

@@ -19,6 +19,16 @@
         "rationale": "Photos app stores raster images and writes EXIF/dimensions extracted from uploaded image files into the image metadata table."
       }
     ],
+    "capabilities": [
+      {
+        "name": "bedrock.invoke",
+        "models": ["amazon.nova-lite", "anthropic.claude-haiku-4-5", "amazon.nova-canvas-v1:0", "amazon.nova-reel-v1:1"],
+        "required": false,
+        "requestedMonthlyBudgetUsd": 20,
+        "reports": ["input:megapixels"],
+        "rationale": "Generate captions for your photos with a cloud vision model, and generate images (e.g. album art) on request. Your photos stay in your Starkeep cloud; only images you caption are sent to the model, up to about $20/month."
+      }
+    ],
     "appSpecificSyncable": {
       "files": true,
       "tables": [

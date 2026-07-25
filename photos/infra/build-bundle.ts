@@ -22,6 +22,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -32,6 +33,9 @@ import { build } from "esbuild";
 
 const INFRA_DIR = dirname(fileURLToPath(import.meta.url)); // .../photos/infra
 const PHOTOS_DIR = resolve(INFRA_DIR, ".."); // .../photos
+
+// OpenNext's entry, renamed out of the way so our wrapper can own index.mjs.
+const UPSTREAM_ENTRY = "open-next-entry.mjs";
 
 const APP_BASE_PATH = process.env.STARKEEP_APP_BASE_PATH;
 if (!APP_BASE_PATH) {
@@ -88,7 +92,27 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
     // machine, which obviously don't resolve inside the Lambda sandbox.
     cpSync(serverFnDir, stagingDir, { recursive: true, verbatimSymlinks: true });
 
-    // 2b. Bundle Next.js static assets into the Lambda zip and overwrite
+    // 2a. Move OpenNext's entry aside so our wrapper can take over index.mjs
+    //     without destroying what it delegates to. Don't reach past this file
+    //     for the handler: OpenNext's layout below the root varies with the
+    //     packagePath it derives from its own monorepo detection (a lock file
+    //     anywhere at or above the app dir), so it's `photos/index.mjs` in a
+    //     workspace but a flat `index.mjs` if that detection lands on the app
+    //     dir itself. The root entry is the one fixed point — either the real
+    //     handler or a re-export shim pointing at it, and the shim's relative
+    //     import still resolves from the staging root after the rename.
+    const upstreamEntry = join(stagingDir, UPSTREAM_ENTRY);
+    if (!existsSync(join(stagingDir, "index.mjs"))) {
+      console.error(
+        `OpenNext entry not found at ${join(stagingDir, "index.mjs")}.\n` +
+          "Expected an ESM entry — check whether OpenNext emitted index.cjs " +
+          "instead (its outfile extension follows the configured runtime).",
+      );
+      process.exit(1);
+    }
+    renameSync(join(stagingDir, "index.mjs"), upstreamEntry);
+
+    // 2b. Bundle Next.js static assets into the Lambda zip and replace
     //     the OpenNext entry with a wrapper that serves /_next/* and
     //     BUILD_ID from local disk before delegating to OpenNext. OpenNext
     //     normally expects these to live on a CDN/S3 origin (see
@@ -150,7 +174,7 @@ function isStaticAssetPath(rest) {
 let upstreamHandler;
 async function getUpstream() {
   if (!upstreamHandler) {
-    const mod = await import("./photos/index.mjs");
+    const mod = await import(${JSON.stringify(`./${UPSTREAM_ENTRY}`)});
     upstreamHandler = mod.handler;
   }
   return upstreamHandler;

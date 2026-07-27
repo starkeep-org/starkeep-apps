@@ -135,10 +135,12 @@ export async function POST(req: NextRequest) {
       contentHash,
       sizeBytes: resizedBytes.byteLength,
       parentId: targetId,
-      // Advisory interest-filter marker: this is a derived thumbnail, not a
-      // photo the user uploaded. Other image-declaring apps can filter it out
-      // via the `<appId>/<purpose>` label convention. Originals stay unlabeled.
-      label: "photos/thumbnail",
+      // Interest marker for other image-declaring apps: this is a derived
+      // thumbnail, not a photo the user uploaded. Written as a cross-app
+      // label in the same request as the record — the namespace comes from
+      // our authenticated identity, so no `photos/` prefix is sent.
+      // Originals stay unlabelled.
+      labels: [{ key: "thumbnail" }],
     }),
   });
   if (!createRes.ok) {

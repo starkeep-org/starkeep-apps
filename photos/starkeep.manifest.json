@@ -19,6 +19,12 @@
         "rationale": "Photos app stores raster images and writes EXIF/dimensions extracted from uploaded image files into the image metadata table."
       }
     ],
+    "labelKeys": [
+      {
+        "key": "thumbnail",
+        "description": "A re-sized thumbnail Photos derived from another image, not a photo the user uploaded. Other image apps can filter these out."
+      }
+    ],
     "appSpecificSyncable": {
       "files": true,
       "tables": [

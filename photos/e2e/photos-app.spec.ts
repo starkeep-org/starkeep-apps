@@ -54,8 +54,12 @@ interface SharedRecord {
   type: string;
   parent_id: string | null;
   original_filename: string | null;
-  /** Advisory `<appId>/<purpose>` interest-filter marker; null for originals. */
-  label: string | null;
+  /**
+   * Present only when the listing asked for `include=labels`. `[]` for a
+   * record no app has labelled — absence of labels is an empty set, not an
+   * unknown.
+   */
+  labels?: Array<{ app_id: string; key: string; value: string | null; label: string }>;
   [k: string]: unknown;
 }
 
@@ -67,7 +71,10 @@ async function imageMetadata(recordId: string): Promise<Record<string, unknown> 
 }
 
 async function findRecord(fileName: string): Promise<SharedRecord> {
-  const records = (await listRecords(photosApp)) as unknown as SharedRecord[];
+  const records = (await listRecords(
+    photosApp,
+    "?include=labels&limit=1000",
+  )) as unknown as SharedRecord[];
   const match = records.find((r) => r.original_filename === fileName && r.parent_id === null);
   if (!match) throw new Error(`no original record for ${fileName} yet`);
   return match;
@@ -112,9 +119,9 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
   const record = await eventually(() => findRecord(PNG_NAME));
   pngRecordId = record.id;
   expect(record.type).toBe("image/png");
-  // An uploaded original is general-interest shared data — no advisory label.
+  // An uploaded original is general-interest shared data — nothing labels it.
   // (Only derived thumbnails carry photos/thumbnail; see the thumbnail test.)
-  expect(record.label).toBeNull();
+  expect(record.labels).toEqual([]);
 
   // The live UI upload now extracts dimensions (createImageBitmap) + EXIF in
   // the browser and writes them through the same proxy, so the shared image
@@ -160,7 +167,10 @@ test("a thumbnail is registered as a shared derived record with parentId", async
   // thumbnail; wait for the derived record to materialize.
   const thumb = await eventually(
     async () => {
-      const records = (await listRecords(photosApp)) as unknown as SharedRecord[];
+      const records = (await listRecords(
+        photosApp,
+        "?include=labels&limit=1000",
+      )) as unknown as SharedRecord[];
       const t = records.find((r) => r.parent_id === pngRecordId);
       if (!t) throw new Error("thumbnail record not registered yet");
       return t;
@@ -170,21 +180,37 @@ test("a thumbnail is registered as a shared derived record with parentId", async
   // Re-encoded as JPEG and named after its original.
   expect(thumb.type).toBe("image/jpeg");
   expect(thumb.original_filename).toBe(`thumb_${PNG_NAME}`);
-  // The thumbnail carries the advisory label so other image-declaring apps can
-  // filter it out — that's the whole point of the label. Photos sets it on the
-  // /api/resize write path (see app/api/resize/route.ts).
-  expect(thumb.label).toBe("photos/thumbnail");
+  // The thumbnail carries Photos' interest marker so other image-declaring
+  // apps can filter it out. Photos writes it as a cross-app label in the same
+  // request as the record (see app/api/resize/route.ts) — the `photos/`
+  // namespace comes from its authenticated identity, never from the body.
+  expect(thumb.labels).toEqual([
+    { app_id: "photos", key: "thumbnail", value: null, label: "photos/thumbnail" },
+  ]);
 
   // Shared semantics: another app with image access (Drive) sees the
-  // thumbnail, its parent link, AND the advisory label — it's platform data,
-  // not photos-private, and the label rides the shared-record sync.
+  // thumbnail, its parent link, AND the label — labels are platform data, not
+  // photos-private, and any app that can read the type sees every app's
+  // labels on it.
   const drive = await driveCreds(ldsUrl());
-  const driveView = (await listRecords(drive)) as unknown as SharedRecord[];
+  const driveView = (await listRecords(
+    drive,
+    "?include=labels&limit=1000",
+  )) as unknown as SharedRecord[];
   const driveThumb = driveView.find((r) => r.id === thumb.id);
   expect(driveThumb?.parent_id).toBe(pngRecordId);
-  expect(driveThumb?.label).toBe("photos/thumbnail");
-  // …and the original stays unlabeled in the cross-app view.
-  expect(driveView.find((r) => r.id === pngRecordId)?.label).toBeNull();
+  expect(driveThumb?.labels?.map((l) => l.label)).toEqual(["photos/thumbnail"]);
+  // …and the original stays unlabelled in the cross-app view.
+  expect(driveView.find((r) => r.id === pngRecordId)?.labels).toEqual([]);
+
+  // The reverse query — the one labels exist for. Drive asks "which records
+  // did photos label as thumbnails?" without knowing anything about Photos.
+  const thumbs = (await listRecords(
+    drive,
+    "?label=photos/thumbnail&limit=1000",
+  )) as unknown as SharedRecord[];
+  expect(thumbs.map((r) => r.id)).toContain(thumb.id);
+  expect(thumbs.map((r) => r.id)).not.toContain(pngRecordId);
 });
 
 test("captions live in the app-private image_enriched table, not in shared data", async ({

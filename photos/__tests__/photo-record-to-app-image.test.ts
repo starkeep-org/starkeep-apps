@@ -82,4 +82,81 @@ describe("photoRecordToAppImage", () => {
     const img = photoRecordToAppImage(record({ original_filename: null }), null);
     expect(img.originalFilename).toBe("REC");
   });
+
+  describe("derivedKind, read off Photos' own labels", () => {
+    // `parent_id` says WHICH record an image came from; the label says HOW.
+    // Reading `parentId !== null` as "is a thumbnail" — which the grid used to
+    // do — rendered every crop as its source's thumbnail.
+    it("types a thumbnail and a crop from their labels", () => {
+      const thumb = photoRecordToAppImage(
+        record({
+          parent_id: "PARENT",
+          labels: [
+            { app_id: "photos", key: "thumbnail-of", value: null, label: "photos/thumbnail-of" },
+          ],
+        }),
+        null,
+      );
+      expect(thumb.derivedKind).toBe("thumbnail");
+
+      const crop = photoRecordToAppImage(
+        record({
+          parent_id: "PARENT",
+          labels: [{ app_id: "photos", key: "crop-of", value: null, label: "photos/crop-of" }],
+        }),
+        null,
+      );
+      expect(crop.derivedKind).toBe("crop");
+      // The edge itself is unchanged — the label types it, it doesn't replace it.
+      expect(crop.parentId).toBe("PARENT");
+    });
+
+    it("is null for an original", () => {
+      expect(photoRecordToAppImage(record({ labels: [] }), null).derivedKind).toBeNull();
+    });
+
+    it("is null when labels were not hydrated at all", () => {
+      // `?include=labels` is opt-in; a list without it must not read as "no
+      // record is derived" in some paths and crash in others.
+      expect(photoRecordToAppImage(record(), null).derivedKind).toBeNull();
+    });
+
+    it("is null for a derived record whose label has not arrived yet", () => {
+      // A record and its labels share a request but not a transaction, so this
+      // state is real and transient. Treating it as "not derived" shows a
+      // placeholder for a moment rather than mis-typing the edge.
+      const img = photoRecordToAppImage(record({ parent_id: "PARENT", labels: [] }), null);
+      expect(img.derivedKind).toBeNull();
+    });
+
+    it("ignores another app's identically-named key", () => {
+      // Hydration carries every app's labels. Namespaces exist so that a
+      // `crop-of` published by someone else is not a collision.
+      const img = photoRecordToAppImage(
+        record({
+          parent_id: "PARENT",
+          labels: [
+            { app_id: "other-app", key: "crop-of", value: null, label: "other-app/crop-of" },
+            { app_id: "other-app", key: "thumbnail-of", value: null, label: "other-app/thumbnail-of" },
+          ],
+        }),
+        null,
+      );
+      expect(img.derivedKind).toBeNull();
+    });
+
+    it("reads Photos' label out of a mixed set", () => {
+      const img = photoRecordToAppImage(
+        record({
+          parent_id: "PARENT",
+          labels: [
+            { app_id: "face-index", key: "faces-detected", value: null, label: "face-index/faces-detected" },
+            { app_id: "photos", key: "thumbnail-of", value: null, label: "photos/thumbnail-of" },
+          ],
+        }),
+        null,
+      );
+      expect(img.derivedKind).toBe("thumbnail");
+    });
+  });
 });

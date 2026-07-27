@@ -49,6 +49,7 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     parentId: "orig-1",
+    derivedKind: "thumbnail",
     width: 400,
     height: 300,
     exif: {
@@ -129,12 +130,41 @@ describe("PhotoThumbnail lazy loading", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("never requests a URL for a placeholder original (parentId === null), even in view", () => {
+  it("never requests a URL for a placeholder original, even in view", () => {
     const getSrc = vi.fn().mockReturnValue("https://signed/never");
-    renderThumbnail(appImage({ id: "orig-2", parentId: null }), getSrc);
+    renderThumbnail(appImage({ id: "orig-2", parentId: null, derivedKind: null }), getSrc);
 
     act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
     expect(getSrc).not.toHaveBeenCalled();
     expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("does not render a CROP as if it were its source's thumbnail", () => {
+    // The bug this discriminator change exists to fix. A crop sets parentId
+    // exactly like a thumbnail does, so the old `parentId !== null` test
+    // matched it and drew the crop into the grid as its source's tile.
+    const getSrc = vi.fn().mockReturnValue("https://signed/crop");
+    renderThumbnail(
+      appImage({ id: "crop-1", parentId: "orig-1", derivedKind: "crop" }),
+      getSrc,
+    );
+
+    act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
+    expect(getSrc).not.toHaveBeenCalled();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("treats a derived record whose label has not arrived yet as a placeholder", () => {
+    // A record and its labels share a request but not a transaction, so a
+    // thumbnail can briefly exist unlabelled. Showing a placeholder for a
+    // moment is the safe direction; mis-typing the edge is not.
+    const getSrc = vi.fn().mockReturnValue("https://signed/pending");
+    renderThumbnail(
+      appImage({ id: "thumb-pending", parentId: "orig-1", derivedKind: null }),
+      getSrc,
+    );
+
+    act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
+    expect(getSrc).not.toHaveBeenCalled();
   });
 });

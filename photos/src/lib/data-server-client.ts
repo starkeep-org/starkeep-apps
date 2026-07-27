@@ -22,6 +22,25 @@ export interface PhotoRecord {
    * backfill).
    */
   metadata?: PhotoMetadataRow | null;
+  /**
+   * Cross-app labels, embedded when the list is fetched with
+   * `?include=labels`. `undefined` when not requested; `[]` when requested and
+   * no app has labelled the record — absence of labels is an empty set, not an
+   * unknown, which is the opposite of `metadata` above.
+   *
+   * Includes *every* app's labels on the record, not just Photos'. Any app
+   * that can read the type sees them all.
+   */
+  labels?: PhotoLabel[];
+}
+
+/** One cross-app label on a record, as the data server renders it. */
+export interface PhotoLabel {
+  app_id: string;
+  key: string;
+  value: string | null;
+  /** Wire/UI rendering of `<app_id>/<key>`; storage has no such string. */
+  label: string;
 }
 
 /**
@@ -245,7 +264,7 @@ async function extractImageMetadata(
 export async function listPhotos(): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
-    "/data/records?limit=500&include=metadata",
+    "/data/records?limit=500&include=metadata,labels",
     source,
   );
   return result.records;
@@ -254,7 +273,7 @@ export async function listPhotos(): Promise<PhotoRecord[]> {
 export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
-    `/data/records?limit=500&include=metadata&updated_after=${encodeURIComponent(updatedAfter)}`,
+    `/data/records?limit=500&include=metadata,labels&updated_after=${encodeURIComponent(updatedAfter)}`,
     source,
   );
   return result.records;

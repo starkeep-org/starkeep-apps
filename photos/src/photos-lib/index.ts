@@ -1,5 +1,5 @@
 // Types
-export type { AppImage, AppImageExif } from "./types/app-image";
+export type { AppImage, AppImageExif, DerivedKind } from "./types/app-image";
 export type { GoogleAlbum, GoogleMediaItem } from "./types/google";
 
 // EXIF reader

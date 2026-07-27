@@ -105,6 +105,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       contentHash,
       sizeBytes: croppedBytes.byteLength,
       parentId: sourceImageId,
+      // Types the parent edge. Without this a crop is indistinguishable from
+      // a thumbnail — both set parent_id, and the grid used to read
+      // `parentId !== null` as "is a thumbnail", so crops rendered as their
+      // source's thumbnail.
+      labels: [{ key: "crop-of" }],
     }),
   });
   if (!createRes.ok) {

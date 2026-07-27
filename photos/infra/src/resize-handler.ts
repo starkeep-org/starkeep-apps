@@ -72,16 +72,34 @@ export async function handler(event: APIGatewayEvent) {
     const { record } = (await recordRes.json()) as { record: BrokerPhotoRecord };
 
     if (!record.object_storage_key) return clientErr("Record has no attached file", 422);
-    if (record.parent_id) return clientErr("Record is already a thumbnail", 400);
-
-    // Skip if a thumbnail already exists for this original. A type-less list is
-    // server-scoped to the app's granted types, returning every image.
-    const existingRes = await signedFetch(creds, `/data/records?limit=1000`);
+    // Both questions below used to be answered by `parent_id`, and both were
+    // wrong once crops existed — a crop has a parent too. They now read the
+    // typed edge. A type-less list is server-scoped to the app's granted
+    // types, returning every image; hydrating labels answers both from one
+    // request.
+    const existingRes = await signedFetch(creds, `/data/records?limit=1000&include=labels`);
     if (existingRes.ok) {
       const { records } = (await existingRes.json()) as {
-        records: { id: string; parent_id: string | null }[];
+        records: Array<{
+          id: string;
+          parent_id: string | null;
+          labels?: Array<{ app_id: string; key: string }>;
+        }>;
       };
-      const existing = records.find((r) => r.parent_id === targetId);
+      const isThumbnail = (r: { labels?: Array<{ app_id: string; key: string }> }) =>
+        (r.labels ?? []).some((l) => l.app_id === "photos" && l.key === "thumbnail-of");
+
+      // Don't thumbnail a thumbnail. A *crop* is a legitimate target: it needs
+      // its own grid tile, and rejecting it on `parent_id` alone left crops
+      // with no thumbnail and therefore invisible.
+      const target = records.find((r) => r.id === targetId);
+      if (target && isThumbnail(target)) {
+        return clientErr("Record is already a thumbnail", 400);
+      }
+
+      // "Already thumbnailed?" must match a thumbnail specifically. Matching
+      // any child meant cropping a photo silently suppressed its thumbnail.
+      const existing = records.find((r) => r.parent_id === targetId && isThumbnail(r));
       if (existing) return ok({ ok: true, thumbnailId: existing.id, skipped: true });
     }
 
@@ -147,12 +165,15 @@ export async function handler(event: APIGatewayEvent) {
         contentHash,
         sizeBytes: resizedBytes.byteLength,
         parentId: targetId,
-        // Interest marker for other image-declaring apps: this is a derived
-        // thumbnail, not a photo the user uploaded. Written as a cross-app
-        // label in the same request as the record — the namespace comes from
-        // our authenticated identity, so no `photos/` prefix is sent.
-        // Originals stay unlabelled.
-        labels: [{ key: "thumbnail" }],
+        // Types the parent edge. `parent_id` says *which* record this came
+        // from; this says *how*, which the column alone cannot express — and
+        // without it a crop is indistinguishable from a thumbnail.
+        //
+        // Doubles as the interest marker for other image-declaring apps:
+        // a thumbnail is derived, not something the user uploaded.
+        // The `photos/` namespace comes from our authenticated identity, so
+        // no prefix is sent. Originals stay unlabelled.
+        labels: [{ key: "thumbnail-of" }],
       }),
     });
     if (!createRes.ok) {

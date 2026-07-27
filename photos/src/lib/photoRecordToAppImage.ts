@@ -1,5 +1,24 @@
-import type { AppImage } from "@/photos-lib";
+import type { AppImage, DerivedKind } from "@/photos-lib";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "./data-server-client";
+
+/** Photos' app id — the namespace its own labels land in. */
+const PHOTOS_APP_ID = "photos";
+
+/**
+ * Read the parent-edge type off Photos' own labels.
+ *
+ * Scoped to `photos` deliberately: the hydrated list carries every app's
+ * labels, and another app is free to declare a `crop-of` key meaning something
+ * else entirely. Namespaces exist so that isn't a collision.
+ */
+function derivedKindOf(record: PhotoRecord): DerivedKind | null {
+  for (const label of record.labels ?? []) {
+    if (label.app_id !== PHOTOS_APP_ID) continue;
+    if (label.key === "thumbnail-of") return "thumbnail";
+    if (label.key === "crop-of") return "crop";
+  }
+  return null;
+}
 
 export function photoRecordToAppImage(
   record: PhotoRecord,
@@ -16,6 +35,7 @@ export function photoRecordToAppImage(
     createdAt: record.created_at,
     updatedAt: record.updated_at,
     parentId: record.parent_id,
+    derivedKind: derivedKindOf(record),
     width: metadata?.width ?? 0,
     height: metadata?.height ?? 0,
     exif: {

@@ -13,9 +13,16 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // gallery doesn't fan out into a URL request per photo on load.
   const [containerRef, inView] = useInView<HTMLDivElement>();
 
-  // Only thumbnail records (parentId !== null) have a small image to display.
-  // Originals with parentId === null are placeholders — their thumbnail is being generated.
-  const isThumbnail = image.parentId !== null;
+  // Only thumbnails have a small image to display. This reads Photos' own
+  // `thumbnail-of` label rather than `parentId !== null`, which was the bug:
+  // crops set parentId too, so every crop rendered here as if it were its
+  // source's thumbnail. The parent edge needed a type.
+  //
+  // An unlabelled record is treated as "not a thumbnail" and shows the
+  // placeholder — which is also the right transient answer for a thumbnail
+  // whose label hasn't landed yet, since the record and its labels share a
+  // request but not a transaction.
+  const isThumbnail = image.derivedKind === "thumbnail";
   const src = isThumbnail && inView ? getFullSizeSrc(image.id) : null;
 
   return (

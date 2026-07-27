@@ -24,6 +24,7 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     parentId: null,
+    derivedKind: null,
     width: 4000,
     height: 3000,
     exif: {

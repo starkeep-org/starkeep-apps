@@ -21,8 +21,12 @@
     ],
     "labelKeys": [
       {
-        "key": "thumbnail",
-        "description": "A re-sized thumbnail Photos derived from another image, not a photo the user uploaded. Other image apps can filter these out."
+        "key": "thumbnail-of",
+        "description": "This image is a re-sized thumbnail of its parent record, not a photo the user uploaded. Other image apps can filter these out."
+      },
+      {
+        "key": "crop-of",
+        "description": "This image is a user-made crop of its parent record."
       }
     ],
     "appSpecificSyncable": {

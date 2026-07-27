@@ -35,6 +35,7 @@ function appImage(over: Partial<AppImage> & { orientation?: number | null } = {}
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     parentId: null,
+    derivedKind: null,
     width: 4000,
     height: 3000,
     exif: {
@@ -158,7 +159,10 @@ describe("PhotoThumbnail EXIF orientation", () => {
     const getSrc = vi.fn().mockReturnValue("https://signed/t1");
     // Defensive: even if a thumbnail record carried a raw orientation, the
     // component must not double-apply it on top of the browser.
-    renderThumbnail(appImage({ id: "thumb-1", parentId: "orig-1", orientation: 6 }), getSrc);
+    renderThumbnail(
+      appImage({ id: "thumb-1", parentId: "orig-1", derivedKind: "thumbnail", orientation: 6 }),
+      getSrc,
+    );
 
     const img = screen.getByRole("img") as HTMLImageElement;
     expect(img.style.transform).toBe("");

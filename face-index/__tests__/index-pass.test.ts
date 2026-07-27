@@ -206,6 +206,100 @@ describe("indexing pass", () => {
   });
 });
 
+describe("paging and batching", () => {
+  /**
+   * The two loops the app exists to demonstrate, and the two that a
+   * single-page fixture leaves entirely unexercised: paging a listing to
+   * exhaustion, and chunking label writes to stay inside DSQL's
+   * 3,000-modified-rows transaction limit. Both are sized down here rather
+   * than seeding thousands of images.
+   */
+  function countingFetcher(): { fetch: Fetcher; listCalls: string[]; writeSizes: number[] } {
+    const listCalls: string[] = [];
+    const writeSizes: number[] = [];
+    const fetch: Fetcher = async (path, init) => {
+      if (path.startsWith("/data/records")) listCalls.push(path);
+      if (path === "/data/labels" && init?.body) {
+        const { labels } = JSON.parse(String(init.body)) as { labels: unknown[] };
+        writeSizes.push(labels.length);
+      }
+      return faceIndex.fetch(path, init);
+    };
+    return { fetch, listCalls, writeSizes };
+  }
+
+  it("visits every image exactly once across several pages", async () => {
+    // Stopping on the first short page — or a cursor that failed to advance —
+    // would silently skip images, and the pass would look like it succeeded.
+    const { fetch, listCalls } = countingFetcher();
+    const result = await runIndexPass(fetch, { pageSize: 5 });
+
+    expect(result.scanned).toBe(imageIds.length);
+    expect(listCalls.length).toBeGreaterThan(1);
+    // Every page after the first carried a cursor.
+    expect(listCalls.slice(1).every((p) => p.includes("cursor="))).toBe(true);
+    expect(listCalls[0]).not.toContain("cursor=");
+    // Nothing new to write: the earlier passes already labelled everything.
+    // (`scanned` counts the already-indexed ones too; they are neither
+    // labelled nor skipped, they are simply passed over.)
+    expect(result.labelled).toBe(0);
+    expect(result.skipped).toBe(imageIds.filter((id) => detectFaceCount(id) === 0).length);
+  });
+
+  it("flushes label writes in chunks instead of one oversized batch", async () => {
+    // Retract everything first so this pass has real work to do.
+    const labelled = imageIds.filter((id) => detectFaceCount(id) > 0);
+    const retract = await faceIndex.fetch("/data/labels/retract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        labels: labelled.flatMap((id) => [
+          { recordId: id, key: "faces-detected" },
+          { recordId: id, key: "face-count" },
+        ]),
+      }),
+    });
+    expect(retract.status).toBe(200);
+
+    const { fetch, writeSizes } = countingFetcher();
+    const result = await runIndexPass(fetch, { imagesPerBatch: 2 });
+
+    expect(result.labelled).toBe(labelled.length);
+    // Several writes, none over the batch size (2 images = 4 label rows).
+    expect(writeSizes.length).toBeGreaterThan(1);
+    expect(Math.max(...writeSizes)).toBeLessThanOrEqual(4);
+    expect(writeSizes.reduce((a, b) => a + b, 0)).toBe(labelled.length * 2);
+
+    // And the labels are all actually there afterwards — chunking is not
+    // allowed to drop the remainder that never filled a batch.
+    const flagged = await reverseQuery(owner, "face-index/faces-detected");
+    expect(flagged.sort()).toEqual(labelled.sort());
+  });
+
+  it("keeps paging and chunking correct when both are small at once", async () => {
+    const labelled = imageIds.filter((id) => detectFaceCount(id) > 0);
+    await faceIndex.fetch("/data/labels/retract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        labels: labelled.flatMap((id) => [
+          { recordId: id, key: "faces-detected" },
+          { recordId: id, key: "face-count" },
+        ]),
+      }),
+    });
+
+    const { fetch } = countingFetcher();
+    const result = await runIndexPass(fetch, { pageSize: 3, imagesPerBatch: 2 });
+
+    expect(result.scanned).toBe(imageIds.length);
+    expect(result.labelled).toBe(labelled.length);
+    expect((await reverseQuery(owner, "face-index/faces-detected")).sort()).toEqual(
+      labelled.sort(),
+    );
+  });
+});
+
 // ---- helpers ---------------------------------------------------------------
 
 interface WireLabel {

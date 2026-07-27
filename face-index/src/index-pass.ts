@@ -18,6 +18,9 @@ export const APP_ID = "face-index";
  *  up to two labels, so 1,000 images per batch stays inside it with room. */
 const IMAGES_PER_BATCH = 1_000;
 
+/** Records per listing page. A short page never means the end — see below. */
+const RECORDS_PER_PAGE = 200;
+
 export interface IndexResult {
   scanned: number;
   labelled: number;
@@ -44,7 +47,24 @@ export function fetcherFor(creds: AppCredentials): Fetcher {
   return (path, init) => signedFetch(creds, path, init);
 }
 
-export async function runIndexPass(fetchAs: Fetcher): Promise<IndexResult> {
+/**
+ * Sizes the pass's two loops. Both default to the production values; tests
+ * shrink them so the paging and chunking paths are reachable without seeding
+ * thousands of images, which is the only way those loops get exercised at all.
+ */
+export interface IndexPassOptions {
+  /** Records requested per listing page. */
+  pageSize?: number;
+  /** Images accumulated before a label batch is flushed. */
+  imagesPerBatch?: number;
+}
+
+export async function runIndexPass(
+  fetchAs: Fetcher,
+  options: IndexPassOptions = {},
+): Promise<IndexResult> {
+  const pageSize = options.pageSize ?? RECORDS_PER_PAGE;
+  const imagesPerBatch = options.imagesPerBatch ?? IMAGES_PER_BATCH;
   const result: IndexResult = { scanned: 0, labelled: 0, skipped: 0 };
 
   // Page to exhaustion. A short page does NOT mean the end — only a null
@@ -67,7 +87,7 @@ export async function runIndexPass(fetchAs: Fetcher): Promise<IndexResult> {
 
   do {
     const res = await fetchAs(
-      `/data/records?include=labels&limit=200${
+      `/data/records?include=labels&limit=${pageSize}${
         cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
       }`,
     );
@@ -102,7 +122,7 @@ export async function runIndexPass(fetchAs: Fetcher): Promise<IndexResult> {
       batch.push({ recordId: record.id, key: "face-count", value: String(faces) });
       result.labelled++;
 
-      if (batch.length >= IMAGES_PER_BATCH * 2) await flush();
+      if (batch.length >= imagesPerBatch * 2) await flush();
     }
 
     cursor = body.nextCursor;

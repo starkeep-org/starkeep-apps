@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { photoRecordToAppImage } from "../../../../src/lib/photoRecordToAppImage";
 import type { PhotoRecord } from "../../../../src/lib/data-server-client";
+import { PHOTOS_LABEL_KEYS } from "@/photos-lib";
 
 export const runtime = "nodejs";
 
@@ -109,7 +110,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       // a thumbnail — both set parent_id, and the grid used to read
       // `parentId !== null` as "is a thumbnail", so crops rendered as their
       // source's thumbnail.
-      labels: [{ key: "crop-of" }],
+      labels: [{ key: PHOTOS_LABEL_KEYS.cropOf }],
     }),
   });
   if (!createRes.ok) {

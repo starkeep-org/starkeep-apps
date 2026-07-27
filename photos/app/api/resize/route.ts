@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
+import { canThumbnail, findThumbnailFor, PHOTOS_LABEL_KEYS } from "@/photos-lib";
 
 export const runtime = "nodejs";
 
@@ -57,7 +58,8 @@ export async function POST(req: NextRequest) {
 
   // Both questions below used to be answered by `parent_id`, and both were
   // wrong once crops existed — a crop has a parent too. They now read the
-  // typed edge instead. One list, hydrated with labels, answers both.
+  // typed edge, via the same helpers the cloud resize Lambda and the grid use.
+  // One list, hydrated with labels, answers both.
   const existingRes = await signedFetch(creds, `/data/records?limit=1000&include=labels`);
   if (existingRes.ok) {
     const { records } = (await existingRes.json()) as {
@@ -67,20 +69,12 @@ export async function POST(req: NextRequest) {
         labels?: Array<{ app_id: string; key: string }>;
       }>;
     };
-    const isThumbnail = (r: { labels?: Array<{ app_id: string; key: string }> }) =>
-      (r.labels ?? []).some((l) => l.app_id === "photos" && l.key === "thumbnail-of");
 
-    // Don't thumbnail a thumbnail. A *crop* is a legitimate target: it is a
-    // user artifact that needs its own grid tile, and rejecting it on
-    // `parent_id` alone left crops with no thumbnail and therefore invisible.
-    const target = records.find((r) => r.id === targetId);
-    if (target && isThumbnail(target)) {
+    if (!canThumbnail(records, targetId)) {
       return NextResponse.json({ error: "Record is already a thumbnail" }, { status: 400 });
     }
 
-    // "Already thumbnailed?" must match a thumbnail specifically. Matching any
-    // child meant cropping a photo silently suppressed its thumbnail.
-    const existing = records.find((r) => r.parent_id === targetId && isThumbnail(r));
+    const existing = findThumbnailFor(records, targetId);
     if (existing) {
       return NextResponse.json({ ok: true, thumbnailId: existing.id, skipped: true });
     }
@@ -161,7 +155,7 @@ export async function POST(req: NextRequest) {
       // a thumbnail is derived, not something the user uploaded.
       // The `photos/` namespace comes from our authenticated identity, so
       // no prefix is sent. Originals stay unlabelled.
-      labels: [{ key: "thumbnail-of" }],
+      labels: [{ key: PHOTOS_LABEL_KEYS.thumbnailOf }],
     }),
   });
   if (!createRes.ok) {

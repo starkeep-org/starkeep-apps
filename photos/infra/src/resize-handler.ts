@@ -16,6 +16,11 @@
 import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
+import {
+  canThumbnail,
+  findThumbnailFor,
+  PHOTOS_LABEL_KEYS,
+} from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
 function dataRecordObjectKey(typeId: string, contentHash: string): string {
@@ -86,20 +91,14 @@ export async function handler(event: APIGatewayEvent) {
           labels?: Array<{ app_id: string; key: string }>;
         }>;
       };
-      const isThumbnail = (r: { labels?: Array<{ app_id: string; key: string }> }) =>
-        (r.labels ?? []).some((l) => l.app_id === "photos" && l.key === "thumbnail-of");
-
-      // Don't thumbnail a thumbnail. A *crop* is a legitimate target: it needs
-      // its own grid tile, and rejecting it on `parent_id` alone left crops
-      // with no thumbnail and therefore invisible.
-      const target = records.find((r) => r.id === targetId);
-      if (target && isThumbnail(target)) {
+      // Both rules come from photos-lib, shared with the Next /api/resize
+      // route this handler mirrors line for line — a rule kept in both would
+      // eventually be fixed in only one.
+      if (!canThumbnail(records, targetId)) {
         return clientErr("Record is already a thumbnail", 400);
       }
 
-      // "Already thumbnailed?" must match a thumbnail specifically. Matching
-      // any child meant cropping a photo silently suppressed its thumbnail.
-      const existing = records.find((r) => r.parent_id === targetId && isThumbnail(r));
+      const existing = findThumbnailFor(records, targetId);
       if (existing) return ok({ ok: true, thumbnailId: existing.id, skipped: true });
     }
 
@@ -173,7 +172,7 @@ export async function handler(event: APIGatewayEvent) {
         // a thumbnail is derived, not something the user uploaded.
         // The `photos/` namespace comes from our authenticated identity, so
         // no prefix is sent. Originals stay unlabelled.
-        labels: [{ key: "thumbnail-of" }],
+        labels: [{ key: PHOTOS_LABEL_KEYS.thumbnailOf }],
       }),
     });
     if (!createRes.ok) {

@@ -110,7 +110,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       // a thumbnail — both set parent_id, and the grid used to read
       // `parentId !== null` as "is a thumbnail", so crops rendered as their
       // source's thumbnail.
-      labels: [{ key: PHOTOS_LABEL_KEYS.cropOf }],
+      labels: [{ key: PHOTOS_LABEL_KEYS.crop }],
     }),
   });
   if (!createRes.ok) {

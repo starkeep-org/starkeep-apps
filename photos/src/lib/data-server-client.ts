@@ -44,7 +44,7 @@ export interface PhotoRecord {
 export interface PhotoLabel {
   app_id: string;
   key: string;
-  /** Never null: a bare flag (`thumbnail-of`, `crop-of`) is the empty string. */
+  /** Never null: a bare flag (`thumbnail`, `crop`) is the empty string. */
   value: string;
   /** Wire/UI rendering of `<app_id>/<key>`; storage has no such string. */
   label: string;

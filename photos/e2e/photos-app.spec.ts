@@ -120,7 +120,7 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
   pngRecordId = record.id;
   expect(record.type).toBe("image/png");
   // An uploaded original is general-interest shared data — nothing labels it.
-  // (Only derived images carry photos/thumbnail-of or photos/crop-of.)
+  // (Only derived images carry photos/thumbnail or photos/crop.)
   expect(record.labels).toEqual([]);
 
   // The live UI upload now extracts dimensions (createImageBitmap) + EXIF in
@@ -185,7 +185,9 @@ test("a thumbnail is registered as a shared derived record with parentId", async
   // request as the record (see app/api/resize/route.ts) — the `photos/`
   // namespace comes from its authenticated identity, never from the body.
   expect(thumb.labels).toEqual([
-    { app_id: "photos", key: "thumbnail-of", value: null, label: "photos/thumbnail-of" },
+    // A bare flag is the empty string, never null: `value` is part of the
+    // label row's primary key, so it cannot be nullable.
+    { app_id: "photos", key: "thumbnail", value: "", label: "photos/thumbnail" },
   ]);
 
   // Shared semantics: another app with image access (Drive) sees the
@@ -199,7 +201,7 @@ test("a thumbnail is registered as a shared derived record with parentId", async
   )) as unknown as SharedRecord[];
   const driveThumb = driveView.find((r) => r.id === thumb.id);
   expect(driveThumb?.parent_id).toBe(pngRecordId);
-  expect(driveThumb?.labels?.map((l) => l.label)).toEqual(["photos/thumbnail-of"]);
+  expect(driveThumb?.labels?.map((l) => l.label)).toEqual(["photos/thumbnail"]);
   // …and the original stays unlabelled in the cross-app view.
   expect(driveView.find((r) => r.id === pngRecordId)?.labels).toEqual([]);
 
@@ -207,7 +209,7 @@ test("a thumbnail is registered as a shared derived record with parentId", async
   // did photos label as thumbnails?" without knowing anything about Photos.
   const thumbs = (await listRecords(
     drive,
-    "?label=photos/thumbnail-of&limit=1000",
+    "?label=photos/thumbnail&limit=1000",
   )) as unknown as SharedRecord[];
   expect(thumbs.map((r) => r.id)).toContain(thumb.id);
   expect(thumbs.map((r) => r.id)).not.toContain(pngRecordId);

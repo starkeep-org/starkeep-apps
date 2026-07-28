@@ -25,6 +25,10 @@
       {
         "key": "face-count",
         "description": "How many faces were detected, as a decimal string."
+      },
+      {
+        "key": "face",
+        "description": "One recognised person in this image, by name. Set-valued: a photo of three people carries three rows, so another app can ask which photos contain a given person by exact match."
       }
     ]
   }

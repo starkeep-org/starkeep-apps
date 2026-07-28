@@ -31,7 +31,8 @@ export interface IndexResult {
 interface ListedRecord {
   id: string;
   type: string;
-  labels?: Array<{ app_id: string; key: string; value: string | null }>;
+  /** One entry per `(app, key, value)` — a key may appear more than once. */
+  labels?: Array<{ app_id: string; key: string; value: string }>;
 }
 
 /**
@@ -70,7 +71,7 @@ export async function runIndexPass(
   // Page to exhaustion. A short page does NOT mean the end — only a null
   // cursor does. Stopping on the first short page would silently skip images.
   let cursor: string | null = null;
-  let batch: Array<{ recordId: string; key: string; value?: string | null }> = [];
+  let batch: Array<{ recordId: string; key: string; value?: string }> = [];
 
   const flush = async () => {
     if (batch.length === 0) return;
@@ -118,6 +119,12 @@ export async function runIndexPass(
         continue;
       }
 
+      // A plain add, not the set-valued write, and that is only correct because
+      // of the `alreadySeen` guard above: `face-count` is single-valued, and an
+      // add over an existing row would leave `face-count=3` beside
+      // `face-count=4` rather than replacing it. Anything that re-indexes a
+      // record it has already labelled — a detector change, a forced re-run —
+      // must switch these to POST /data/labels/values.
       batch.push({ recordId: record.id, key: "faces-detected" });
       batch.push({ recordId: record.id, key: "face-count", value: String(faces) });
       result.labelled++;

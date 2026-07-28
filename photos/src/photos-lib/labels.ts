@@ -18,7 +18,16 @@ import type { DerivedKind } from "./types/app-image";
 /** Photos' app id — the namespace its own labels land in. */
 export const PHOTOS_APP_ID = "photos";
 
-/** The keys Photos declares in its manifest. Nothing else may be written. */
+/**
+ * The keys Photos declares in its manifest. Nothing else may be written.
+ *
+ * Both are **bare flags** — written once, at record creation, with no value,
+ * which is stored as the empty string. That is why a plain label write is right
+ * for them: a key is set-valued and a plain write adds rather than replaces, so
+ * a key Photos ever *updated* would need the set-valued write
+ * (`POST /data/labels/values`) instead, or the old value would sit beside the
+ * new one with nothing to say which is current.
+ */
 export const PHOTOS_LABEL_KEYS = {
   /** The child is a derived thumbnail of its parent. */
   thumbnailOf: "thumbnail-of",
@@ -26,7 +35,14 @@ export const PHOTOS_LABEL_KEYS = {
   cropOf: "crop-of",
 } as const;
 
-/** A record as the data servers render it with `?include=labels`. */
+/**
+ * A record as the data servers render it with `?include=labels`.
+ *
+ * One entry per `(app, key, value)`: a key is set-valued, so the same
+ * `app_id`/`key` may appear more than once with different values. Photos' own
+ * keys are flags and so appear at most once each, but the array as a whole
+ * carries every app's labels and must not be read as a key→label map.
+ */
 export interface LabelledRecord {
   labels?: Array<{ app_id: string; key: string }>;
 }

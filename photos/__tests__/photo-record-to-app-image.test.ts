@@ -92,7 +92,7 @@ describe("photoRecordToAppImage", () => {
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "photos", key: "thumbnail-of", value: "", label: "photos/thumbnail-of" },
+            { app_id: "photos", key: "thumbnail", value: "", label: "photos/thumbnail" },
           ],
         }),
         null,
@@ -102,7 +102,7 @@ describe("photoRecordToAppImage", () => {
       const crop = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
-          labels: [{ app_id: "photos", key: "crop-of", value: "", label: "photos/crop-of" }],
+          labels: [{ app_id: "photos", key: "crop", value: "", label: "photos/crop" }],
         }),
         null,
       );
@@ -131,13 +131,13 @@ describe("photoRecordToAppImage", () => {
 
     it("ignores another app's identically-named key", () => {
       // Hydration carries every app's labels. Namespaces exist so that a
-      // `crop-of` published by someone else is not a collision.
+      // `crop` published by someone else is not a collision.
       const img = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "other-app", key: "crop-of", value: "", label: "other-app/crop-of" },
-            { app_id: "other-app", key: "thumbnail-of", value: "", label: "other-app/thumbnail-of" },
+            { app_id: "other-app", key: "crop", value: "", label: "other-app/crop" },
+            { app_id: "other-app", key: "thumbnail", value: "", label: "other-app/thumbnail" },
           ],
         }),
         null,
@@ -151,7 +151,7 @@ describe("photoRecordToAppImage", () => {
           parent_id: "PARENT",
           labels: [
             { app_id: "face-index", key: "faces-detected", value: "", label: "face-index/faces-detected" },
-            { app_id: "photos", key: "thumbnail-of", value: "", label: "photos/thumbnail-of" },
+            { app_id: "photos", key: "thumbnail", value: "", label: "photos/thumbnail" },
           ],
         }),
         null,

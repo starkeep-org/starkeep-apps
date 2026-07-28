@@ -30,9 +30,9 @@ export const PHOTOS_APP_ID = "photos";
  */
 export const PHOTOS_LABEL_KEYS = {
   /** The child is a derived thumbnail of its parent. */
-  thumbnailOf: "thumbnail-of",
+  thumbnail: "thumbnail",
   /** The child is a user-made crop of its parent. */
-  cropOf: "crop-of",
+  crop: "crop",
 } as const;
 
 /**
@@ -51,7 +51,7 @@ export interface LabelledRecord {
  * The parent-edge type, read off Photos' own labels.
  *
  * Scoped to `photos` deliberately: a hydrated list carries every app's labels,
- * and another app is free to declare a `crop-of` key meaning something else
+ * and another app is free to declare a `crop` key meaning something else
  * entirely. Namespaces exist so that is not a collision.
  *
  * `null` covers two cases that behave the same everywhere they are used — an
@@ -63,8 +63,8 @@ export interface LabelledRecord {
 export function derivedKindOf(record: LabelledRecord): DerivedKind | null {
   for (const label of record.labels ?? []) {
     if (label.app_id !== PHOTOS_APP_ID) continue;
-    if (label.key === PHOTOS_LABEL_KEYS.thumbnailOf) return "thumbnail";
-    if (label.key === PHOTOS_LABEL_KEYS.cropOf) return "crop";
+    if (label.key === PHOTOS_LABEL_KEYS.thumbnail) return "thumbnail";
+    if (label.key === PHOTOS_LABEL_KEYS.crop) return "crop";
   }
   return null;
 }

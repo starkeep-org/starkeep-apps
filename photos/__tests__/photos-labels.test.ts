@@ -26,12 +26,12 @@ const original = (id: string): Row => ({ id, parent_id: null, labels: [] });
 const thumbnailOf = (id: string, parent: string): Row => ({
   id,
   parent_id: parent,
-  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.thumbnailOf }],
+  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.thumbnail }],
 });
 const cropOf = (id: string, parent: string): Row => ({
   id,
   parent_id: parent,
-  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.cropOf }],
+  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.crop }],
 });
 
 describe("derivedKindOf", () => {
@@ -51,7 +51,7 @@ describe("derivedKindOf", () => {
   it("ignores another app's key of the same name", () => {
     expect(
       derivedKindOf({
-        labels: [{ app_id: "someone-else", key: PHOTOS_LABEL_KEYS.thumbnailOf }],
+        labels: [{ app_id: "someone-else", key: PHOTOS_LABEL_KEYS.thumbnail }],
       }),
     ).toBeNull();
   });

@@ -14,7 +14,7 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   const [containerRef, inView] = useInView<HTMLDivElement>();
 
   // Only thumbnails have a small image to display. This reads Photos' own
-  // `thumbnail-of` label rather than `parentId !== null`, which was the bug:
+  // `thumbnail` label rather than `parentId !== null`, which was the bug:
   // crops set parentId too, so every crop rendered here as if it were its
   // source's thumbnail. The parent edge needed a type.
   //

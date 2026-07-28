@@ -172,7 +172,7 @@ export async function handler(event: APIGatewayEvent) {
         // a thumbnail is derived, not something the user uploaded.
         // The `photos/` namespace comes from our authenticated identity, so
         // no prefix is sent. Originals stay unlabelled.
-        labels: [{ key: PHOTOS_LABEL_KEYS.thumbnailOf }],
+        labels: [{ key: PHOTOS_LABEL_KEYS.thumbnail }],
       }),
     });
     if (!createRes.ok) {

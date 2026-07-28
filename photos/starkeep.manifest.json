@@ -21,11 +21,11 @@
     ],
     "labelKeys": [
       {
-        "key": "thumbnail-of",
+        "key": "thumbnail",
         "description": "This image is a re-sized thumbnail of its parent record, not a photo the user uploaded. Other image apps can filter these out."
       },
       {
-        "key": "crop-of",
+        "key": "crop",
         "description": "This image is a user-made crop of its parent record."
       }
     ],

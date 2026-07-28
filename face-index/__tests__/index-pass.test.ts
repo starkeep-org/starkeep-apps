@@ -92,7 +92,9 @@ describe("indexing pass", () => {
     // The namespace came from face-index's authenticated identity — it never
     // sent an app id, and could not have sent a different one.
     expect(labels.every((l) => l.app_id === APP_ID)).toBe(true);
-    expect(labels.find((l) => l.key === "faces-detected")!.value).toBeNull();
+    // A bare flag is the empty string, not null — there is no null in the
+    // label model, and row-present vs row-absent is what carries the meaning.
+    expect(labels.find((l) => l.key === "faces-detected")!.value).toBe("");
     expect(labels.find((l) => l.key === "face-count")!.value).toBe(
       String(detectFaceCount(withFaces)),
     );
@@ -157,6 +159,7 @@ describe("indexing pass", () => {
       labelKeys: Array<{ label: string; description: string }>;
     };
     expect(labelKeys.map((k) => k.label).sort()).toEqual([
+      "face-index/face",
       "face-index/face-count",
       "face-index/faces-detected",
     ]);
@@ -300,12 +303,190 @@ describe("paging and batching", () => {
   });
 });
 
+/**
+ * The set-valued key — the thing the primary-key widening bought, and the
+ * question labels exist to answer: *which photos contain Alice?*, asked by an
+ * app that holds only a read grant and never calls the labeller.
+ *
+ * Driven directly rather than through `runIndexPass`, because the mocked
+ * detector produces a count and not names.
+ */
+describe("a set-valued key", () => {
+  /** Three images used only here, so the passes above are unaffected. */
+  let photoA: string;
+  let photoB: string;
+  let photoC: string;
+
+  const setFaces = (recordId: string, values: string[]) =>
+    faceIndex.fetch("/data/labels/values", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels: [{ recordId, key: "face", values }] }),
+    });
+
+  const facesOn = async (recordId: string) =>
+    (await labelsOf(owner, recordId))
+      .filter((l) => l.app_id === APP_ID && l.key === "face")
+      .map((l) => l.value)
+      .sort();
+
+  beforeAll(async () => {
+    [photoA, photoB, photoC] = await Promise.all(
+      [0, 1, 2].map(async (i) => {
+        const { record } = await createRecordWithBytes(owner, {
+          bytes: solidPng([200 + i, 10, 10]),
+          fileName: `faces-${i}.png`,
+        });
+        return record.id;
+      }),
+    );
+  }, 60_000);
+
+  it("keeps every value of one key as its own row", async () => {
+    // The whole point: packed into one row as "Alice,Bob" this is a substring
+    // match no index can serve, and one that matches "Alicent" besides.
+    const res = await faceIndex.fetch("/data/labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        labels: [
+          { recordId: photoA, key: "face", value: "Alice" },
+          { recordId: photoA, key: "face", value: "Bob" },
+          { recordId: photoB, key: "face", value: "Alice" },
+          { recordId: photoC, key: "face", value: "Alicent" },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await facesOn(photoA)).toEqual(["Alice", "Bob"]);
+  });
+
+  it("answers the reverse query by exact value, across a namespace it doesn't own", async () => {
+    const withAlice = await reverseQuery(owner, "face-index/face", "Alice");
+    expect(withAlice.sort()).toEqual([photoA, photoB].sort());
+
+    // Exact, not a prefix: "Alice" must not drag in "Alicent". This is the bug
+    // a substring match would have shipped with, and it looks like it works
+    // right up until someone is named a superstring of someone else.
+    expect(withAlice).not.toContain(photoC);
+  });
+
+  it("a plain write adds rather than replaces", async () => {
+    // The sharp edge of the widened primary key, and one that produces no
+    // error — which is why the set-valued write exists at all.
+    await faceIndex.fetch("/data/labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels: [{ recordId: photoB, key: "face", value: "Bob" }] }),
+    });
+    expect(await facesOn(photoB)).toEqual(["Alice", "Bob"]);
+  });
+
+  it("the set-valued write makes the key hold exactly what it was given", async () => {
+    // Alice kept, Bob tombstoned, Carol added — the diff a caller would
+    // otherwise compute itself, from a read it would have to do first, without
+    // atomicity.
+    expect((await setFaces(photoA, ["Alice", "Carol"])).status).toBe(200);
+    expect(await facesOn(photoA)).toEqual(["Alice", "Carol"]);
+
+    // And the reverse index follows: Bob's row is a tombstone, not a match.
+    expect(await reverseQuery(owner, "face-index/face", "Bob")).toEqual([photoB]);
+  });
+
+  it("an empty value set clears the key", async () => {
+    expect((await setFaces(photoC, [])).status).toBe(200);
+    expect(await facesOn(photoC)).toEqual([]);
+  });
+
+  it("re-setting a retracted value revives it", async () => {
+    // A set → retract → set cycle has to end with a live row; without the
+    // upsert clearing deleted_at it writes one that stays invisible forever.
+    expect((await setFaces(photoC, ["Alicent"])).status).toBe(200);
+    expect(await facesOn(photoC)).toEqual(["Alicent"]);
+  });
+
+  it("retracting without a value takes back every value of the key", async () => {
+    await setFaces(photoA, ["Alice", "Carol", "Dave"]);
+    const res = await faceIndex.fetch("/data/labels/retract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels: [{ recordId: photoA, key: "face" }] }),
+    });
+    expect(res.status).toBe(200);
+    expect(await facesOn(photoA)).toEqual([]);
+  });
+
+  it("retracting with a value takes back only that one", async () => {
+    await setFaces(photoA, ["Alice", "Carol"]);
+    const res = await faceIndex.fetch("/data/labels/retract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        labels: [{ recordId: photoA, key: "face", value: "Carol" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await facesOn(photoA)).toEqual(["Alice"]);
+  });
+
+  it("separates a bare-flag query from an unfiltered one", async () => {
+    // `?labelValue=` asks for bare flags; omitting it asks for any value. Read
+    // as the same thing, the first returns a superset — which looks like it
+    // works. face-index's own flag key is the fixture: it has values nowhere.
+    const flagged = await reverseQuery(owner, "face-index/faces-detected", "");
+    const anyValue = await reverseQuery(owner, "face-index/faces-detected");
+    expect(flagged.sort()).toEqual(anyValue.sort());
+
+    // On a key that does carry values, the two differ — and the empty-valued
+    // query matches nothing, because no `face` row is a bare flag.
+    expect(await reverseQuery(owner, "face-index/face", "")).toEqual([]);
+    expect((await reverseQuery(owner, "face-index/face")).length).toBeGreaterThan(0);
+  });
+
+  it("caps values per key, counting what is already stored", async () => {
+    // The cap is the value-side counterpart of the per-app key cap, and it only
+    // does its job if it counts stored rows: over the batch alone it is cleared
+    // by sending 32 values repeatedly, which is exactly the smuggling channel
+    // it exists to close.
+    const name = (i: number) => `person-${String(i).padStart(2, "0")}`;
+    const write = (values: string[]) =>
+      faceIndex.fetch("/data/labels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          labels: values.map((value) => ({ recordId: photoB, key: "face", value })),
+        }),
+      });
+
+    await setFaces(photoB, []);
+    const first = await write(Array.from({ length: 30 }, (_, i) => name(i)));
+    expect(first.status).toBe(200);
+
+    // 30 stored + 5 new = 35, over the 32 cap, even though the batch is small.
+    const second = await write(Array.from({ length: 5 }, (_, i) => name(30 + i)));
+    expect(second.status).toBe(400);
+    expect(await second.text()).toContain("32 values");
+
+    // Re-writing values it already has costs nothing — a slot is a value, not
+    // a write.
+    const rewrite = await write(Array.from({ length: 30 }, (_, i) => name(i)));
+    expect(rewrite.status).toBe(200);
+
+    // One batch over the cap fails on its own too.
+    await setFaces(photoB, []);
+    const oversized = await write(Array.from({ length: 33 }, (_, i) => name(i)));
+    expect(oversized.status).toBe(400);
+
+    await setFaces(photoB, ["Alice", "Bob"]);
+  });
+});
+
 // ---- helpers ---------------------------------------------------------------
 
 interface WireLabel {
   app_id: string;
   key: string;
-  value: string | null;
+  value: string;
   label: string;
 }
 

@@ -92,7 +92,7 @@ describe("photoRecordToAppImage", () => {
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "photos", key: "thumbnail-of", value: null, label: "photos/thumbnail-of" },
+            { app_id: "photos", key: "thumbnail-of", value: "", label: "photos/thumbnail-of" },
           ],
         }),
         null,
@@ -102,7 +102,7 @@ describe("photoRecordToAppImage", () => {
       const crop = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
-          labels: [{ app_id: "photos", key: "crop-of", value: null, label: "photos/crop-of" }],
+          labels: [{ app_id: "photos", key: "crop-of", value: "", label: "photos/crop-of" }],
         }),
         null,
       );
@@ -136,8 +136,8 @@ describe("photoRecordToAppImage", () => {
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "other-app", key: "crop-of", value: null, label: "other-app/crop-of" },
-            { app_id: "other-app", key: "thumbnail-of", value: null, label: "other-app/thumbnail-of" },
+            { app_id: "other-app", key: "crop-of", value: "", label: "other-app/crop-of" },
+            { app_id: "other-app", key: "thumbnail-of", value: "", label: "other-app/thumbnail-of" },
           ],
         }),
         null,
@@ -150,8 +150,8 @@ describe("photoRecordToAppImage", () => {
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "face-index", key: "faces-detected", value: null, label: "face-index/faces-detected" },
-            { app_id: "photos", key: "thumbnail-of", value: null, label: "photos/thumbnail-of" },
+            { app_id: "face-index", key: "faces-detected", value: "", label: "face-index/faces-detected" },
+            { app_id: "photos", key: "thumbnail-of", value: "", label: "photos/thumbnail-of" },
           ],
         }),
         null,

@@ -34,11 +34,18 @@ export interface PhotoRecord {
   labels?: PhotoLabel[];
 }
 
-/** One cross-app label on a record, as the data server renders it. */
+/**
+ * One cross-app label on a record, as the data server renders it.
+ *
+ * One row per `(record, app, key, value)` — a key is set-valued, so the same
+ * `app_id`/`key` can appear more than once in a record's `labels` with different
+ * values. Code that reaches for `.find()` on a key is assuming otherwise.
+ */
 export interface PhotoLabel {
   app_id: string;
   key: string;
-  value: string | null;
+  /** Never null: a bare flag (`thumbnail-of`, `crop-of`) is the empty string. */
+  value: string;
   /** Wire/UI rendering of `<app_id>/<key>`; storage has no such string. */
   label: string;
 }

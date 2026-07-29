@@ -19,8 +19,8 @@
  *   count, a timestamp — never a sentence".
  *
  * Neither key is published for a zero-face image. A negative would make the
- * presence query `?label=photos/faces` match everything — the same reasoning the
- * `face-index` fixture records.
+ * presence query `?label=photos/faces` match every processed image, so absence
+ * is how "no faces" is encoded.
  */
 
 import { readAllFaceSidecars } from "./sidecars";

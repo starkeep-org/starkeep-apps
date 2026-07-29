@@ -7,11 +7,13 @@ import {
   FACE_DETECTOR_MODEL,
   FACE_EMBEDDER_MODEL,
   FACE_MODEL_ID,
+  FACE_MODEL_PACK,
   FACE_MODELS,
+  FACE_MODELS_TOTAL_BYTES,
   faceModelStatus,
 } from "@/vision/models";
 import { modelsDir } from "@/vision/paths";
-import { DigestMismatchError, verifiedDownload } from "../scripts/lib/verified-download";
+import { DigestMismatchError, verifiedDownload } from "@/vision/verified-download";
 
 /**
  * Model installation and integrity.
@@ -72,6 +74,21 @@ describe("the model manifest", () => {
     // if the id actually identifies the pair.
     expect(FACE_MODEL_ID).toContain("scrfd_10g_bnkps");
     expect(FACE_MODEL_ID).toContain("glintr100");
+  });
+
+  it("names the same pack the installed badge shows", () => {
+    // The badge's name and the sidecars' `model` field must not drift: they are
+    // the answer to the same question asked from two places, and the id is a
+    // literal precisely because it is matched literally against what is on disk.
+    expect(FACE_MODEL_ID.startsWith(`${FACE_MODEL_PACK}:`)).toBe(true);
+  });
+
+  it("totals the pack from the manifest rather than a written-down number", () => {
+    // 278 MB is quoted in the README and in comments; the badge must not be a
+    // fourth copy that can go stale when a model is swapped.
+    expect(FACE_MODELS_TOTAL_BYTES).toBe(
+      FACE_DETECTOR_MODEL.sizeBytes + FACE_EMBEDDER_MODEL.sizeBytes,
+    );
   });
 });
 

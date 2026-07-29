@@ -10,7 +10,7 @@
 
 import { mkdirSync, statSync } from "node:fs";
 import { fixturePath, fixturesDir, VISION_FIXTURES } from "./lib/vision-fixtures";
-import { verifiedDownload } from "./lib/verified-download";
+import { verifiedDownload } from "../src/vision/verified-download";
 
 async function main(): Promise<void> {
   const dir = fixturesDir();

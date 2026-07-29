@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { readVisionConfig } from "@/vision/config";
-import { faceModelStatus } from "@/vision/models";
+import { modelDownloadState } from "@/vision/model-download";
+import {
+  FACE_MODEL_PACK,
+  FACE_MODELS,
+  FACE_MODELS_TOTAL_BYTES,
+  faceModelStatus,
+} from "@/vision/models";
 import { remoteNotImplemented } from "@/vision/remote";
 import { currentScanState, isScanning, workerBundlePath } from "@/vision/scan-controller";
 import { listSidecarRecordIds, readAllFaceSidecars } from "@/vision/sidecars";
@@ -40,6 +46,19 @@ export async function GET(): Promise<Response> {
       missing: models.missing,
       dir: models.dir,
       fetchCommand: "pnpm vision:fetch-models",
+      // Folded in here rather than given its own poll: the panel is already
+      // asking this route every second while something is in flight, and two
+      // endpoints would let the progress bar and the "installed" flag it
+      // resolves into come from different instants.
+      download: modelDownloadState(),
+      missingBytes: models.missingBytes,
+      // What is installed, named — the panel shows this as a standing badge, so
+      // "which weights am I actually running?" is answerable without a shell.
+      pack: {
+        name: FACE_MODEL_PACK,
+        files: FACE_MODELS.map((model) => model.fileName),
+        totalBytes: FACE_MODELS_TOTAL_BYTES,
+      },
     },
     worker: {
       built: existsSync(workerBundlePath()),

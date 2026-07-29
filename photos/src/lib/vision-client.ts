@@ -29,9 +29,30 @@ export interface VisionScanState {
   error: string | null;
 }
 
+export interface VisionModelDownload {
+  running: boolean;
+  /** Verified bytes on disk plus bytes of the file in flight. */
+  bytesReceived: number;
+  bytesTotal: number;
+  currentFile: string | null;
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
 export interface VisionStatus {
   config: VisionConfigShape;
-  models: { installed: boolean; missing: string[]; dir: string; fetchCommand: string };
+  models: {
+    installed: boolean;
+    missing: string[];
+    /** Bytes an install would transfer — quoted before anyone commits to it. */
+    missingBytes: number;
+    dir: string;
+    fetchCommand: string;
+    download: VisionModelDownload;
+    /** Identity of the weights themselves, for the installed badge. */
+    pack: { name: string; files: string[]; totalBytes: number };
+  };
   worker: { built: boolean; path: string; buildCommand: string };
   scan: VisionScanState;
   store: {
@@ -114,6 +135,17 @@ export function updateVisionConfig(
   patch: { faces: Partial<VisionConfigShape["faces"]> },
 ): Promise<MaybeUnavailable<{ config: VisionConfigShape; warning?: string }>> {
   return send("/api/vision/config", "PUT", patch);
+}
+
+/**
+ * Starts the model download. `acceptLicence` is sent explicitly rather than
+ * implied by the call: the route refuses without it, and the flag is what ties
+ * the request back to the notice the user was shown.
+ */
+export function startVisionModelDownload(): Promise<
+  MaybeUnavailable<{ download: VisionModelDownload }>
+> {
+  return send("/api/vision/models", "POST", { action: "download", acceptLicence: true });
 }
 
 export function startVisionScan(): Promise<MaybeUnavailable<{ scan: VisionScanState }>> {

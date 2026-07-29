@@ -11,29 +11,21 @@
  * distinction is exactly the one that gets lost — a package that quietly
  * downloads them hands every user a restriction they never saw. So this asks,
  * once, and records the answer next to the files.
+ *
+ * The Faces panel offers the same download for people who did not arrive from a
+ * shell; both go through `verifiedDownload` and both record the acceptance the
+ * same way. This remains the path for a headless or scripted install.
  */
 
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
+import { LICENCE_NOTICE, writeLicenceAcknowledgement } from "../src/vision/licence";
 import { FACE_MODELS, type VisionModel } from "../src/vision/models";
 import { modelsDir } from "../src/vision/paths";
-import { verifiedDownload } from "./lib/verified-download";
+import { verifiedDownload } from "../src/vision/verified-download";
 
 const ACK_FLAG = "--accept-noncommercial-licence";
-const ACK_FILE = "LICENCE-ACKNOWLEDGED.txt";
-
-const LICENCE_NOTICE = `
-  The antelopev2 models come from InsightFace. Its *code* is MIT-licensed, but
-  the training data and the pretrained weights — antelopev2 included — are
-  released for NON-COMMERCIAL RESEARCH USE ONLY.
-
-    https://github.com/deepinsight/insightface
-    https://github.com/deepinsight/insightface/issues/2022
-
-  Downloading them means you accept that restriction. Starkeep does not
-  redistribute these weights and does not fetch them without this step.
-`;
 
 async function acknowledge(): Promise<boolean> {
   if (process.argv.includes(ACK_FLAG)) return true;
@@ -109,13 +101,7 @@ async function main(): Promise<void> {
     await fetchModel(model, dir);
   }
 
-  writeFileSync(
-    join(dir, ACK_FILE),
-    `antelopev2 weights: non-commercial research use only (InsightFace).\n` +
-      `Acknowledged ${new Date().toISOString()} by \`pnpm vision:fetch-models\`.\n` +
-      `${LICENCE_NOTICE.trim()}\n`,
-    "utf-8",
-  );
+  writeLicenceAcknowledgement("`pnpm vision:fetch-models`");
 
   console.log(`\nDone. Enable face detection in the Photos Settings panel.`);
 }

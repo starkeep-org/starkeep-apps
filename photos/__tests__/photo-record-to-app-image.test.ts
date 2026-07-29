@@ -150,7 +150,7 @@ describe("photoRecordToAppImage", () => {
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "face-index", key: "faces-detected", value: "", label: "face-index/faces-detected" },
+            { app_id: "other-app", key: "faces-detected", value: "", label: "other-app/faces-detected" },
             { app_id: "photos", key: "thumbnail", value: "", label: "photos/thumbnail" },
           ],
         }),

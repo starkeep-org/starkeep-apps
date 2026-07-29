@@ -17,13 +17,12 @@
 import { parentPort } from "node:worker_threads";
 import { loadAppCredentials, signedFetch, type AppCredentials } from "@starkeep/app-client";
 import { assignUnclusteredFaces, reconcilePeopleToStore } from "../clustering";
-import { emptyScanState, type ScanState, type VisionConfig } from "../types";
+import { emptyScanState, type ScanState, type VisionConfig, type VisionTaskId } from "../types";
 import { readScanState, writeScanState } from "../scan-state";
 import { listOriginals } from "../scan-set";
 import { reapOrphanSidecars } from "../sidecars";
 import { PROGRESS_INTERVAL_MS, type ScanCommand, type ScanEvent } from "../worker-protocol";
-import { FaceEngine } from "./face-engine";
-import { faceTask, type VisionTask } from "./tasks";
+import { enabledTaskSpecs, type VisionTask, type VisionTaskSpec } from "./tasks";
 
 /** Cancellation is cooperative: the loop checks between images. */
 let stopRequested = false;
@@ -56,19 +55,28 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
   const creds = await loadAppCredentials("photos");
   if (!creds) throw new Error("photos has not been installed locally — run install from admin-web");
 
-  const engine = await FaceEngine.create({
-    detectorPath: command.detectorPath,
-    embedderPath: command.embedderPath,
-  });
-
-  const tasks: VisionTask[] = [faceTask(engine)].filter((task) => task.enabled(config));
-  if (tasks.length === 0) {
+  const specs = enabledTaskSpecs(config);
+  if (specs.length === 0) {
     // Nothing enabled is a finished pass over nothing, not an error — it is what
-    // "start a scan with faces off" means.
-    await engine.dispose();
+    // "start a scan with every task off" means. Reached before any engine is
+    // constructed, which is the point of the spec/task split.
     finish(state, null);
     return;
   }
+
+  /**
+   * Engines are opened on first use and never re-opened, so a task whose records
+   * are all already processed costs nothing. With faces off and scene on, this is
+   * the difference between loading 278 MB and loading none of it.
+   */
+  const loaded = new Map<VisionTaskId, VisionTask>();
+  const loadTask = async (spec: VisionTaskSpec): Promise<VisionTask> => {
+    const already = loaded.get(spec.id);
+    if (already) return already;
+    const task = await spec.create(command.models[spec.id] ?? {});
+    loaded.set(spec.id, task);
+    return task;
+  };
 
   let lastProgress = 0;
   try {
@@ -106,13 +114,14 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
     for (const recordId of recordIds) {
       if (stopRequested) break;
 
-      const pending = tasks.filter((task) => !task.isProcessed(recordId));
+      const pending = specs.filter((spec) => !spec.isProcessed(recordId));
       if (pending.length === 0) {
         state.skipped++;
       } else {
         try {
           const bytes = await fetchImageBytes(creds, recordId);
-          for (const task of pending) {
+          for (const spec of pending) {
+            const task = await loadTask(spec);
             await task.run(recordId, bytes);
             state.processed[task.id] = (state.processed[task.id] ?? 0) + 1;
           }
@@ -137,7 +146,9 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
     if (config.faces.enabled) assignUnclusteredFaces(config.faces.threshold);
     finish(state, null);
   } finally {
-    await engine.dispose();
+    // Only what actually loaded — a task that skipped every record opened no
+    // session to close.
+    for (const task of loaded.values()) await task.dispose();
   }
 }
 

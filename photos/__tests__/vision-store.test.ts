@@ -2,18 +2,49 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { mergeVisionConfig, readVisionConfig, writeVisionConfig } from "@/vision/config";
+import {
+  enabledTaskIds,
+  mergeVisionConfig,
+  readVisionConfig,
+  taskEnabled,
+  writeVisionConfig,
+} from "@/vision/config";
 import { defaultVisionConfig, FACE_SIDECAR_VERSION, type FaceSidecar } from "@/vision/types";
-import { FACE_MODEL_ID } from "@/vision/models";
-import { configPath, faceSidecarPath, modelsDir, visionAssetsDir, visionDir } from "@/vision/paths";
+import {
+  FACE_DETECTOR_MODEL,
+  FACE_EMBEDDER_MODEL,
+  FACE_MODEL_ID,
+  FACE_MODELS,
+  FACE_MODELS_TOTAL_BYTES,
+  modelStatus,
+  modelStatusFor,
+  taskModelPaths,
+} from "@/vision/models";
+import {
+  configPath,
+  faceSidecarPath,
+  modelPath,
+  modelsDir,
+  sidecarPath,
+  taskDir,
+  visionAssetsDir,
+  visionDir,
+} from "@/vision/paths";
 import {
   deleteFaceSidecar,
+  deleteTaskSidecar,
+  isCurrentFor,
   listSidecarRecordIds,
+  listTaskRecordIds,
   processedRecordIds,
   readAllFaceSidecars,
   readFaceSidecar,
+  readTaskSidecar,
   reapOrphanSidecars,
+  taskProcessedRecordIds,
+  taskSchema,
   writeFaceSidecar,
+  writeTaskSidecar,
 } from "@/vision/sidecars";
 import { readScanState, writeScanState } from "@/vision/scan-state";
 
@@ -150,6 +181,87 @@ describe("sidecars", () => {
     deleteFaceSidecar("rec-2");
     expect(readFaceSidecar("rec-2")).toBeNull();
     expect(listSidecarRecordIds()).toEqual([]);
+  });
+});
+
+describe("the generic task store", () => {
+  it("keeps each task's sidecars in its own directory, named by task id", () => {
+    // `faces/` is the path it already had — the refactor renamed the accessor,
+    // not the store on disk, so an existing library is not re-scanned.
+    expect(taskDir("faces")).toBe(join(visionDir(), "faces"));
+    expect(sidecarPath("faces", "rec")).toBe(faceSidecarPath("rec"));
+  });
+
+  it("round-trips through the generic accessors", () => {
+    writeTaskSidecar("faces", "rec-1", sidecar({ w: 800, h: 600 }));
+    expect(readTaskSidecar("faces", "rec-1")).toMatchObject({ w: 800, h: 600 });
+    expect(listTaskRecordIds("faces")).toEqual(["rec-1"]);
+    expect(taskProcessedRecordIds("faces").has("rec-1")).toBe(true);
+    deleteTaskSidecar("faces", "rec-1");
+    expect(readTaskSidecar("faces", "rec-1")).toBeNull();
+  });
+
+  it("rejects a sidecar carrying another task's payload", () => {
+    // The only thing that would notice a task directory being read as the wrong
+    // task's: the file name is just `<recordId>.json` either way.
+    writeTaskSidecar("faces", "rec-alien", {
+      v: FACE_SIDECAR_VERSION,
+      model: FACE_MODEL_ID,
+      processedAt: "2026-07-28T00:00:00.000Z",
+      w: 10,
+      h: 10,
+    });
+    expect(readTaskSidecar("faces", "rec-alien")).toBeNull();
+    expect(taskProcessedRecordIds("faces").has("rec-alien")).toBe(false);
+  });
+
+  it("judges staleness against the task's own version and model", () => {
+    const schema = taskSchema("faces");
+    expect(schema).toEqual({ version: FACE_SIDECAR_VERSION, modelId: FACE_MODEL_ID });
+    expect(isCurrentFor("faces", sidecar())).toBe(true);
+    expect(isCurrentFor("faces", sidecar({ model: "some-older-pair" }))).toBe(false);
+    expect(isCurrentFor("faces", sidecar({ v: FACE_SIDECAR_VERSION - 1 }))).toBe(false);
+  });
+
+  it("reports an unscanned task as having processed nothing", () => {
+    // The check that matters when a second task is enabled on an already-scanned
+    // library: a shared processed-set would report every record done and skip
+    // the entire pass.
+    writeTaskSidecar("faces", "rec-1", sidecar());
+    expect(taskProcessedRecordIds("faces").size).toBe(1);
+    expect(listTaskRecordIds("faces")).toEqual(["rec-1"]);
+  });
+});
+
+describe("enabled tasks and their models", () => {
+  it("reports nothing enabled by default", () => {
+    expect(enabledTaskIds(defaultVisionConfig())).toEqual([]);
+  });
+
+  it("reports faces enabled once its toggle is on", () => {
+    const config = { faces: { enabled: true, threshold: 0.45, publishLabels: false } };
+    expect(enabledTaskIds(config)).toEqual(["faces"]);
+    expect(taskEnabled(config, "faces")).toBe(true);
+  });
+
+  it("asks for no models when no task is enabled", () => {
+    // What keeps a scene-only pass from being refused for want of the 278 MB of
+    // face weights it was never going to open.
+    expect(modelStatusFor([])).toMatchObject({ installed: true, missing: [], missingBytes: 0 });
+  });
+
+  it("names a task's own missing models", () => {
+    const status = modelStatusFor(["faces"]);
+    expect(status).toEqual(modelStatus("faces"));
+    expect(status.missing).toEqual(FACE_MODELS.map((m) => m.fileName));
+    expect(status.missingBytes).toBe(FACE_MODELS_TOTAL_BYTES);
+  });
+
+  it("resolves a task's model paths by the role its engine asks for", () => {
+    const paths = taskModelPaths("faces");
+    expect(Object.keys(paths).sort()).toEqual(["detector", "embedder"]);
+    expect(paths.detector).toBe(modelPath(FACE_DETECTOR_MODEL.fileName));
+    expect(paths.embedder).toBe(modelPath(FACE_EMBEDDER_MODEL.fileName));
   });
 });
 

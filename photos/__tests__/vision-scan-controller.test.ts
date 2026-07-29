@@ -60,10 +60,10 @@ afterEach(() => {
 });
 
 describe("startScan refusals", () => {
-  it("refuses while face detection is off", async () => {
+  it("refuses while every vision task is off", async () => {
     const result = await startScan();
     expect(result).toMatchObject({ ok: false, status: 409 });
-    expect(result.ok === false && result.error).toMatch(/face detection is off/);
+    expect(result.ok === false && result.error).toMatch(/no vision task is enabled/);
   });
 
   it("refuses without the models, naming which are missing", async () => {

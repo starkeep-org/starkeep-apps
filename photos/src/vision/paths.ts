@@ -18,6 +18,7 @@
 
 import { join } from "node:path";
 import { starkeepAssetsDir, starkeepDir } from "@starkeep/app-client";
+import type { VisionTaskId } from "./types";
 
 /** Root of Photos' non-syncable, on-device state. */
 export function visionDir(): string {
@@ -53,17 +54,39 @@ export function configPath(): string {
 }
 
 /**
- * One sidecar per processed record. The sidecar's *existence* is the
- * processed-state — there is no separate index that could drift from it, and an
- * image with no faces still gets one (with `faces: []`) so
- * processed-with-zero-results stays distinguishable from unprocessed.
+ * One directory per vision task, holding one sidecar per record that task has
+ * processed. The sidecar's *existence* is the processed-state — there is no
+ * separate index that could drift from it, and an image the task found nothing
+ * in still gets one (with an empty payload) so processed-with-zero-results
+ * stays distinguishable from unprocessed.
+ *
+ * Per-task rather than one shared directory because the staleness check is
+ * per-task: a scene model swap must reprocess scene and leave faces alone, and
+ * a directory listing is the cheapest way to ask "what has *this* task done".
+ * The task id is the directory name, so `faces/` keeps the path it already had.
+ */
+export function taskDir(taskId: VisionTaskId): string {
+  return join(visionDir(), taskId);
+}
+
+export function sidecarPath(taskId: VisionTaskId, recordId: string): string {
+  return join(taskDir(taskId), `${recordId}.json`);
+}
+
+/**
+ * The face task's spellings of the two above.
+ *
+ * Kept because faces is the one task with a typed facade over the generic store
+ * (see `sidecars.ts`), and reading `faceSidecarPath(id)` at a face-specific call
+ * site beats threading a literal `"faces"` through it. New tasks use the generic
+ * pair directly rather than growing a matching couple here.
  */
 export function facesDir(): string {
-  return join(visionDir(), "faces");
+  return taskDir("faces");
 }
 
 export function faceSidecarPath(recordId: string): string {
-  return join(facesDir(), `${recordId}.json`);
+  return sidecarPath("faces", recordId);
 }
 
 /** Named clusters. Membership itself lives as `personId` on each sidecar face. */

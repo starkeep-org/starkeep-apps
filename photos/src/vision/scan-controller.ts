@@ -15,12 +15,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Worker } from "node:worker_threads";
-import { readVisionConfig } from "./config";
-import { FACE_DETECTOR_MODEL, FACE_EMBEDDER_MODEL, faceModelStatus } from "./models";
-import { modelPath } from "./paths";
+import { enabledTaskIds, readVisionConfig } from "./config";
+import { modelStatusFor, taskModelPaths } from "./models";
 import { readScanState, writeScanState } from "./scan-state";
-import type { ScanState } from "./types";
-import type { ScanCommand, ScanEvent } from "./worker-protocol";
+import type { ScanState, VisionTaskId } from "./types";
+import type { ScanCommand, ScanEvent, TaskModelPaths } from "./worker-protocol";
 
 /**
  * Where `pnpm vision:build-worker` puts the worker — a build artefact rather
@@ -89,16 +88,24 @@ export async function startScan(): Promise<StartResult> {
   if (self.worker) return { ok: false, status: 409, error: "a scan is already running" };
 
   const config = readVisionConfig();
-  if (!config.faces.enabled) {
-    return { ok: false, status: 409, error: "face detection is off — enable it in Settings first" };
+  const tasks = enabledTaskIds(config);
+  if (tasks.length === 0) {
+    return {
+      ok: false,
+      status: 409,
+      error: "no vision task is enabled — turn one on in Settings first",
+    };
   }
 
-  const models = faceModelStatus();
+  // Only the enabled tasks' models. Gating on all of them would refuse a
+  // scene-only scan for want of the face weights, which is 278 MB the pass was
+  // never going to open.
+  const models = modelStatusFor(tasks);
   if (!models.installed) {
     return {
       ok: false,
       status: 409,
-      error: `face models are not installed (missing ${models.missing.join(", ")}) — run \`pnpm vision:fetch-models\``,
+      error: `vision models are not installed (missing ${models.missing.join(", ")}) — run \`pnpm vision:fetch-models\``,
     };
   }
 
@@ -149,12 +156,10 @@ export async function startScan(): Promise<StartResult> {
     self.state = readScanState();
   });
 
-  const command: ScanCommand = {
-    type: "start",
-    config,
-    detectorPath: modelPath(FACE_DETECTOR_MODEL.fileName),
-    embedderPath: modelPath(FACE_EMBEDDER_MODEL.fileName),
-  };
+  const paths: Partial<Record<VisionTaskId, TaskModelPaths>> = {};
+  for (const taskId of tasks) paths[taskId] = taskModelPaths(taskId);
+
+  const command: ScanCommand = { type: "start", config, models: paths };
   worker.postMessage(command);
 
   self.state = { ...self.state, running: true, error: null };

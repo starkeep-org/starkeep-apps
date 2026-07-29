@@ -498,10 +498,10 @@ describe("POST /api/vision/scan", () => {
     expect((await post({})).status).toBe(400);
   });
 
-  it("refuses to start while face detection is off", async () => {
+  it("refuses to start while every vision task is off", async () => {
     const res = await post({ action: "start" });
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toMatch(/enable it in Settings/);
+    expect(((await res.json()) as { error: string }).error).toMatch(/in Settings/);
   });
 
   it("refuses to start without the models, and names the fetch command", async () => {

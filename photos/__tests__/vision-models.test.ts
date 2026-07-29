@@ -107,7 +107,7 @@ describe("faceModelStatus", () => {
 
   it("names the directory the files belong in", () => {
     expect(faceModelStatus().dir).toBe(modelsDir());
-    expect(faceModelStatus().dir).toContain(join("app-local", "photos", "vision"));
+    expect(faceModelStatus().dir).toContain(join("app-assets", "photos", "vision"));
   });
 });
 

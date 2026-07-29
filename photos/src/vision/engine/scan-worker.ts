@@ -16,10 +16,11 @@
 
 import { parentPort } from "node:worker_threads";
 import { loadAppCredentials, signedFetch, type AppCredentials } from "@starkeep/app-client";
-import { assignUnclusteredFaces } from "../clustering";
+import { assignUnclusteredFaces, reconcilePeopleToStore } from "../clustering";
 import { emptyScanState, type ScanState, type VisionConfig } from "../types";
 import { readScanState, writeScanState } from "../scan-state";
 import { listOriginals } from "../scan-set";
+import { reapOrphanSidecars } from "../sidecars";
 import { PROGRESS_INTERVAL_MS, type ScanCommand, type ScanEvent } from "../worker-protocol";
 import { FaceEngine } from "./face-engine";
 import { faceTask, type VisionTask } from "./tasks";
@@ -73,6 +74,34 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
   try {
     const recordIds = await listOriginals((path) => signedFetch(creds, path));
     state.eligible = recordIds.length;
+
+    // Reconcile the store against the library before anything reads it — the
+    // skip check below, the counts, and the clustering fold at the end all fold
+    // over every sidecar on disk, so an orphan is not merely stale, it votes.
+    //
+    // Here because this is the only place holding a listing that is both
+    // complete (paged to exhaustion) and authoritative; the status route polls
+    // and has no business making a network call to get one.
+    //
+    // Empty is the exception. An empty library really does orphan every sidecar,
+    // but it is also what a scan started against a data server mid-reinstall
+    // sees, and the two are indistinguishable from here. Reaping then would
+    // discard the store — and with it the face→person assignments that make the
+    // names in `people.json` mean anything — to save a pass that has no work to
+    // do either way. Skipping costs nothing: the next non-empty scan reaps.
+    if (recordIds.length > 0) {
+      const reaped = reapOrphanSidecars(new Set(recordIds));
+      if (reaped.length > 0) {
+        // `people.json` caches sizes and centroids over faces that just went
+        // away, and nothing downstream recomputes them — see
+        // `reconcilePeopleToStore`.
+        const dropped = reconcilePeopleToStore();
+        console.warn(
+          `[vision] reaped ${reaped.length} sidecar(s) for records no longer present` +
+            (dropped > 0 ? `; dropped ${dropped} now-empty person cluster(s)` : ""),
+        );
+      }
+    }
 
     for (const recordId of recordIds) {
       if (stopRequested) break;

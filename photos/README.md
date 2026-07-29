@@ -25,12 +25,16 @@ Detects faces, groups them by identity, and lets you name the groups. **It runs
 entirely on the machine Photos is running on.** No image and no biometric data
 is sent anywhere, and none of the derived state syncs.
 
+Open the **Faces** button in the toolbar. It offers the one-time ~278 MB model
+download — accepting the non-commercial-research licence in the process — and
+shows its progress; then turn detection on and press *Scan now*. `pnpm dev`
+builds the scan worker automatically.
+
+For a headless or scripted install, the same download from a shell:
+
 ```bash
 pnpm vision:fetch-models   # ~278 MB, once
 ```
-
-Then turn it on from the **Faces** button in the toolbar and press *Scan now*.
-`pnpm dev` builds the scan worker automatically.
 
 ### Where the state lives
 
@@ -65,9 +69,10 @@ keypoints) and `glintr100.onnx` (512-d embedding), run through
 **InsightFace's code is MIT, but its pretrained weights — antelopev2 included —
 are licensed for non-commercial research use only**
 ([clarification](https://github.com/deepinsight/insightface/issues/2022)).
-Starkeep does not redistribute them; `vision:fetch-models` downloads them from a
-pinned URL, verifies their SHA-256, and asks you to accept that restriction
-first.
+Starkeep does not redistribute them. Both download paths — the Faces panel's
+button and `vision:fetch-models` — fetch from a commit-pinned URL, verify the
+SHA-256 before the file lands, require an explicit acceptance of that
+restriction, and record it as `LICENCE-ACKNOWLEDGED.txt` beside the weights.
 
 ### Sharing results with other apps
 

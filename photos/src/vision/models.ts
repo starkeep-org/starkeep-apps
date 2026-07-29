@@ -67,10 +67,25 @@ export const FACE_MODELS: VisionModel[] = [FACE_DETECTOR_MODEL, FACE_EMBEDDER_MO
  */
 export const FACE_MODEL_ID = "antelopev2:scrfd_10g_bnkps+glintr100";
 
+/**
+ * What the pack is called, for a UI that has to name what it installed.
+ *
+ * Kept beside `FACE_MODEL_ID` rather than parsed out of it: that id is written
+ * into every sidecar on disk and is matched literally, so it stays a literal —
+ * greppable, and impossible to change by accident. `vision-models.test.ts` pins
+ * the two to each other.
+ */
+export const FACE_MODEL_PACK = "antelopev2";
+
+/** The whole pair, installed or not — what the badge reports once it is. */
+export const FACE_MODELS_TOTAL_BYTES = FACE_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
+
 export interface ModelInstallStatus {
   installed: boolean;
   dir: string;
   missing: string[];
+  /** What an install would have to transfer — what the panel quotes up front. */
+  missingBytes: number;
 }
 
 /**
@@ -83,14 +98,17 @@ export interface ModelInstallStatus {
  */
 export function faceModelStatus(): ModelInstallStatus {
   const missing: string[] = [];
+  let missingBytes = 0;
   for (const model of FACE_MODELS) {
     try {
       if (statSync(modelPath(model.fileName)).size !== model.sizeBytes) {
         missing.push(model.fileName);
+        missingBytes += model.sizeBytes;
       }
     } catch {
       missing.push(model.fileName);
+      missingBytes += model.sizeBytes;
     }
   }
-  return { installed: missing.length === 0, dir: modelsDir(), missing };
+  return { installed: missing.length === 0, dir: modelsDir(), missing, missingBytes };
 }

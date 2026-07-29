@@ -1,9 +1,14 @@
 /**
  * Download a file and only keep it if its SHA-256 matches.
  *
- * Its own module because it is the one part of `vision:fetch-models` with a
- * security property worth pinning, and the script itself — top-level `await`,
- * a licence prompt, `process.exit` — cannot be imported by a test.
+ * Its own module because it is the one part of model installation with a
+ * security property worth pinning, and because it has two callers that must not
+ * diverge: the `vision:fetch-*` scripts and `model-download.ts`, which serves
+ * the in-app download. It lives under `src/vision/` rather than `scripts/lib/`
+ * for the second of those — a route may not import from `scripts/`.
+ *
+ * Nothing here touches the engine or onnxruntime, so it is safe in the Next
+ * server graph (see `__tests__/vision-bundle-isolation.test.ts`).
  *
  * The invariant: **a failed verification leaves nothing behind.** Model presence
  * is later judged by file size (re-hashing 278 MB on every status poll would

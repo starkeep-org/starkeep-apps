@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchVisionStatus,
+  startVisionModelDownload,
   startVisionScan,
   stopVisionScan,
   updateVisionConfig,
@@ -21,6 +22,10 @@ import {
 
 const POLL_IDLE_MS = 4000;
 const POLL_SCANNING_MS = 1000;
+
+function mb(bytes: number): string {
+  return `${Math.round(bytes / 1024 / 1024)} MB`;
+}
 
 interface VisionPanelProps {
   onClose: () => void;
@@ -59,13 +64,18 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
   }, [refresh]);
 
   // Poll faster while a pass is running: a scan card that updates every four
-  // seconds during a 45-minute pass reads as frozen.
+  // seconds during a 45-minute pass reads as frozen. A download's progress bar
+  // has the same problem, so it gets the same rate.
   const scanning = status?.scan.running ?? false;
+  const downloading = status?.models.download.running ?? false;
   useEffect(() => {
     if (unavailable) return;
-    const id = setInterval(() => void refresh(), scanning ? POLL_SCANNING_MS : POLL_IDLE_MS);
+    const id = setInterval(
+      () => void refresh(),
+      scanning || downloading ? POLL_SCANNING_MS : POLL_IDLE_MS,
+    );
     return () => clearInterval(id);
-  }, [refresh, scanning, unavailable]);
+  }, [refresh, scanning, downloading, unavailable]);
 
   const patchConfig = async (patch: { faces: Partial<VisionStatus["config"]["faces"]> }) => {
     setBusy(true);
@@ -73,6 +83,24 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
     try {
       const result = await updateVisionConfig(patch);
       if (result !== VISION_UNAVAILABLE && result.warning) setError(result.warning);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * The button is the licence acceptance — see `/api/vision/models`. Refreshing
+   * straight after start is what swaps the prompt for the progress bar without
+   * waiting out a poll interval.
+   */
+  const downloadModels = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await startVisionModelDownload();
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -117,18 +145,16 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
 
         {!status && !error && <p style={noteStyle}>Loading…</p>}
 
-        {status && !status.models.installed && (
-          <div style={warnStyle}>
-            <div>
-              Models are not installed{status.models.missing.length > 0 ? ` (missing ${status.models.missing.join(", ")})` : ""}.
-            </div>
-            <code style={codeStyle}>{status.models.fetchCommand}</code>
-            <div style={{ opacity: 0.7, marginTop: 6 }}>
-              The antelopev2 weights are licensed for non-commercial research use only; the fetch
-              script asks you to accept that before downloading.
-            </div>
-          </div>
-        )}
+        {status &&
+          (status.models.installed ? (
+            <ModelsInstalledBadge models={status.models} />
+          ) : (
+            <ModelDownloadPrompt
+              models={status.models}
+              busy={busy}
+              onDownload={() => void downloadModels()}
+            />
+          ))}
 
         {status && status.models.installed && !status.worker.built && (
           <div style={warnStyle}>
@@ -239,6 +265,103 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
   );
 }
 
+/**
+ * Standing confirmation of which weights are installed — the resting state of
+ * the same slot the download prompt occupies.
+ *
+ * Standing rather than a toast on completion: the question it answers is not
+ * "did the download finish" but "what am I running", and that one is asked
+ * months later, by someone wondering whether a bad grouping is the model's
+ * fault. The pack name is the answer, and it is otherwise only visible in a
+ * sidecar's `model` field.
+ *
+ * The directory is a `title` rather than a line of its own: an absolute path
+ * under `$STARKEEP_DIR` is long, and wanting it is rarer than wanting to know
+ * the thing is there at all.
+ */
+function ModelsInstalledBadge({ models }: { models: VisionStatus["models"] }) {
+  return (
+    <div style={okStyle} title={models.dir}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+        <span>✓ {models.pack.name} models installed</span>
+        <span style={{ opacity: 0.7 }}>{mb(models.pack.totalBytes)}</span>
+      </div>
+      <div style={{ opacity: 0.7, marginTop: 4 }}>{models.pack.files.join(" · ")}</div>
+    </div>
+  );
+}
+
+/**
+ * The one thing standing between a fresh install and the feature working: 278 MB
+ * of weights that are not shipped with the app.
+ *
+ * Three states, one box. The explanation is deliberately two lines — the size,
+ * because a quarter-gigabyte download is not something to start on someone's
+ * behalf without saying so, and the licence, because clicking the button is the
+ * acceptance of it. The full terms are in the file the download leaves next to
+ * the weights; a paragraph of licence text here would be read by nobody.
+ *
+ * `pnpm vision:fetch-models` stays on screen, small: it is the answer when the
+ * download keeps failing, and the only path on a headless install.
+ */
+function ModelDownloadPrompt({
+  models,
+  busy,
+  onDownload,
+}: {
+  models: VisionStatus["models"];
+  busy: boolean;
+  onDownload: () => void;
+}) {
+  const { download } = models;
+
+  if (download.running) {
+    const pct =
+      download.bytesTotal > 0
+        ? Math.min(100, Math.round((download.bytesReceived / download.bytesTotal) * 100))
+        : 0;
+    return (
+      <div style={warnStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <span>Downloading face models…</span>
+          <span>
+            {mb(download.bytesReceived)} / {mb(download.bytesTotal)}
+          </span>
+        </div>
+        <div style={progressTrackStyle}>
+          <div style={{ ...progressBarStyle, width: `${pct}%` }} />
+        </div>
+        <div style={{ opacity: 0.7, marginTop: 6 }}>
+          {download.currentFile ?? "starting"} — you can close this panel; the download continues.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={warnStyle}>
+      {download.error ? (
+        // The failed transfer left nothing behind, so this really is a retry and
+        // not a resume — saying so avoids the "didn't it already get half of it?"
+        // question.
+        <div style={{ color: "#f88" }}>Download failed: {download.error}</div>
+      ) : (
+        <div>Face recognition needs a one-time {mb(models.missingBytes)} model download.</div>
+      )}
+      <div style={{ opacity: 0.7, marginTop: 4 }}>
+        InsightFace antelopev2 weights — licensed for non-commercial research use only. Downloading
+        them accepts that.
+      </div>
+      <button onClick={onDownload} disabled={busy} style={{ ...buttonStyle, marginTop: 10 }}>
+        {download.error ? "Try again" : `Download ${mb(models.missingBytes)}`}
+      </button>
+      <div style={{ opacity: 0.55, marginTop: 8 }}>
+        Or from a shell: <code style={codeStyle}>{models.fetchCommand}</code>
+      </div>
+    </div>
+  );
+}
+
 const backdropStyle: React.CSSProperties = {
   position: "fixed",
   inset: 0,
@@ -311,6 +434,31 @@ const warnStyle: React.CSSProperties = {
   background: "rgba(255,200,60,0.10)",
   border: "1px solid rgba(255,200,60,0.25)",
   color: "#ffd86b",
+};
+
+/** `warnStyle`'s counterpart — same box, resolved rather than pending. */
+const okStyle: React.CSSProperties = {
+  marginTop: 12,
+  padding: 10,
+  borderRadius: 6,
+  background: "rgba(90,200,120,0.10)",
+  border: "1px solid rgba(90,200,120,0.25)",
+  color: "#8fdca6",
+};
+
+const progressTrackStyle: React.CSSProperties = {
+  marginTop: 8,
+  height: 6,
+  borderRadius: 3,
+  background: "rgba(0,0,0,0.35)",
+  overflow: "hidden",
+};
+
+const progressBarStyle: React.CSSProperties = {
+  height: "100%",
+  background: "#ffd86b",
+  // The poll is 1 s; without this the bar steps rather than moves.
+  transition: "width 1s linear",
 };
 
 const codeStyle: React.CSSProperties = {

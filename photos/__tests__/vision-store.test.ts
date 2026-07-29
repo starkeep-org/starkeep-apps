@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { mergeVisionConfig, readVisionConfig, writeVisionConfig } from "@/vision/config";
 import { defaultVisionConfig, FACE_SIDECAR_VERSION, type FaceSidecar } from "@/vision/types";
 import { FACE_MODEL_ID } from "@/vision/models";
-import { configPath, faceSidecarPath, visionDir } from "@/vision/paths";
+import { configPath, faceSidecarPath, modelsDir, visionAssetsDir, visionDir } from "@/vision/paths";
 import {
   deleteFaceSidecar,
   listSidecarRecordIds,
   processedRecordIds,
   readAllFaceSidecars,
   readFaceSidecar,
+  reapOrphanSidecars,
   writeFaceSidecar,
 } from "@/vision/sidecars";
 import { readScanState, writeScanState } from "@/vision/scan-state";
@@ -51,6 +52,20 @@ describe("vision paths", () => {
     // `apps/photos/syncable/…`, both of which sync unconditionally.
     expect(visionDir()).toBe(join(root, "app-local", "photos", "vision"));
     expect(visionDir()).not.toContain("syncable");
+  });
+
+  it("keep the downloads out of the state tree", () => {
+    // Losing app-local loses the user's clusters and labels; losing app-assets
+    // costs a re-download. Only the second may be read out of the operator's
+    // real ~/.starkeep under a test runner, so they cannot share a root.
+    expect(visionAssetsDir()).toBe(join(root, "app-assets", "photos", "vision"));
+    expect(visionAssetsDir().startsWith(visionDir())).toBe(false);
+  });
+
+  it("resolve the models with no STARKEEP_DIR, where state paths throw", () => {
+    delete process.env.STARKEEP_DIR;
+    expect(() => visionDir()).toThrow(/real Starkeep state directory/);
+    expect(modelsDir()).toBe(join(homedir(), ".starkeep", "app-assets", "photos", "vision", "models"));
   });
 });
 
@@ -135,6 +150,35 @@ describe("sidecars", () => {
     deleteFaceSidecar("rec-2");
     expect(readFaceSidecar("rec-2")).toBeNull();
     expect(listSidecarRecordIds()).toEqual([]);
+  });
+});
+
+describe("reapOrphanSidecars", () => {
+  it("drops sidecars for records that are no longer in the scan set", () => {
+    writeFaceSidecar("lives", sidecar());
+    writeFaceSidecar("gone", sidecar());
+    expect(reapOrphanSidecars(new Set(["lives"]))).toEqual(["gone"]);
+    expect(listSidecarRecordIds()).toEqual(["lives"]);
+  });
+
+  it("reaps a stale-model sidecar too", () => {
+    // The reap works off `listSidecarRecordIds`, not `readAllFaceSidecars` — a
+    // sidecar this build would rewrite is still a sidecar taking up a record id,
+    // and leaving it would mean orphans that only a model swap could clear.
+    writeFaceSidecar("gone-old", sidecar({ model: "some-older-pair" }));
+    expect(reapOrphanSidecars(new Set(["lives"]))).toEqual(["gone-old"]);
+    expect(listSidecarRecordIds()).toEqual([]);
+  });
+
+  it("keeps everything when the scan set covers the store", () => {
+    writeFaceSidecar("a", sidecar());
+    writeFaceSidecar("b", sidecar());
+    expect(reapOrphanSidecars(new Set(["a", "b", "never-scanned"]))).toEqual([]);
+    expect(listSidecarRecordIds().sort()).toEqual(["a", "b"]);
+  });
+
+  it("is a no-op on an empty store rather than throwing", () => {
+    expect(reapOrphanSidecars(new Set(["a"]))).toEqual([]);
   });
 });
 

@@ -17,12 +17,13 @@
  * count, which a portrait cannot establish).
  *
  * Pinned by SHA-256 like the models, so a mirror serving different bytes fails
- * loudly instead of quietly changing what the test asserts.
+ * loudly instead of quietly changing what the test asserts. And installed
+ * alongside them under `app-assets/` — re-fetchable downloads, not state.
  */
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { visionDir } from "../../src/vision/paths";
+import { visionAssetsDir } from "../../src/vision/paths";
 
 export interface VisionFixture {
   fileName: string;
@@ -62,7 +63,7 @@ export const VISION_FIXTURES: VisionFixture[] = [
 ];
 
 export function fixturesDir(): string {
-  return join(visionDir(), "test-fixtures");
+  return join(visionAssetsDir(), "test-fixtures");
 }
 
 export function fixturePath(fileName: string): string {

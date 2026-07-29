@@ -8,21 +8,39 @@
  * scratch space"; the platform does not create, enumerate, or clean it up, so
  * an uninstall leaves it behind.
  *
+ * The downloads are the exception: model weights and test photographs live
+ * under `$STARKEEP_DIR/app-assets/photos/vision/` because they are
+ * re-fetchable content rather than user data. See `visionAssetsDir()`.
+ *
  * Nothing here imports onnxruntime — this module is safe for the Next server
  * graph. See `engine/` for the part that is not.
  */
 
 import { join } from "node:path";
-import { starkeepDir } from "@starkeep/app-client";
+import { starkeepAssetsDir, starkeepDir } from "@starkeep/app-client";
 
 /** Root of Photos' non-syncable, on-device state. */
 export function visionDir(): string {
   return join(starkeepDir(), "app-local", "photos", "vision");
 }
 
+/**
+ * Root of the vision downloads: the ONNX graphs and the test photographs, each
+ * SHA-pinned and fetched by a `pnpm vision:fetch-*` script.
+ *
+ * These sit under `app-assets/` rather than beside the rest of the vision state
+ * because they are not state — `rm -rf` costs a re-download and nothing else.
+ * That is also why they are the one part of vision resolved through core's
+ * unguarded root: a test asking "are the models installed?" has to be allowed
+ * to look at the real answer, or it skips itself forever while reporting green.
+ */
+export function visionAssetsDir(): string {
+  return join(starkeepAssetsDir(), "photos", "vision");
+}
+
 /** ONNX graphs, fetched by `pnpm vision:fetch-models`. Gitignored, never synced. */
 export function modelsDir(): string {
-  return join(visionDir(), "models");
+  return join(visionAssetsDir(), "models");
 }
 
 export function modelPath(fileName: string): string {

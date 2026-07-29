@@ -40,10 +40,17 @@ none of this may leave the device.
 
 ```
 config.json                 toggles and thresholds
-models/                     the ONNX graphs (fetched, gitignored)
 faces/<recordId>.json       detections + 512-d identity vectors
 people.json                 named groups
 scan-state.json             progress of the last pass
+```
+
+The downloads live in a separate tree, `$STARKEEP_DIR/app-assets/photos/vision/`,
+because they are not state — deleting them costs a re-fetch and nothing else:
+
+```
+models/                     the ONNX graphs (`pnpm vision:fetch-models`)
+test-fixtures/              the integration test's photographs (`pnpm vision:fetch-fixtures`)
 ```
 
 A record's sidecar *existing* is what marks it processed — there is no separate

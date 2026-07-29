@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
  * `pnpm vision:fetch-models` — download the antelopev2 ONNX graphs the
- * on-device face task needs into `$STARKEEP_DIR/app-local/photos/vision/models/`.
+ * on-device face task needs into `$STARKEEP_DIR/app-assets/photos/vision/models/`.
  *
  * 278 MB, which is why it is a script and not a committed asset, and why the
  * app runs in a "models not installed" state until it has been run.

@@ -7,6 +7,7 @@ import {
   facesByPerson,
   mergePeopleAndFaces,
   reclusterAll,
+  reconcilePeopleToStore,
   renamePerson,
   splitFacesToNewPerson,
 } from "@/vision/clustering";
@@ -19,7 +20,7 @@ import {
   updateCentroid,
 } from "@/vision/embeddings";
 import { newPerson, PersonAssigner, readPeople } from "@/vision/people";
-import { readAllFaceSidecars, writeFaceSidecar } from "@/vision/sidecars";
+import { readAllFaceSidecars, reapOrphanSidecars, writeFaceSidecar } from "@/vision/sidecars";
 import { FACE_MODEL_ID } from "@/vision/models";
 import { FACE_SIDECAR_VERSION, type DetectedFace } from "@/vision/types";
 
@@ -279,6 +280,85 @@ describe("reclusterAll", () => {
     const { people } = reclusterAll(0.9);
     expect(people).toHaveLength(2);
     expect(people.every((p) => p.name === "")).toBe(true);
+  });
+});
+
+describe("reconcilePeopleToStore", () => {
+  it("drops clusters whose every face was reaped, and keeps the rest named", () => {
+    seed("keep", [face(vectorAt(0))]);
+    seed("orphan", [face(vectorAt(Math.PI / 2))]);
+    assignUnclusteredFaces(0.45);
+    expect(readPeople()).toHaveLength(2);
+    const kept = facesByPerson();
+    const keptId = [...kept.keys()].find((id) => kept.get(id)![0].recordId === "keep")!;
+    renamePerson(keptId, "Alice");
+
+    reapOrphanSidecars(new Set(["keep"]));
+    expect(reconcilePeopleToStore()).toBe(1);
+
+    const people = readPeople();
+    expect(people).toHaveLength(1);
+    expect(people[0].id).toBe(keptId);
+    expect(people[0].name).toBe("Alice");
+  });
+
+  it("recounts faceCount so the centroid keeps moving at the right rate", () => {
+    // faceCount is the running-mean weight in PersonAssigner.assign, not a
+    // display counter. Left inflated by reaped faces, every later face nudges
+    // the centroid less than it should and the cluster stays anchored to an
+    // identity whose faces are gone.
+    seed("a", [face(vectorAt(0))]);
+    seed("b", [face(vectorAt(0.1))]);
+    seed("c", [face(vectorAt(0.2))]);
+    assignUnclusteredFaces(0.45);
+    expect(readPeople()[0].faceCount).toBe(3);
+
+    reapOrphanSidecars(new Set(["a"]));
+    reconcilePeopleToStore();
+    expect(readPeople()[0].faceCount).toBe(1);
+  });
+
+  it("re-derives the centroid from the survivors", () => {
+    seed("a", [face(vectorAt(0))]);
+    seed("b", [face(vectorAt(0.3))]);
+    assignUnclusteredFaces(0.45);
+
+    reapOrphanSidecars(new Set(["b"]));
+    reconcilePeopleToStore();
+    // Exactly b's vector now — not the two-face mean it held a moment ago.
+    const centroid = decodeEmbedding(readPeople()[0].centroid);
+    expect(cosineSimilarity(centroid, vectorAt(0.3))).toBeCloseTo(1, 5);
+  });
+
+  it("keeps a cluster whose faces have undecodable embeddings", () => {
+    // Same tolerance as PersonAssigner's constructor: one corrupt vector must
+    // not silently delete a cluster the user has named.
+    seed("a", [face(vectorAt(0))]);
+    assignUnclusteredFaces(0.45);
+    const person = readPeople()[0];
+    renamePerson(person.id, "Alice");
+
+    const sidecar = readAllFaceSidecars().get("a")!;
+    sidecar.faces[0].embedding = "AAAA"; // not a whole number of float32s
+    writeFaceSidecar("a", sidecar);
+
+    expect(reconcilePeopleToStore()).toBe(0);
+    const after = readPeople();
+    expect(after).toHaveLength(1);
+    expect(after[0].name).toBe("Alice");
+    expect(after[0].faceCount).toBe(1);
+    expect(after[0].centroid).toBe(person.centroid);
+  });
+
+  it("leaves a healthy store untouched", () => {
+    seed("a", [face(vectorAt(0)), face(vectorAt(0.1))]);
+    assignUnclusteredFaces(0.45);
+    const before = readPeople();
+
+    expect(reconcilePeopleToStore()).toBe(0);
+    expect(readPeople().map((p) => ({ id: p.id, faceCount: p.faceCount }))).toEqual(
+      before.map((p) => ({ id: p.id, faceCount: p.faceCount })),
+    );
   });
 });
 

@@ -11,7 +11,7 @@
  * the routes use it.
  */
 
-import { decodeEmbedding, meanEmbedding } from "./embeddings";
+import { decodeEmbedding, encodeEmbedding, meanEmbedding } from "./embeddings";
 import { mergePeople, newPerson, PersonAssigner, readPeople, writePeople } from "./people";
 import { readAllFaceSidecars, writeFaceSidecar } from "./sidecars";
 import type { Person } from "./types";
@@ -57,6 +57,63 @@ export function assignUnclusteredFaces(threshold: number): AssignmentResult {
   const people = assigner.snapshot();
   if (assigned > 0 || assigner.hasChanges()) writePeople(people);
   return { assigned, people };
+}
+
+/**
+ * Rebuild the roster's bookkeeping from the faces that are actually left.
+ *
+ * The companion to `reapOrphanSidecars`, and not optional after one: `people.json`
+ * caches per-cluster size and centroid, and neither is derivable from a deletion
+ * that happened in another file. `assignUnclusteredFaces` will not notice, because
+ * it only looks at faces whose `personId` is still null.
+ *
+ * `faceCount` is the part that has to be right. It is not a display counter — it
+ * is the running-mean weight in `PersonAssigner.assign`, so a count left inflated
+ * by deleted faces makes every subsequent face move the centroid less than it
+ * should, and a cluster that has lost most of its members keeps drifting toward
+ * the identity it used to hold. Centroids are re-derived here as an exact mean
+ * over the survivors rather than patched, which is both simpler and strictly
+ * better than the incremental value it replaces.
+ *
+ * Names survive: this preserves cluster ids and only recomputes what is derived,
+ * which is what separates it from `reclusterAll`. Returns how many clusters lost
+ * every face and were dropped.
+ */
+export function reconcilePeopleToStore(): number {
+  const members = new Map<string, { embeddings: Float32Array[]; faces: number }>();
+  for (const sidecar of readAllFaceSidecars().values()) {
+    for (const face of sidecar.faces) {
+      if (face.personId === null) continue;
+      let entry = members.get(face.personId);
+      if (!entry) {
+        entry = { embeddings: [], faces: 0 };
+        members.set(face.personId, entry);
+      }
+      entry.faces++;
+      try {
+        entry.embeddings.push(decodeEmbedding(face.embedding));
+      } catch {
+        // Counts toward the cluster's size but not its centroid — same tolerance
+        // as PersonAssigner's constructor, and for the same reason: one corrupt
+        // vector must not delete a cluster the user has named.
+      }
+    }
+  }
+
+  const survivors: Person[] = [];
+  let dropped = 0;
+  for (const person of readPeople()) {
+    const entry = members.get(person.id);
+    if (!entry) {
+      dropped++;
+      continue;
+    }
+    person.faceCount = entry.faces;
+    if (entry.embeddings.length > 0) person.centroid = encodeEmbedding(meanEmbedding(entry.embeddings));
+    survivors.push(person);
+  }
+  writePeople(survivors);
+  return dropped;
 }
 
 /**

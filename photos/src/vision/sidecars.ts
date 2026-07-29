@@ -8,6 +8,13 @@
  * processed" stay distinguishable, which is the difference between a scan that
  * converges and one that retries the same empty photos forever.
  *
+ * What that buys is consistency *within* the store, and it is worth being exact
+ * about the limit: the store can still drift from the **library**, because a
+ * directory of files cannot express "this belongs to that record". Deleting a
+ * record deletes nothing here. `reapOrphanSidecars` is the reconciliation that
+ * has to stand in for the cascade, and a scan is the only place with a
+ * trustworthy view of what still exists to drive it.
+ *
  * A sidecar whose `v` or `model` does not match the current build is treated as
  * absent: that is the whole reprocess mechanism, and it is why swapping models
  * needs no migration.
@@ -74,6 +81,35 @@ export function processedRecordIds(): Set<string> {
     if (sidecar && isCurrent(sidecar)) out.add(id);
   }
   return out;
+}
+
+/**
+ * Drop sidecars whose record is no longer in the scan set, and report what went.
+ *
+ * Nothing else reconciles this store with the library. A directory of files has
+ * no foreign key to `shared_records` and no cascade to hang off, so a record
+ * that goes away leaves its faces behind forever — inflating every count the
+ * status route folds (`processed`, `imagesWithFaces`, `facesFound`) and, worse,
+ * feeding dead embeddings to `assignUnclusteredFaces`, which clusters over the
+ * whole store. Re-importing a library therefore doubles every person in it.
+ *
+ * `keep` is the scan set, not the record set — a record that stops being an
+ * original (it gains a `photos/crop` label) is reaped too. That is deliberate:
+ * its faces are its parent's faces at an offset, so they were never ours to
+ * hold, and the alternative is a second listing pass to tell the two cases
+ * apart for no behavioural difference.
+ *
+ * Callers must not pass an empty `keep` for a library that merely failed to
+ * list — see the guard at the one call site in `engine/scan-worker.ts`.
+ */
+export function reapOrphanSidecars(keep: ReadonlySet<string>): string[] {
+  const reaped: string[] = [];
+  for (const id of listSidecarRecordIds()) {
+    if (keep.has(id)) continue;
+    deleteFaceSidecar(id);
+    reaped.push(id);
+  }
+  return reaped;
 }
 
 /**

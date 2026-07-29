@@ -131,7 +131,7 @@ Only 2 of antelopev2's 5 files are needed:
 Skipped: `1k3d68.onnx` (144 MB), `2d106det.onnx`, `genderage.onnx`. Full pack is 428 MB.
 
 **Do not commit 278 MB to git.** Add `pnpm vision:fetch-models` — pinned URL +
-SHA-256 verify → `~/.starkeep/app-local/photos/vision/models/`. The UI shows a
+SHA-256 verify → `~/.starkeep/app-assets/photos/vision/models/`. The UI shows a
 "models not installed" state until it has been run.
 
 ### License
@@ -221,12 +221,20 @@ Cloud sync becomes a future feature rather than a dead toggle.
 ```
 ~/.starkeep/app-local/photos/vision/
   config.json                 # toggles + thresholds
-  models/                     # fetched, gitignored
   faces/<recordId>.json       # { v, model, processedAt, w, h,
                               #   faces: [{ bbox, score, kps, embedding(b64 f32), personId }] }
   people.json                 # { people: [{ id, name, createdAt }] }
   scan-state.json             # last pass: eligible total, per-type processed, timestamps
+
+~/.starkeep/app-assets/photos/vision/
+  models/                     # fetched, gitignored
+  test-fixtures/              # fetched, gitignored
 ```
+
+*(As built: the downloads ended up in a sibling `app-assets/` tree rather than in
+`app-local/`. They are re-fetchable content, not state, and separating them is what
+lets a test read them out of the operator's real `~/.starkeep` — see
+`starkeepAssetsDir()` and core's `system-design.md`.)*
 
 Three properties fall out of this and are worth preserving:
 
@@ -234,6 +242,34 @@ Three properties fall out of this and are worth preserving:
   at boot → a `Set` per vision type → counts are free and cannot drift. An image with
   no faces still gets a sidecar with `faces: []`, so processed-with-zero-results is
   distinguishable from unprocessed. A `model` mismatch means "reprocess".
+
+  > **"Cannot drift" was too strong, and the gap it hid is real** (fixed 2026-07-29).
+  > Counts cannot drift from *each other*; the store can still drift from the
+  > **library**, which is the only thing a user sees. A directory of files has no
+  > foreign key to `shared_records` and no cascade, so a record that goes away
+  > leaves its faces behind forever. Found in a dev library that had been
+  > re-imported: 7 photos reported as `32 faces in 14 photos`, and — worse —
+  > *every* person cluster doubled, because `assignUnclusteredFaces` folds over
+  > the whole store and the dead embeddings vote in it.
+  >
+  > The fix is `reapOrphanSidecars(keep)`, driven from the scan worker right after
+  > `listOriginals` — the only place holding a listing that is both complete and
+  > authoritative. Two things it forced:
+  >
+  > - **An empty listing does not reap.** An empty library really does orphan
+  >   every sidecar, but it is also what a scan started against a data server
+  >   mid-reinstall sees, and the two are indistinguishable from the worker.
+  >   Reaping then would discard the store to save a pass with no work in it.
+  > - **`people.json` has to be reconciled too** (`reconcilePeopleToStore`).
+  >   `faceCount` is not a display counter — it is the running-mean weight in
+  >   `PersonAssigner.assign`, so a count left inflated by deleted faces makes
+  >   every later face move the centroid less than it should.
+  >
+  > Worth noting for the platform, not just for Photos: `image_enriched` has the
+  > same shape of defect — `record_id` primary key, no FK, no cascade — and there
+  > is no `DELETE /data/records/:id` in the local data server at all. Record
+  > deletion propagating into app-keyed state is unsolved generally; app-private
+  > local state is the app's problem to reconcile, and this is what that costs.
 - **Bounding boxes are the sidecar's `bbox`** — satisfying "bboxes as app-specific
   metadata" without a syncable table.
 - Only the small `{recordId → [{bbox, personId}]}` projection is held in the Next

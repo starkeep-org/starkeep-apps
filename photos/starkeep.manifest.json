@@ -27,6 +27,14 @@
       {
         "key": "crop",
         "description": "This image is a user-made crop of its parent record."
+      },
+      {
+        "key": "faces",
+        "description": "A person the user has named in this photo. Multi-valued: one row per named person, so ?label=photos/faces&labelValue=Alice finds every photo of Alice. Written only when on-device face recognition is enabled AND the user opts in to publishing; unnamed clusters are never published."
+      },
+      {
+        "key": "face-count",
+        "description": "How many faces on-device detection found in this photo, as a small integer. Absent (never zero) when there are none, so ?label=photos/face-count means 'has at least one face'."
       }
     ],
     "appSpecificSyncable": {

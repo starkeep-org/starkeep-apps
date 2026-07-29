@@ -5,6 +5,8 @@ export type { AppImage, AppImageExif, DerivedKind } from "./types/app-image";
 export {
   PHOTOS_APP_ID,
   PHOTOS_LABEL_KEYS,
+  LABEL_VALUE_MAX_BYTES,
+  LABEL_VALUES_PER_KEY_MAX,
   derivedKindOf,
   isThumbnail,
   findThumbnailFor,

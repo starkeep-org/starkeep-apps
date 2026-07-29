@@ -5,6 +5,8 @@ import {
   PhotoGrid,
   PhotoViewer,
   usePhotoContext,
+  VisionPanel,
+  PeopleView,
 } from "@/photos-ui";
 import {
   addPhotoFromPath,
@@ -121,6 +123,11 @@ function PhotosAppInner() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showCloudSetup, setShowCloudSetup] = useState(false);
+  // Mounted unconditionally: both panels return null when the vision routes
+  // answer 501, so the local/remote decision stays server-side rather than
+  // being re-derived from the build flag here.
+  const [showVision, setShowVision] = useState(false);
+  const [showPeople, setShowPeople] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
     () => (localStorage.getItem("thumbnail-strategy") as ThumbnailStrategy) ?? "browser",
@@ -318,6 +325,16 @@ function PhotosAppInner() {
             </button>
           )}
 
+          {!FORCE_REMOTE && (
+            <button
+              onClick={() => setShowVision(true)}
+              title="On-device face recognition"
+              style={toolbarButtonStyle}
+            >
+              Faces
+            </button>
+          )}
+
           <button
             onClick={handleAddClick}
             disabled={adding}
@@ -396,6 +413,18 @@ function PhotosAppInner() {
         {showCloudSetup && (
           <CloudSetupModal onClose={() => setShowCloudSetup(false)} />
         )}
+
+        {showVision && (
+          <VisionPanel
+            onClose={() => setShowVision(false)}
+            onOpenPeople={() => {
+              setShowVision(false);
+              setShowPeople(true);
+            }}
+          />
+        )}
+
+        {showPeople && <PeopleView onClose={() => setShowPeople(false)} />}
       </div>
     </PhotoUrlProvider>
   );

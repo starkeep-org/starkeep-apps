@@ -18,13 +18,16 @@
  */
 
 import { FaceEngine } from "./face-engine";
+import { SceneEngine } from "./siglip";
 import { encodeEmbedding } from "../embeddings";
 import { taskEnabled } from "../config";
-import { FACE_MODEL_ID } from "../models";
+import { FACE_MODEL_ID, SCENE_MODEL_ID } from "../models";
 import {
   FACE_SIDECAR_VERSION,
+  SCENE_SIDECAR_VERSION,
   VISION_TASK_IDS,
   type FaceSidecar,
+  type SceneSidecar,
   type VisionConfig,
   type VisionTaskId,
 } from "../types";
@@ -56,6 +59,32 @@ export interface VisionTaskSpec {
 }
 
 const SPECS: Record<VisionTaskId, VisionTaskSpec> = {
+  scene: {
+    id: "scene",
+    isProcessed: (recordId) => {
+      const sidecar = readTaskSidecar("scene", recordId);
+      return sidecar !== null && isCurrentFor("scene", sidecar);
+    },
+    create: async (models) => {
+      const engine = await SceneEngine.create({ imagePath: required(models, "image") });
+      return {
+        id: "scene",
+        dispose: () => engine.dispose(),
+        run: async (recordId, bytes) => {
+          const result = await engine.embed(bytes);
+          const sidecar: SceneSidecar = {
+            v: SCENE_SIDECAR_VERSION,
+            model: SCENE_MODEL_ID,
+            processedAt: new Date().toISOString(),
+            w: result.width,
+            h: result.height,
+            embedding: encodeEmbedding(result.embedding),
+          };
+          writeTaskSidecar("scene", recordId, sidecar);
+        },
+      };
+    },
+  },
   faces: {
     id: "faces",
     isProcessed: (recordId) => {

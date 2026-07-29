@@ -94,6 +94,19 @@ export function peoplePath(): string {
   return join(visionDir(), "people.json");
 }
 
+/**
+ * The compacted scene embedding index — derived from the scene sidecars and
+ * rebuilt at the end of a scan.
+ *
+ * Beside the task directories rather than inside `scene/`, because everything in
+ * a task directory is a per-record sidecar and `reapOrphanSidecars` sweeps by
+ * that assumption. A `.bin` in there would be ignored by the `.json` filter
+ * today and is a trap waiting for whoever relaxes it.
+ */
+export function sceneIndexPath(): string {
+  return join(visionDir(), "scene-index.bin");
+}
+
 /** Progress of the last/current pass. */
 export function scanStatePath(): string {
   return join(visionDir(), "scan-state.json");

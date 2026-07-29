@@ -18,6 +18,7 @@ import {
   FACE_MODELS_TOTAL_BYTES,
   modelStatus,
   modelStatusFor,
+  SCENE_IMAGE_MODEL,
   taskModelPaths,
 } from "@/vision/models";
 import {
@@ -108,10 +109,12 @@ describe("config", () => {
   });
 
   it("round-trips a write", () => {
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.6, publishLabels: true } });
-    expect(readVisionConfig()).toEqual({
+    const config = {
       faces: { enabled: true, threshold: 0.6, publishLabels: true },
-    });
+      scene: { enabled: true },
+    };
+    writeVisionConfig(config);
+    expect(readVisionConfig()).toEqual(config);
   });
 
   it("falls back to defaults on a corrupt file rather than throwing", () => {
@@ -123,10 +126,36 @@ describe("config", () => {
   });
 
   it("keeps unspecified fields when patching", () => {
-    const base = { faces: { enabled: true, threshold: 0.6, publishLabels: true } };
+    const base = {
+      faces: { enabled: true, threshold: 0.6, publishLabels: true },
+      scene: { enabled: true },
+    };
     expect(mergeVisionConfig(base, { faces: { enabled: false } })).toEqual({
       faces: { enabled: false, threshold: 0.6, publishLabels: true },
+      scene: { enabled: true },
     });
+  });
+
+  it("applies a patch that touches only one section, leaving the other alone", () => {
+    // The regression the face-only merge would have shipped: it returned `base`
+    // wholesale whenever `patch.faces` was absent, so a PUT touching only
+    // `scene` was silently discarded while reporting success. Invisible with one
+    // section; data loss with two.
+    const base = {
+      faces: { enabled: true, threshold: 0.6, publishLabels: true },
+      scene: { enabled: false },
+    };
+    expect(mergeVisionConfig(base, { scene: { enabled: true } })).toEqual({
+      faces: { enabled: true, threshold: 0.6, publishLabels: true },
+      scene: { enabled: true },
+    });
+  });
+
+  it("leaves every section alone for a patch that names none of them", () => {
+    const base = defaultVisionConfig();
+    expect(mergeVisionConfig(base, {})).toEqual(base);
+    expect(mergeVisionConfig(base, null)).toEqual(base);
+    expect(mergeVisionConfig(base, { nonsense: true })).toEqual(base);
   });
 
   it("clamps the threshold into a usable band", () => {
@@ -238,16 +267,38 @@ describe("enabled tasks and their models", () => {
     expect(enabledTaskIds(defaultVisionConfig())).toEqual([]);
   });
 
-  it("reports faces enabled once its toggle is on", () => {
-    const config = { faces: { enabled: true, threshold: 0.45, publishLabels: false } };
-    expect(enabledTaskIds(config)).toEqual(["faces"]);
-    expect(taskEnabled(config, "faces")).toBe(true);
+  it("reports each task enabled independently, in registry order", () => {
+    const facesOnly = {
+      faces: { enabled: true, threshold: 0.45, publishLabels: false },
+      scene: { enabled: false },
+    };
+    expect(enabledTaskIds(facesOnly)).toEqual(["faces"]);
+    expect(taskEnabled(facesOnly, "faces")).toBe(true);
+    expect(taskEnabled(facesOnly, "scene")).toBe(false);
+
+    const sceneOnly = {
+      faces: { enabled: false, threshold: 0.45, publishLabels: false },
+      scene: { enabled: true },
+    };
+    expect(enabledTaskIds(sceneOnly)).toEqual(["scene"]);
+
+    const both = { ...facesOnly, scene: { enabled: true } };
+    // `VISION_TASK_IDS` order, not config key order — the host's gate and the
+    // worker's task list both derive from it and must agree.
+    expect(enabledTaskIds(both)).toEqual(["faces", "scene"]);
   });
 
   it("asks for no models when no task is enabled", () => {
     // What keeps a scene-only pass from being refused for want of the 278 MB of
     // face weights it was never going to open.
     expect(modelStatusFor([])).toMatchObject({ installed: true, missing: [], missingBytes: 0 });
+  });
+
+  it("gates a scene-only scan on the scene weights alone", () => {
+    // The §3.2 property, now actually observable: enabling scene must not demand
+    // the face pair, and vice versa.
+    expect(modelStatusFor(["scene"]).missing).toEqual([SCENE_IMAGE_MODEL.fileName]);
+    expect(modelStatusFor(["faces"]).missing).not.toContain(SCENE_IMAGE_MODEL.fileName);
   });
 
   it("names a task's own missing models", () => {

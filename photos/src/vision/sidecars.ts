@@ -30,11 +30,13 @@
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { sidecarPath, taskDir } from "./paths";
-import { FACE_MODEL_ID } from "./models";
+import { FACE_MODEL_ID, SCENE_MODEL_ID } from "./models";
 import {
   FACE_SIDECAR_VERSION,
+  SCENE_SIDECAR_VERSION,
   VISION_TASK_IDS,
   type FaceSidecar,
+  type SceneSidecar,
   type SidecarBase,
   type VisionTaskId,
 } from "./types";
@@ -73,6 +75,11 @@ const TASK_SCHEMAS: Record<VisionTaskId, TaskSchema> = {
     version: FACE_SIDECAR_VERSION,
     modelId: FACE_MODEL_ID,
     hasPayload: (parsed) => Array.isArray((parsed as FaceSidecar).faces),
+  },
+  scene: {
+    version: SCENE_SIDECAR_VERSION,
+    modelId: SCENE_MODEL_ID,
+    hasPayload: (parsed) => typeof (parsed as SceneSidecar).embedding === "string",
   },
 };
 
@@ -245,4 +252,18 @@ export function readAllFaceSidecars(): Map<string, FaceSidecar> {
     if (sidecar && isCurrent(sidecar)) out.set(id, sidecar);
   }
   return out;
+}
+
+/**
+ * The scene task's facade — one function, because scene results are only ever
+ * read one record at a time or folded wholesale into the compacted index.
+ *
+ * There is deliberately no `readAllSceneSidecars()`. Search must not fold the
+ * store per query (§5.5), and offering the function is how someone ends up doing
+ * it; `scene-index.ts` owns the one fold there is.
+ */
+export function readSceneSidecar(recordId: string): SceneSidecar | null {
+  const sidecar = readTaskSidecar("scene", recordId);
+  if (!sidecar || !isCurrentFor("scene", sidecar)) return null;
+  return sidecar as SceneSidecar;
 }

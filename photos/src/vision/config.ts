@@ -47,6 +47,7 @@ function bool(from: Record<string, unknown> | null, key: string, fallback: boole
  */
 export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionConfig {
   const faces = section(patch, "faces");
+  const scene = section(patch, "scene");
   const threshold = faces?.threshold;
   return {
     faces: {
@@ -56,6 +57,9 @@ export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionCon
           ? Math.min(0.95, Math.max(0.1, threshold))
           : base.faces.threshold,
       publishLabels: bool(faces, "publishLabels", base.faces.publishLabels),
+    },
+    scene: {
+      enabled: bool(scene, "enabled", base.scene.enabled),
     },
   };
 }
@@ -75,6 +79,8 @@ export function taskEnabled(config: VisionConfig, taskId: VisionTaskId): boolean
   switch (taskId) {
     case "faces":
       return config.faces.enabled;
+    case "scene":
+      return config.scene.enabled;
   }
 }
 

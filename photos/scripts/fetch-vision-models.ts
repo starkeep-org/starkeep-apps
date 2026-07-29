@@ -1,16 +1,21 @@
 #!/usr/bin/env tsx
 /**
- * `pnpm vision:fetch-models` — download the antelopev2 ONNX graphs the
- * on-device face task needs into `$STARKEEP_DIR/app-assets/photos/vision/models/`.
+ * `pnpm vision:fetch-models` — download the ONNX graphs the on-device vision
+ * tasks need into `$STARKEEP_DIR/app-assets/photos/vision/models/`.
  *
- * 278 MB, which is why it is a script and not a committed asset, and why the
- * app runs in a "models not installed" state until it has been run.
+ * 278 MB for faces and 1.7 GB for scene, which is why it is a script and not a
+ * committed asset, and why the app runs in a "models not installed" state until
+ * it has been run. `--faces` or `--scene` fetches just one.
  *
  * The acknowledgement is not ceremony. The antelopev2 *weights* are
  * non-commercial-research-only while InsightFace's code is MIT, and that
  * distinction is exactly the one that gets lost — a package that quietly
  * downloads them hands every user a restriction they never saw. So this asks,
  * once, and records the answer next to the files.
+ *
+ * It gates **faces only**. The scene weights are Apache-2.0, and making an
+ * Apache-2.0 download conditional on accepting a non-commercial restriction would
+ * misrepresent both licences.
  *
  * The Faces panel offers the same download for people who did not arrive from a
  * shell; both go through `verifiedDownload` and both record the acceptance the
@@ -20,9 +25,10 @@
 import { mkdirSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
-import { LICENCE_NOTICE, writeLicenceAcknowledgement } from "../src/vision/licence";
-import { FACE_MODELS, type VisionModel } from "../src/vision/models";
+import { LICENCE_NOTICE, LICENCE_SUMMARY, writeLicenceAcknowledgement } from "../src/vision/licence";
+import { SCENE_LICENCE_SUMMARY, TASK_MODELS, type VisionModel } from "../src/vision/models";
 import { modelsDir } from "../src/vision/paths";
+import { VISION_TASK_IDS, type VisionTaskId } from "../src/vision/types";
 import { verifiedDownload } from "../src/vision/verified-download";
 
 const ACK_FLAG = "--accept-noncommercial-licence";
@@ -87,23 +93,49 @@ async function fetchModel(model: VisionModel, dir: string): Promise<void> {
   console.log(`    ✓ verified ${digest.slice(0, 16)}…`);
 }
 
+/**
+ * Which task's weights to fetch. Faces and scene are separated because their
+ * *licences* differ, not merely their size: the antelopev2 acknowledgement must
+ * gate only the weights it applies to, or accepting a non-commercial restriction
+ * becomes the price of an Apache-2.0 download.
+ */
+function requestedTasks(): VisionTaskId[] {
+  const only = VISION_TASK_IDS.filter((id) => process.argv.includes(`--${id}`));
+  return only.length > 0 ? only : [...VISION_TASK_IDS];
+}
+
 async function main(): Promise<void> {
-  if (!(await acknowledge())) {
-    console.error("\nDeclined — no models downloaded.");
-    process.exit(1);
-  }
-
+  const tasks = requestedTasks();
   const dir = modelsDir();
-  mkdirSync(dir, { recursive: true });
-  console.log(`\nInstalling face models into ${dir}\n`);
 
-  for (const model of FACE_MODELS) {
-    await fetchModel(model, dir);
+  // Asked once, up front, and only if something being fetched needs it — so
+  // `--scene` is never gated on a restriction that does not apply to it.
+  if (tasks.includes("faces")) {
+    if (!(await acknowledge())) {
+      console.error("\nDeclined — no face models downloaded.");
+      if (tasks.length === 1) process.exit(1);
+      tasks.splice(tasks.indexOf("faces"), 1);
+    }
+  }
+  if (tasks.length === 0) process.exit(1);
+
+  mkdirSync(dir, { recursive: true });
+
+  for (const taskId of tasks) {
+    const models = TASK_MODELS[taskId];
+    const total = models.reduce((sum, m) => sum + m.sizeBytes, 0);
+    const licence = taskId === "faces" ? LICENCE_SUMMARY : SCENE_LICENCE_SUMMARY;
+    console.log(`\n${taskId} — ${mb(total)}, ${licence} → ${dir}\n`);
+    for (const model of models) {
+      await fetchModel(model, dir);
+    }
   }
 
-  writeLicenceAcknowledgement("`pnpm vision:fetch-models`");
+  if (tasks.includes("faces")) {
+    writeLicenceAcknowledgement("`pnpm vision:fetch-models`");
+  }
 
-  console.log(`\nDone. Enable face detection in the Photos Settings panel.`);
+  console.log(`\nDone. Enable ${tasks.join(" and ")} in the Photos Settings panel.`);
 }
 
 await main();

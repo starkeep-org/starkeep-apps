@@ -20,6 +20,7 @@ import { assignUnclusteredFaces, reconcilePeopleToStore } from "../clustering";
 import { emptyScanState, type ScanState, type VisionConfig, type VisionTaskId } from "../types";
 import { readScanState, writeScanState } from "../scan-state";
 import { listOriginals } from "../scan-set";
+import { buildSceneIndex, deleteSceneIndex } from "../scene-index";
 import { reapOrphanSidecars } from "../sidecars";
 import { PROGRESS_INTERVAL_MS, type ScanCommand, type ScanEvent } from "../worker-protocol";
 import { enabledTaskSpecs, type VisionTask, type VisionTaskSpec } from "./tasks";
@@ -100,6 +101,12 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
     if (recordIds.length > 0) {
       const reaped = reapOrphanSidecars(new Set(recordIds));
       if (reaped.length > 0) {
+        // The index holds a row per scene sidecar, so a reap makes it describe
+        // records that no longer exist. Dropped rather than rebuilt: rebuilding
+        // is the end-of-pass step below, and it only runs when scene is enabled —
+        // whereas the reap sweeps every task, enabled or not. Deleting is what
+        // keeps a scene-disabled reap from leaving search ranking dead records.
+        deleteSceneIndex();
         // `people.json` caches sizes and centroids over faces that just went
         // away, and nothing downstream recomputes them — see
         // `reconcilePeopleToStore`.
@@ -144,6 +151,18 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
     // Clustering is a fold over the whole store, so it runs once at the end —
     // including after a stop, so the faces that *were* found are usable.
     if (config.faces.enabled) assignUnclusteredFaces(config.faces.threshold);
+
+    // The compacted index is derived from the sidecars this pass just wrote, so
+    // it is rebuilt here — after a stop as well as a clean finish, so the
+    // embeddings that *were* computed are searchable. A full rebuild rather than
+    // an incremental update because it is a linear fold over a store that is
+    // already the right size to hold in memory, and because "rebuild from
+    // authoritative state" has no partial-update bugs to have.
+    if (config.scene.enabled) {
+      const rows = buildSceneIndex();
+      console.log(`[vision] scene index rebuilt with ${rows} embedding(s)`);
+    }
+
     finish(state, null);
   } finally {
     // Only what actually loaded — a task that skipped every record opened no

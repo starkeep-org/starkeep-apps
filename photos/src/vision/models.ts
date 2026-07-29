@@ -61,6 +61,94 @@ export const FACE_EMBEDDER_MODEL = antelopev2(
 
 export const FACE_MODELS: VisionModel[] = [FACE_DETECTOR_MODEL, FACE_EMBEDDER_MODEL];
 
+// ---------------------------------------------------------------------------
+// Scene: SigLIP 2 so400m/16-384.
+//
+// **Licence: Apache-2.0** — upstream is `google/siglip2-so400m-patch16-384`.
+// Unlike antelopev2 this carries no non-commercial restriction, so it needs no
+// acknowledgement gate; `licence.ts` stays face-specific on purpose.
+//
+// Chosen for retrieval rather than tagging, which is why it is not the ViT-B/32
+// the face plan pre-settled — see `vision-model-choice.md` for the full
+// comparison. Two signals agreed: published text→image retrieval rankings, and
+// Immich (a self-hosted personal-photo app, i.e. this exact problem) shipping
+// this family as its high-end option.
+//
+// The export is the transformers.js one rather than Immich's own, for a dull but
+// decisive reason: Immich's OpenCLIP-format text tower is scattered across
+// *hundreds* of external-data blobs, one per weight tensor, which `VisionModel`'s
+// one-URL-one-digest shape cannot express. This export is one file per tower.
+//
+// Only the **image** tower is listed as the scene task's model. The text tower is
+// search's, loaded by the query worker, and gating a scan on it would refuse a
+// pass for want of a graph it never opens — the same mistake §3.2 removed.
+// ---------------------------------------------------------------------------
+
+const SIGLIP_REPO = "onnx-community/siglip2-so400m-patch16-384-ONNX";
+/** Pinned commit, so "same URL" means "same bytes" independently of the digest. */
+const SIGLIP_REVISION = "29f74e673c298fd07482d8e20138179282001eb7";
+
+function siglip(path: string, sha256: string, sizeBytes: number, role: string): VisionModel {
+  return {
+    fileName: path.split("/").pop() as string,
+    url: `https://huggingface.co/${SIGLIP_REPO}/resolve/${SIGLIP_REVISION}/${path}`,
+    sha256,
+    sizeBytes,
+    role,
+  };
+}
+
+/**
+ * fp32, not int8. This is the one graph whose output is *persisted* — the
+ * embedding lands in a sidecar and every search ranks against it — so there is no
+ * reason to quantize away quality on it when compute is not the binding
+ * constraint. Contrast the text tower, whose precision is freely revisable
+ * because nothing it produces is stored.
+ */
+export const SCENE_IMAGE_MODEL = siglip(
+  "onnx/vision_model.onnx",
+  "e3f730b2a37c69ac08c2159fe3c7fab97f23fbe3f32319f9953375ba82ecb1e6",
+  1_713_609_535,
+  "whole-image embedding (SigLIP 2 so400m/16-384)",
+);
+
+export const SCENE_MODELS: VisionModel[] = [SCENE_IMAGE_MODEL];
+
+/**
+ * Identifies the model a scene sidecar was produced by. A sidecar whose `model`
+ * does not equal this is stale and gets reprocessed — per-task since the step-1
+ * refactor, so changing this invalidates **scene** results and leaves faces
+ * untouched.
+ *
+ * The precision is part of the id: embeddings from the fp32 and int8 towers are
+ * close but not identical, and an index mixing the two would rank against
+ * subtly inconsistent vectors. Dropping to int8 is therefore a reprocess, which
+ * is the honest cost and is what this literal makes unavoidable.
+ */
+export const SCENE_MODEL_ID = "siglip2-so400m-patch16-384:vision-fp32";
+
+export const SCENE_MODEL_PACK = "siglip2-so400m-patch16-384";
+
+/** Licence of the scene weights, for a UI that names what it installed. */
+export const SCENE_LICENCE_SUMMARY = "Apache-2.0";
+
+export const SCENE_MODELS_TOTAL_BYTES = SCENE_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
+
+/**
+ * What the image tower expects, from the export's `preprocessor_config.json`.
+ *
+ * Worth pinning as named constants because SigLIP differs from CLIP in two ways
+ * that fail silently if assumed: it **squashes to a square** rather than resizing
+ * the short side and centre-cropping, and it normalizes to [−1, 1] with
+ * mean/std 0.5 rather than using ImageNet statistics. Either mistake yields
+ * embeddings that are plausible, self-consistent, and quietly worse.
+ */
+export const SCENE_INPUT_SIZE = 384;
+export const SCENE_MEAN = 127.5;
+export const SCENE_STD = 127.5;
+/** Projection width of both towers — the dimension stored in every sidecar. */
+export const SCENE_EMBEDDING_DIM = 1152;
+
 /**
  * Identifies the model pair a sidecar was produced by. A sidecar whose `model`
  * does not equal this is stale and gets reprocessed — which is how swapping in
@@ -92,6 +180,7 @@ export const FACE_MODELS_TOTAL_BYTES = FACE_MODELS.reduce((sum, m) => sum + m.si
  */
 export const TASK_MODELS: Record<VisionTaskId, VisionModel[]> = {
   faces: FACE_MODELS,
+  scene: SCENE_MODELS,
 };
 
 /**
@@ -108,6 +197,8 @@ export function taskModelPaths(taskId: VisionTaskId): TaskModelPaths {
         detector: modelPath(FACE_DETECTOR_MODEL.fileName),
         embedder: modelPath(FACE_EMBEDDER_MODEL.fileName),
       };
+    case "scene":
+      return { image: modelPath(SCENE_IMAGE_MODEL.fileName) };
   }
 }
 

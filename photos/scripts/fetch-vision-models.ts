@@ -13,14 +13,12 @@
  * once, and records the answer next to the files.
  */
 
-import { createHash } from "node:crypto";
-import { createWriteStream, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
-import { Readable, Transform } from "node:stream";
 import { FACE_MODELS, type VisionModel } from "../src/vision/models";
 import { modelsDir } from "../src/vision/paths";
+import { verifiedDownload } from "./lib/verified-download";
 
 const ACK_FLAG = "--accept-noncommercial-licence";
 const ACK_FILE = "LICENCE-ACKNOWLEDGED.txt";
@@ -69,9 +67,9 @@ function alreadyPresent(path: string, model: VisionModel): boolean {
 }
 
 /**
- * Download to a temp file, hashing the stream as it lands, and only `rename`
- * into place once the digest matches. A failed verify therefore leaves no file
- * behind that a later size check could mistake for a good one.
+ * The verification itself lives in `lib/verified-download.ts` — this only adds
+ * progress reporting, because on a 261 MB file over an unknown link that is the
+ * difference between "working" and "hung".
  */
 async function fetchModel(model: VisionModel, dir: string): Promise<void> {
   const target = join(dir, model.fileName);
@@ -81,44 +79,20 @@ async function fetchModel(model: VisionModel, dir: string): Promise<void> {
   }
 
   console.log(`  ↓ ${model.fileName} (${mb(model.sizeBytes)}) — ${model.role}`);
-  const res = await fetch(model.url);
-  if (!res.ok || !res.body) {
-    throw new Error(`GET ${model.url} → ${res.status} ${res.statusText}`);
-  }
-
-  const tmp = `${target}.download`;
-  rmSync(tmp, { force: true });
-  const hash = createHash("sha256");
-  let seen = 0;
   let lastReport = 0;
-  const tap = new Transform({
-    transform(chunk: Buffer, _enc, done) {
-      hash.update(chunk);
-      seen += chunk.byteLength;
-      // Progress on a 261 MB file over an unknown link is the difference
-      // between "working" and "hung" — but one line per chunk is unreadable.
+  const digest = await verifiedDownload({
+    url: model.url,
+    target,
+    sha256: model.sha256,
+    onProgress: (seen) => {
+      // One line per chunk is unreadable; one per 20 MB is a progress bar.
       if (seen - lastReport > 20 * 1024 * 1024) {
         lastReport = seen;
         process.stdout.write(`    ${mb(seen)} / ${mb(model.sizeBytes)}\n`);
       }
-      done(null, chunk);
     },
   });
-
-  try {
-    await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), tap, createWriteStream(tmp));
-    const digest = hash.digest("hex");
-    if (digest !== model.sha256) {
-      throw new Error(
-        `SHA-256 mismatch for ${model.fileName}\n    expected ${model.sha256}\n    got      ${digest}`,
-      );
-    }
-    renameSync(tmp, target);
-    console.log(`    ✓ verified ${digest.slice(0, 16)}…`);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
+  console.log(`    ✓ verified ${digest.slice(0, 16)}…`);
 }
 
 async function main(): Promise<void> {

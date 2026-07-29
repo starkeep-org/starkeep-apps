@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   chunkByRows,
+  MAX_ROWS_PER_BATCH,
   planLabelPublish,
   publishFaceLabels,
   retractFaceLabels,
@@ -245,6 +246,48 @@ describe("publishFaceLabels", () => {
     seed("a", [0]);
     const failing = async () => new Response("nope", { status: 403 });
     await expect(publishFaceLabels(failing)).rejects.toThrow(/403/);
+  });
+});
+
+describe("MAX_ROWS_PER_BATCH", () => {
+  it("leaves headroom under DSQL's 3,000-row transaction cap", () => {
+    // The set-valued write emits tombstones alongside upserts, so the rows a
+    // batch modifies exceed the values it sends. Chunking right at the cap
+    // would fail only against the cloud, and only on the batches that happened
+    // to retract something.
+    expect(MAX_ROWS_PER_BATCH).toBeLessThan(3000);
+    expect(MAX_ROWS_PER_BATCH).toBeGreaterThan(500);
+  });
+
+  it("splits a library large enough to exceed one transaction", () => {
+    const writes: LabelValueWrite[] = Array.from({ length: MAX_ROWS_PER_BATCH + 10 }, (_, i) => ({
+      recordId: `rec-${i}`,
+      key: "face-count",
+      values: ["1"],
+    }));
+    const batches = chunkByRows(writes);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      const rows = batch.reduce((n, w) => n + Math.max(1, w.values.length), 0);
+      expect(rows).toBeLessThanOrEqual(MAX_ROWS_PER_BATCH);
+    }
+  });
+});
+
+describe("publishing an empty store", () => {
+  it("sends no requests when nothing has been scanned", async () => {
+    // Turning the toggle on before the first scan should be silent, not a
+    // round trip that writes nothing.
+    const { batches, fetcher } = recordingFetcher();
+    const result = await publishFaceLabels(fetcher);
+    expect(batches).toEqual([]);
+    expect(result).toMatchObject({ recordsWritten: 0, batches: 0 });
+  });
+
+  it("retracts nothing when nothing has been scanned", async () => {
+    const { batches, fetcher } = recordingFetcher();
+    await retractFaceLabels(fetcher);
+    expect(batches).toEqual([]);
   });
 });
 

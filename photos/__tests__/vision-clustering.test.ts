@@ -18,7 +18,7 @@ import {
   normalize,
   updateCentroid,
 } from "@/vision/embeddings";
-import { readPeople } from "@/vision/people";
+import { newPerson, PersonAssigner, readPeople } from "@/vision/people";
 import { readAllFaceSidecars, writeFaceSidecar } from "@/vision/sidecars";
 import { FACE_MODEL_ID } from "@/vision/models";
 import { FACE_SIDECAR_VERSION, type DetectedFace } from "@/vision/types";
@@ -279,6 +279,51 @@ describe("reclusterAll", () => {
     const { people } = reclusterAll(0.9);
     expect(people).toHaveLength(2);
     expect(people.every((p) => p.name === "")).toBe(true);
+  });
+});
+
+describe("PersonAssigner", () => {
+  it("keeps a person whose centroid cannot be decoded, but stops matching to them", () => {
+    // A corrupt centroid must not cost the user a name they typed. Dropping the
+    // whole file over one bad row would; dropping the row from *matching* only
+    // means new faces start a fresh cluster.
+    const good = newPerson(vectorAt(0));
+    good.name = "Alice";
+    const broken = newPerson(vectorAt(Math.PI / 2));
+    broken.name = "Bob";
+    broken.centroid = "AAAA"; // not a whole number of float32s
+
+    const assigner = new PersonAssigner([good, broken], 0.45);
+    // A face that would have matched Bob starts its own cluster instead...
+    const assigned = assigner.assign(vectorAt(Math.PI / 2));
+    expect(assigned).not.toBe(broken.id);
+    // ...and Bob is still there, still named.
+    expect(assigner.snapshot().find((p) => p.id === broken.id)?.name).toBe("Bob");
+  });
+
+  it("ignores a centroid of a different dimensionality", () => {
+    // A model swap changes the embedding width. Comparing across it would throw
+    // in the middle of a pass; skipping means those clusters simply stop
+    // attracting faces until a rebuild.
+    const wrongWidth = newPerson(normalize(new Float32Array([1, 0])));
+    const assigner = new PersonAssigner([wrongWidth], 0.45);
+    expect(() => assigner.assign(vectorAt(0))).not.toThrow();
+    expect(assigner.snapshot()).toHaveLength(2);
+  });
+
+  it("reports no changes before anything is assigned", () => {
+    expect(new PersonAssigner([], 0.45).hasChanges()).toBe(false);
+  });
+
+  it("grows a cluster's faceCount as faces join it", () => {
+    seed("a", [face(vectorAt(0))]);
+    seed("b", [face(vectorAt(0.02))]);
+    seed("c", [face(vectorAt(0.04))]);
+    assignUnclusteredFaces(0.45);
+    expect(readPeople()).toHaveLength(1);
+    // The count is what weights the centroid's running mean, so it has to track
+    // membership rather than be recomputed from it.
+    expect(readPeople()[0].faceCount).toBe(3);
   });
 });
 

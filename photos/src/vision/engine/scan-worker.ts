@@ -19,18 +19,10 @@ import { loadAppCredentials, signedFetch, type AppCredentials } from "@starkeep/
 import { assignUnclusteredFaces } from "../clustering";
 import { emptyScanState, type ScanState, type VisionConfig } from "../types";
 import { readScanState, writeScanState } from "../scan-state";
+import { listOriginals } from "../scan-set";
 import { PROGRESS_INTERVAL_MS, type ScanCommand, type ScanEvent } from "../worker-protocol";
 import { FaceEngine } from "./face-engine";
 import { faceTask, type VisionTask } from "./tasks";
-
-/** Records per listing page. A short page never means the end — see below. */
-const RECORDS_PER_PAGE = 200;
-
-interface ListedRecord {
-  id: string;
-  parent_id: string | null;
-  labels?: Array<{ app_id: string; key: string; value: string }>;
-}
 
 /** Cancellation is cooperative: the loop checks between images. */
 let stopRequested = false;
@@ -38,53 +30,6 @@ let running = false;
 
 function post(event: ScanEvent): void {
   parentPort?.postMessage(event);
-}
-
-/**
- * The scan set: originals only.
- *
- * `derivation === "original"` in the plan's terms, read off Photos' own labels
- * rather than `parent_id` — a crop has a parent too. Thumbnails are excluded
- * because they are 400 px re-encodings of images already in the set, and crops
- * because a crop's faces are its parent's faces at an offset. Both would be
- * double work whose results duplicate an original's.
- */
-function isOriginal(record: ListedRecord): boolean {
-  if (record.parent_id !== null) return false;
-  return !(record.labels ?? []).some(
-    (l) => l.app_id === "photos" && (l.key === "thumbnail" || l.key === "crop"),
-  );
-}
-
-async function listOriginals(creds: AppCredentials): Promise<string[]> {
-  const ids: string[] = [];
-  let cursor: string | null = null;
-  do {
-    const res = await signedFetch(
-      creds,
-      `/data/records?include=labels&limit=${RECORDS_PER_PAGE}${
-        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
-      }`,
-    );
-    if (!res.ok) throw new Error(`list records failed: ${res.status} ${await res.text()}`);
-    const body = (await res.json()) as {
-      records: ListedRecord[];
-      nextCursor?: string | null;
-    };
-    for (const record of body.records) {
-      if (isOriginal(record)) ids.push(record.id);
-    }
-    // Page to exhaustion. A short page does NOT mean the end — only an exhausted
-    // cursor does. Stopping on the first short page silently skips images.
-    //
-    // `?? null` is load-bearing: the data server's last page omits `nextCursor`
-    // entirely rather than sending `null` (the adapter's own field is optional,
-    // and `JSON.stringify` drops `undefined`). Comparing the raw value against
-    // `null` therefore never terminates — a hang, not a wrong answer, and one
-    // that only appears against a real server.
-    cursor = body.nextCursor ?? null;
-  } while (cursor !== null);
-  return ids;
 }
 
 async function fetchImageBytes(creds: AppCredentials, recordId: string): Promise<Uint8Array> {
@@ -126,7 +71,7 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
 
   let lastProgress = 0;
   try {
-    const recordIds = await listOriginals(creds);
+    const recordIds = await listOriginals((path) => signedFetch(creds, path));
     state.eligible = recordIds.length;
 
     for (const recordId of recordIds) {

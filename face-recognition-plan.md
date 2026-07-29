@@ -15,8 +15,9 @@ Six things landed differently from the plan below, each noted at its section:
   (§2).
 - The scan **worker must exit** when a pass ends, or the host reports a running
   scan forever (§2).
-- `/data/records` **omits** `nextCursor` at the end of a listing rather than
-  sending `null`, so the plan's "page until a null cursor" loop hangs (§8 step 4).
+- The "page until a null cursor" loop needs `?? null`: a data server older than
+  the current contract **omits** `nextCursor` rather than sending `null`, and the
+  loop then never terminates (§8 step 4).
 - The People view uses a **new transient face-crop route**, not `/api/photos/crop`
   (§4).
 - Clustering runs **after** a pass, not during it (§4).
@@ -101,7 +102,9 @@ risk in the plan.**
 >
 > **Validated end to end on real photos**, which is what actually retired the
 > risk — an alignment bug survives every unit test and shows up only as
-> mediocre similarity scores:
+> mediocre similarity scores. Now a committed test
+> (`__tests__/vision-engine.integration.test.ts`), skipped unless the models and
+> `pnpm vision:fetch-fixtures` have both been run:
 >
 > | check | result |
 > | --- | --- |
@@ -385,16 +388,21 @@ adding them cheap.
    short page), filter to originals, skip existing sidecars, write results, update
    `scan-state.json`.
 
-   > **As built.** "Page until the cursor is null" is right in spirit and wrong
-   > as written: the data server's last page **omits `nextCursor` entirely**
-   > rather than sending `null` — the adapter's field is optional and
-   > `JSON.stringify` drops `undefined` — so `while (cursor !== null)` never
-   > terminates. A hang, not a wrong answer, and one that appears only against a
-   > real server. `body.nextCursor ?? null` is the fix.
+   > **As built.** "Page until the cursor is null" needs one guard the plan does
+   > not mention: `body.nextCursor ?? null`.
    >
-   > `starkeep-apps/face-index/src/index-pass.ts` has the same loop and the same
-   > latent hang. Left alone per §5 ("leave `face-index` alone for now"), but it
-   > should be fixed or retired with it.
+   > A **current** data server always sends `nextCursor: null` on the last page
+   > (`QueryResult.nextCursor` is `string | null`, and the SQLite adapter returns
+   > an explicit `null`), so against one this is unnecessary. An **older** server
+   > omits the field; `JSON.stringify` drops `undefined`, and
+   > `while (cursor !== null)` then never terminates. That is not hypothetical —
+   > a server old enough to do it was running on the dev machine while this was
+   > written, and it hung the scan. Worth normalizing because an app is deployed
+   > independently of the data server it talks to and the failure mode is a
+   > silent hang rather than an error.
+   >
+   > The same guard was added to `face-index/src/index-pass.ts`, which has the
+   > same loop.
 5. Routes + status/progress polling.
 6. Settings panel; a Scan card showing `processed / eligible` per type.
 7. Bounding-box overlay in the viewer (orientation-correct), toggleable.
@@ -411,8 +419,10 @@ Objects (RT-DETR) and scene (CLIP) are a separate follow-up branch — see §7.
 
 ## What is not yet verified
 
-Everything above is implemented, typechecked, and covered by 91 vision tests
-(212 in the package). Two things could not be exercised here:
+Everything above is implemented, typechecked, and covered by 271 vision tests
+(367 in the package) — see
+[`photos/vision-test-coverage.md`](photos/vision-test-coverage.md) for what the
+first pass missed and why. Two things could not be exercised here:
 
 - **Live label publishing.** The publisher is unit-tested against a fake fetcher,
   including the rename-retracts-the-old-row behaviour that motivated the

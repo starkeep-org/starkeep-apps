@@ -9,6 +9,7 @@
     "bundle": "tsx infra/build-bundle.ts",
     "start": "pnpm vision:build-worker && next start",
     "vision:fetch-models": "tsx scripts/fetch-vision-models.ts",
+    "vision:fetch-fixtures": "tsx scripts/fetch-vision-fixtures.ts",
     "vision:build-worker": "tsx scripts/build-vision-worker.ts",
     "test": "vitest run",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",

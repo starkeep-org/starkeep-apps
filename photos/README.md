@@ -80,6 +80,21 @@ opt-in — see `starkeep-core/multi-value-labels.md`.
 data server will accept writes to them: the installer reconciles the label-key
 registry at install time and rejects undeclared keys.
 
+### Tests
+
+`pnpm test` covers the whole feature except the engine itself, which needs the
+models and four photographs that are not in the repo:
+
+```bash
+pnpm vision:fetch-models     # the ONNX graphs
+pnpm vision:fetch-fixtures   # 4 public-domain photographs
+```
+
+With both installed, `__tests__/vision-engine.integration.test.ts` runs the real
+detector and recogniser and pins the things a unit test cannot see — box counts,
+the identity floor and ceiling either side of the 0.45 default, and that an
+EXIF-rotated photo puts its box in display space. Without them it skips.
+
 ### Cloud
 
 Every `/api/vision/*` route answers **501** when Photos is serving against a

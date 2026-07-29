@@ -21,19 +21,52 @@ export const PHOTOS_APP_ID = "photos";
 /**
  * The keys Photos declares in its manifest. Nothing else may be written.
  *
- * Both are **bare flags** — written once, at record creation, with no value,
- * which is stored as the empty string. That is why a plain label write is right
- * for them: a key is set-valued and a plain write adds rather than replaces, so
- * a key Photos ever *updated* would need the set-valued write
+ * `thumbnail` and `crop` are **bare flags** — written once, at record creation,
+ * with no value, which is stored as the empty string. That is why a plain label
+ * write is right for them: a key is set-valued and a plain write adds rather
+ * than replaces, so a key Photos ever *updated* would need the set-valued write
  * (`POST /data/labels/values`) instead, or the old value would sit beside the
  * new one with nothing to say which is current.
+ *
+ * `faces` and `face-count` are exactly that updated case, and both go through
+ * `/data/labels/values` — see `src/vision/label-publish.ts`.
  */
 export const PHOTOS_LABEL_KEYS = {
   /** The child is a derived thumbnail of its parent. */
   thumbnail: "thumbnail",
   /** The child is a user-made crop of its parent. */
   crop: "crop",
+  /**
+   * One value per *named* person in the photo. Multi-valued, which is what the
+   * widened label primary key exists for — `?label=photos/faces&labelValue=Alice`
+   * is the query this key is published to answer.
+   *
+   * Only written when the user opts in (`publishLabels`), and only for people
+   * they have named: an unnamed cluster has nothing to say to another app.
+   */
+  faces: "faces",
+  /**
+   * How many faces the on-device scan found. Single-valued, and a small integer
+   * matched by equality — `labelValue=1` finds portraits.
+   *
+   * Absent, never zero, on an image with no faces: publishing a negative would
+   * make the presence query match every processed image.
+   */
+  faceCount: "face-count",
 } as const;
+
+/**
+ * Platform caps on a label value, mirrored from
+ * `@starkeep/protocol-primitives/records/labels`.
+ *
+ * Copied rather than imported because Photos depends only on
+ * `@starkeep/app-client`, and a data-plane package would be a much larger
+ * dependency for two numbers. They bound what the publisher may send; the data
+ * server enforces them for real, and a write that exceeds either is rejected as
+ * a whole batch.
+ */
+export const LABEL_VALUE_MAX_BYTES = 128;
+export const LABEL_VALUES_PER_KEY_MAX = 32;
 
 /**
  * A record as the data servers render it with `?include=labels`.

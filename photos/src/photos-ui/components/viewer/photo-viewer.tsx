@@ -1,7 +1,9 @@
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import type { AppImage } from "@/photos-lib";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { usePhotoUrls } from "../../context/photo-url-context";
+import { FaceOverlay } from "../vision/face-overlay";
+import type { ImageFaces } from "../../../lib/vision-client";
 
 // EXIF orientations 5–8 rotate the image by ±90°, so the *displayed* image
 // swaps width and height relative to the stored (un-oriented) pixel
@@ -47,6 +49,16 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
     setCaption(image.caption ?? null);
   }, [image.id, image.caption]);
 
+  // Off by default — boxes over every photo would be a permanent overlay on a
+  // photo viewer. `facesKnown` stays null until the overlay has actually asked,
+  // so the toggle can say "no faces here" without claiming it before it knows.
+  const [facesVisible, setFacesVisible] = useState(false);
+  const [facesKnown, setFacesKnown] = useState<ImageFaces | null>(null);
+  useEffect(() => {
+    setFacesKnown(null);
+  }, [image.id]);
+  const onFacesLoaded = useCallback((result: ImageFaces) => setFacesKnown(result), []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -85,6 +97,26 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
             }}
           >
             Info
+          </button>
+          <button
+            onClick={() => setFacesVisible((v) => !v)}
+            title={
+              facesKnown && !facesKnown.processed
+                ? "This photo has not been scanned for faces yet"
+                : "Show detected faces"
+            }
+            style={{
+              background: facesVisible ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
+              border: "1px solid rgba(255,255,255,0.2)",
+              color: "#fff",
+              borderRadius: 4,
+              padding: "6px 14px",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Faces
+            {facesVisible && facesKnown?.processed ? ` (${facesKnown.faces.length})` : ""}
           </button>
         </div>
         <button
@@ -152,6 +184,9 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
               }}
             />
           )}
+          {/* Inside the same box the <img> fills, so bbox percentages land on
+              the right pixels without measuring the rendered image. */}
+          <FaceOverlay recordId={image.id} visible={facesVisible} onLoaded={onFacesLoaded} />
         </div>
         <style>{`@keyframes starkeep-skeleton-pulse { 0%, 100% { background-color: rgba(255, 255, 255, 0.07); } 50% { background-color: rgba(255, 255, 255, 0.16); } }`}</style>
 

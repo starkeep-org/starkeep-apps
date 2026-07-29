@@ -17,6 +17,76 @@ Opens on port 3000. Run only one of photos-web or admin-web at a time (they shar
 - **Browse photos** — Gallery view of all photos stored in Starkeep, with metadata displayed alongside each image
 - **Upload photos** — Add new photos via the web interface; files are stored through the data-server and synced to cloud if configured
 - **View metadata** — Image dimensions, EXIF data (camera model, capture date, GPS coordinates if present), file size, and MIME type are extracted automatically and displayed per photo
+- **Face recognition, on-device** — optional, off by default; see below
+
+## Face recognition
+
+Detects faces, groups them by identity, and lets you name the groups. **It runs
+entirely on the machine Photos is running on.** No image and no biometric data
+is sent anywhere, and none of the derived state syncs.
+
+```bash
+pnpm vision:fetch-models   # ~278 MB, once
+```
+
+Then turn it on from the **Faces** button in the toolbar and press *Scan now*.
+`pnpm dev` builds the scan worker automatically.
+
+### Where the state lives
+
+`$STARKEEP_DIR/app-local/photos/vision/` — deliberately outside both storage
+homes the platform gives an app, because both of those sync unconditionally and
+none of this may leave the device.
+
+```
+config.json                 toggles and thresholds
+models/                     the ONNX graphs (fetched, gitignored)
+faces/<recordId>.json       detections + 512-d identity vectors
+people.json                 named groups
+scan-state.json             progress of the last pass
+```
+
+A record's sidecar *existing* is what marks it processed — there is no separate
+index that could drift. Uninstalling Photos does not remove this directory.
+
+### Models and licensing
+
+Two of antelopev2's five graphs: `scrfd_10g_bnkps.onnx` (detection + 5
+keypoints) and `glintr100.onnx` (512-d embedding), run through
+`onnxruntime-node` on CPU. Expect roughly 0.2–0.5 s per photo.
+
+**InsightFace's code is MIT, but its pretrained weights — antelopev2 included —
+are licensed for non-commercial research use only**
+([clarification](https://github.com/deepinsight/insightface/issues/2022)).
+Starkeep does not redistribute them; `vision:fetch-models` downloads them from a
+pinned URL, verifies their SHA-256, and asks you to accept that restriction
+first.
+
+### Sharing results with other apps
+
+Off by default, and separately from detection itself. When enabled, Photos
+publishes two record labels:
+
+- `photos/faces` — one row per **named** person, so another app can ask
+  `?label=photos/faces&labelValue=Alice`;
+- `photos/face-count` — how many faces were found, as a small integer.
+
+Neither is published for a photo with no faces. Turning the setting off retracts
+what was published. Note that publishing makes the people in your library
+enumerable by any app that can read your images, which is why it is an explicit
+opt-in — see `starkeep-core/multi-value-labels.md`.
+
+**Both keys are new in the manifest, so Photos must be re-installed** before the
+data server will accept writes to them: the installer reconciles the label-key
+registry at install time and rejects undeclared keys.
+
+### Cloud
+
+Every `/api/vision/*` route answers **501** when Photos is serving against a
+remote data server. The feature is on-device, and a cloud deployment has neither
+the photos nor the models locally. The engine is loaded only by the scan worker,
+by absolute path, so `onnxruntime-node` never enters the Lambda bundle —
+`__tests__/vision-bundle-isolation.test.ts` fails if that stops being true.
 
 ## Architecture
 

@@ -4,7 +4,6 @@ import {
   startVisionModelDownload,
   startVisionScan,
   stopVisionScan,
-  saveVocabulary,
   updateVisionConfig,
   VISION_UNAVAILABLE,
   type VisionModelDownload,
@@ -284,16 +283,6 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
               <StaleLine store={status.tasks.objects.store} />
             </TaskCard>
 
-            <VocabularyCard
-              vocabulary={status.config.tags.vocabulary}
-              threshold={status.config.tags.threshold}
-              embedded={status.tags.embedded}
-              stale={status.tags.stale}
-              sceneReady={status.tasks.scene.store.processed > 0}
-              busy={busy}
-              onSave={(patch) => void act(() => saveVocabulary(patch))}
-            />
-
             <SearchCard
               search={status.search}
               download={status.download}
@@ -511,125 +500,6 @@ function SearchCard({
         Searching by name works as soon as you have named someone in People. Searching by
         description also needs Scene above.
       </p>
-    </div>
-  );
-}
-
-/**
- * The tag vocabulary (plan §7).
- *
- * Its own card rather than part of Scene, because editing the vocabulary is a
- * *different operation* from anything the scan does: it costs one text encode per
- * tag and then a dot product per (image, tag), with no image decode and no pass over
- * the library. Putting it inside a card whose other controls all trigger hours of
- * work would misrepresent what the button does.
- *
- * A textarea, one tag per line. Not a chip editor: this is a list of up to a few
- * hundred phrases that people will want to paste in and out wholesale, and a chip
- * editor makes that the hard case instead of the easy one.
- */
-function VocabularyCard({
-  vocabulary,
-  threshold,
-  embedded,
-  stale,
-  sceneReady,
-  busy,
-  onSave,
-}: {
-  vocabulary: string[];
-  threshold: number;
-  embedded: boolean;
-  stale: boolean;
-  sceneReady: boolean;
-  busy: boolean;
-  onSave: (patch: { vocabulary?: string[]; threshold?: number }) => void;
-}) {
-  // Seeded once and then owned locally while editing, so a poll landing mid-typing
-  // does not overwrite the draft.
-  const [draft, setDraft] = useState<string | null>(null);
-  const text = draft ?? vocabulary.join("\n");
-  const parsed = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const changed = draft !== null && parsed.join("\n") !== vocabulary.join("\n");
-
-  return (
-    <div style={cardStyle}>
-      <strong>Tags</strong>
-      <div style={{ ...noteStyle, marginTop: 4 }}>
-        Suggests tags by scoring each phrase below against every described photo. Editing this
-        list re-scores; it does not re-scan.
-      </div>
-
-      {!sceneReady && (
-        <div style={warnStyle}>Needs a scene scan before anything can be scored.</div>
-      )}
-      {sceneReady && !embedded && (
-        <div style={warnStyle}>Save to build the phrase embeddings.</div>
-      )}
-      {stale && (
-        <div style={warnStyle}>
-          The stored embeddings are for a different list — save to rebuild them.
-        </div>
-      )}
-
-      <textarea
-        value={text}
-        onChange={(e) => setDraft(e.target.value)}
-        disabled={busy}
-        spellCheck={false}
-        aria-label="Tag vocabulary, one per line"
-        style={{
-          width: "100%",
-          minHeight: 120,
-          marginTop: 8,
-          boxSizing: "border-box",
-          background: "rgba(0,0,0,0.4)",
-          color: "#ddd",
-          border: "1px solid rgba(255,255,255,0.1)",
-          borderRadius: 4,
-          padding: 8,
-          fontSize: 12,
-          fontFamily: "ui-monospace, monospace",
-          resize: "vertical",
-        }}
-      />
-
-      <label style={rowStyle}>
-        <span style={{ minWidth: 130 }}>Suggest above</span>
-        <input
-          type="range"
-          min={0}
-          max={0.3}
-          step={0.005}
-          value={threshold}
-          disabled={busy}
-          onChange={(e) => onSave({ threshold: Number(e.target.value) })}
-          style={{ flex: 1 }}
-        />
-        <span style={{ width: 42, textAlign: "right" }}>{threshold.toFixed(3)}</span>
-      </label>
-      <p style={{ ...noteStyle, marginTop: -4 }}>
-        Similarity scores are uncalibrated and run low — a few hundredths is a real signal.
-        Suggestions stay suggestions until you keep them.
-      </p>
-
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-        <button
-          onClick={() => onSave({ vocabulary: parsed })}
-          disabled={busy || !changed}
-          style={buttonStyle}
-        >
-          {changed ? `Save ${parsed.length} phrases` : `${vocabulary.length} phrases`}
-        </button>
-        {changed && (
-          <button onClick={() => setDraft(null)} disabled={busy} style={buttonStyle}>
-            Revert
-          </button>
-        )}
-      </div>
     </div>
   );
 }

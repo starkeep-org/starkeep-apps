@@ -12,6 +12,10 @@ import {
  * Renders nothing when the vision routes answer 501 — a cloud-served Photos has no
  * embeddings to score against.
  *
+ * With the vocabulary empty — its current parked state — this is simply a manual tag
+ * editor, and still a useful one: user tags never depended on the vocabulary, and
+ * they are the only thing §7 publishes anyway.
+ *
  * **Suggestions and user tags look different, on purpose.** A suggestion is an
  * uncalibrated cosine that cleared an arbitrary bar; a confirmed or typed tag is a
  * human's judgement. §7 turns on that distinction — only the latter is publishable,
@@ -122,6 +126,15 @@ export function PhotoTags({ recordId, visible }: PhotoTagsProps) {
   const restore = (tag: string) =>
     void save({ added: edits.added, removed: edits.removed.filter((t) => t !== tag) });
 
+  /**
+   * Whether automatic suggestions are even on the table.
+   *
+   * With the vocabulary parked (empty), this is a manual tag editor — which works
+   * fine, since user tags never depended on the vocabulary — and saying "nothing
+   * scored above the threshold" would blame a threshold for the absence of a list.
+   */
+  const suggestionsPossible = tags !== null && (tags.length > 0 || suggestions.length > 0);
+
   const sorted = useMemo(() => {
     if (!tags) return [];
     // User tags first, then suggestions by score — the human's answers should not be
@@ -178,7 +191,11 @@ export function PhotoTags({ recordId, visible }: PhotoTagsProps) {
             ))}
             {sorted.length === 0 && (
               <span style={noteStyle}>
-                {described ? "No tags above the threshold." : "Not described yet."}
+                {!described
+                  ? "Not described yet — run a scene scan."
+                  : suggestionsPossible
+                    ? "Nothing scored above the threshold."
+                    : "No tags yet."}
               </span>
             )}
           </div>

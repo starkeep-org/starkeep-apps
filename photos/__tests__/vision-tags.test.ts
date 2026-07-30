@@ -17,7 +17,6 @@ import {
   vocabularyHash,
   writeTagEmbeddings,
 } from "@/vision/tags";
-import { COCO_CLASSES } from "@/vision/coco-classes";
 import { DEFAULT_TAG_VOCABULARY, SCENE_SIDECAR_VERSION } from "@/vision/types";
 
 /**
@@ -288,29 +287,40 @@ describe("tagsForRecord", () => {
   });
 });
 
-describe("the seed vocabulary", () => {
-  it("is non-empty and free of duplicates", () => {
-    expect(DEFAULT_TAG_VOCABULARY.length).toBeGreaterThan(20);
-    expect(new Set(DEFAULT_TAG_VOCABULARY).size).toBe(DEFAULT_TAG_VOCABULARY.length);
+describe("the parked vocabulary", () => {
+  it("ships empty, so nothing is suggested until a list is configured", () => {
+    // Retired after measurement: of ~70 hand-authored phrases only 21 ever fired on a
+    // real library, one fired on *every* photo (carrying no information), and one
+    // dominated as a generic attractor. §11's "too large makes every photo score
+    // something", observed rather than predicted.
+    expect(DEFAULT_TAG_VOCABULARY).toEqual([]);
   });
 
-  it("does not duplicate any class the object detector already finds exactly", () => {
-    // §9's complementarity argument, as a constraint on the seed list: there is no
-    // point spending a vocabulary slot on "dog" when the detector finds dogs *and*
-    // counts them. Checked against the whole COCO table rather than a hand-picked
-    // few, because that is the actual property — and it caught three overlaps
-    // ("a car", "a bicycle", "a boat") that a shorter list would have missed.
-    //
-    // Near-synonyms are still fine where they mean something scene-level a box
-    // cannot: "a pet" is about what the photo is *of*, "traffic" about a street
-    // rather than one car.
-    const bare = new Set(DEFAULT_TAG_VOCABULARY.map((t) => t.replace(/^(a|an|the) /, "")));
-    const overlaps = COCO_CLASSES.filter((cls) => bare.has(cls));
-    expect(overlaps).toEqual([]);
+  it("leaves a described photo described, with the user's own tags intact", () => {
+    // The bug an empty vocabulary exposes: falling through to the embedding cache
+    // would find no file for a list with nothing in it and report a photo that *is*
+    // described as undescribed. "No suggestions" is a configuration, not a failure.
+    seedScene("rec", towards(0.9));
+    const result = tagsForRecord("rec", { added: ["mine"], removed: [] }, [], 0.06);
+    expect(result).not.toBeNull();
+    expect(result!.tags).toEqual([{ tag: "mine", source: "added", score: null }]);
+    expect(result!.suggestions).toEqual([]);
   });
 
-  it("is phrased as noun phrases, closer to the training distribution", () => {
-    const withArticle = DEFAULT_TAG_VOCABULARY.filter((t) => /^(a|an|the) /.test(t));
-    expect(withArticle.length).toBeGreaterThan(DEFAULT_TAG_VOCABULARY.length / 2);
+  it("still returns null for a photo with no scene embedding", () => {
+    // The empty-vocabulary shortcut must not paper over the genuinely-unknown case.
+    expect(tagsForRecord("never-scanned", emptyTagEdits(), [], 0.06)).toBeNull();
+  });
+
+  it("needs no embedding cache at all", () => {
+    // Nothing was written by any test above this point in this block, so this asserts
+    // the shortcut runs before the cache read rather than after a lucky hit.
+    seedScene("rec", towards(0.9));
+    expect(readTagEmbeddings([])).toBeNull();
+    expect(tagsForRecord("rec", emptyTagEdits(), [], 0.06)).toEqual({
+      tags: [],
+      suggestions: [],
+    });
   });
 });
+

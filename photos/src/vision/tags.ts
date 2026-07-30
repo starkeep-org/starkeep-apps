@@ -290,6 +290,16 @@ export function tagsForRecord(
 ): { tags: PhotoTag[]; suggestions: Array<{ tag: string; score: number }> } | null {
   const sidecar = readSceneSidecar(recordId);
   if (!sidecar) return null;
+
+  // An **empty vocabulary means "no suggestions"**, which is a legitimate
+  // configuration and not a failure to compute one. Falling through to the cache
+  // read here would return null — reporting a photo that *is* described as
+  // undescribed — because there is no cache file for a list with nothing in it.
+  // The user's own tags still apply, and are the whole answer in this state.
+  if (vocabulary.length === 0) {
+    return { tags: combineTags([], edits, threshold), suggestions: [] };
+  }
+
   const embeddings = readTagEmbeddings(vocabulary);
   if (!embeddings) return null;
 

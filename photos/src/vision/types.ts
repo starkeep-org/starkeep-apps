@@ -148,41 +148,36 @@ export const OBJECT_SIDECAR_VERSION = 1;
 export const DEFAULT_OBJECT_THRESHOLD = 0.35;
 
 /**
- * A starting vocabulary for zero-shot tagging.
+ * **Empty on purpose — tag suggestions are parked.**
  *
- * §11 lists this as settle-by-trying: "too small misses; too large makes every
- * photo score something". These ~70 entries lean toward the *kinds of occasion and
- * setting* a personal library actually divides into, because that is the axis
- * objects (§9) does not already cover — there is no point putting "dog" here when
- * the detector finds dogs exactly.
+ * A hand-authored seed list of ~70 phrases used to live here, and measuring it
+ * against a real library is what retired it: only 21 phrases ever fired, one
+ * ("a candid photo of people") fired on *every* photo and so carried no
+ * information at all, and one ("a hike") dominated as a generic outdoor-people
+ * attractor. That is §11's "too large makes every photo score something", observed
+ * rather than predicted.
  *
- * Phrased as noun phrases rather than single words, since that is closer to the
- * alt-text distribution the tower was trained on. Editable at runtime, which is the
- * whole point — this is a seed, not a taxonomy.
+ * The mechanism it fed is intact — the vocabulary is still configurable and
+ * `/api/vision/vocabulary` still embeds whatever it is given — so unparking this is
+ * a matter of putting a *better-sourced* list in, not of rebuilding anything. What
+ * the retired list got wrong was its source, not its shape: candidates authored
+ * upfront by a developer cannot know what is in someone's library.
+ *
+ * Better sources, when this is picked up again:
+ *
+ *   - the user's own captions and titles, which are both genuinely derived from the
+ *     library and better phrased than anything invented for them;
+ *   - empirical pruning — drop candidates that fire on everything or nothing, which
+ *     is exactly the measurement above, as an action rather than an investigation;
+ *   - a captioning model (BLIP or a small VLM) if tags should be *generated* from
+ *     photos. SigLIP cannot do this: it only scores an image against strings supplied
+ *     to it, which is why a candidate list has to exist at all.
+ *
+ * Note that search does not depend on any of this — a free-form query is embedded at
+ * query time and never consults the vocabulary. Tags buy browsability and cross-app
+ * labels, not retrieval.
  */
-export const DEFAULT_TAG_VOCABULARY: readonly string[] = [
-  // Setting
-  "the beach", "a forest", "mountains", "a lake", "a river", "a desert",
-  "a city street", "a park", "a garden", "indoors at home", "a restaurant",
-  "a café", "an office", "a classroom", "a museum", "a church", "a stadium",
-  "a swimming pool", "a hotel room", "an airport", "a train station", "on board a boat",
-  "a farm", "a snowy landscape", "a sunset", "a sunrise", "a night scene",
-  "fireworks", "rain", "fog",
-  // Occasion
-  "a birthday party", "a wedding", "a graduation", "a concert", "a festival",
-  "a picnic", "a barbecue", "a christmas scene", "a halloween costume",
-  "a sports match", "a hike", "camping", "a road trip", "a museum visit",
-  "a business meeting", "a family gathering", "a night out",
-  // Subject and composition
-  "a portrait", "a group photo", "a selfie", "a candid photo of people",
-  "a close-up", "a landscape photograph", "an aerial photo", "a street photograph",
-  "a black and white photograph", "a screenshot", "a document or receipt",
-  "a whiteboard", "a chart or diagram", "a map",
-  // Content
-  "food on a plate", "a drink", "a birthday cake", "flowers", "a pet",
-  "a baby", "children playing", "artwork or a painting",
-  "a building exterior", "an interior of a room", "traffic",
-];
+export const DEFAULT_TAG_VOCABULARY: readonly string[] = [];
 
 /**
  * Threshold for suggesting a vocabulary entry.

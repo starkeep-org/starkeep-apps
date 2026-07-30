@@ -96,7 +96,7 @@ function status(
       scene: { enabled: false },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
-      search: { denseFloor: 0.03 },
+      search: { denseFloor: 0.035 },
     },
     worker: { built: true, path: "/tmp/worker.mjs", buildCommand: "pnpm vision:build-worker" },
     scan: {

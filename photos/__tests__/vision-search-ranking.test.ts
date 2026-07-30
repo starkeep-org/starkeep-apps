@@ -42,12 +42,18 @@ describe("the additive invariant", () => {
     // The §5.1 table, as a test. Raw cosines are in SigLIP's real band (~0.02–0.11)
     // rather than idealized, because the normalization is what makes them comparable
     // to a 0-or-1 structured match.
-    const ranked = rankCandidates([
-      candidate("alice-at-beach", 0.11, [alice]),
-      candidate("alice-indoors", 0.03, [alice]),
-      candidate("best-beach-no-alice", 0.11),
-      candidate("neither", 0.03),
-    ]);
+    // An explicit floor of 0 so this documents §5.1's *fusion arithmetic* and does not
+    // break every time the membership floor is retuned — the floor has its own block
+    // below, and the two concerns are now genuinely separate.
+    const ranked = rankCandidates(
+      [
+        candidate("alice-at-beach", 0.11, [alice]),
+        candidate("alice-indoors", 0.03, [alice]),
+        candidate("best-beach-no-alice", 0.11),
+        candidate("neither", 0.03),
+      ],
+      { denseFloor: 0 },
+    );
 
     // All four rows of §5.1's table, in its order. The fourth used to be missing:
     // membership was decided by normalization, so the pool's dense minimum scored 0

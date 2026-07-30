@@ -256,7 +256,7 @@ describe("GET|PUT /api/vision/config", () => {
     // published on the shared plane — a lie about the disclosure it controls.
     seed("a", [0]);
     assignUnclusteredFaces(0.45);
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: true }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: true }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.035 } });
 
     await configPut(jsonRequest({ faces: { publishLabels: false } }));
 
@@ -294,7 +294,7 @@ describe("GET|PUT /api/vision/config", () => {
   });
 
   it("ignores a malformed body rather than clobbering the config", async () => {
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.6, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.6, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.035 } });
     const res = await configPut(
       new Request("http://localhost/api/vision/config", { method: "PUT", body: "not json" }) as never,
     );
@@ -435,7 +435,7 @@ describe("GET|PUT /api/vision/people", () => {
   it("rebuilds every cluster, discarding names", async () => {
     seed("a", [0]);
     seed("b", [0.6]);
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.9, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.9, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.035 } });
     assignUnclusteredFaces(0.45);
     const [person] = readPeople();
     person.name = "Alice";
@@ -450,7 +450,7 @@ describe("GET|PUT /api/vision/people", () => {
   it("republishes labels after an edit when publishing is on", async () => {
     seed("a", [0]);
     assignUnclusteredFaces(0.45);
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: true }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: true }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.035 } });
     const [person] = readPeople();
 
     await peoplePut(jsonRequest({ action: "rename", personId: person.id, name: "Alice" }));
@@ -469,7 +469,7 @@ describe("GET|PUT /api/vision/people", () => {
   it("keeps a rename that a failed republish could not propagate", async () => {
     seed("a", [0]);
     assignUnclusteredFaces(0.45);
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: true }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: true }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.035 } });
     signedFetch.mockResolvedValue(new Response("nope", { status: 502 }));
 
     const res = await peoplePut(
@@ -526,7 +526,7 @@ describe("POST /api/vision/scan", () => {
   });
 
   it("refuses to start without the models, and names the fetch command", async () => {
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.035 } });
     const res = await post({ action: "start" });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toMatch(/vision:fetch-models/);

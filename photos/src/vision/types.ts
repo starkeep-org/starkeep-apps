@@ -154,7 +154,7 @@ export const DEFAULT_OBJECT_THRESHOLD = 0.35;
  * `ranking.ts` reaches this module, so importing back would close a cycle.
  * `vision-search-ranking.test.ts` pins the two to each other.
  */
-export const DEFAULT_DENSE_FLOOR = 0.03;
+export const DEFAULT_DENSE_FLOOR = 0.035;
 
 /**
  * **Empty on purpose — tag suggestions are parked.**

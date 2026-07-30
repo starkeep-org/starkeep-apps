@@ -66,27 +66,40 @@ export const DEFAULT_WEIGHTS: RankingWeights = { person: 2, object: 1.5, dense: 
  * in this code, and no threshold fixes it. §5.4's complementarity argument is the
  * real answer there: the detector knows what a boat is.
  *
- * **Measured outcomes at this default, on a 7-photo library.** Worth recording,
- * because they show what the floor does and does not buy:
+ * **The value is chosen by measurement, not taste.** `pnpm vision:tune-floor` sweeps
+ * candidate floors over queries with known answers and counts the errors each way. On
+ * the library this was first tuned against (7 photos, 12 queries):
  *
- *     a plate of sushi   0/7   ✓ correctly nothing
- *     a subway train     0/7   ✓ correctly nothing
- *     a dog              2/7   ✓ the dog photo first, by 2×
- *     water              4/7   ~ three photos actually contain water
- *     a spaceship        5/7   ✗ false positives survive
- *     a lake             7/7   ✗ the whole library
+ *     floor    false positives   false negatives
+ *     0.030          21                 0
+ *     0.035           8                 0     ← chosen
+ *     0.040           4                 1
+ *     0.043           1                 2
+ *     0.050           1                 3
  *
- * `"a lake"` is the instructive failure: its baseline sits around 0.035, so a 0.03
- * floor admits everything. That is §5.3's objection reproduced — a single constant
- * cannot suit every phrasing, because the *offset* moves with the wording.
+ * 0.035 is the largest floor that costs **no recall at all** — a principled criterion
+ * rather than a magic number, and the right one while every observed error is a false
+ * positive. Push higher only once a false negative is more annoying than a false
+ * positive; the table says what that trade costs.
  *
- * So this floor fixes membership being unexpressible; it does **not** fix relevance.
- * Removing the remaining false positives needs the per-query offset estimated rather
- * than assumed, and estimating it wants a library of thousands — the median of seven
- * photos, three of which match, is itself a match. Deliberately left as a tunable
- * constant rather than a statistic invented on too little data.
+ * **What a floor cannot fix.** `"a lake"` keeps four false positives at *every* floor
+ * up to 0.05, because its scores sit high as a block: a query's whole band shifts with
+ * its phrasing, so a single constant meets different queries at different points in
+ * their distributions. That is §5.3's objection, reproduced rather than argued.
+ *
+ * Two things measured and rejected on the way here, recorded so they are not retried:
+ *
+ *   - **Scale-free rules** (min-max, median/MAD z-scores) cannot express "nothing
+ *     matched" at all — `"a plate of sushi"` scores every photo *negative* on a library
+ *     with no food, yet three clear a z of 1.0.
+ *   - **Centering the gallery** (subtracting the mean image embedding to remove the
+ *     per-query offset) made things *worse* on this data: sushi went from a correct
+ *     −0.001 to +0.028, overlapping real matches. With a small library whose photos all
+ *     share a subject, the mean *is* that subject, so removing it flatters anything
+ *     unlike it. Worth revisiting at thousands of photos, where the mean means
+ *     something.
  */
-export const DEFAULT_DENSE_FLOOR = 0.03;
+export const DEFAULT_DENSE_FLOOR = 0.035;
 
 export interface Candidate {
   recordId: string;

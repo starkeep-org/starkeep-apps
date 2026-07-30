@@ -3,7 +3,8 @@ import type { AppImage } from "@/photos-lib";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { FaceOverlay } from "../vision/face-overlay";
-import type { ImageFaces } from "../../../lib/vision-client";
+import { ObjectOverlay } from "../vision/object-overlay";
+import type { ImageFaces, ImageObjects } from "../../../lib/vision-client";
 
 // EXIF orientations 5–8 rotate the image by ±90°, so the *displayed* image
 // swaps width and height relative to the stored (un-oriented) pixel
@@ -54,10 +55,17 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // so the toggle can say "no faces here" without claiming it before it knows.
   const [facesVisible, setFacesVisible] = useState(false);
   const [facesKnown, setFacesKnown] = useState<ImageFaces | null>(null);
+  // Independent of faces, because the two overlays answer different questions and
+  // are frequently both worth seeing — a face box and a "person" box on the same
+  // subject is informative, not redundant.
+  const [objectsVisible, setObjectsVisible] = useState(false);
+  const [objectsKnown, setObjectsKnown] = useState<ImageObjects | null>(null);
   useEffect(() => {
     setFacesKnown(null);
+    setObjectsKnown(null);
   }, [image.id]);
   const onFacesLoaded = useCallback((result: ImageFaces) => setFacesKnown(result), []);
+  const onObjectsLoaded = useCallback((result: ImageObjects) => setObjectsKnown(result), []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -117,6 +125,26 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
           >
             Faces
             {facesVisible && facesKnown?.processed ? ` (${facesKnown.faces.length})` : ""}
+          </button>
+          <button
+            onClick={() => setObjectsVisible((v) => !v)}
+            title={
+              objectsKnown && !objectsKnown.processed
+                ? "This photo has not been scanned for objects yet"
+                : "Show detected objects"
+            }
+            style={{
+              background: objectsVisible ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
+              border: "1px solid rgba(255,255,255,0.2)",
+              color: "#fff",
+              borderRadius: 4,
+              padding: "6px 14px",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Objects
+            {objectsVisible && objectsKnown?.processed ? ` (${objectsKnown.objects.length})` : ""}
           </button>
         </div>
         <button
@@ -187,6 +215,11 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
           {/* Inside the same box the <img> fills, so bbox percentages land on
               the right pixels without measuring the rendered image. */}
           <FaceOverlay recordId={image.id} visible={facesVisible} onLoaded={onFacesLoaded} />
+          <ObjectOverlay
+            recordId={image.id}
+            visible={objectsVisible}
+            onLoaded={onObjectsLoaded}
+          />
         </div>
         <style>{`@keyframes starkeep-skeleton-pulse { 0%, 100% { background-color: rgba(255, 255, 255, 0.07); } 50% { background-color: rgba(255, 255, 255, 0.16); } }`}</style>
 

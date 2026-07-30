@@ -8,7 +8,7 @@ export async function resizeForThumbnail(
   imageBytes: Uint8Array,
   maxWidth: number,
 ): Promise<ResizeResult & { contentType: string }> {
-  const { default: sharp } = await import("sharp") as { default: typeof import("sharp") };
+  const { default: sharp } = await import("sharp") as { default: typeof import("sharp").default };
   const inputBuffer = Buffer.from(imageBytes);
   const meta = await sharp(inputBuffer).metadata();
   const hasAlpha = meta.hasAlpha ?? false;

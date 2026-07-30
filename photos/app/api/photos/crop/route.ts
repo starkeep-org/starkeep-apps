@@ -54,9 +54,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const sourceBytes = Buffer.from(await sourceRes.arrayBuffer());
 
-  const { default: sharp } = await import("sharp") as { default: typeof import("sharp") };
+  const { default: sharp } = await import("sharp") as { default: typeof import("sharp").default };
 
-  const cropped = await (sharp as typeof import("sharp"))(sourceBytes)
+  const cropped = await (sharp as typeof import("sharp").default)(sourceBytes)
     .extract({ left: cropRect.x, top: cropRect.y, width: cropRect.width, height: cropRect.height })
     .jpeg({ quality: 90 })
     .toBuffer();

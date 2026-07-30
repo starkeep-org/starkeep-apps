@@ -61,7 +61,7 @@ export async function GET(req: NextRequest, ctx: RouteContext): Promise<Response
   }
   const bytes = Buffer.from(await sourceRes.arrayBuffer());
 
-  const { default: sharp } = (await import("sharp")) as { default: typeof import("sharp") };
+  const { default: sharp } = (await import("sharp")) as { default: typeof import("sharp").default };
   const rotated = sharp(bytes).rotate();
   const meta = await rotated.metadata();
   const imageWidth = meta.width ?? sidecar.w;

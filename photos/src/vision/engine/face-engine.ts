@@ -64,7 +64,7 @@ export class FaceEngine {
     private readonly detector: InferenceSession,
     private readonly embedder: InferenceSession,
     private readonly ort: typeof import("onnxruntime-node"),
-    private readonly sharp: typeof import("sharp"),
+    private readonly sharp: typeof import("sharp").default,
     private readonly scoreThreshold: number,
     private readonly nmsIou: number,
   ) {}
@@ -76,7 +76,7 @@ export class FaceEngine {
     // invisible to the type checker too.
     const ort = await import("onnxruntime-node");
     const sharpMod = await import("sharp");
-    const sharp = (sharpMod.default ?? sharpMod) as unknown as typeof import("sharp");
+    const sharp = (sharpMod.default ?? sharpMod) as unknown as typeof import("sharp").default;
 
     const [detector, embedder] = await Promise.all([
       ort.InferenceSession.create(options.detectorPath),

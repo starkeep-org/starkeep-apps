@@ -1,22 +1,27 @@
 // @vitest-environment jsdom
 /**
- * The Faces panel's model-download affordance.
+ * The Vision panel's per-task model-download affordances.
  *
- * The feature does nothing at all until 278 MB of weights are on disk, and until
- * now the only thing the panel said about that was a shell command — which ends
- * the feature for anyone who opened Photos from the launcher.
+ * A task does nothing at all until its weights are on disk, and the only thing the
+ * panel said about that used to be a shell command — which ends the feature for
+ * anyone who opened Photos from the launcher.
  *
- * Two things are worth pinning. The prompt must state the size *before* the
- * click, because a quarter-gigabyte download is not something to start on
- * someone's behalf silently. And the request must carry `acceptLicence`: the
- * antelopev2 weights are non-commercial-research-only, and the only thing making
- * a button an acceptable way to fetch them is that the button says so and sends
- * it.
+ * Three things are worth pinning. The prompt must state the size *before* the
+ * click, because a download this large is not something to start on someone's
+ * behalf silently. The request must carry `acceptLicence` and the group it applies
+ * to. And crucially the **licence line must be per group**: antelopev2 is
+ * non-commercial-research-only while the scene and search weights are Apache-2.0,
+ * so a shared notice would either impose a restriction that does not exist or
+ * hide one that does.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { VisionPanel } from "../src/photos-ui/components/vision/vision-panel";
-import type { VisionModelDownload, VisionStatus } from "../src/lib/vision-client";
+import type {
+  VisionModelDownload,
+  VisionModelGroup,
+  VisionStatus,
+} from "../src/lib/vision-client";
 
 const originalFetch = global.fetch;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -26,6 +31,7 @@ const MB = 1024 * 1024;
 function download(over: Partial<VisionModelDownload> = {}): VisionModelDownload {
   return {
     running: false,
+    group: null,
     bytesReceived: 0,
     bytesTotal: 0,
     currentFile: null,
@@ -36,25 +42,58 @@ function download(over: Partial<VisionModelDownload> = {}): VisionModelDownload 
   };
 }
 
-function status(models: Partial<VisionStatus["models"]> = {}): VisionStatus {
+function faceModels(over: Partial<VisionModelGroup> = {}): VisionModelGroup {
+  return {
+    installed: false,
+    missing: ["scrfd_10g_bnkps.onnx", "glintr100.onnx"],
+    missingBytes: 278 * MB,
+    dir: "/tmp/models",
+    fetchCommand: "pnpm vision:fetch-models --faces",
+    licence: "non-commercial research use only",
+    needsAck: true,
+    label: "Face recognition",
+    purpose: "find and group faces",
+    pack: {
+      name: "antelopev2",
+      files: ["scrfd_10g_bnkps.onnx", "glintr100.onnx"],
+      totalBytes: 278 * MB,
+    },
+    ...over,
+  };
+}
+
+function sceneModels(over: Partial<VisionModelGroup> = {}): VisionModelGroup {
+  return {
+    installed: true,
+    missing: [],
+    missingBytes: 0,
+    dir: "/tmp/models",
+    fetchCommand: "pnpm vision:fetch-models --scene",
+    licence: "Apache-2.0",
+    needsAck: false,
+    label: "Scene understanding",
+    purpose: "describe photos so they can be searched",
+    pack: {
+      name: "siglip2-so400m-patch16-384",
+      files: ["vision_model.onnx"],
+      totalBytes: 1634 * MB,
+    },
+    ...over,
+  };
+}
+
+/**
+ * `models` patches the **face** group, since that is what most of these cases are
+ * about; `over` reaches anything else.
+ */
+function status(
+  models: Partial<VisionModelGroup> = {},
+  over: Partial<VisionStatus> = {},
+): VisionStatus {
   return {
     config: {
       faces: { enabled: false, threshold: 0.45, publishLabels: false },
       scene: { enabled: false },
-    },
-    models: {
-      installed: false,
-      missing: ["scrfd_10g_bnkps.onnx", "glintr100.onnx"],
-      missingBytes: 278 * MB,
-      dir: "/tmp/models",
-      fetchCommand: "pnpm vision:fetch-models",
-      download: download(),
-      pack: {
-        name: "antelopev2",
-        files: ["scrfd_10g_bnkps.onnx", "glintr100.onnx"],
-        totalBytes: 278 * MB,
-      },
-      ...models,
     },
     worker: { built: true, path: "/tmp/worker.mjs", buildCommand: "pnpm vision:build-worker" },
     scan: {
@@ -67,14 +106,39 @@ function status(models: Partial<VisionStatus["models"]> = {}): VisionStatus {
       finishedAt: null,
       error: null,
     },
-    store: {
-      processed: 0,
-      sidecarsOnDisk: 0,
-      imagesWithFaces: 0,
-      facesFound: 0,
-      people: 0,
-      namedPeople: 0,
+    download: download(),
+    tasks: {
+      faces: {
+        models: faceModels(models),
+        store: {
+          processed: 0,
+          sidecarsOnDisk: 0,
+          imagesWithFaces: 0,
+          facesFound: 0,
+          people: 0,
+          namedPeople: 0,
+        },
+      },
+      scene: {
+        models: sceneModels(),
+        store: { processed: 0, sidecarsOnDisk: 0, indexed: 0, indexReady: false },
+      },
     },
+    search: {
+      models: sceneModels({
+        pack: {
+          name: "siglip2-so400m-patch16-384",
+          files: ["text_model_int8.onnx", "tokenizer.json"],
+          totalBytes: 745 * MB,
+        },
+        label: "Search",
+        purpose: "turn what you type into something comparable to your photos",
+      }),
+      workerRunning: false,
+      workerBuilt: true,
+      ready: false,
+    },
+    ...over,
   };
 }
 
@@ -137,24 +201,26 @@ describe("the prompt, before anything is downloaded", () => {
     serve(status());
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
 
-    expect(await screen.findByText("pnpm vision:fetch-models")).toBeTruthy();
+    expect(await screen.findByText("pnpm vision:fetch-models --faces")).toBeTruthy();
   });
 
-  it("sends acceptLicence with the request the button makes", async () => {
+  it("sends acceptLicence and the group with the request the button makes", async () => {
     serve(status());
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
     (await screen.findByRole("button", { name: "Download 278 MB" })).click();
 
     await waitFor(() => expect(posts()).toHaveLength(1));
     expect(posts()[0].url).toContain("/api/vision/models");
-    expect(posts()[0].body).toEqual({ action: "download", acceptLicence: true });
+    // The group is what lets the route decide whether the acceptance was even
+    // required — it is for these weights and is not for the Apache-2.0 ones.
+    expect(posts()[0].body).toEqual({ action: "download", group: "faces", acceptLicence: true });
   });
 
   it("does not offer the download once the models are installed", async () => {
     serve(status({ installed: true, missing: [], missingBytes: 0 }));
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
 
-    await screen.findByText(/Detect faces in my photos/);
+    await screen.findByText("✓ antelopev2 installed");
     expect(screen.queryByRole("button", { name: /^Download/ })).toBeNull();
   });
 });
@@ -168,7 +234,7 @@ describe("the installed badge", () => {
     serve(installed());
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
 
-    expect(await screen.findByText("✓ antelopev2 models installed")).toBeTruthy();
+    expect(await screen.findByText("✓ antelopev2 installed")).toBeTruthy();
   });
 
   it("lists both graphs and the size on disk", async () => {
@@ -183,7 +249,7 @@ describe("the installed badge", () => {
     serve(installed());
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
 
-    const badge = await screen.findByText("✓ antelopev2 models installed");
+    const badge = await screen.findByText("✓ antelopev2 installed");
     expect(badge.closest("[title]")?.getAttribute("title")).toBe("/tmp/models");
   });
 
@@ -194,15 +260,19 @@ describe("the installed badge", () => {
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
 
     await screen.findByRole("button", { name: "Download 278 MB" });
-    expect(screen.queryByText(/models installed/)).toBeNull();
+    expect(screen.queryByText(/antelopev2 installed/)).toBeNull();
   });
 });
 
 describe("while a download is running", () => {
   const running = () =>
-    status({
+    status({}, {
       download: download({
         running: true,
+        // The group is what puts the bar on the right card. One transfer runs at a
+        // time across all groups, so an unattributed download belongs to none of
+        // them — see the test at the end of this block.
+        group: "faces",
         bytesReceived: 139 * MB,
         bytesTotal: 278 * MB,
         currentFile: "glintr100.onnx",
@@ -215,7 +285,7 @@ describe("while a download is running", () => {
     render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
 
     expect(await screen.findByText("139 MB / 278 MB")).toBeTruthy();
-    expect(screen.getByText(/Downloading face models/)).toBeTruthy();
+    expect(screen.getByText(/Downloading…/)).toBeTruthy();
   });
 
   it("names the file in flight", async () => {
@@ -232,12 +302,37 @@ describe("while a download is running", () => {
     await screen.findByText("139 MB / 278 MB");
     expect(screen.queryByRole("button", { name: /^Download/ })).toBeNull();
   });
+
+  it("puts the progress on the group it names, not on every card", async () => {
+    // One transfer at a time across all groups, so the faces card must not claim a
+    // scene download's bytes. With scene already installed in this fixture, a
+    // scene-attributed transfer should leave the faces prompt alone.
+    serve(
+      status({}, {
+        download: download({
+          running: true,
+          group: "scene",
+          bytesReceived: 100 * MB,
+          bytesTotal: 1634 * MB,
+          currentFile: "vision_model.onnx",
+        }),
+      }),
+    );
+    render(<VisionPanel onClose={() => {}} onOpenPeople={() => {}} />);
+
+    // The faces prompt is still a prompt — but its button is held, because there is
+    // only one transfer slot.
+    const button = await screen.findByRole("button", { name: /Another download is running/ });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("100 MB / 1.6 GB")).toBeNull();
+  });
 });
 
 describe("after a failed download", () => {
   const failed = () =>
-    status({
+    status({}, {
       download: download({
+        group: "faces",
         error: "SHA-256 mismatch for glintr100.onnx",
         finishedAt: new Date().toISOString(),
       }),
@@ -257,7 +352,7 @@ describe("after a failed download", () => {
     (await screen.findByRole("button", { name: "Try again" })).click();
 
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(posts()[0].body).toEqual({ action: "download", acceptLicence: true });
+    expect(posts()[0].body).toEqual({ action: "download", group: "faces", acceptLicence: true });
   });
 });
 

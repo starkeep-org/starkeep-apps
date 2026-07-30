@@ -1,5 +1,5 @@
 /**
- * Fetches the face models from inside the Next server, so the Faces panel can
+ * Fetches a model group from inside the Next server, so the Vision panel can
  * offer the download instead of printing a command.
  *
  * `pnpm vision:fetch-models` still exists and still works — this is the same
@@ -13,19 +13,31 @@
  * installed" from the files themselves. A progress file would be one more thing
  * that can disagree with the disk.
  *
- * Whether a model *is* installed is never asked here — `faceModelStatus()` reads
+ * Whether a model *is* installed is never asked here — `groupModelStatus()` reads
  * the directory, and it stays the single answer to that question. The rename
  * into place happens last, so a download in flight cannot read as installed.
+ *
+ * **One transfer at a time, across all groups.** Not a limitation to work around:
+ * these are hundreds of megabytes each and running them concurrently would make
+ * both slower and the progress bar meaningless. `group` records which one is in
+ * flight so the panel can put the bar on the right card.
  */
 
 import { mkdirSync } from "node:fs";
 import { writeLicenceAcknowledgement } from "./licence";
-import { FACE_MODELS, faceModelStatus, type VisionModel } from "./models";
+import {
+  groupModelStatus,
+  MODEL_GROUPS,
+  type ModelGroup,
+  type VisionModel,
+} from "./models";
 import { modelPath, modelsDir } from "./paths";
 import { verifiedDownload } from "./verified-download";
 
 export interface ModelDownloadState {
   running: boolean;
+  /** Which group is in flight, or was last. Null before anything has been tried. */
+  group: ModelGroup | null;
   /** Verified bytes on disk plus bytes of the file in flight. */
   bytesReceived: number;
   /** Sum of the sizes this run set out to fetch. */
@@ -47,6 +59,7 @@ const DOWNLOADER_KEY = Symbol.for("starkeep.photos.vision.modelDownload");
 function idleState(): ModelDownloadState {
   return {
     running: false,
+    group: null,
     bytesReceived: 0,
     bytesTotal: 0,
     currentFile: null,
@@ -87,29 +100,36 @@ export type StartDownloadResult =
  * re-fetch it — and so `bytesTotal` is the number of bytes this run will
  * actually move rather than the size of the full pair.
  */
-export function startModelDownload(options: StartDownloadOptions = {}): StartDownloadResult {
+export function startModelDownload(
+  group: ModelGroup,
+  options: StartDownloadOptions = {},
+): StartDownloadResult {
   const self = downloader();
   if (self.state.running) {
     return { ok: false, status: 409, error: "a model download is already running" };
   }
 
-  const status = faceModelStatus();
+  const info = MODEL_GROUPS[group];
+  const status = groupModelStatus(group);
   if (status.installed) {
-    return { ok: false, status: 409, error: "the face models are already installed" };
+    return { ok: false, status: 409, error: `the ${group} models are already installed` };
   }
 
-  const pending = FACE_MODELS.filter((model) => status.missing.includes(model.fileName));
+  const pending = info.models.filter((model) => status.missing.includes(model.fileName));
   self.state = {
     ...idleState(),
     running: true,
+    group,
     bytesTotal: pending.reduce((sum, model) => sum + model.sizeBytes, 0),
     startedAt: new Date().toISOString(),
   };
 
-  // Accepted at the click that got here; recorded before the bytes land so an
-  // interrupted download still leaves the record of what was agreed to.
   mkdirSync(modelsDir(), { recursive: true });
-  writeLicenceAcknowledgement("the Photos Faces panel");
+  // Only for a group that actually carries a restriction. Recording an
+  // acknowledgement for the Apache-2.0 weights would misstate what was agreed to,
+  // and recording it here at all — before the bytes land — is so that an
+  // interrupted download still leaves the record of the decision.
+  if (info.needsAck) writeLicenceAcknowledgement(`the Photos ${info.label} panel`);
 
   void run(self, pending, options.fetchImpl);
   return { ok: true, download: self.state };

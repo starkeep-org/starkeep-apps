@@ -153,16 +153,37 @@ describe("the on-device guard", () => {
 });
 
 describe("GET /api/vision/status", () => {
-  it("reports models as missing before they are fetched", async () => {
+  it("reports each task's models separately", async () => {
+    // Per task, because the alternative cannot express "faces is installed and
+    // scene is not" — which is the normal state, given one is 278 MB and the
+    // other 1.7 GB.
     const body = (await (await statusGet()).json()) as {
-      models: { installed: boolean; fetchCommand: string };
+      tasks: Record<string, { models: { installed: boolean; fetchCommand: string; licence: string } }>;
       worker: { built: boolean; buildCommand: string };
     };
-    expect(body.models.installed).toBe(false);
+    expect(body.tasks.faces.models.installed).toBe(false);
+    expect(body.tasks.scene.models.installed).toBe(false);
     // The panel renders these verbatim, so a wrong command is a dead end for
     // the user rather than a cosmetic bug.
-    expect(body.models.fetchCommand).toBe("pnpm vision:fetch-models");
+    expect(body.tasks.faces.models.fetchCommand).toBe("pnpm vision:fetch-models --faces");
+    expect(body.tasks.scene.models.fetchCommand).toBe("pnpm vision:fetch-models --scene");
     expect(body.worker.buildCommand).toBe("pnpm vision:build-worker");
+  });
+
+  it("reports each group's own licence, not one shared line", async () => {
+    // The one field that must not be flattened: antelopev2 is
+    // non-commercial-research-only and the SigLIP weights are Apache-2.0, so a
+    // shared notice would either impose a restriction that does not exist or hide
+    // one that does.
+    const body = (await (await statusGet()).json()) as {
+      tasks: Record<string, { models: { licence: string; needsAck: boolean } }>;
+      search: { models: { licence: string; needsAck: boolean } };
+    };
+    expect(body.tasks.faces.models.licence).toMatch(/non-commercial/);
+    expect(body.tasks.faces.models.needsAck).toBe(true);
+    expect(body.tasks.scene.models.licence).toBe("Apache-2.0");
+    expect(body.tasks.scene.models.needsAck).toBe(false);
+    expect(body.search.models.needsAck).toBe(false);
   });
 
   it("counts faces and people from the sidecar store, not a separate index", async () => {
@@ -171,13 +192,13 @@ describe("GET /api/vision/status", () => {
     assignUnclusteredFaces(0.45);
 
     const body = (await (await statusGet()).json()) as {
-      store: { processed: number; imagesWithFaces: number; facesFound: number; people: number; namedPeople: number };
+      tasks: { faces: { store: { processed: number; imagesWithFaces: number; facesFound: number; people: number; namedPeople: number } } };
     };
-    expect(body.store.processed).toBe(2);
-    expect(body.store.imagesWithFaces).toBe(1);
-    expect(body.store.facesFound).toBe(2);
-    expect(body.store.people).toBe(2);
-    expect(body.store.namedPeople).toBe(0);
+    expect(body.tasks.faces.store.processed).toBe(2);
+    expect(body.tasks.faces.store.imagesWithFaces).toBe(1);
+    expect(body.tasks.faces.store.facesFound).toBe(2);
+    expect(body.tasks.faces.store.people).toBe(2);
+    expect(body.tasks.faces.store.namedPeople).toBe(0);
   });
 
   it("surfaces stale-model sidecars as a gap between processed and on-disk", async () => {
@@ -191,10 +212,10 @@ describe("GET /api/vision/status", () => {
       faces: [],
     });
     const body = (await (await statusGet()).json()) as {
-      store: { processed: number; sidecarsOnDisk: number };
+      tasks: { faces: { store: { processed: number; sidecarsOnDisk: number } } };
     };
-    expect(body.store.processed).toBe(1);
-    expect(body.store.sidecarsOnDisk).toBe(2);
+    expect(body.tasks.faces.store.processed).toBe(1);
+    expect(body.tasks.faces.store.sidecarsOnDisk).toBe(2);
   });
 
   it("reports the default config when nothing has been configured", async () => {

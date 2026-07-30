@@ -79,7 +79,7 @@ describe("startModelDownload", () => {
     // The detector is already there, so only the embedder is owed. A total that
     // included it would make the progress bar stall at 6% and never finish.
     installModel(FACE_DETECTOR_MODEL);
-    const result = startModelDownload({ fetchImpl: serving(Buffer.from("wrong bytes")) });
+    const result = startModelDownload("faces", { fetchImpl: serving(Buffer.from("wrong bytes")) });
 
     expect(result.ok).toBe(true);
     expect(modelDownloadState().bytesTotal).toBe(FACE_EMBEDDER_MODEL.sizeBytes);
@@ -89,22 +89,22 @@ describe("startModelDownload", () => {
   it("records the licence acceptance before the bytes land", async () => {
     // Recorded up front so an interrupted download still leaves evidence of what
     // was agreed to — the agreement is to the terms, not to a completed file.
-    const result = startModelDownload({ fetchImpl: serving(Buffer.from("wrong bytes")) });
+    const result = startModelDownload("faces", { fetchImpl: serving(Buffer.from("wrong bytes")) });
     expect(result.ok).toBe(true);
 
     const ack = readFileSync(join(modelsDir(), ACK_FILE), "utf-8");
     expect(ack).toContain("non-commercial research use only");
-    expect(ack).toContain("Faces panel");
+    expect(ack).toContain("Face recognition panel");
     await settled();
   });
 
   it("refuses a second transfer while one is running", async () => {
-    const first = startModelDownload({ fetchImpl: serving(Buffer.from("wrong bytes")) });
+    const first = startModelDownload("faces", { fetchImpl: serving(Buffer.from("wrong bytes")) });
     expect(first.ok).toBe(true);
 
     // Double-click, or two tabs. Two transfers writing the same `.download`
     // temporary would fail each other's digest check.
-    const second = startModelDownload({ fetchImpl: serving(Buffer.from("wrong bytes")) });
+    const second = startModelDownload("faces", { fetchImpl: serving(Buffer.from("wrong bytes")) });
     expect(second).toMatchObject({ ok: false, status: 409 });
 
     await settled();
@@ -113,14 +113,14 @@ describe("startModelDownload", () => {
   it("refuses when both models are already installed", () => {
     installModel(FACE_DETECTOR_MODEL);
     installModel(FACE_EMBEDDER_MODEL);
-    expect(startModelDownload()).toMatchObject({ ok: false, status: 409 });
+    expect(startModelDownload("faces")).toMatchObject({ ok: false, status: 409 });
     expect(modelDownloadState().running).toBe(false);
   });
 
   it("reports a failure and leaves nothing that reads as installed", async () => {
     // The bytes served do not hash to the pinned digest, which is the same shape
     // as a truncated transfer or a tampered mirror.
-    startModelDownload({ fetchImpl: serving(Buffer.from("not the model")) });
+    startModelDownload("faces", { fetchImpl: serving(Buffer.from("not the model")) });
     await settled();
 
     const state = modelDownloadState();
@@ -134,12 +134,12 @@ describe("startModelDownload", () => {
   });
 
   it("is startable again after a failure", async () => {
-    startModelDownload({ fetchImpl: serving(Buffer.from("not the model")) });
+    startModelDownload("faces", { fetchImpl: serving(Buffer.from("not the model")) });
     await settled();
     expect(modelDownloadState().error).not.toBeNull();
 
     // The retry the panel's "Try again" offers: a failed run must not latch.
-    const retry = startModelDownload({ fetchImpl: serving(Buffer.from("still not the model")) });
+    const retry = startModelDownload("faces", { fetchImpl: serving(Buffer.from("still not the model")) });
     expect(retry.ok).toBe(true);
     expect(modelDownloadState().error).toBeNull();
     await settled();
@@ -149,7 +149,7 @@ describe("startModelDownload", () => {
     // Both files come from the same mirror at the same commit. If the first
     // fails the digest check, the second is not going to be fine, and 261 MB of
     // "let's see" is not a reasonable response to a corrupt 17 MB.
-    startModelDownload({ fetchImpl: serving(Buffer.from("not the model")) });
+    startModelDownload("faces", { fetchImpl: serving(Buffer.from("not the model")) });
     await settled();
 
     // The mismatch names the file it was writing; the second model never got a

@@ -242,6 +242,7 @@ export function searchModelStatus(): ModelInstallStatus {
   return statusOf(SEARCH_MODELS);
 }
 
+
 /**
  * Identifies the model pair a sidecar was produced by. A sidecar whose `model`
  * does not equal this is stale and gets reprocessed — which is how swapping in
@@ -350,4 +351,73 @@ function statusOf(models: readonly VisionModel[]): ModelInstallStatus {
 /** The face task's spelling, for the face-specific call sites and the fetch script. */
 export function faceModelStatus(): ModelInstallStatus {
   return modelStatus("faces");
+}
+
+// ---------------------------------------------------------------------------
+// Download groups
+// ---------------------------------------------------------------------------
+
+/**
+ * What a user can choose to install, as one unit.
+ *
+ * Grouped by *what needs them* rather than by task, because `search` is not a
+ * vision task — the scan never opens the text tower — and because the groups have
+ * different **licences**, which is the property that must not be flattened: the
+ * antelopev2 acknowledgement has to gate only the weights it applies to, or
+ * accepting a non-commercial restriction becomes the price of an Apache-2.0
+ * download.
+ *
+ * Shared by `pnpm vision:fetch-models` and the in-app downloader so the two
+ * cannot disagree about what a group contains.
+ */
+export type ModelGroup = "faces" | "scene" | "search";
+
+export interface ModelGroupInfo {
+  models: VisionModel[];
+  /** One line, for a UI with room for one line. */
+  licence: string;
+  /** Does installing these require an explicit licence acceptance? */
+  needsAck: boolean;
+  /** What the pack is called, for a badge naming what is installed. */
+  pack: string;
+  label: string;
+  /** What the group is for, in the user's terms. */
+  purpose: string;
+}
+
+export const MODEL_GROUPS: Record<ModelGroup, ModelGroupInfo> = {
+  faces: {
+    models: FACE_MODELS,
+    licence: "non-commercial research use only",
+    needsAck: true,
+    pack: FACE_MODEL_PACK,
+    label: "Face recognition",
+    purpose: "find and group faces",
+  },
+  scene: {
+    models: SCENE_MODELS,
+    licence: SCENE_LICENCE_SUMMARY,
+    needsAck: false,
+    pack: SCENE_MODEL_PACK,
+    label: "Scene understanding",
+    purpose: "describe photos so they can be searched",
+  },
+  search: {
+    models: SEARCH_MODELS,
+    licence: SCENE_LICENCE_SUMMARY,
+    needsAck: false,
+    pack: SCENE_MODEL_PACK,
+    label: "Search",
+    purpose: "turn what you type into something comparable to your photos",
+  },
+};
+
+export const MODEL_GROUP_NAMES = Object.keys(MODEL_GROUPS) as ModelGroup[];
+
+export function groupModelStatus(group: ModelGroup): ModelInstallStatus {
+  return statusOf(MODEL_GROUPS[group].models);
+}
+
+export function groupTotalBytes(group: ModelGroup): number {
+  return MODEL_GROUPS[group].models.reduce((sum, model) => sum + model.sizeBytes, 0);
 }

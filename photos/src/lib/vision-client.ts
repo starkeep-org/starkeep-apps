@@ -30,8 +30,12 @@ export interface VisionScanState {
   error: string | null;
 }
 
+export type VisionModelGroupName = "faces" | "scene" | "search";
+
 export interface VisionModelDownload {
   running: boolean;
+  /** Which group is in flight, or was last. */
+  group: VisionModelGroupName | null;
   /** Verified bytes on disk plus bytes of the file in flight. */
   bytesReceived: number;
   bytesTotal: number;
@@ -41,28 +45,60 @@ export interface VisionModelDownload {
   finishedAt: string | null;
 }
 
+/** One model group's install state, as the panel renders it. */
+export interface VisionModelGroup {
+  installed: boolean;
+  missing: string[];
+  /** Bytes an install would transfer — quoted before anyone commits to it. */
+  missingBytes: number;
+  dir: string;
+  fetchCommand: string;
+  /** One line of licence, and whether installing needs an explicit acceptance. */
+  licence: string;
+  needsAck: boolean;
+  label: string;
+  purpose: string;
+  pack: { name: string; files: string[]; totalBytes: number };
+}
+
+export interface VisionTaskStatus<Store> {
+  models: VisionModelGroup;
+  store: Store;
+}
+
+export interface VisionFaceStore {
+  processed: number;
+  sidecarsOnDisk: number;
+  imagesWithFaces: number;
+  facesFound: number;
+  people: number;
+  namedPeople: number;
+}
+
+export interface VisionSceneStore {
+  processed: number;
+  sidecarsOnDisk: number;
+  /** Rows in the compacted index — what search actually ranks against. */
+  indexed: number;
+  indexReady: boolean;
+}
+
 export interface VisionStatus {
   config: VisionConfigShape;
-  models: {
-    installed: boolean;
-    missing: string[];
-    /** Bytes an install would transfer — quoted before anyone commits to it. */
-    missingBytes: number;
-    dir: string;
-    fetchCommand: string;
-    download: VisionModelDownload;
-    /** Identity of the weights themselves, for the installed badge. */
-    pack: { name: string; files: string[]; totalBytes: number };
-  };
   worker: { built: boolean; path: string; buildCommand: string };
   scan: VisionScanState;
-  store: {
-    processed: number;
-    sidecarsOnDisk: number;
-    imagesWithFaces: number;
-    facesFound: number;
-    people: number;
-    namedPeople: number;
+  /** One transfer at a time across all groups; `group` says which. */
+  download: VisionModelDownload;
+  tasks: {
+    faces: VisionTaskStatus<VisionFaceStore>;
+    scene: VisionTaskStatus<VisionSceneStore>;
+  };
+  search: {
+    models: VisionModelGroup;
+    /** The worker exits when idle, so this is not a health check. */
+    workerRunning: boolean;
+    workerBuilt: boolean;
+    ready: boolean;
   };
 }
 
@@ -133,20 +169,31 @@ export function fetchVisionStatus(): Promise<MaybeUnavailable<VisionStatus>> {
 }
 
 export function updateVisionConfig(
-  patch: { faces: Partial<VisionConfigShape["faces"]> },
+  patch: {
+    faces?: Partial<VisionConfigShape["faces"]>;
+    scene?: Partial<VisionConfigShape["scene"]>;
+  },
 ): Promise<MaybeUnavailable<{ config: VisionConfigShape; warning?: string }>> {
   return send("/api/vision/config", "PUT", patch);
 }
 
 /**
- * Starts the model download. `acceptLicence` is sent explicitly rather than
- * implied by the call: the route refuses without it, and the flag is what ties
- * the request back to the notice the user was shown.
+ * Starts one group's model download.
+ *
+ * `acceptLicence` is sent explicitly rather than implied by the call: the route
+ * refuses without it for a restricted group, and the flag is what ties the request
+ * back to the notice the user was shown. Sent for every group because the caller
+ * showed a licence line for every group — the route is what decides whether it was
+ * *required*.
  */
-export function startVisionModelDownload(): Promise<
-  MaybeUnavailable<{ download: VisionModelDownload }>
-> {
-  return send("/api/vision/models", "POST", { action: "download", acceptLicence: true });
+export function startVisionModelDownload(
+  group: VisionModelGroupName,
+): Promise<MaybeUnavailable<{ download: VisionModelDownload }>> {
+  return send("/api/vision/models", "POST", {
+    action: "download",
+    group,
+    acceptLicence: true,
+  });
 }
 
 export function startVisionScan(): Promise<MaybeUnavailable<{ scan: VisionScanState }>> {

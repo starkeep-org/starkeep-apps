@@ -176,6 +176,9 @@ export async function search(query: string, options: SearchOptions = {}): Promis
   const dense = new Map<string, number>();
   let denseUnavailable: string | null = null;
 
+  // The residual arrives with function words already removed (`parse.ts`), so an empty
+  // one really does mean "no description to match" — `"a boat"` leaves nothing rather
+  // than the article that used to be embedded and ranked against the whole library.
   if (parsed.residual.trim() !== "") {
     const index = readSceneIndex();
     if (!index) {

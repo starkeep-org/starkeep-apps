@@ -155,8 +155,10 @@ describe("search", () => {
     buildSceneIndex();
 
     const response = await search("at the beach");
-    expect(embedQueries).toHaveBeenCalledWith(["at the beach", "a photo of at the beach"]);
-    expect(response.residual).toBe("at the beach");
+    // Function words are stripped in the parser, so the description actually embedded
+    // is the content of the query — see `contentResidual` for the measurement.
+    expect(embedQueries).toHaveBeenCalledWith(["beach", "a photo of beach"]);
+    expect(response.residual).toBe("beach");
     expect(response.terms).toEqual([]);
     // All three clear the dense membership floor, so all three are returned — the
     // weakest is no longer discarded just for being the pool's minimum.
@@ -265,11 +267,8 @@ describe("search", () => {
 
     const dropped = await search("Rose at the beach", { dropped: new Set([`person:${rose}`]) });
     expect(dropped.terms).toEqual([]);
-    expect(dropped.residual).toBe("Rose at the beach");
-    expect(embedQueries).toHaveBeenLastCalledWith([
-      "Rose at the beach",
-      "a photo of Rose at the beach",
-    ]);
+    expect(dropped.residual).toBe("Rose beach");
+    expect(embedQueries).toHaveBeenLastCalledWith(["Rose beach", "a photo of Rose beach"]);
   });
 
   it("honours the limit while reporting the true total", async () => {

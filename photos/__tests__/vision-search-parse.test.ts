@@ -30,13 +30,13 @@ describe("parseQuery", () => {
     const parsed = parseQuery("Alice at the beach", ALICE);
     expect(parsed.terms).toHaveLength(1);
     expect(parsed.terms[0]).toMatchObject({ kind: "person", id: "p-alice", label: "Alice" });
-    expect(parsed.residual).toBe("at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("leaves a query with no known name entirely to the dense stage", () => {
     const parsed = parseQuery("at the beach", ALICE);
     expect(parsed.terms).toEqual([]);
-    expect(parsed.residual).toBe("at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("produces no residual for a pure-structured query", () => {
@@ -59,14 +59,14 @@ describe("parseQuery", () => {
     expect(parsed.terms).toHaveLength(1);
     expect(parsed.terms[0].id).toBe("p-mj");
     // The failure this guards: "Jane" left in the residual, reading as scenery.
-    expect(parsed.residual).toBe("at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("still matches the shorter name when the longer one does not fit", () => {
     const both = vocab({ "p-mary": "Mary", "p-mj": "Mary Jane" });
     const parsed = parseQuery("Mary at the beach", both);
     expect(parsed.terms[0].id).toBe("p-mary");
-    expect(parsed.residual).toBe("at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("finds several people in one query", () => {
@@ -74,13 +74,13 @@ describe("parseQuery", () => {
     const parsed = parseQuery("Alice and Bob at the beach", two);
     expect(parsed.terms.map((t) => t.id)).toEqual(["p-a", "p-b"]);
     // "and" is not a name, so it stays — the dense stage is welcome to it.
-    expect(parsed.residual).toBe("and at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("matches a name anywhere in the query, not only at the start", () => {
     const parsed = parseQuery("beach photos of Alice", ALICE);
     expect(parsed.terms).toHaveLength(1);
-    expect(parsed.residual).toBe("beach photos of");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("ignores unnamed clusters, which have no string a human could type", () => {
@@ -97,7 +97,7 @@ describe("parseQuery", () => {
   it("collapses repeated whitespace without shifting spans", () => {
     const parsed = parseQuery("  Alice   at   the   beach ", ALICE);
     expect(parsed.terms).toHaveLength(1);
-    expect(parsed.residual).toBe("at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("is deterministic when two clusters share a name", () => {
@@ -124,7 +124,7 @@ describe("name collisions with common nouns", () => {
     (name) => {
       const parsed = parseQuery(`${name} at the beach`, vocab({ "p-x": name }));
       expect(parsed.terms).toHaveLength(1);
-      expect(parsed.residual).toBe("at the beach");
+      expect(parsed.residual).toBe("beach");
     },
   );
 });
@@ -136,7 +136,7 @@ describe("withoutTerms", () => {
     const parsed = parseQuery("Rose at the beach", vocab({ "p-rose": "Rose" }));
     const dropped = withoutTerms(parsed, new Set([termKey(parsed.terms[0])]));
     expect(dropped.terms).toEqual([]);
-    expect(dropped.residual).toBe("Rose at the beach");
+    expect(dropped.residual).toBe("Rose beach");
   });
 
   it("keeps the other interpretations when one is dropped", () => {
@@ -144,7 +144,7 @@ describe("withoutTerms", () => {
     const parsed = parseQuery("Alice and Bob at the beach", two);
     const dropped = withoutTerms(parsed, new Set(["person:p-b"]));
     expect(dropped.terms.map((t) => t.id)).toEqual(["p-a"]);
-    expect(dropped.residual).toBe("and Bob at the beach");
+    expect(dropped.residual).toBe("Bob beach");
   });
 
   it("is a no-op for a key that did not match anything", () => {
@@ -166,7 +166,7 @@ describe("object classes", () => {
     const parsed = parseQuery("dog on the beach", withObjects());
     expect(parsed.terms).toHaveLength(1);
     expect(parsed.terms[0]).toMatchObject({ kind: "object", id: "dog", count: null });
-    expect(parsed.residual).toBe("on the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("does not match classes when nothing has been detected", () => {
@@ -174,7 +174,7 @@ describe("object classes", () => {
     // dense stage could answer into a filter that matches nothing.
     const parsed = parseQuery("dog on the beach", vocab({}, false));
     expect(parsed.terms).toEqual([]);
-    expect(parsed.residual).toBe("dog on the beach");
+    expect(parsed.residual).toBe("dog beach");
   });
 
   it("prefers the longer class, so 'hot dog' is not 'dog'", () => {
@@ -225,7 +225,7 @@ describe("object classes", () => {
     const parsed = parseQuery("Alice with two dogs at the beach", withObjects({ "p-a": "Alice" }));
     expect(parsed.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["person:p-a", "object:dog"]);
     expect(parsed.terms[1].count).toBe(2);
-    expect(parsed.residual).toBe("with at the beach");
+    expect(parsed.residual).toBe("beach");
   });
 
   it("returns a dropped class to the residual", () => {
@@ -234,5 +234,50 @@ describe("object classes", () => {
     expect(dropped.terms).toEqual([]);
     // The count came in with the class, so it goes back out with it.
     expect(dropped.residual).toBe("three dogs");
+  });
+});
+
+describe("function words in the residual", () => {
+  it("leaves nothing to search when only function words remain", () => {
+    // The bug this fixes: consuming the class from "a boat" left a residual of "a",
+    // which the dense stage embedded and ranked the whole library against. "a boat"
+    // returned four photos where one contained a boat, while "boats" — no article to
+    // strip — correctly returned one.
+    const parsed = parseQuery("a boat", vocab({}, true));
+    expect(parsed.terms.map((t) => t.id)).toEqual(["boat"]);
+    expect(parsed.residual).toBe("");
+  });
+
+  it("clears the wreckage left by consuming words mid-phrase", () => {
+    // "a dog on a boat" used to leave "a on a" — not a fragment, wreckage.
+    const parsed = parseQuery("a dog on a boat", vocab({}, true));
+    expect(parsed.terms.map((t) => t.id)).toEqual(["dog", "boat"]);
+    expect(parsed.residual).toBe("");
+  });
+
+  it("drops the words people put in front of a search", () => {
+    const parsed = parseQuery("show me photos of a dog at the beach", vocab({}, true));
+    expect(parsed.terms.map((t) => t.id)).toEqual(["dog"]);
+    expect(parsed.residual).toBe("beach");
+  });
+
+  it("keeps every content word, in order", () => {
+    const parsed = parseQuery("a red boat on the water at sunset", vocab({}, false));
+    expect(parsed.residual).toBe("red boat water sunset");
+  });
+
+  it("strips a purely descriptive query too, which measurement decided", () => {
+    // §5.3 suggests natural phrasing beats fragments, so leaving this alone looked
+    // safer. Measured on real photos: the top match moves 0.102 → 0.099 while the
+    // photos clearing the floor halve, 6 → 3. The function words were lifting the whole
+    // distribution rather than discriminating.
+    expect(parseQuery("at the beach", vocab({}, false)).residual).toBe("beach");
+    expect(parseQuery("in the water", vocab({}, false)).residual).toBe("water");
+  });
+
+  it("leaves a query of nothing but function words with no residual at all", () => {
+    // "photos" is not a search; the grid already shows everything when the box is
+    // empty, so returning nothing beats returning an arbitrary top-k.
+    expect(parseQuery("show me my photos", vocab({}, false)).residual).toBe("");
   });
 });

@@ -22,22 +22,35 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = resolve(SCRIPTS_DIR, "..");
-const OUT_FILE = join(PHOTOS_DIR, ".vision", "scan-worker.mjs");
+const OUT_DIR = join(PHOTOS_DIR, ".vision");
 
-mkdirSync(dirname(OUT_FILE), { recursive: true });
+/**
+ * Two entry points, because the two workers have opposite lifecycles: the scan
+ * worker retires when a pass ends, and the query worker stays resident between
+ * searches (plan §6). One bundle serving both would mean a search keeping the
+ * scan engine loaded, or a scan being indistinguishable from a search.
+ */
+const WORKERS = [
+  { name: "scan-worker", entry: join("src", "vision", "engine", "scan-worker.ts") },
+  { name: "query-worker", entry: join("src", "vision", "engine", "query-worker.ts") },
+];
 
-await build({
-  entryPoints: [join(PHOTOS_DIR, "src", "vision", "engine", "scan-worker.ts")],
-  outfile: OUT_FILE,
-  bundle: true,
-  platform: "node",
-  target: "node22",
-  format: "esm",
-  sourcemap: true,
-  // Native modules cannot be bundled, and @starkeep/app-client reads credentials
-  // off disk — all three must resolve from node_modules at runtime.
-  external: ["onnxruntime-node", "sharp", "@starkeep/app-client"],
-  logLevel: "info",
-});
+mkdirSync(OUT_DIR, { recursive: true });
 
-console.log(`Vision worker → ${OUT_FILE}`);
+for (const worker of WORKERS) {
+  const outfile = join(OUT_DIR, `${worker.name}.mjs`);
+  await build({
+    entryPoints: [join(PHOTOS_DIR, worker.entry)],
+    outfile,
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    format: "esm",
+    sourcemap: true,
+    // Native modules cannot be bundled, and @starkeep/app-client reads credentials
+    // off disk — all three must resolve from node_modules at runtime.
+    external: ["onnxruntime-node", "sharp", "@starkeep/app-client"],
+    logLevel: "info",
+  });
+  console.log(`Vision worker → ${outfile}`);
+}

@@ -19,3 +19,4 @@ export { GoogleImportPanel } from "./components/google/google-import-panel";
 export { VisionPanel } from "./components/vision/vision-panel";
 export { PeopleView } from "./components/vision/people-view";
 export { FaceOverlay } from "./components/vision/face-overlay";
+export { SearchView } from "./components/vision/search-view";

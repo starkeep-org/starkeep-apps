@@ -12,6 +12,7 @@
     "vision:fetch-fixtures": "tsx scripts/fetch-vision-fixtures.ts",
     "vision:build-worker": "tsx scripts/build-vision-worker.ts",
     "vision:bench-scene": "tsx scripts/bench-scene-engine.ts",
+    "vision:spot-check": "tsx scripts/spot-check-retrieval.ts",
     "test": "vitest run",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json"

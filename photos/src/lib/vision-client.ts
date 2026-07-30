@@ -16,13 +16,14 @@ import { withBasePath } from "./base-path";
 
 export interface VisionConfigShape {
   faces: { enabled: boolean; threshold: number; publishLabels: boolean };
+  scene: { enabled: boolean };
 }
 
 export interface VisionScanState {
   running: boolean;
   eligible: number;
   skipped: number;
-  processed: { faces?: number };
+  processed: { faces?: number; scene?: number };
   failed: number;
   startedAt: string | null;
   finishedAt: string | null;
@@ -181,4 +182,57 @@ export function faceCropUrl(ref: VisionFaceRef): string {
   return withBasePath(
     `/api/vision/face-crop/${encodeURIComponent(ref.recordId)}?face=${ref.faceIndex}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Search (plan §5)
+// ---------------------------------------------------------------------------
+
+/** One interpretation the parse made, rendered as a removable chip (§5.2). */
+export interface VisionSearchTerm {
+  kind: "person";
+  id: string;
+  /** Stable identity, passed back as `drop` to dismiss this interpretation. */
+  key: string;
+  /** What the user typed. */
+  matched: string;
+  /** The canonical name. */
+  label: string;
+}
+
+export interface VisionSearchResult {
+  recordId: string;
+  score: number;
+  structured: number;
+  /** Normalized dense score in [0, 1], or null when the query had no residual. */
+  dense: number | null;
+  matched: VisionSearchTerm[];
+}
+
+export interface VisionSearchResponse {
+  raw: string;
+  terms: VisionSearchTerm[];
+  residual: string;
+  results: VisionSearchResult[];
+  bands: Array<{ terms: VisionSearchTerm[]; results: VisionSearchResult[] }>;
+  total: number;
+  /** Why the dense half could not run, when it could not. */
+  denseUnavailable: string | null;
+}
+
+/**
+ * Run a search.
+ *
+ * `dropped` carries the dismissed chips in the query string rather than in
+ * stored state, because dropping a parse is a property of *this* search: "Rose
+ * is never a person" would be a different feature with a different lifetime.
+ */
+export function searchVision(
+  query: string,
+  options: { dropped?: readonly string[]; limit?: number } = {},
+): Promise<MaybeUnavailable<VisionSearchResponse>> {
+  const params = new URLSearchParams({ q: query });
+  for (const key of options.dropped ?? []) params.append("drop", key);
+  if (options.limit) params.set("limit", String(options.limit));
+  return get<VisionSearchResponse>(`/api/vision/search?${params}`);
 }

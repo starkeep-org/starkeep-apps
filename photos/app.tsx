@@ -7,6 +7,7 @@ import {
   usePhotoContext,
   VisionPanel,
   PeopleView,
+  SearchView,
 } from "@/photos-ui";
 import {
   addPhotoFromPath,
@@ -128,6 +129,7 @@ function PhotosAppInner() {
   // being re-derived from the build flag here.
   const [showVision, setShowVision] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
     () => (localStorage.getItem("thumbnail-strategy") as ThumbnailStrategy) ?? "browser",
@@ -335,6 +337,16 @@ function PhotosAppInner() {
             </button>
           )}
 
+          {!FORCE_REMOTE && (
+            <button
+              onClick={() => setShowSearch(true)}
+              title="Search by person or description"
+              style={toolbarButtonStyle}
+            >
+              Search
+            </button>
+          )}
+
           <button
             onClick={handleAddClick}
             disabled={adding}
@@ -425,6 +437,31 @@ function PhotosAppInner() {
         )}
 
         {showPeople && <PeopleView onClose={() => setShowPeople(false)} />}
+
+        {showSearch && (
+          <SearchView
+            onClose={() => setShowSearch(false)}
+            // Search returns *original* record ids (the scan set is originals-only),
+            // while the grid renders thumbnails whose `parentId` is the original. So
+            // a result is resolved to its thumbnail where one exists, and to the
+            // original otherwise — the same fallback the grid itself makes.
+            thumbnailUrl={(recordId) => {
+              const display =
+                displayImages.find((img) => img.parentId === recordId) ??
+                displayImages.find((img) => img.id === recordId);
+              return display ? getFullSizeSrc(display.id) ?? undefined : undefined;
+            }}
+            onSelect={(recordId) => {
+              const display =
+                displayImages.find((img) => img.parentId === recordId) ??
+                displayImages.find((img) => img.id === recordId);
+              if (display) {
+                dispatch({ type: "SET_SELECTED_ID", id: display.id });
+                setShowSearch(false);
+              }
+            }}
+          />
+        )}
       </div>
     </PhotoUrlProvider>
   );

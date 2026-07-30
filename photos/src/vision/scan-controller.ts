@@ -18,6 +18,7 @@ import type { Worker } from "node:worker_threads";
 import { enabledTaskIds, readVisionConfig } from "./config";
 import { modelStatusFor, taskModelPaths } from "./models";
 import { readScanState, writeScanState } from "./scan-state";
+import { invalidateQueryWorker } from "./search/query-controller";
 import type { ScanState, VisionTaskId } from "./types";
 import type { ScanCommand, ScanEvent, TaskModelPaths } from "./worker-protocol";
 
@@ -154,6 +155,10 @@ export async function startScan(): Promise<StartResult> {
     // The worker's last write is authoritative — re-read rather than trusting
     // whatever message happened to arrive last.
     self.state = readScanState();
+    // A finished pass rewrote the scene embeddings and the index built from them,
+    // so anything the query worker holds is stale (§6). Fire-and-forget: it is
+    // best-effort by design, and an exit handler is not a place to await.
+    void invalidateQueryWorker();
   });
 
   const paths: Partial<Record<VisionTaskId, TaskModelPaths>> = {};

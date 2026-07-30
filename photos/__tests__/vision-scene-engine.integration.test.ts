@@ -40,6 +40,14 @@ import { fixturePath, fixturesInstalled } from "../scripts/lib/vision-fixtures";
 
 const ready = modelStatus("scene").installed && fixturesInstalled();
 
+/**
+ * Generous, because these are the only tests that load a 1.7 GB graph. Each
+ * inference is ~1.6 s alone (see `pnpm vision:bench-scene`) but several ONNX suites
+ * run in parallel and contend for memory bandwidth, which pushed them past the 5 s
+ * default. A timeout here should mean "wedged", not "busy".
+ */
+const MODEL_TIMEOUT_MS = 120_000;
+
 let engine: SceneEngine;
 const cache = new Map<string, Float32Array>();
 
@@ -60,7 +68,7 @@ async function embed(fixture: string): Promise<Float32Array> {
   return result.embedding;
 }
 
-describe.skipIf(!ready)("SceneEngine.embed", () => {
+describe.skipIf(!ready)("SceneEngine.embed", { timeout: MODEL_TIMEOUT_MS }, () => {
   it("returns one unit-length vector of the projection width", async () => {
     const embedding = await embed("portrait-a1.jpg");
     expect(embedding.length).toBe(SCENE_EMBEDDING_DIM);

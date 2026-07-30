@@ -26,9 +26,13 @@ import { mkdirSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import { LICENCE_NOTICE, LICENCE_SUMMARY, writeLicenceAcknowledgement } from "../src/vision/licence";
-import { SCENE_LICENCE_SUMMARY, TASK_MODELS, type VisionModel } from "../src/vision/models";
+import {
+  SCENE_LICENCE_SUMMARY,
+  SEARCH_MODELS,
+  TASK_MODELS,
+  type VisionModel,
+} from "../src/vision/models";
 import { modelsDir } from "../src/vision/paths";
-import { VISION_TASK_IDS, type VisionTaskId } from "../src/vision/types";
 import { verifiedDownload } from "../src/vision/verified-download";
 
 const ACK_FLAG = "--accept-noncommercial-licence";
@@ -94,48 +98,61 @@ async function fetchModel(model: VisionModel, dir: string): Promise<void> {
 }
 
 /**
- * Which task's weights to fetch. Faces and scene are separated because their
- * *licences* differ, not merely their size: the antelopev2 acknowledgement must
- * gate only the weights it applies to, or accepting a non-commercial restriction
- * becomes the price of an Apache-2.0 download.
+ * The downloadable groups.
+ *
+ * Grouped by *what needs them* rather than by repository, and separated because
+ * their licences differ: the antelopev2 acknowledgement must gate only the
+ * weights it applies to, or accepting a non-commercial restriction becomes the
+ * price of an Apache-2.0 download.
+ *
+ * `search` is not a vision task — the scan never opens the text tower — so it is
+ * a group here rather than an entry in `TASK_MODELS`.
  */
-function requestedTasks(): VisionTaskId[] {
-  const only = VISION_TASK_IDS.filter((id) => process.argv.includes(`--${id}`));
-  return only.length > 0 ? only : [...VISION_TASK_IDS];
+const GROUPS = {
+  faces: { models: TASK_MODELS.faces, licence: LICENCE_SUMMARY, needsAck: true },
+  scene: { models: TASK_MODELS.scene, licence: SCENE_LICENCE_SUMMARY, needsAck: false },
+  search: { models: SEARCH_MODELS, licence: SCENE_LICENCE_SUMMARY, needsAck: false },
+} as const;
+
+type GroupName = keyof typeof GROUPS;
+const ALL_GROUPS = Object.keys(GROUPS) as GroupName[];
+
+function requestedGroups(): GroupName[] {
+  const only = ALL_GROUPS.filter((name) => process.argv.includes(`--${name}`));
+  return only.length > 0 ? only : [...ALL_GROUPS];
 }
 
 async function main(): Promise<void> {
-  const tasks = requestedTasks();
+  const groups = requestedGroups();
   const dir = modelsDir();
 
   // Asked once, up front, and only if something being fetched needs it — so
   // `--scene` is never gated on a restriction that does not apply to it.
-  if (tasks.includes("faces")) {
+  if (groups.some((name) => GROUPS[name].needsAck)) {
     if (!(await acknowledge())) {
-      console.error("\nDeclined — no face models downloaded.");
-      if (tasks.length === 1) process.exit(1);
-      tasks.splice(tasks.indexOf("faces"), 1);
+      const gated = groups.filter((name) => GROUPS[name].needsAck);
+      console.error(`\nDeclined — skipping ${gated.join(", ")}.`);
+      for (const name of gated) groups.splice(groups.indexOf(name), 1);
+      if (groups.length === 0) process.exit(1);
     }
   }
-  if (tasks.length === 0) process.exit(1);
 
   mkdirSync(dir, { recursive: true });
 
-  for (const taskId of tasks) {
-    const models = TASK_MODELS[taskId];
+  for (const name of groups) {
+    const { models, licence } = GROUPS[name];
     const total = models.reduce((sum, m) => sum + m.sizeBytes, 0);
-    const licence = taskId === "faces" ? LICENCE_SUMMARY : SCENE_LICENCE_SUMMARY;
-    console.log(`\n${taskId} — ${mb(total)}, ${licence} → ${dir}\n`);
+    console.log(`\n${name} — ${mb(total)}, ${licence} → ${dir}\n`);
     for (const model of models) {
       await fetchModel(model, dir);
     }
   }
 
-  if (tasks.includes("faces")) {
+  if (groups.includes("faces")) {
     writeLicenceAcknowledgement("`pnpm vision:fetch-models`");
   }
 
-  console.log(`\nDone. Enable ${tasks.join(" and ")} in the Photos Settings panel.`);
+  console.log(`\nDone: ${groups.join(", ")}. Enable what you want in the Photos Settings panel.`);
 }
 
 await main();

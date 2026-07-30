@@ -149,6 +149,99 @@ export const SCENE_STD = 127.5;
 /** Projection width of both towers — the dimension stored in every sidecar. */
 export const SCENE_EMBEDDING_DIM = 1152;
 
+// ---------------------------------------------------------------------------
+// Search: the same model's *text* tower, plus its tokenizer.
+//
+// Separate from `SCENE_MODELS` on purpose. The scan never opens these, so gating
+// a scan on them would refuse a pass for want of a graph it does not use — and
+// conversely, search needs them without needing the 1.7 GB image tower present.
+// They are the *search feature's* models, checked by the query worker.
+//
+// **int8, unlike the image tower**, and the asymmetry is deliberate rather than
+// inconsistent:
+//
+//   - Nothing this tower produces is persisted. It turns a live query into a
+//     vector; the stored index comes entirely from the image tower. So its
+//     precision is not pinned into any sidecar and can change with no reprocess.
+//   - It is held **resident** by the query worker between searches (§6), where
+//     fp32 means 2.8 GB of RAM for a search box. §6's open worry is a background
+//     tab holding ~65 MB forever; 2.8 GB is not a variation on that concern, it
+//     is a different one.
+//   - fp32 also needs external data (a 599 KB graph plus a 2831 MB
+//     `.onnx_data` sibling) where int8 is one self-contained file.
+//
+// `pnpm vision:compare-text-towers` measures what that costs in ranking terms,
+// because the honest answer to "how much retrieval quality does int8 lose" is a
+// measurement, not a prior. `SEARCH_TEXT_MODEL_FP32` exists for it to compare
+// against, and swapping the pin below is the whole cost of changing our mind.
+// ---------------------------------------------------------------------------
+
+export const SEARCH_TEXT_MODEL = siglip(
+  "onnx/text_model_int8.onnx",
+  "96bb04c4987f7e0d35ae64c4ef1a3121f833c2d0ad95faaae223c59dbbdd639c",
+  711_126_655,
+  "text query embedding (SigLIP 2 so400m text tower, int8)",
+);
+
+/**
+ * The Gemma tokenizer, as a HuggingFace `tokenizer.json`.
+ *
+ * A model file in every sense that matters here: pinned, verified, and required
+ * at query time. **BPE with byte fallback over a 256 k vocabulary** — not the
+ * sentencepiece Unigram the plan's §4.1 and an earlier draft of
+ * `vision-model-choice.md` assumed. `tokenizer.json` is the authority and
+ * `search/tokenizer.ts` implements exactly what it declares.
+ */
+export const SEARCH_TOKENIZER = siglip(
+  "tokenizer.json",
+  "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+  34_363_039,
+  "Gemma BPE tokenizer (256k vocab, 580k merges)",
+);
+
+export const SEARCH_MODELS: VisionModel[] = [SEARCH_TEXT_MODEL, SEARCH_TOKENIZER];
+
+export const SEARCH_MODELS_TOTAL_BYTES = SEARCH_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
+
+/**
+ * The fp32 text tower, for `vision:compare-text-towers` only.
+ *
+ * Never loaded by the app. Note it is the small half of a pair — ORT resolves
+ * `text_model.onnx_data` beside it — which is the other reason the shipped pin is
+ * int8: `VisionModel` describes one file, and a two-file graph does not fit it
+ * without a manifest.
+ */
+export const SEARCH_TEXT_MODEL_FP32 = siglip(
+  "onnx/text_model.onnx",
+  "1be6a35f94aa0d1aa15024569ccb7637c7157809624922e50e22d746d43745a5",
+  599_026,
+  "text tower, fp32 (needs text_model.onnx_data alongside)",
+);
+
+export const SEARCH_TEXT_DATA_FP32 = siglip(
+  "onnx/text_model.onnx_data",
+  "80d50b22c6a56758717e6acdbf03f3e564b3a701d152b6741d8b62181cae7983",
+  2_831_131_584,
+  "external weights for the fp32 text tower",
+);
+
+/**
+ * Tokens the text tower expects, exactly. From `tokenizer.json`'s `padding`
+ * block and `post_processor`.
+ *
+ * The length is **fixed, not a maximum**: SigLIP pads every sequence to 64 and
+ * was trained that way, so feeding a shorter tensor is not "more efficient", it
+ * is a different input distribution.
+ */
+export const SEARCH_TEXT_TOKENS = 64;
+export const SEARCH_PAD_ID = 0;
+export const SEARCH_EOS_ID = 1;
+
+/** Is the search feature's own model set installed? */
+export function searchModelStatus(): ModelInstallStatus {
+  return statusOf(SEARCH_MODELS);
+}
+
 /**
  * Identifies the model pair a sidecar was produced by. A sidecar whose `model`
  * does not equal this is stale and gets reprocessed — which is how swapping in

@@ -118,10 +118,10 @@ export function isCurrentFor(taskId: VisionTaskId, sidecar: SidecarBase): boolea
  * from a processed record the task found nothing in. `rename` within a directory
  * is atomic on every platform this runs on.
  */
-export function writeTaskSidecar(
+export function writeTaskSidecar<T extends SidecarBase>(
   taskId: VisionTaskId,
   recordId: string,
-  sidecar: SidecarBase,
+  sidecar: T,
 ): void {
   const path = sidecarPath(taskId, recordId);
   mkdirSync(taskDir(taskId), { recursive: true });

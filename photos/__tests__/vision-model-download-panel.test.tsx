@@ -38,7 +38,10 @@ function download(over: Partial<VisionModelDownload> = {}): VisionModelDownload 
 
 function status(models: Partial<VisionStatus["models"]> = {}): VisionStatus {
   return {
-    config: { faces: { enabled: false, threshold: 0.45, publishLabels: false } },
+    config: {
+      faces: { enabled: false, threshold: 0.45, publishLabels: false },
+      scene: { enabled: false },
+    },
     models: {
       installed: false,
       missing: ["scrfd_10g_bnkps.onnx", "glintr100.onnx"],

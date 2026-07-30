@@ -265,9 +265,30 @@ export const FACE_MODEL_PACK = "antelopev2";
 export const FACE_MODELS_TOTAL_BYTES = FACE_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
 
 // ---------------------------------------------------------------------------
-// Objects: RT-DETRv2 R101.
+// Objects: D-FINE-X, trained on Objects365.
 //
-// **Licence: Apache-2.0** — upstream is `PekingU/rtdetr_v2_r101vd`.
+// **Licence: Apache-2.0** — upstream is `Peterande/D-FINE`.
+//
+// Replaced RT-DETRv2/COCO-80 because 80 categories was the binding limit on the
+// feature, not the detector's accuracy: measured on the engine fixtures, COCO found
+// `person, tie` on a portrait where this finds `person, flag, watch, tie, desk,
+// pen/pencil`, and 7 boxes vs 24 on a group shot. Objects365's 365 categories are
+// also a better *shape* for a photo library — shoes, hats, glasses, watches, rings,
+// pillows, picture frames, lamps — where COCO leans towards street scenes and sports.
+//
+// It is a straight swap, which is why it was worth trying first. D-FINE is the same
+// DETR-family set-prediction design: 300 queries, per-class sigmoid, normalized
+// `cxcywh` boxes, and the same `pixel_values` → `logits`/`pred_boxes` signature. The
+// preprocessing is identical too — `do_normalize: false`, `do_pad: false`, flat
+// 640×640 — so `detr.ts` needed only the class count and the background slot below.
+// It is also *smaller* than what it replaces: 252 MB against 307 MB.
+//
+// ⚠ **366 logits, not 365.** Objects365 is 1-indexed upstream and the conversion
+// left a placeholder at index 0 (`"None"`). The graph really does emit 366 — probed,
+// not assumed — so the count here is 366 and `BACKGROUND_CLASS` keeps slot 0 from
+// ever being reported. On the fixtures it never wins a query at any usable
+// threshold, but a detection labelled "None" is exactly the kind of quiet nonsense
+// that would reach the UI unnoticed.
 //
 // Smaller work than the face path, not larger, exactly as §9 predicted: the DETR
 // family emits set predictions directly, so there is no anchor grid, no stride
@@ -289,21 +310,22 @@ export const FACE_MODELS_TOTAL_BYTES = FACE_MODELS.reduce((sum, m) => sum + m.si
 //      Subtracting them anyway shifts every input off the trained distribution.
 // ---------------------------------------------------------------------------
 
-const RTDETR_REPO = "onnx-community/rtdetr_v2_r101vd-ONNX";
-const RTDETR_REVISION = "20760ebd6e97f223ce139bcf9c30ba993dfe953b";
+const DFINE_REPO = "onnx-community/dfine_x_obj365-ONNX";
+/** Pinned commit, so "same URL" means "same bytes" independently of the digest. */
+const DFINE_REVISION = "8b0ccdfc94d2a405acaaeceade13b6d2b4fccd16";
 
 /**
  * fp32, like the scene tower and for the same reason: its output is persisted, so
  * there is no reason to quantize away precision when compute is not the binding
- * constraint. R101 rather than R50 for the couple of AP points, which cost only
- * download size here.
+ * constraint. `x` rather than `l` for the accuracy, which costs only download size
+ * here — and even the larger one undercuts the RT-DETR it replaces.
  */
 export const OBJECT_DETECTOR_MODEL: VisionModel = {
-  fileName: "rtdetr_v2_r101vd.onnx",
-  url: `https://huggingface.co/${RTDETR_REPO}/resolve/${RTDETR_REVISION}/onnx/model.onnx`,
-  sha256: "238e94ddfdf6b478968e9bb4157bb49456bf384e61ad284646820fd06f650be2",
-  sizeBytes: 307_282_575,
-  role: "object detection (COCO-80 boxes and classes)",
+  fileName: "dfine_x_obj365.onnx",
+  url: `https://huggingface.co/${DFINE_REPO}/resolve/${DFINE_REVISION}/onnx/model.onnx`,
+  sha256: "8499ca27e2ee289f0b664a2def6c3d574ae2765186460f18454969cf0d14e137",
+  sizeBytes: 251_726_476,
+  role: "object detection (Objects365 boxes and classes)",
 };
 
 export const OBJECT_MODELS: VisionModel[] = [OBJECT_DETECTOR_MODEL];
@@ -312,9 +334,9 @@ export const OBJECT_MODELS: VisionModel[] = [OBJECT_DETECTOR_MODEL];
  * Identifies the model an object sidecar was produced by — per-task, so changing
  * it reprocesses **objects** and leaves faces and scene alone.
  */
-export const OBJECT_MODEL_ID = "rtdetr_v2_r101vd:fp32";
+export const OBJECT_MODEL_ID = "dfine_x_obj365:fp32";
 
-export const OBJECT_MODEL_PACK = "rtdetr-v2-r101vd";
+export const OBJECT_MODEL_PACK = "dfine-x-obj365";
 
 export const OBJECT_MODELS_TOTAL_BYTES = OBJECT_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
 
@@ -330,7 +352,8 @@ export const OBJECT_MODELS_TOTAL_BYTES = OBJECT_MODELS.reduce((sum, m) => sum + 
 export const OBJECT_INPUT_SIZE = 640;
 /** 300 set predictions per image, whatever the image contains. */
 export const OBJECT_QUERIES = 300;
-export const OBJECT_CLASS_COUNT = 80;
+/** 365 Objects365 categories plus the unused slot 0 — see the section comment. */
+export const OBJECT_CLASS_COUNT = 366;
 
 /**
  * Which graphs each task needs.

@@ -165,7 +165,7 @@ describe("object classes", () => {
   it("matches a class name", () => {
     const parsed = parseQuery("dog on the beach", withObjects());
     expect(parsed.terms).toHaveLength(1);
-    expect(parsed.terms[0]).toMatchObject({ kind: "object", id: "dog", count: null });
+    expect(parsed.terms[0]).toMatchObject({ kind: "object", id: "Dog", count: null });
     expect(parsed.residual).toBe("beach");
   });
 
@@ -181,7 +181,7 @@ describe("object classes", () => {
     // The plan's own longest-match example, and both are real COCO classes.
     const parsed = parseQuery("hot dog", withObjects());
     expect(parsed.terms).toHaveLength(1);
-    expect(parsed.terms[0].id).toBe("hot dog");
+    expect(parsed.terms[0].id).toBe("Hot dog");
     expect(parsed.residual).toBe("");
   });
 
@@ -223,7 +223,7 @@ describe("object classes", () => {
 
   it("finds a class and a person in one query", () => {
     const parsed = parseQuery("Alice with two dogs at the beach", withObjects({ "p-a": "Alice" }));
-    expect(parsed.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["person:p-a", "object:dog"]);
+    expect(parsed.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["person:p-a", "object:Dog"]);
     expect(parsed.terms[1].count).toBe(2);
     expect(parsed.residual).toBe("beach");
   });
@@ -244,21 +244,40 @@ describe("function words in the residual", () => {
     // returned four photos where one contained a boat, while "boats" — no article to
     // strip — correctly returned one.
     const parsed = parseQuery("a boat", vocab({}, true));
-    expect(parsed.terms.map((t) => t.id)).toEqual(["boat"]);
+    expect(parsed.terms.map((t) => t.id)).toEqual(["Boat"]);
     expect(parsed.residual).toBe("");
   });
 
   it("clears the wreckage left by consuming words mid-phrase", () => {
     // "a dog on a boat" used to leave "a on a" — not a fragment, wreckage.
     const parsed = parseQuery("a dog on a boat", vocab({}, true));
-    expect(parsed.terms.map((t) => t.id)).toEqual(["dog", "boat"]);
+    expect(parsed.terms.map((t) => t.id)).toEqual(["Dog", "Boat"]);
     expect(parsed.residual).toBe("");
   });
 
   it("drops the words people put in front of a search", () => {
     const parsed = parseQuery("show me photos of a dog at the beach", vocab({}, true));
-    expect(parsed.terms.map((t) => t.id)).toEqual(["dog"]);
+    expect(parsed.terms.map((t) => t.id)).toEqual(["Dog"]);
     expect(parsed.residual).toBe("beach");
+  });
+
+  it("never matches a class on a word that only names the medium", () => {
+    // The regression the Objects365 swap introduced: `Picture/Frame` is a real
+    // category — a framed picture on a wall — and "photos"/"pictures" are how people
+    // say "photograph". Stopword filtering alone does not prevent this, because it
+    // runs over the *residual* and matching happens first, so "show me photos of a
+    // dog" searched for framed pictures.
+    //
+    // Vacuous under COCO-80, which contained no word meaning "photograph". Not
+    // vacuous now, and less so with every category added.
+    for (const query of ["photos of a dog", "pictures of a dog", "my pics"]) {
+      const parsed = parseQuery(query, vocab({}, true));
+      expect(parsed.terms.map((t) => t.id)).not.toContain("Picture/Frame");
+    }
+    // The category is still reachable by its own name.
+    expect(parseQuery("picture frame", vocab({}, true)).terms.map((t) => t.id)).toEqual([
+      "Picture/Frame",
+    ]);
   });
 
   it("keeps every content word, in order", () => {

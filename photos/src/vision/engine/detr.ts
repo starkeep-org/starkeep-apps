@@ -13,28 +13,34 @@
  *
  * **Where this diverges from plan §9, and why.** §9 was written against
  * DETR-ResNet50 and describes "softmax over logits, drop the no-object class" plus
- * "ImageNet normalization". RT-DETRv2 does neither, and both mistakes are the
- * quiet kind:
+ * "ImageNet normalization". D-FINE — like the RT-DETRv2 this replaced — does
+ * neither, and both mistakes are the quiet kind:
  *
- *   - Scores are a **per-class sigmoid** over 80 contiguous classes. There is no
- *     81st no-object class to drop. A softmax would force the 80 to sum to one,
- *     making a confident single-object photo look uncertain and a busy one look
- *     confident — a systematic distortion of exactly the number the threshold
- *     reads.
+ *   - Scores are a **per-class sigmoid**, trained with a focal loss. A softmax would
+ *     force the classes to sum to one, making a confident single-object photo look
+ *     uncertain and a busy one look confident — a systematic distortion of exactly
+ *     the number the threshold reads.
  *   - Preprocessing is a **÷255 rescale only** (`do_normalize: false`), even though
  *     the config file carries ImageNet mean/std it does not use. Subtracting them
  *     shifts every pixel off the distribution the model was trained on.
  *
  * Both are asserted against the real graph in `vision-objects.test.ts`, because
  * neither would throw.
+ *
+ * **The one thing §9's "drop the no-object class" still applies to.** Objects365 is
+ * 1-indexed upstream, so slot 0 of the 366 logits is an unused `None` placeholder
+ * rather than a category. It is not a no-object *score* in the DETR sense — nothing
+ * needs subtracting — but it must never be argmaxed into a detection, hence
+ * `BACKGROUND_CLASS`.
  */
 
 import type { InferenceSession, Tensor } from "onnxruntime-node";
 import { OBJECT_CLASS_COUNT, OBJECT_INPUT_SIZE } from "../models";
+import { BACKGROUND_CLASS } from "../object-classes";
 import { DEFAULT_OBJECT_THRESHOLD } from "../types";
 
 export interface EngineObject {
-  /** Index into `COCO_CLASSES`. The index, not the name, is what the model said. */
+  /** Index into `OBJECT_CLASSES`. The index, not the name, is what the model said. */
   classIndex: number;
   /** Sigmoid confidence, 0–1. */
   score: number;
@@ -167,7 +173,9 @@ export function decodeDetections(
   for (let query = 0; query < queries; query++) {
     let bestIndex = -1;
     let bestScore = 0;
-    for (let cls = 0; cls < OBJECT_CLASS_COUNT; cls++) {
+    // From 1: slot 0 is Objects365's unused `None` placeholder, not a category.
+    // Starting at 0 would let a query be reported as a detection named "None".
+    for (let cls = BACKGROUND_CLASS + 1; cls < OBJECT_CLASS_COUNT; cls++) {
       // Sigmoid per class — see the module comment. Independent probabilities, so
       // they do not and should not sum to one.
       const score = 1 / (1 + Math.exp(-logits[query * OBJECT_CLASS_COUNT + cls]));

@@ -33,7 +33,7 @@ import { buildSceneIndex } from "@/vision/scene-index";
 import { writeTaskSidecar } from "@/vision/sidecars";
 import { FACE_MODEL_ID } from "@/vision/models";
 import { FACE_SIDECAR_VERSION, OBJECT_SIDECAR_VERSION, SCENE_SIDECAR_VERSION } from "@/vision/types";
-import { classIndex } from "@/vision/coco-classes";
+import { classIndex } from "@/vision/object-classes";
 import { search, promptVariants } from "@/vision/search/search";
 
 let root: string;
@@ -316,7 +316,7 @@ describe("object classes in search", () => {
     seedObjects("has-cat", { cat: 1 });
 
     const response = await search("dog");
-    expect(response.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["object:dog"]);
+    expect(response.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["object:Dog"]);
     expect(response.results.map((r) => r.recordId)).toEqual(["has-dog"]);
     // No residual, so no dense stage — an exact class filter.
     expect(embedQueries).not.toHaveBeenCalled();

@@ -14,7 +14,7 @@
  */
 
 import { listTaskRecordIds, readAllFaceSidecars, readAllObjectSidecars } from "../sidecars";
-import { className } from "../coco-classes";
+import { className } from "../object-classes";
 import { readVisionConfig } from "../config";
 import { readPeople } from "../people";
 import { readSceneIndex, scoreAgainstIndex } from "../scene-index";

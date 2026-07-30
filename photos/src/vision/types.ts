@@ -114,7 +114,7 @@ export const SCENE_SIDECAR_VERSION = 1;
  */
 export interface DetectedObject {
   /**
-   * Index into `COCO_CLASSES`.
+   * Index into `OBJECT_CLASSES`.
    *
    * The index rather than the name, because the index is what the model actually
    * emitted and the name is a lookup. Storing names would bake a spelling into

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { className } from "@/vision/coco-classes";
+import { className } from "@/vision/object-classes";
 import { remoteNotImplemented } from "@/vision/remote";
 import { readObjectSidecar } from "@/vision/sidecars";
 

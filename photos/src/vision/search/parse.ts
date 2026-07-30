@@ -16,7 +16,7 @@
  * Only the *dense* half needs the text tower.
  */
 
-import { resolveClass } from "../coco-classes";
+import { resolveClass } from "../object-classes";
 
 /** A vocabulary a query token can resolve against. Closed and small, by design. */
 export type StructuredKind = "person" | "object";
@@ -28,7 +28,7 @@ export interface StructuredTerm {
    *
    * For objects this is the class *name* rather than its index, because the index
    * is a model-order detail and the name is what a chip and a URL should carry.
-   * `coco-classes.ts` maps between them.
+   * `object-classes.ts` maps between them.
    */
   id: string;
   /** What the user typed, for the chip label. */
@@ -209,7 +209,17 @@ export function parseQuery(query: string, vocab: Vocabularies): ParsedQuery {
         break;
       }
 
-      const cls = vocab.objects ? resolveClass(folded) : null;
+      // A span that is nothing but function words can never be a class, however
+      // well it resolves. `STOPWORDS` alone does not prevent this: it filters the
+      // *residual*, and matching runs first, so "show me photos of a dog" matched
+      // `photos` → `Picture/Frame` and searched for framed pictures. Harmless at 80
+      // COCO nouns, which contained no word anyone uses to mean "photograph";
+      // Objects365 contains several.
+      const isFunctionSpan = tokens
+        .slice(at, at + length)
+        .every((token) => STOPWORDS.has(fold(token)));
+
+      const cls = vocab.objects && !isFunctionSpan ? resolveClass(folded) : null;
       if (cls) {
         // A count immediately before the class — "three dogs", "2 cats". Consumed
         // along with it, so the number does not survive into the residual where it

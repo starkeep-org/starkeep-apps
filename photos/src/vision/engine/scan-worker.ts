@@ -8,10 +8,12 @@
  * `pnpm vision:build-worker`), which is what keeps 270 MB of ORT out of
  * open-next's dependency trace.
  *
- * A worker rather than the request thread because a first pass over ~10k photos
- * is 45–60 minutes of CPU: even with ORT's off-thread `run()`, the decode,
- * letterbox, warp, and tensor packing around it are synchronous JavaScript, and
- * that is enough to make the grid stutter for the whole scan.
+ * A worker rather than the request thread because a first pass is *hours* of CPU
+ * once scene is enabled — measured at ~1.6 s per photo for the image tower alone
+ * (`pnpm vision:bench-scene`), on top of ~0.3 s for faces. Even with ORT's
+ * off-thread `run()`, the decode, letterbox, warp, and tensor packing around it are
+ * synchronous JavaScript, and that is enough to make the grid stutter for the whole
+ * scan.
  */
 
 import { parentPort } from "node:worker_threads";
@@ -74,7 +76,7 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
   const loadTask = async (spec: VisionTaskSpec): Promise<VisionTask> => {
     const already = loaded.get(spec.id);
     if (already) return already;
-    const task = await spec.create(command.models[spec.id] ?? {});
+    const task = await spec.create(command.models[spec.id] ?? {}, config);
     loaded.set(spec.id, task);
     return task;
   };

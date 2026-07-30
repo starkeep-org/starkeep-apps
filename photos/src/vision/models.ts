@@ -264,6 +264,74 @@ export const FACE_MODEL_PACK = "antelopev2";
 /** The whole pair, installed or not — what the badge reports once it is. */
 export const FACE_MODELS_TOTAL_BYTES = FACE_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
 
+// ---------------------------------------------------------------------------
+// Objects: RT-DETRv2 R101.
+//
+// **Licence: Apache-2.0** — upstream is `PekingU/rtdetr_v2_r101vd`.
+//
+// Smaller work than the face path, not larger, exactly as §9 predicted: the DETR
+// family emits set predictions directly, so there is no anchor grid, no stride
+// decoding, and **no NMS** — which is most of what `scrfd.ts` is — and nothing
+// downstream, since objects need no alignment, no embedding, no clustering, and no
+// naming UI.
+//
+// ⚠ **Two details where §9 describes DETR and this model is RT-DETR.** Both fail
+// silently if taken on trust, so both are pinned here and asserted in
+// `vision-objects.test.ts` against the graph itself:
+//
+//   1. §9 says "softmax over logits, drop the no-object class". RT-DETR has **no
+//      no-object class** — 80 contiguous logits — and is trained with a focal loss,
+//      so scores come from a **per-class sigmoid**, not a softmax over 81. Using
+//      softmax would renormalize away the very signal the threshold reads.
+//   2. §9 says "resize + ImageNet normalization". The export's
+//      `preprocessor_config.json` says `do_normalize: false` — only a ÷255 rescale,
+//      despite the file also carrying ImageNet mean/std values it does not apply.
+//      Subtracting them anyway shifts every input off the trained distribution.
+// ---------------------------------------------------------------------------
+
+const RTDETR_REPO = "onnx-community/rtdetr_v2_r101vd-ONNX";
+const RTDETR_REVISION = "20760ebd6e97f223ce139bcf9c30ba993dfe953b";
+
+/**
+ * fp32, like the scene tower and for the same reason: its output is persisted, so
+ * there is no reason to quantize away precision when compute is not the binding
+ * constraint. R101 rather than R50 for the couple of AP points, which cost only
+ * download size here.
+ */
+export const OBJECT_DETECTOR_MODEL: VisionModel = {
+  fileName: "rtdetr_v2_r101vd.onnx",
+  url: `https://huggingface.co/${RTDETR_REPO}/resolve/${RTDETR_REVISION}/onnx/model.onnx`,
+  sha256: "238e94ddfdf6b478968e9bb4157bb49456bf384e61ad284646820fd06f650be2",
+  sizeBytes: 307_282_575,
+  role: "object detection (COCO-80 boxes and classes)",
+};
+
+export const OBJECT_MODELS: VisionModel[] = [OBJECT_DETECTOR_MODEL];
+
+/**
+ * Identifies the model an object sidecar was produced by — per-task, so changing
+ * it reprocesses **objects** and leaves faces and scene alone.
+ */
+export const OBJECT_MODEL_ID = "rtdetr_v2_r101vd:fp32";
+
+export const OBJECT_MODEL_PACK = "rtdetr-v2-r101vd";
+
+export const OBJECT_MODELS_TOTAL_BYTES = OBJECT_MODELS.reduce((sum, m) => sum + m.sizeBytes, 0);
+
+/**
+ * What the detector expects, from the export's `preprocessor_config.json` and the
+ * probed graph.
+ *
+ * `do_pad: false` and a flat 640×640 `size` mean it **squashes** rather than
+ * letterboxing — unlike SCRFD, which pads at the top-left and needs its boxes
+ * scaled back by one factor. Squashing means two independent scale factors, which
+ * is simpler but only if nobody assumes otherwise.
+ */
+export const OBJECT_INPUT_SIZE = 640;
+/** 300 set predictions per image, whatever the image contains. */
+export const OBJECT_QUERIES = 300;
+export const OBJECT_CLASS_COUNT = 80;
+
 /**
  * Which graphs each task needs.
  *
@@ -275,6 +343,7 @@ export const FACE_MODELS_TOTAL_BYTES = FACE_MODELS.reduce((sum, m) => sum + m.si
 export const TASK_MODELS: Record<VisionTaskId, VisionModel[]> = {
   faces: FACE_MODELS,
   scene: SCENE_MODELS,
+  objects: OBJECT_MODELS,
 };
 
 /**
@@ -293,6 +362,8 @@ export function taskModelPaths(taskId: VisionTaskId): TaskModelPaths {
       };
     case "scene":
       return { image: modelPath(SCENE_IMAGE_MODEL.fileName) };
+    case "objects":
+      return { detector: modelPath(OBJECT_DETECTOR_MODEL.fileName) };
   }
 }
 
@@ -353,6 +424,7 @@ export function faceModelStatus(): ModelInstallStatus {
   return modelStatus("faces");
 }
 
+
 // ---------------------------------------------------------------------------
 // Download groups
 // ---------------------------------------------------------------------------
@@ -370,7 +442,7 @@ export function faceModelStatus(): ModelInstallStatus {
  * Shared by `pnpm vision:fetch-models` and the in-app downloader so the two
  * cannot disagree about what a group contains.
  */
-export type ModelGroup = "faces" | "scene" | "search";
+export type ModelGroup = "faces" | "scene" | "objects" | "search";
 
 export interface ModelGroupInfo {
   models: VisionModel[];
@@ -401,6 +473,14 @@ export const MODEL_GROUPS: Record<ModelGroup, ModelGroupInfo> = {
     pack: SCENE_MODEL_PACK,
     label: "Scene understanding",
     purpose: "describe photos so they can be searched",
+  },
+  objects: {
+    models: OBJECT_MODELS,
+    licence: SCENE_LICENCE_SUMMARY,
+    needsAck: false,
+    pack: OBJECT_MODEL_PACK,
+    label: "Object detection",
+    purpose: "label what is in a photo, so you can filter and count by it",
   },
   search: {
     models: SEARCH_MODELS,

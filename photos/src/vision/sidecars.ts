@@ -30,12 +30,14 @@
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { sidecarPath, taskDir } from "./paths";
-import { FACE_MODEL_ID, SCENE_MODEL_ID } from "./models";
+import { FACE_MODEL_ID, OBJECT_MODEL_ID, SCENE_MODEL_ID } from "./models";
 import {
   FACE_SIDECAR_VERSION,
+  OBJECT_SIDECAR_VERSION,
   SCENE_SIDECAR_VERSION,
   VISION_TASK_IDS,
   type FaceSidecar,
+  type ObjectSidecar,
   type SceneSidecar,
   type SidecarBase,
   type VisionTaskId,
@@ -80,6 +82,11 @@ const TASK_SCHEMAS: Record<VisionTaskId, TaskSchema> = {
     version: SCENE_SIDECAR_VERSION,
     modelId: SCENE_MODEL_ID,
     hasPayload: (parsed) => typeof (parsed as SceneSidecar).embedding === "string",
+  },
+  objects: {
+    version: OBJECT_SIDECAR_VERSION,
+    modelId: OBJECT_MODEL_ID,
+    hasPayload: (parsed) => Array.isArray((parsed as ObjectSidecar).objects),
   },
 };
 
@@ -266,4 +273,25 @@ export function readSceneSidecar(recordId: string): SceneSidecar | null {
   const sidecar = readTaskSidecar("scene", recordId);
   if (!sidecar || !isCurrentFor("scene", sidecar)) return null;
   return sidecar as SceneSidecar;
+}
+
+/**
+ * The object task's facade.
+ *
+ * Read per record by the overlay, and folded wholesale by search's structured
+ * stage — there is no third access pattern, so there is no third accessor.
+ */
+export function readObjectSidecar(recordId: string): ObjectSidecar | null {
+  const sidecar = readTaskSidecar("objects", recordId);
+  if (!sidecar || !isCurrentFor("objects", sidecar)) return null;
+  return sidecar as ObjectSidecar;
+}
+
+export function readAllObjectSidecars(): Map<string, ObjectSidecar> {
+  const out = new Map<string, ObjectSidecar>();
+  for (const id of listTaskRecordIds("objects")) {
+    const sidecar = readObjectSidecar(id);
+    if (sidecar) out.set(id, sidecar);
+  }
+  return out;
 }

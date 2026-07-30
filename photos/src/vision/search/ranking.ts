@@ -29,10 +29,18 @@ import type { StructuredTerm } from "./parse";
  */
 export interface RankingWeights {
   person: number;
+  object: number;
   dense: number;
 }
 
-export const DEFAULT_WEIGHTS: RankingWeights = { person: 2, dense: 1 };
+/**
+ * `object` sits below `person` because the two are not equally certain. A name was
+ * typed by a human onto a cluster; a class came from a detector at a tunable
+ * threshold, and §9's own argument for objects is that they cover the slice CLIP is
+ * *worst* at rather than that they are more reliable than a name. Still above
+ * `dense`, since an exact class match beats a fuzzy resemblance.
+ */
+export const DEFAULT_WEIGHTS: RankingWeights = { person: 2, object: 1.5, dense: 1 };
 
 export interface Candidate {
   recordId: string;
@@ -115,6 +123,8 @@ function weightFor(term: StructuredTerm, weights: RankingWeights): number {
   switch (term.kind) {
     case "person":
       return weights.person;
+    case "object":
+      return weights.object;
   }
 }
 

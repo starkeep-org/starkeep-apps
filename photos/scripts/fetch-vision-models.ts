@@ -3,9 +3,12 @@
  * `pnpm vision:fetch-models` — download the ONNX graphs the on-device vision
  * tasks need into `$STARKEEP_DIR/app-assets/photos/vision/models/`.
  *
- * 278 MB for faces and 1.7 GB for scene, which is why it is a script and not a
- * committed asset, and why the app runs in a "models not installed" state until
- * it has been run. `--faces` or `--scene` fetches just one.
+ * Hundreds of megabytes to gigabytes per group, which is why it is a script and not
+ * a committed asset, and why the app runs in a "models not installed" state until
+ * it has been run. `--faces`, `--scene`, `--objects`, or `--search` fetches just one.
+ *
+ * The group table lives in `models.ts` and is shared with the in-app downloader, so
+ * the two cannot disagree about what a group contains.
  *
  * The acknowledgement is not ceremony. The antelopev2 *weights* are
  * non-commercial-research-only while InsightFace's code is MIT, and that
@@ -13,11 +16,12 @@
  * downloads them hands every user a restriction they never saw. So this asks,
  * once, and records the answer next to the files.
  *
- * It gates **faces only**. The scene weights are Apache-2.0, and making an
+ * It gates **faces only** — every other group is Apache-2.0, and making an
  * Apache-2.0 download conditional on accepting a non-commercial restriction would
- * misrepresent both licences.
+ * misrepresent both licences. `MODEL_GROUPS[…].needsAck` is the single source of
+ * that decision.
  *
- * The Faces panel offers the same download for people who did not arrive from a
+ * The Settings panel offers the same downloads for people who did not arrive from a
  * shell; both go through `verifiedDownload` and both record the acceptance the
  * same way. This remains the path for a headless or scripted install.
  */
@@ -25,11 +29,11 @@
 import { mkdirSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
-import { LICENCE_NOTICE, LICENCE_SUMMARY, writeLicenceAcknowledgement } from "../src/vision/licence";
+import { LICENCE_NOTICE, writeLicenceAcknowledgement } from "../src/vision/licence";
 import {
-  SCENE_LICENCE_SUMMARY,
-  SEARCH_MODELS,
-  TASK_MODELS,
+  MODEL_GROUP_NAMES,
+  MODEL_GROUPS,
+  type ModelGroup,
   type VisionModel,
 } from "../src/vision/models";
 import { modelsDir } from "../src/vision/paths";
@@ -97,29 +101,10 @@ async function fetchModel(model: VisionModel, dir: string): Promise<void> {
   console.log(`    ✓ verified ${digest.slice(0, 16)}…`);
 }
 
-/**
- * The downloadable groups.
- *
- * Grouped by *what needs them* rather than by repository, and separated because
- * their licences differ: the antelopev2 acknowledgement must gate only the
- * weights it applies to, or accepting a non-commercial restriction becomes the
- * price of an Apache-2.0 download.
- *
- * `search` is not a vision task — the scan never opens the text tower — so it is
- * a group here rather than an entry in `TASK_MODELS`.
- */
-const GROUPS = {
-  faces: { models: TASK_MODELS.faces, licence: LICENCE_SUMMARY, needsAck: true },
-  scene: { models: TASK_MODELS.scene, licence: SCENE_LICENCE_SUMMARY, needsAck: false },
-  search: { models: SEARCH_MODELS, licence: SCENE_LICENCE_SUMMARY, needsAck: false },
-} as const;
-
-type GroupName = keyof typeof GROUPS;
-const ALL_GROUPS = Object.keys(GROUPS) as GroupName[];
-
-function requestedGroups(): GroupName[] {
-  const only = ALL_GROUPS.filter((name) => process.argv.includes(`--${name}`));
-  return only.length > 0 ? only : [...ALL_GROUPS];
+/** Which groups to fetch. No flags means all of them. */
+function requestedGroups(): ModelGroup[] {
+  const only = MODEL_GROUP_NAMES.filter((name) => process.argv.includes(`--${name}`));
+  return only.length > 0 ? only : [...MODEL_GROUP_NAMES];
 }
 
 async function main(): Promise<void> {
@@ -128,9 +113,9 @@ async function main(): Promise<void> {
 
   // Asked once, up front, and only if something being fetched needs it — so
   // `--scene` is never gated on a restriction that does not apply to it.
-  if (groups.some((name) => GROUPS[name].needsAck)) {
+  if (groups.some((name) => MODEL_GROUPS[name].needsAck)) {
     if (!(await acknowledge())) {
-      const gated = groups.filter((name) => GROUPS[name].needsAck);
+      const gated = groups.filter((name) => MODEL_GROUPS[name].needsAck);
       console.error(`\nDeclined — skipping ${gated.join(", ")}.`);
       for (const name of gated) groups.splice(groups.indexOf(name), 1);
       if (groups.length === 0) process.exit(1);
@@ -140,7 +125,7 @@ async function main(): Promise<void> {
   mkdirSync(dir, { recursive: true });
 
   for (const name of groups) {
-    const { models, licence } = GROUPS[name];
+    const { models, licence } = MODEL_GROUPS[name];
     const total = models.reduce((sum, m) => sum + m.sizeBytes, 0);
     console.log(`\n${name} — ${mb(total)}, ${licence} → ${dir}\n`);
     for (const model of models) {

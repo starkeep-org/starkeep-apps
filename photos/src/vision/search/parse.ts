@@ -16,17 +16,33 @@
  * Only the *dense* half needs the text tower.
  */
 
+import { resolveClass } from "../coco-classes";
+
 /** A vocabulary a query token can resolve against. Closed and small, by design. */
-export type StructuredKind = "person";
+export type StructuredKind = "person" | "object";
 
 export interface StructuredTerm {
   kind: StructuredKind;
-  /** What to match against in the store — a person id, not a name. */
+  /**
+   * What to match against in the store — a person id, or a COCO class name.
+   *
+   * For objects this is the class *name* rather than its index, because the index
+   * is a model-order detail and the name is what a chip and a URL should carry.
+   * `coco-classes.ts` maps between them.
+   */
   id: string;
   /** What the user typed, for the chip label. */
   matched: string;
   /** The canonical name, which may differ from `matched` in case. */
   label: string;
+  /**
+   * How many of this class the query asked for, when it said so.
+   *
+   * `"three dogs"` → 3. Null means "any". §5.4 is emphatic that counting must route
+   * to detector counts and never to CLIP, which is weak at it — this field is how
+   * that routing is expressed.
+   */
+  count: number | null;
   /** Token span in the tokenized query, so removing a chip can re-derive the residual. */
   from: number;
   to: number;
@@ -44,6 +60,14 @@ export interface ParsedQuery {
 export interface Vocabularies {
   /** `id → name`, from `people.json`. Only named clusters are matchable. */
   people: ReadonlyMap<string, string>;
+  /**
+   * Whether to match COCO classes at all.
+   *
+   * Off when objects has never been scanned: matching `"dog"` as a class when no
+   * photo carries object data turns a query that the dense stage could have
+   * answered into a structured filter that matches nothing.
+   */
+  objects: boolean;
 }
 
 /**
@@ -92,7 +116,10 @@ export function parseQuery(query: string, vocab: Vocabularies): ParsedQuery {
     }
   }
 
-  const longest = Math.max(1, ...[...byName.values()].map((v) => v.words));
+  // Names can be several words ("Mary Jane"); COCO classes at most two ("hot dog",
+  // "wine glass", "teddy bear"). The window is the longer of the two, so the
+  // longest-match loop below covers both vocabularies in one pass.
+  const longest = Math.max(2, ...[...byName.values()].map((v) => v.words));
   const terms: StructuredTerm[] = [];
   const consumed = new Array<boolean>(tokens.length).fill(false);
 
@@ -102,25 +129,88 @@ export function parseQuery(query: string, vocab: Vocabularies): ParsedQuery {
     // Try the longest span that could fit, shrinking until something matches.
     for (let length = Math.min(longest, tokens.length - at); length >= 1; length--) {
       const span = tokens.slice(at, at + length).join(" ");
-      const hit = byName.get(fold(span));
-      if (!hit) continue;
-      terms.push({
-        kind: "person",
-        id: hit.id,
-        matched: span,
-        label: hit.label,
-        from: at,
-        to: at + length,
-      });
-      for (let i = at; i < at + length; i++) consumed[i] = true;
-      matchedLength = length;
-      break;
+      const folded = fold(span);
+
+      // People before objects at the same span length. A name is something a human
+      // deliberately typed onto a cluster in this library, so it is the stronger
+      // claim — and §5.2's chips exist precisely so a wrong person reading (Rose,
+      // Daisy, Iris) can be dropped, whereas there is no comparable affordance for
+      // recovering a name the parse decided was furniture.
+      const person = byName.get(folded);
+      if (person) {
+        terms.push({
+          kind: "person",
+          id: person.id,
+          matched: span,
+          label: person.label,
+          count: null,
+          from: at,
+          to: at + length,
+        });
+        for (let i = at; i < at + length; i++) consumed[i] = true;
+        matchedLength = length;
+        break;
+      }
+
+      const cls = vocab.objects ? resolveClass(folded) : null;
+      if (cls) {
+        // A count immediately before the class — "three dogs", "2 cats". Consumed
+        // along with it, so the number does not survive into the residual where it
+        // would be a meaningless token for the text tower.
+        const countAt = at - 1;
+        const count = countAt >= 0 && !consumed[countAt] ? parseCount(tokens[countAt]) : null;
+        if (count !== null) consumed[countAt] = true;
+        terms.push({
+          kind: "object",
+          id: cls,
+          matched: count !== null ? `${tokens[countAt]} ${span}` : span,
+          label: cls,
+          count,
+          from: count !== null ? countAt : at,
+          to: at + length,
+        });
+        for (let i = at; i < at + length; i++) consumed[i] = true;
+        matchedLength = length;
+        break;
+      }
     }
     at += matchedLength > 0 ? matchedLength : 1;
   }
 
   const residual = tokens.filter((_, i) => !consumed[i]).join(" ");
   return { terms, residual, raw: query };
+}
+
+/**
+ * A leading quantity, as a digit or a small English word.
+ *
+ * Only up to ten, and deliberately: past that the count is not what the user is
+ * really asking (nobody means exactly seventeen chairs), and a general
+ * number-word parser would be more machinery than the closed vocabulary of
+ * useful answers. `"a"` and `"an"` are *not* counts — "a dog" means any dog, not
+ * exactly one, and reading it as `= 1` would exclude every photo with two.
+ */
+const COUNT_WORDS: Readonly<Record<string, number>> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+};
+
+function parseCount(token: string): number | null {
+  const key = fold(token);
+  if (key in COUNT_WORDS) return COUNT_WORDS[key];
+  if (/^\d{1,2}$/.test(key)) {
+    const value = Number(key);
+    return value >= 1 && value <= 20 ? value : null;
+  }
+  return null;
 }
 
 /**
@@ -147,7 +237,14 @@ export function withoutTerms(parsed: ParsedQuery, dropped: ReadonlySet<string>):
   };
 }
 
-/** Stable identity for a chip, so the client can name what it dropped. */
+/**
+ * Stable identity for a chip, so the client can name what it dropped.
+ *
+ * Excludes the count: dropping `"three dogs"` drops the dog interpretation
+ * entirely, and a key that varied with the number would make the dismissal stop
+ * applying the moment the user edited it to `"four dogs"` — which is the same
+ * mistaken interpretation, not a new one.
+ */
 export function termKey(term: StructuredTerm): string {
   return `${term.kind}:${term.id}`;
 }

@@ -48,7 +48,9 @@ function bool(from: Record<string, unknown> | null, key: string, fallback: boole
 export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionConfig {
   const faces = section(patch, "faces");
   const scene = section(patch, "scene");
+  const objects = section(patch, "objects");
   const threshold = faces?.threshold;
+  const objectThreshold = objects?.threshold;
   return {
     faces: {
       enabled: bool(faces, "enabled", base.faces.enabled),
@@ -60,6 +62,16 @@ export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionCon
     },
     scene: {
       enabled: bool(scene, "enabled", base.scene.enabled),
+    },
+    objects: {
+      enabled: bool(objects, "enabled", base.objects.enabled),
+      // Clamped like the face threshold, and for the same class of reason: a
+      // sigmoid score outside (0, 1) either never fires or never fails, and both
+      // present as "detection silently stopped working".
+      threshold:
+        typeof objectThreshold === "number" && Number.isFinite(objectThreshold)
+          ? Math.min(0.95, Math.max(0.05, objectThreshold))
+          : base.objects.threshold,
     },
   };
 }
@@ -81,6 +93,8 @@ export function taskEnabled(config: VisionConfig, taskId: VisionTaskId): boolean
       return config.faces.enabled;
     case "scene":
       return config.scene.enabled;
+    case "objects":
+      return config.objects.enabled;
   }
 }
 

@@ -19,4 +19,6 @@ export { GoogleImportPanel } from "./components/google/google-import-panel";
 export { VisionPanel } from "./components/vision/vision-panel";
 export { PeopleView } from "./components/vision/people-view";
 export { FaceOverlay } from "./components/vision/face-overlay";
+export { ObjectOverlay } from "./components/vision/object-overlay";
+export { LabelledBoxOverlay } from "./components/vision/labelled-box-overlay";
 export { SearchView } from "./components/vision/search-view";

@@ -17,20 +17,21 @@ import { withBasePath } from "./base-path";
 export interface VisionConfigShape {
   faces: { enabled: boolean; threshold: number; publishLabels: boolean };
   scene: { enabled: boolean };
+  objects: { enabled: boolean; threshold: number };
 }
 
 export interface VisionScanState {
   running: boolean;
   eligible: number;
   skipped: number;
-  processed: { faces?: number; scene?: number };
+  processed: { faces?: number; scene?: number; objects?: number };
   failed: number;
   startedAt: string | null;
   finishedAt: string | null;
   error: string | null;
 }
 
-export type VisionModelGroupName = "faces" | "scene" | "search";
+export type VisionModelGroupName = "faces" | "scene" | "objects" | "search";
 
 export interface VisionModelDownload {
   running: boolean;
@@ -75,6 +76,14 @@ export interface VisionFaceStore {
   namedPeople: number;
 }
 
+export interface VisionObjectStore {
+  processed: number;
+  sidecarsOnDisk: number;
+  detections: number;
+  classes: number;
+  imagesWithObjects: number;
+}
+
 export interface VisionSceneStore {
   processed: number;
   sidecarsOnDisk: number;
@@ -92,6 +101,7 @@ export interface VisionStatus {
   tasks: {
     faces: VisionTaskStatus<VisionFaceStore>;
     scene: VisionTaskStatus<VisionSceneStore>;
+    objects: VisionTaskStatus<VisionObjectStore>;
   };
   search: {
     models: VisionModelGroup;
@@ -172,6 +182,7 @@ export function updateVisionConfig(
   patch: {
     faces?: Partial<VisionConfigShape["faces"]>;
     scene?: Partial<VisionConfigShape["scene"]>;
+    objects?: Partial<VisionConfigShape["objects"]>;
   },
 ): Promise<MaybeUnavailable<{ config: VisionConfigShape; warning?: string }>> {
   return send("/api/vision/config", "PUT", patch);
@@ -208,6 +219,26 @@ export function fetchImageFaces(recordId: string): Promise<MaybeUnavailable<Imag
   return get<ImageFaces>(`/api/vision/faces/${encodeURIComponent(recordId)}`);
 }
 
+export interface DetectedObjectView {
+  index: number;
+  /** `[x, y, width, height]` in display-orientation pixels. */
+  bbox: [number, number, number, number];
+  score: number;
+  /** Resolved server-side — the sidecar stores a class index, not a name. */
+  name: string;
+}
+
+export interface ImageObjects {
+  processed: boolean;
+  width?: number;
+  height?: number;
+  objects: DetectedObjectView[];
+}
+
+export function fetchImageObjects(recordId: string): Promise<MaybeUnavailable<ImageObjects>> {
+  return get<ImageObjects>(`/api/vision/objects/${encodeURIComponent(recordId)}`);
+}
+
 export function fetchPeople(): Promise<MaybeUnavailable<{ people: VisionPerson[] }>> {
   return get<{ people: VisionPerson[] }>("/api/vision/people");
 }
@@ -237,8 +268,10 @@ export function faceCropUrl(ref: VisionFaceRef): string {
 
 /** One interpretation the parse made, rendered as a removable chip (§5.2). */
 export interface VisionSearchTerm {
-  kind: "person";
+  kind: "person" | "object";
   id: string;
+  /** How many of this class the query asked for, when it said so. */
+  count: number | null;
   /** Stable identity, passed back as `drop` to dismiss this interpretation. */
   key: string;
   /** What the user typed. */

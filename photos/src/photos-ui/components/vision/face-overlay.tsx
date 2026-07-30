@@ -5,23 +5,14 @@ import {
   type DetectedFaceView,
   type ImageFaces,
 } from "../../../lib/vision-client";
+import { LabelledBoxOverlay } from "./labelled-box-overlay";
 
 /**
- * Bounding boxes over the photo in the viewer.
+ * Face boxes over the photo in the viewer.
  *
- * Positioned in **percentages of the sidecar's own dimensions**, not of the
- * record's stored width/height. The worker rotates by EXIF before inference, so
- * a sidecar's `w`/`h` are the displayed dimensions — which for an
- * orientation-tagged photo are the stored ones swapped. Scaling by the record's
- * numbers would put every box on a rotated photo in the wrong place, and would
- * look right on the majority of photos that carry no orientation tag.
- *
- * The overlay reproduces `objectFit: contain` in CSS — an inner box with the
- * sidecar's aspect ratio, capped at 100% of both axes and centred — so the boxes
- * track the rendered image at any window size without measuring it. That also
- * covers the case where the viewer has no dimensions yet and letterboxes the
- * photo into a fixed rectangle, which a plain `inset: 0` overlay would get
- * wrong on exactly the photos whose metadata has not arrived.
+ * Only the fetching and the colour live here — the positioning, which is the part
+ * that is subtle and identical for any task's boxes, moved to
+ * `LabelledBoxOverlay` when objects arrived.
  */
 
 interface FaceOverlayProps {
@@ -62,66 +53,19 @@ export function FaceOverlay({ recordId, visible, onLoaded }: FaceOverlayProps) {
   if (!visible || !dimensions || faces.length === 0) return null;
 
   return (
-    <div
-      data-testid="face-overlay"
-      style={{
-        position: "absolute",
-        inset: 0,
-        pointerEvents: "none",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <div
-        style={{
-          position: "relative",
-          aspectRatio: `${dimensions.w} / ${dimensions.h}`,
-          maxWidth: "100%",
-          maxHeight: "100%",
-          width: "100%",
-          height: "100%",
-        }}
-      >
-        {faces.map((face) => {
-          const [x, y, w, h] = face.bbox;
-          return (
-            <div
-              key={face.index}
-              data-testid="face-box"
-              style={{
-                position: "absolute",
-                left: `${(x / dimensions.w) * 100}%`,
-                top: `${(y / dimensions.h) * 100}%`,
-                width: `${(w / dimensions.w) * 100}%`,
-                height: `${(h / dimensions.h) * 100}%`,
-                border: "2px solid rgba(120, 210, 255, 0.9)",
-                borderRadius: 3,
-                boxShadow: "0 0 0 1px rgba(0,0,0,0.5)",
-              }}
-            >
-              {face.name && (
-                <span
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    bottom: "100%",
-                    marginBottom: 2,
-                    padding: "1px 5px",
-                    borderRadius: 3,
-                    background: "rgba(0,0,0,0.75)",
-                    color: "#cfefff",
-                    fontSize: 11,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {face.name}
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <LabelledBoxOverlay
+      testId="face-overlay"
+      boxTestId="face-box"
+      dimensions={dimensions}
+      colour="rgba(120, 210, 255, 0.9)"
+      labelColour="#cfefff"
+      boxes={faces.map((face) => ({
+        key: face.index,
+        bbox: face.bbox,
+        // Only *named* people are labelled: an unnamed cluster's id is not
+        // something to put on a photo.
+        label: face.name || undefined,
+      }))}
+    />
   );
 }

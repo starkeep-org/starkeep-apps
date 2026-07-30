@@ -16,6 +16,7 @@ import { readSceneIndex } from "@/vision/scene-index";
 import {
   listTaskRecordIds,
   readAllFaceSidecars,
+  readAllObjectSidecars,
   taskProcessedRecordIds,
 } from "@/vision/sidecars";
 import { readPeople } from "@/vision/people";
@@ -51,6 +52,18 @@ export async function GET(): Promise<Response> {
   }
   const people = readPeople();
 
+  // Folded once here rather than in the panel: the same reasoning as the face
+  // counts, and it is the only way to answer "did detection find anything" without
+  // the client reading the store.
+  const objectStats = { detections: 0, images: 0, classes: 0 };
+  const seenClasses = new Set<number>();
+  for (const sidecar of readAllObjectSidecars().values()) {
+    objectStats.detections += sidecar.objects.length;
+    if (sidecar.objects.length > 0) objectStats.images++;
+    for (const object of sidecar.objects) seenClasses.add(object.cls);
+  }
+  objectStats.classes = seenClasses.size;
+
   // Read once: the header carries the row count, so this is a small read even with
   // a large index, and it is the only honest answer to "is search ready".
   const index = readSceneIndex();
@@ -78,6 +91,17 @@ export async function GET(): Promise<Response> {
           facesFound,
           people: people.length,
           namedPeople: people.filter((p) => p.name.trim() !== "").length,
+        },
+      },
+      objects: {
+        models: groupModels("objects"),
+        store: {
+          processed: taskProcessedRecordIds("objects").size,
+          sidecarsOnDisk: listTaskRecordIds("objects").length,
+          /** Detections and how many distinct classes ever fired, for the panel. */
+          detections: objectStats.detections,
+          classes: objectStats.classes,
+          imagesWithObjects: objectStats.images,
         },
       },
       scene: {

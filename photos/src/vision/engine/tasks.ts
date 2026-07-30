@@ -1,11 +1,11 @@
 /**
  * The vision task registry.
  *
- * One entry today. It exists in this shape because the follow-on tasks —
- * objects (RT-DETR) and scene (CLIP) — differ from faces only in which models
- * they load and what they write; the scan loop, the sidecar-as-processed-marker,
- * and the per-task progress counters are identical. Keeping that seam here is
- * what makes them additive instead of a second scan pass.
+ * Three entries. They differ only in which models they load and what they write;
+ * the scan loop, the sidecar-as-processed-marker, and the per-task progress
+ * counters are identical across all of them, which is what made objects and scene
+ * additive rather than a second scan pass — the seam paid off exactly as the face
+ * plan predicted.
  *
  * **Engines are created lazily, by the task, from a path map.** Not a detail:
  * the worker used to construct `FaceEngine` — 278 MB of ONNX — before it looked
@@ -19,14 +19,17 @@
 
 import { FaceEngine } from "./face-engine";
 import { SceneEngine } from "./siglip";
+import { ObjectEngine } from "./detr";
 import { encodeEmbedding } from "../embeddings";
 import { taskEnabled } from "../config";
-import { FACE_MODEL_ID, SCENE_MODEL_ID } from "../models";
+import { FACE_MODEL_ID, OBJECT_MODEL_ID, SCENE_MODEL_ID } from "../models";
 import {
   FACE_SIDECAR_VERSION,
+  OBJECT_SIDECAR_VERSION,
   SCENE_SIDECAR_VERSION,
   VISION_TASK_IDS,
   type FaceSidecar,
+  type ObjectSidecar,
   type SceneSidecar,
   type VisionConfig,
   type VisionTaskId,
@@ -54,11 +57,50 @@ export interface VisionTaskSpec {
   /**
    * Load the models and return the runnable task. Takes decoded bytes when it
    * runs, never storage — the property that keeps the engine extractable.
+   *
+   * `config` is passed because a task's *thresholds* are user-settable even though
+   * its models are not: the object detector's cutoff is a knob, and baking it in at
+   * module scope would make it unreachable from Settings.
    */
-  create(models: TaskModelPaths): Promise<VisionTask>;
+  create(models: TaskModelPaths, config: VisionConfig): Promise<VisionTask>;
 }
 
 const SPECS: Record<VisionTaskId, VisionTaskSpec> = {
+  objects: {
+    id: "objects",
+    isProcessed: (recordId) => {
+      const sidecar = readTaskSidecar("objects", recordId);
+      return sidecar !== null && isCurrentFor("objects", sidecar);
+    },
+    create: async (models, config) => {
+      const engine = await ObjectEngine.create({
+        detectorPath: required(models, "detector"),
+        scoreThreshold: config.objects.threshold,
+      });
+      return {
+        id: "objects",
+        dispose: () => engine.dispose(),
+        run: async (recordId, bytes) => {
+          const result = await engine.detect(bytes);
+          const sidecar: ObjectSidecar = {
+            v: OBJECT_SIDECAR_VERSION,
+            model: OBJECT_MODEL_ID,
+            processedAt: new Date().toISOString(),
+            w: result.width,
+            h: result.height,
+            // A record with nothing in it still gets a sidecar, same as faces —
+            // otherwise every empty photo is re-detected on every pass.
+            objects: result.objects.map((object) => ({
+              cls: object.classIndex,
+              score: object.score,
+              bbox: object.bbox,
+            })),
+          };
+          writeTaskSidecar("objects", recordId, sidecar);
+        },
+      };
+    },
+  },
   scene: {
     id: "scene",
     isProcessed: (recordId) => {

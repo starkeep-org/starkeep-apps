@@ -13,7 +13,8 @@
  * that mistake fail silently, so the two never meet.
  */
 
-import { readAllFaceSidecars } from "../sidecars";
+import { listTaskRecordIds, readAllFaceSidecars, readAllObjectSidecars } from "../sidecars";
+import { className } from "../coco-classes";
 import { readPeople } from "../people";
 import { readSceneIndex, scoreAgainstIndex } from "../scene-index";
 import { embedQueries } from "./query-controller";
@@ -79,6 +80,41 @@ function meanUnit(vectors: readonly Float32Array[]): Float32Array {
 }
 
 /**
+ * Which records satisfy each matched object class, honouring counts.
+ *
+ * This is the slice §9 exists for: `"three dogs"` is answered by *counting
+ * detections*, never by asking CLIP, which §5.4 notes is weak at counting. A
+ * count term is satisfied only by a record carrying at least that many of the
+ * class — "at least" rather than "exactly", because a photo of four dogs is a
+ * reasonable answer to "three dogs" and a detector that missed one should not turn
+ * a hit into a miss.
+ */
+function matchObjects(terms: readonly StructuredTerm[]): Map<string, StructuredTerm[]> {
+  const wanted = terms.filter((term) => term.kind === "object");
+  const hits = new Map<string, StructuredTerm[]>();
+  if (wanted.length === 0) return hits;
+
+  for (const [recordId, sidecar] of readAllObjectSidecars()) {
+    // Count per class once per record, so a term needing three can be checked
+    // against the whole photo rather than one detection at a time.
+    const counts = new Map<string, number>();
+    for (const object of sidecar.objects) {
+      const name = className(object.cls);
+      if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    for (const term of wanted) {
+      const found = counts.get(term.id) ?? 0;
+      if (found === 0) continue;
+      if (term.count !== null && found < term.count) continue;
+      const existing = hits.get(recordId);
+      if (existing) existing.push(term);
+      else hits.set(recordId, [term]);
+    }
+  }
+  return hits;
+}
+
+/**
  * Which records carry a face assigned to each matched person.
  *
  * Folds the face store, which §5.5 warns against doing *per query* for
@@ -119,7 +155,12 @@ export function parseFor(query: string, dropped?: ReadonlySet<string>): ParsedQu
     // human could have typed.
     if (person.name.trim() !== "") people.set(person.id, person.name.trim());
   }
-  const parsed = parseQuery(query, { people });
+  // Classes are only matchable once something has actually been detected. Matching
+  // "dog" as a class against an empty object store would convert a query the dense
+  // stage could answer into a structured filter that matches nothing — worse than
+  // not having the feature.
+  const objects = listTaskRecordIds("objects").length > 0;
+  const parsed = parseQuery(query, { people, objects });
   return dropped && dropped.size > 0 ? withoutTerms(parsed, dropped) : parsed;
 }
 
@@ -127,6 +168,7 @@ export async function search(query: string, options: SearchOptions = {}): Promis
   const limit = options.limit ?? DEFAULT_SEARCH_LIMIT;
   const parsed = parseFor(query, options.dropped);
   const peopleHits = matchPeople(parsed.terms);
+  const objectHits = matchObjects(parsed.terms);
 
   const dense = new Map<string, number>();
   let denseUnavailable: string | null = null;
@@ -152,12 +194,16 @@ export async function search(query: string, options: SearchOptions = {}): Promis
   // lacking one — that is what makes the additive invariant hold, and what lets a
   // photo where Alice is present but undetected still land in the beach band
   // (§5.1, which is also why no separate backfill step exists).
-  const recordIds = new Set<string>([...peopleHits.keys(), ...dense.keys()]);
+  const recordIds = new Set<string>([
+    ...peopleHits.keys(),
+    ...objectHits.keys(),
+    ...dense.keys(),
+  ]);
   const candidates: Candidate[] = [];
   for (const recordId of recordIds) {
     candidates.push({
       recordId,
-      matched: peopleHits.get(recordId) ?? [],
+      matched: [...(peopleHits.get(recordId) ?? []), ...(objectHits.get(recordId) ?? [])],
       dense: dense.has(recordId) ? (dense.get(recordId) as number) : null,
     });
   }

@@ -112,6 +112,7 @@ describe("config", () => {
     const config = {
       faces: { enabled: true, threshold: 0.6, publishLabels: true },
       scene: { enabled: true },
+      objects: { enabled: false, threshold: 0.35 },
     };
     writeVisionConfig(config);
     expect(readVisionConfig()).toEqual(config);
@@ -129,10 +130,12 @@ describe("config", () => {
     const base = {
       faces: { enabled: true, threshold: 0.6, publishLabels: true },
       scene: { enabled: true },
+      objects: { enabled: false, threshold: 0.35 },
     };
     expect(mergeVisionConfig(base, { faces: { enabled: false } })).toEqual({
       faces: { enabled: false, threshold: 0.6, publishLabels: true },
       scene: { enabled: true },
+      objects: { enabled: false, threshold: 0.35 },
     });
   });
 
@@ -144,10 +147,12 @@ describe("config", () => {
     const base = {
       faces: { enabled: true, threshold: 0.6, publishLabels: true },
       scene: { enabled: false },
+      objects: { enabled: false, threshold: 0.35 },
     };
     expect(mergeVisionConfig(base, { scene: { enabled: true } })).toEqual({
       faces: { enabled: true, threshold: 0.6, publishLabels: true },
       scene: { enabled: true },
+      objects: { enabled: false, threshold: 0.35 },
     });
   });
 
@@ -271,6 +276,7 @@ describe("enabled tasks and their models", () => {
     const facesOnly = {
       faces: { enabled: true, threshold: 0.45, publishLabels: false },
       scene: { enabled: false },
+      objects: { enabled: false, threshold: 0.35 },
     };
     expect(enabledTaskIds(facesOnly)).toEqual(["faces"]);
     expect(taskEnabled(facesOnly, "faces")).toBe(true);
@@ -279,6 +285,7 @@ describe("enabled tasks and their models", () => {
     const sceneOnly = {
       faces: { enabled: false, threshold: 0.45, publishLabels: false },
       scene: { enabled: true },
+      objects: { enabled: false, threshold: 0.35 },
     };
     expect(enabledTaskIds(sceneOnly)).toEqual(["scene"]);
 

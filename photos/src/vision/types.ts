@@ -7,7 +7,7 @@
  */
 
 /** The vision tasks implemented today. See `engine/tasks.ts` for the registry. */
-export type VisionTaskId = "faces" | "scene";
+export type VisionTaskId = "faces" | "scene" | "objects";
 
 /**
  * Every task id that has ever had a store, enabled or not.
@@ -21,7 +21,7 @@ export type VisionTaskId = "faces" | "scene";
  * The registry in `engine/tasks.ts` cannot serve this: it only lists tasks whose
  * engine is loadable, and it lives behind the `app/` isolation boundary.
  */
-export const VISION_TASK_IDS: readonly VisionTaskId[] = ["faces", "scene"];
+export const VISION_TASK_IDS: readonly VisionTaskId[] = ["faces", "scene", "objects"];
 
 /**
  * What every sidecar carries, whatever task wrote it.
@@ -105,6 +105,48 @@ export interface SceneSidecar extends SidecarBase {
 
 export const SCENE_SIDECAR_VERSION = 1;
 
+/**
+ * One detected object, in **display** orientation.
+ *
+ * Same coordinate convention as `DetectedFace`, and for the same reason: the
+ * worker rotates by EXIF before inference, so `bbox` is in the space the viewer
+ * renders in.
+ */
+export interface DetectedObject {
+  /**
+   * Index into `COCO_CLASSES`.
+   *
+   * The index rather than the name, because the index is what the model actually
+   * emitted and the name is a lookup. Storing names would bake a spelling into
+   * every sidecar on disk and make renaming a class a migration.
+   */
+  cls: number;
+  /** Detector confidence, 0–1 — a per-class sigmoid, not a softmax share. */
+  score: number;
+  /** `[x, y, width, height]` in display pixels. */
+  bbox: [number, number, number, number];
+}
+
+/** `objects/<recordId>.json`. */
+export interface ObjectSidecar extends SidecarBase {
+  objects: DetectedObject[];
+}
+
+export const OBJECT_SIDECAR_VERSION = 1;
+
+/**
+ * Default sigmoid score below which a query is not a detection.
+ *
+ * 0.5 is far too high for a focal-loss detector — its calibrated scores sit low —
+ * and much lower invents furniture in every photo. 0.35 is the usual starting point
+ * for RT-DETR.
+ *
+ * Here rather than in `models.ts` because it is a *config default*, like the face
+ * threshold above it, and because `models.ts` reaches `paths.ts` which reaches this
+ * module — importing a value back the other way would close that circle.
+ */
+export const DEFAULT_OBJECT_THRESHOLD = 0.35;
+
 /** `people.json`. */
 export interface Person {
   id: string;
@@ -174,6 +216,18 @@ export interface VisionConfig {
      */
     enabled: boolean;
   };
+  objects: {
+    enabled: boolean;
+    /**
+     * Sigmoid score below which a detection is discarded.
+     *
+     * A knob rather than a constant because a focal-loss detector's scores are
+     * uncalibrated in the same way §5.1's cosines are: the useful cutoff depends on
+     * whether the user would rather miss a chair or invent one, and only real
+     * photos settle it.
+     */
+    threshold: number;
+  };
 }
 
 /**
@@ -185,12 +239,13 @@ export interface VisionConfig {
  * it on commits to a multi-hour first pass and a 1.7 GB download. That is a
  * decision to opt into, not to discover.
  *
- * `objects` remains deliberately absent — its task is not built, and a toggle for
- * something that does nothing is worse than no toggle (`CLAUDE.md`).
+ * Every task is off by default: each commits to a download and a pass over the
+ * whole library, which is a decision to opt into rather than to discover.
  */
 export function defaultVisionConfig(): VisionConfig {
   return {
     faces: { enabled: false, threshold: 0.45, publishLabels: false },
     scene: { enabled: false },
+    objects: { enabled: false, threshold: DEFAULT_OBJECT_THRESHOLD },
   };
 }

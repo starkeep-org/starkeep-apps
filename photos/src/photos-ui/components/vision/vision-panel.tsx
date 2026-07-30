@@ -29,8 +29,8 @@ import {
  * task over one decode of each photo — that is the whole point of the task
  * registry, and two scan buttons would imply two passes.
  *
- * `objects` is deliberately absent: its task is not built, and a toggle for
- * something that does nothing is worse than no toggle.
+ * Every task's card is the same shape, which is what the per-task status route
+ * bought: adding one is a `TaskCard` and its own controls, not a panel rewrite.
  */
 
 const POLL_IDLE_MS = 4000;
@@ -233,6 +233,56 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
               <StaleLine store={status.tasks.scene.store} />
             </TaskCard>
 
+            <TaskCard
+              group={status.tasks.objects.models}
+              name="objects"
+              download={status.download}
+              busy={busy}
+              enabled={status.config.objects.enabled}
+              onDownload={() => void act(() => startVisionModelDownload("objects"))}
+              onToggle={(enabled) => void act(() => updateVisionConfig({ objects: { enabled } }))}
+            >
+              <p style={{ ...noteStyle, marginTop: -4 }}>
+                Finds the 80 everyday things COCO covers — people, pets, food, vehicles,
+                furniture — so you can search for them by name and by how many.
+              </p>
+
+              <label style={{ ...rowStyle, opacity: status.config.objects.enabled ? 1 : 0.5 }}>
+                <span style={{ minWidth: 130 }}>Confidence</span>
+                <input
+                  type="range"
+                  min={0.05}
+                  max={0.9}
+                  step={0.05}
+                  value={status.config.objects.threshold}
+                  disabled={busy || !status.config.objects.enabled}
+                  onChange={(e) =>
+                    void act(() =>
+                      updateVisionConfig({ objects: { threshold: Number(e.target.value) } }),
+                    )
+                  }
+                  style={{ flex: 1 }}
+                />
+                <span style={{ width: 36, textAlign: "right" }}>
+                  {status.config.objects.threshold.toFixed(2)}
+                </span>
+              </label>
+              <p style={{ ...noteStyle, marginTop: -4 }}>
+                Lower finds more and invents more. Only affects detections from now on — the next
+                scan does not redo photos already done unless the model changes.
+              </p>
+
+              <div style={statLineStyle}>
+                <span>Found</span>
+                <span>
+                  {status.tasks.objects.store.detections} things in{" "}
+                  {status.tasks.objects.store.imagesWithObjects} photos ·{" "}
+                  {status.tasks.objects.store.classes} kinds
+                </span>
+              </div>
+              <StaleLine store={status.tasks.objects.store} />
+            </TaskCard>
+
             <SearchCard
               search={status.search}
               download={status.download}
@@ -268,6 +318,10 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
                 <span>Scene</span>
                 <span>{describeProgress(status, "scene")}</span>
               </div>
+              <div style={statLineStyle}>
+                <span>Objects</span>
+                <span>{describeProgress(status, "objects")}</span>
+              </div>
               {(status.scan.skipped > 0 || status.scan.failed > 0) && (
                 <div style={statLineStyle}>
                   <span>Other</span>
@@ -295,19 +349,25 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
 }
 
 function anyTaskEnabled(status: VisionStatus): boolean {
-  return status.config.faces.enabled || status.config.scene.enabled;
+  return (
+    status.config.faces.enabled || status.config.scene.enabled || status.config.objects.enabled
+  );
 }
 
 function anyTaskInstalled(status: VisionStatus | null): boolean {
   if (!status) return false;
-  return status.tasks.faces.models.installed || status.tasks.scene.models.installed;
+  return (
+    status.tasks.faces.models.installed ||
+    status.tasks.scene.models.installed ||
+    status.tasks.objects.models.installed
+  );
 }
 
 /**
  * `processed` counts what *this pass* ran, which is not the same as what exists —
  * so a task that skipped everything reads "up to date" rather than "0 processed".
  */
-function describeProgress(status: VisionStatus, task: "faces" | "scene"): string {
+function describeProgress(status: VisionStatus, task: "faces" | "scene" | "objects"): string {
   if (!status.config[task].enabled) return "off";
   if (!status.tasks[task].models.installed) return "models not installed";
   const processed = status.scan.processed[task] ?? 0;

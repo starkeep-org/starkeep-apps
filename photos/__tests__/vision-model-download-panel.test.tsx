@@ -94,6 +94,7 @@ function status(
     config: {
       faces: { enabled: false, threshold: 0.45, publishLabels: false },
       scene: { enabled: false },
+      objects: { enabled: false, threshold: 0.35 },
     },
     worker: { built: true, path: "/tmp/worker.mjs", buildCommand: "pnpm vision:build-worker" },
     scan: {
@@ -122,6 +123,14 @@ function status(
       scene: {
         models: sceneModels(),
         store: { processed: 0, sidecarsOnDisk: 0, indexed: 0, indexReady: false },
+      },
+      objects: {
+        models: sceneModels({
+          label: "Object detection",
+          purpose: "label what is in a photo, so you can filter and count by it",
+          pack: { name: "rtdetr-v2-r101vd", files: ["rtdetr_v2_r101vd.onnx"], totalBytes: 293 * MB },
+        }),
+        store: { processed: 0, sidecarsOnDisk: 0, detections: 0, classes: 0, imagesWithObjects: 0 },
       },
     },
     search: {

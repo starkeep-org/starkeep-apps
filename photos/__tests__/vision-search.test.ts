@@ -27,12 +27,13 @@ vi.mock("@/vision/search/query-controller", async (importOriginal) => {
 });
 
 import { encodeEmbedding, normalize } from "@/vision/embeddings";
-import { SCENE_EMBEDDING_DIM, SCENE_MODEL_ID } from "@/vision/models";
+import { OBJECT_MODEL_ID, SCENE_EMBEDDING_DIM, SCENE_MODEL_ID } from "@/vision/models";
 import { newPerson, writePeople } from "@/vision/people";
 import { buildSceneIndex } from "@/vision/scene-index";
 import { writeTaskSidecar } from "@/vision/sidecars";
 import { FACE_MODEL_ID } from "@/vision/models";
-import { FACE_SIDECAR_VERSION, SCENE_SIDECAR_VERSION } from "@/vision/types";
+import { FACE_SIDECAR_VERSION, OBJECT_SIDECAR_VERSION, SCENE_SIDECAR_VERSION } from "@/vision/types";
+import { classIndex } from "@/vision/coco-classes";
 import { search, promptVariants } from "@/vision/search/search";
 
 let root: string;
@@ -103,6 +104,25 @@ function seedFace(recordId: string, personId: string | null): void {
         personId,
       },
     ],
+  });
+}
+
+/** An object sidecar carrying `count` detections of each named class. */
+function seedObjects(recordId: string, classes: Record<string, number>): void {
+  const objects = Object.entries(classes).flatMap(([name, count]) =>
+    Array.from({ length: count }, () => ({
+      cls: classIndex(name)!,
+      score: 0.9,
+      bbox: [0, 0, 10, 10] as [number, number, number, number],
+    })),
+  );
+  writeTaskSidecar("objects", recordId, {
+    v: OBJECT_SIDECAR_VERSION,
+    model: OBJECT_MODEL_ID,
+    processedAt: "2026-07-29T00:00:00.000Z",
+    w: 100,
+    h: 100,
+    objects,
   });
 }
 
@@ -287,5 +307,79 @@ describe("search", () => {
 
     const response = await search("at the beach");
     expect(response.terms).toEqual([]);
+  });
+});
+
+describe("object classes in search", () => {
+  it("filters by class", async () => {
+    seedObjects("has-dog", { dog: 1 });
+    seedObjects("has-cat", { cat: 1 });
+
+    const response = await search("dog");
+    expect(response.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["object:dog"]);
+    expect(response.results.map((r) => r.recordId)).toEqual(["has-dog"]);
+    // No residual, so no dense stage — an exact class filter.
+    expect(embedQueries).not.toHaveBeenCalled();
+  });
+
+  it("counts detections rather than asking the dense stage", async () => {
+    // §5.4: counting routes to detector counts and never to CLIP, which is weak at
+    // it. "at least" rather than "exactly", because four dogs is a fine answer to
+    // "three dogs" and a detector that missed one should not turn a hit into a miss.
+    seedObjects("one-dog", { dog: 1 });
+    seedObjects("three-dogs", { dog: 3 });
+    seedObjects("five-dogs", { dog: 5 });
+
+    const response = await search("three dogs");
+    expect(response.terms[0].count).toBe(3);
+    expect(response.results.map((r) => r.recordId).sort()).toEqual(["five-dogs", "three-dogs"]);
+  });
+
+  it("does not match classes before anything has been detected", async () => {
+    // The store is empty, so "dog" must fall through to the dense stage rather than
+    // becoming a filter that matches nothing.
+    seedScene("something", beachy(0.9));
+    seedScene("other", beachy(0.2));
+    buildSceneIndex();
+
+    const response = await search("dog");
+    expect(response.terms).toEqual([]);
+    expect(embedQueries).toHaveBeenCalledWith(["dog", "a photo of dog"]);
+  });
+
+  it("combines a person, a class, and a description", async () => {
+    // The full §5.1 stack: two structured terms of different kinds plus a residual.
+    const alice = namedPerson("Alice");
+    seedFace("all-three", alice);
+    seedObjects("all-three", { dog: 1 });
+    seedScene("all-three", beachy(0.8));
+    seedFace("alice-only", alice);
+    seedScene("alice-only", beachy(0.1));
+    seedObjects("dog-only", { dog: 1 });
+    seedScene("dog-only", beachy(0.1));
+    buildSceneIndex();
+
+    const response = await search("Alice with a dog at the beach");
+    expect(response.results[0].recordId).toBe("all-three");
+    // Person outweighs object, so the Alice photo beats the dog photo.
+    const ids = response.results.map((r) => r.recordId);
+    expect(ids.indexOf("alice-only")).toBeLessThan(ids.indexOf("dog-only"));
+  });
+
+  it("scores a photo matching two classes above one matching either", async () => {
+    seedObjects("both", { dog: 1, cat: 1 });
+    seedObjects("dog", { dog: 1 });
+    seedObjects("cat", { cat: 1 });
+
+    const response = await search("dog cat");
+    expect(response.results[0].recordId).toBe("both");
+  });
+
+  it("ignores a class the detector never found in a photo", async () => {
+    seedObjects("empty", {});
+    seedObjects("has-dog", { dog: 1 });
+
+    const response = await search("dog");
+    expect(response.results.map((r) => r.recordId)).toEqual(["has-dog"]);
   });
 });

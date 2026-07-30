@@ -24,6 +24,7 @@ const alice: StructuredTerm = {
   id: "p-alice",
   matched: "Alice",
   label: "Alice",
+  count: null,
   from: 0,
   to: 1,
 };
@@ -77,7 +78,7 @@ describe("the additive invariant", () => {
     // configuration question rather than a code change.
     const ranked = rankCandidates(
       [candidate("alice-worst-dense", 0.0, [alice]), candidate("no-alice-best-dense", 1.0)],
-      { person: 0.5, dense: 1 },
+      { person: 0.5, object: 1.5, dense: 1 },
     );
     expect(ranked[0].recordId).toBe("no-alice-best-dense");
   });

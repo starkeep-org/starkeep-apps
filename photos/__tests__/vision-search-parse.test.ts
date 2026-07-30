@@ -19,8 +19,8 @@ import { parseQuery, termKey, withoutTerms, type Vocabularies } from "@/vision/s
  *     flower, not for "at the beach" alone.
  */
 
-function vocab(people: Record<string, string>): Vocabularies {
-  return { people: new Map(Object.entries(people)) };
+function vocab(people: Record<string, string>, objects = false): Vocabularies {
+  return { people: new Map(Object.entries(people)), objects };
 }
 
 const ALICE = vocab({ "p-alice": "Alice" });
@@ -156,5 +156,83 @@ describe("withoutTerms", () => {
     const parsed = parseQuery("Alice", ALICE);
     const dropped = withoutTerms(parsed, new Set([termKey(parsed.terms[0])]));
     expect(dropped.residual).toBe("Alice");
+  });
+});
+
+describe("object classes", () => {
+  const withObjects = (people: Record<string, string> = {}) => vocab(people, true);
+
+  it("matches a class name", () => {
+    const parsed = parseQuery("dog on the beach", withObjects());
+    expect(parsed.terms).toHaveLength(1);
+    expect(parsed.terms[0]).toMatchObject({ kind: "object", id: "dog", count: null });
+    expect(parsed.residual).toBe("on the beach");
+  });
+
+  it("does not match classes when nothing has been detected", () => {
+    // Matching "dog" as a class against an empty object store converts a query the
+    // dense stage could answer into a filter that matches nothing.
+    const parsed = parseQuery("dog on the beach", vocab({}, false));
+    expect(parsed.terms).toEqual([]);
+    expect(parsed.residual).toBe("dog on the beach");
+  });
+
+  it("prefers the longer class, so 'hot dog' is not 'dog'", () => {
+    // The plan's own longest-match example, and both are real COCO classes.
+    const parsed = parseQuery("hot dog", withObjects());
+    expect(parsed.terms).toHaveLength(1);
+    expect(parsed.terms[0].id).toBe("hot dog");
+    expect(parsed.residual).toBe("");
+  });
+
+  it("prefers a person over a class at the same span", () => {
+    // A name was typed by a human onto a cluster in *this* library, so it is the
+    // stronger claim — and §5.2's chips make a wrong person reading recoverable,
+    // where a name read as furniture would not be.
+    const parsed = parseQuery("Rose", withObjects({ "p-rose": "Rose" }));
+    expect(parsed.terms[0].kind).toBe("person");
+  });
+
+  it("reads a count before the class", () => {
+    for (const [query, count] of [
+      ["three dogs", 3],
+      ["2 cats", 2],
+      ["ten people", 10],
+    ] as const) {
+      const parsed = parseQuery(query, withObjects());
+      expect(parsed.terms).toHaveLength(1);
+      expect(parsed.terms[0].count).toBe(count);
+      // The number must not survive into the residual, where it is a meaningless
+      // token for the text tower.
+      expect(parsed.residual).toBe("");
+    }
+  });
+
+  it("treats an article as 'any', not as one", () => {
+    // "a dog" means any dog. Reading it as exactly one would exclude every photo
+    // with two, which is the opposite of what was asked.
+    const parsed = parseQuery("a dog", withObjects());
+    expect(parsed.terms[0].count).toBeNull();
+  });
+
+  it("keeps the count out of the chip key, so editing the number is the same chip", () => {
+    const three = parseQuery("three dogs", withObjects());
+    const four = parseQuery("four dogs", withObjects());
+    expect(termKey(three.terms[0])).toBe(termKey(four.terms[0]));
+  });
+
+  it("finds a class and a person in one query", () => {
+    const parsed = parseQuery("Alice with two dogs at the beach", withObjects({ "p-a": "Alice" }));
+    expect(parsed.terms.map((t) => `${t.kind}:${t.id}`)).toEqual(["person:p-a", "object:dog"]);
+    expect(parsed.terms[1].count).toBe(2);
+    expect(parsed.residual).toBe("with at the beach");
+  });
+
+  it("returns a dropped class to the residual", () => {
+    const parsed = parseQuery("three dogs", withObjects());
+    const dropped = withoutTerms(parsed, new Set([termKey(parsed.terms[0])]));
+    expect(dropped.terms).toEqual([]);
+    // The count came in with the class, so it goes back out with it.
+    expect(dropped.residual).toBe("three dogs");
   });
 });

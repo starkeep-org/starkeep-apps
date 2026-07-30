@@ -147,6 +147,53 @@ export const OBJECT_SIDECAR_VERSION = 1;
  */
 export const DEFAULT_OBJECT_THRESHOLD = 0.35;
 
+/**
+ * A starting vocabulary for zero-shot tagging.
+ *
+ * §11 lists this as settle-by-trying: "too small misses; too large makes every
+ * photo score something". These ~70 entries lean toward the *kinds of occasion and
+ * setting* a personal library actually divides into, because that is the axis
+ * objects (§9) does not already cover — there is no point putting "dog" here when
+ * the detector finds dogs exactly.
+ *
+ * Phrased as noun phrases rather than single words, since that is closer to the
+ * alt-text distribution the tower was trained on. Editable at runtime, which is the
+ * whole point — this is a seed, not a taxonomy.
+ */
+export const DEFAULT_TAG_VOCABULARY: readonly string[] = [
+  // Setting
+  "the beach", "a forest", "mountains", "a lake", "a river", "a desert",
+  "a city street", "a park", "a garden", "indoors at home", "a restaurant",
+  "a café", "an office", "a classroom", "a museum", "a church", "a stadium",
+  "a swimming pool", "a hotel room", "an airport", "a train station", "on board a boat",
+  "a farm", "a snowy landscape", "a sunset", "a sunrise", "a night scene",
+  "fireworks", "rain", "fog",
+  // Occasion
+  "a birthday party", "a wedding", "a graduation", "a concert", "a festival",
+  "a picnic", "a barbecue", "a christmas scene", "a halloween costume",
+  "a sports match", "a hike", "camping", "a road trip", "a museum visit",
+  "a business meeting", "a family gathering", "a night out",
+  // Subject and composition
+  "a portrait", "a group photo", "a selfie", "a candid photo of people",
+  "a close-up", "a landscape photograph", "an aerial photo", "a street photograph",
+  "a black and white photograph", "a screenshot", "a document or receipt",
+  "a whiteboard", "a chart or diagram", "a map",
+  // Content
+  "food on a plate", "a drink", "a birthday cake", "flowers", "a pet",
+  "a baby", "children playing", "artwork or a painting",
+  "a building exterior", "an interior of a room", "traffic",
+];
+
+/**
+ * Threshold for suggesting a vocabulary entry.
+ *
+ * Low in absolute terms because SigLIP cosines are low in absolute terms — the
+ * cross-modal band measured on real photos runs roughly 0.00–0.12 (see
+ * `vision-model-choice.md`). This is a *suggestion* cutoff, not a decision: §7
+ * publishes only what a human confirms.
+ */
+export const DEFAULT_TAG_THRESHOLD = 0.06;
+
 /** `people.json`. */
 export interface Person {
   id: string;
@@ -216,6 +263,27 @@ export interface VisionConfig {
      */
     enabled: boolean;
   };
+  tags: {
+    /**
+     * The candidate list zero-shot tagging scores against.
+     *
+     * CLIP cannot emit tags on its own — it only scores an image against candidate
+     * strings supplied to it — so "the vocabulary" *is* the feature. Editing it is a
+     * different operation from editing the tags on one photo (§7), and it is cheap:
+     * with the image embedding already in the sidecar, re-scoring is one dot product
+     * per (image, tag), no model load and no image decode.
+     */
+    vocabulary: string[];
+    /**
+     * Cosine above which a vocabulary entry is *suggested*.
+     *
+     * §7 is explicit that raw CLIP cosine is uncalibrated and
+     * vocabulary-dependent, so this cannot be a calibrated probability and derived
+     * tags stay **suggestions** rather than facts. §11 lists the seed list's size and
+     * content as settle-by-trying, and this knob with it.
+     */
+    threshold: number;
+  };
   objects: {
     enabled: boolean;
     /**
@@ -247,5 +315,6 @@ export function defaultVisionConfig(): VisionConfig {
     faces: { enabled: false, threshold: 0.45, publishLabels: false },
     scene: { enabled: false },
     objects: { enabled: false, threshold: DEFAULT_OBJECT_THRESHOLD },
+    tags: { vocabulary: [...DEFAULT_TAG_VOCABULARY], threshold: DEFAULT_TAG_THRESHOLD },
   };
 }

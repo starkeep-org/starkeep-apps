@@ -107,6 +107,17 @@ export function sceneIndexPath(): string {
   return join(visionDir(), "scene-index.bin");
 }
 
+/**
+ * Text embeddings for the tag vocabulary — derived, and rebuilt whenever the
+ * vocabulary changes rather than whenever a scan runs.
+ *
+ * Beside the index for the same reason: everything inside a task directory is a
+ * per-record sidecar, and this is neither per-record nor per-task.
+ */
+export function tagEmbeddingsPath(): string {
+  return join(visionDir(), "tag-embeddings.json");
+}
+
 /** Progress of the last/current pass. */
 export function scanStatePath(): string {
   return join(visionDir(), "scan-state.json");

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib";
 import { withBasePath } from "@/lib/base-path";
+import { PhotoTags } from "../vision/photo-tags";
 import { backfillImageMetadata } from "@/lib/data-server-client";
 import { formatBytes, formatMegapixels, formatOrientation } from "./info-format";
 
@@ -205,6 +206,11 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
           }}
         />
       </div>
+
+      {/* Below the caption, because both are user-authored content in the same
+          syncable table — and above nothing, because tags are the last thing
+          anyone edits here. Renders itself away when the vision routes 501. */}
+      <PhotoTags recordId={image.id} visible={visible} />
     </div>
   );
 }

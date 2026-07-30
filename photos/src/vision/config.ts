@@ -49,8 +49,10 @@ export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionCon
   const faces = section(patch, "faces");
   const scene = section(patch, "scene");
   const objects = section(patch, "objects");
+  const tags = section(patch, "tags");
   const threshold = faces?.threshold;
   const objectThreshold = objects?.threshold;
+  const tagThreshold = tags?.threshold;
   return {
     faces: {
       enabled: bool(faces, "enabled", base.faces.enabled),
@@ -62,6 +64,26 @@ export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionCon
     },
     scene: {
       enabled: bool(scene, "enabled", base.scene.enabled),
+    },
+    tags: {
+      // Strings only, trimmed, de-duplicated, and capped. The cap is not
+      // arbitrary: every entry costs a text encode when the vocabulary changes and a
+      // dot product per photo per tag thereafter, and §11 warns that too large makes
+      // every photo score something.
+      vocabulary: Array.isArray(tags?.vocabulary)
+        ? [
+            ...new Set(
+              (tags.vocabulary as unknown[])
+                .filter((entry): entry is string => typeof entry === "string")
+                .map((entry) => entry.trim())
+                .filter((entry) => entry.length > 0 && entry.length <= 100),
+            ),
+          ].slice(0, 500)
+        : base.tags.vocabulary,
+      threshold:
+        typeof tagThreshold === "number" && Number.isFinite(tagThreshold)
+          ? Math.min(0.5, Math.max(0, tagThreshold))
+          : base.tags.threshold,
     },
     objects: {
       enabled: bool(objects, "enabled", base.objects.enabled),

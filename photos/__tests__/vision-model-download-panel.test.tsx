@@ -95,6 +95,7 @@ function status(
       faces: { enabled: false, threshold: 0.45, publishLabels: false },
       scene: { enabled: false },
       objects: { enabled: false, threshold: 0.35 },
+      tags: { vocabulary: [], threshold: 0.06 },
     },
     worker: { built: true, path: "/tmp/worker.mjs", buildCommand: "pnpm vision:build-worker" },
     scan: {
@@ -133,6 +134,7 @@ function status(
         store: { processed: 0, sidecarsOnDisk: 0, detections: 0, classes: 0, imagesWithObjects: 0 },
       },
     },
+    tags: { count: 0, threshold: 0.06, embedded: false, stale: false },
     search: {
       models: sceneModels({
         pack: {

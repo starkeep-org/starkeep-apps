@@ -20,6 +20,7 @@ import {
   taskProcessedRecordIds,
 } from "@/vision/sidecars";
 import { readPeople } from "@/vision/people";
+import { readTagEmbeddings, vocabularyHash } from "@/vision/tags";
 
 export const runtime = "nodejs";
 // Every field here is read off local disk, so a cached render would report a
@@ -42,6 +43,9 @@ export const dynamic = "force-dynamic";
 export async function GET(): Promise<Response> {
   const remote = remoteNotImplemented();
   if (remote) return remote;
+
+  const config = readVisionConfig();
+  const tagEmbeddings = readTagEmbeddings();
 
   const faceSidecars = readAllFaceSidecars();
   let facesFound = 0;
@@ -69,7 +73,7 @@ export async function GET(): Promise<Response> {
   const index = readSceneIndex();
 
   return NextResponse.json({
-    config: readVisionConfig(),
+    config,
     worker: {
       built: existsSync(workerBundlePath()),
       path: workerBundlePath(),
@@ -115,6 +119,16 @@ export async function GET(): Promise<Response> {
           indexReady: index !== null,
         },
       },
+    },
+    tags: {
+      count: config.tags.vocabulary.length,
+      threshold: config.tags.threshold,
+      embedded: tagEmbeddings !== null,
+      // Built for a different list than the one configured — what a hand-edited
+      // config.json produces, and the state in which the tag routes decline to guess.
+      stale:
+        tagEmbeddings !== null &&
+        tagEmbeddings.vocabularyHash !== vocabularyHash(config.tags.vocabulary),
     },
     search: {
       models: groupModels("search"),

@@ -22,3 +22,4 @@ export { FaceOverlay } from "./components/vision/face-overlay";
 export { ObjectOverlay } from "./components/vision/object-overlay";
 export { LabelledBoxOverlay } from "./components/vision/labelled-box-overlay";
 export { SearchView } from "./components/vision/search-view";
+export { PhotoTags } from "./components/vision/photo-tags";

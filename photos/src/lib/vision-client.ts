@@ -18,6 +18,7 @@ export interface VisionConfigShape {
   faces: { enabled: boolean; threshold: number; publishLabels: boolean };
   scene: { enabled: boolean };
   objects: { enabled: boolean; threshold: number };
+  tags: { vocabulary: string[]; threshold: number };
 }
 
 export interface VisionScanState {
@@ -102,6 +103,12 @@ export interface VisionStatus {
     faces: VisionTaskStatus<VisionFaceStore>;
     scene: VisionTaskStatus<VisionSceneStore>;
     objects: VisionTaskStatus<VisionObjectStore>;
+  };
+  tags: {
+    count: number;
+    threshold: number;
+    embedded: boolean;
+    stale: boolean;
   };
   search: {
     models: VisionModelGroup;
@@ -315,4 +322,71 @@ export function searchVision(
   for (const key of options.dropped ?? []) params.append("drop", key);
   if (options.limit) params.set("limit", String(options.limit));
   return get<VisionSearchResponse>(`/api/vision/search?${params}`);
+}
+
+// ---------------------------------------------------------------------------
+// Tags (plan §7)
+// ---------------------------------------------------------------------------
+
+export interface PhotoTagView {
+  tag: string;
+  /**
+   * `suggested` — derived, untouched. `confirmed` — derived and kept by the user.
+   * `added` — typed by the user. Only the last two are publishable, since an
+   * uncalibrated score must not become another app's ground truth.
+   */
+  source: "suggested" | "confirmed" | "added";
+  score: number | null;
+}
+
+export interface PhotoTagsResponse {
+  /** False when the photo has no scene embedding yet — user tags still apply. */
+  described: boolean;
+  tags: PhotoTagView[];
+  /** Near-misses below the threshold, for a "did you mean" affordance. */
+  suggestions: Array<{ tag: string; score: number }>;
+  edits: { added: string[]; removed: string[] };
+}
+
+export function fetchPhotoTags(recordId: string): Promise<MaybeUnavailable<PhotoTagsResponse>> {
+  return get<PhotoTagsResponse>(`/api/vision/tags/${encodeURIComponent(recordId)}`);
+}
+
+/**
+ * Save the whole diff, not a toggle.
+ *
+ * The diff is the unit that syncs, so a partial update would need a
+ * read-modify-write here *and* an LWW resolution in the table. A client that has
+ * rendered the tags already knows the intended state.
+ */
+export function savePhotoTags(
+  recordId: string,
+  edits: { added: string[]; removed: string[] },
+): Promise<MaybeUnavailable<PhotoTagsResponse>> {
+  return send(`/api/vision/tags/${encodeURIComponent(recordId)}`, "PUT", edits);
+}
+
+export interface VocabularyResponse {
+  vocabulary: string[];
+  threshold: number;
+  /** Whether text embeddings exist for the configured list. */
+  embedded: boolean;
+  /** Built for a different list than the one configured. */
+  stale?: boolean;
+}
+
+export function fetchVocabulary(): Promise<MaybeUnavailable<VocabularyResponse>> {
+  return get<VocabularyResponse>("/api/vision/vocabulary");
+}
+
+/**
+ * Replace the vocabulary and rebuild its embeddings.
+ *
+ * Cheap by design (§7): one text encode per tag and then a dot product per
+ * (image, tag). No scan, no image decode.
+ */
+export function saveVocabulary(
+  patch: { vocabulary?: string[]; threshold?: number },
+): Promise<MaybeUnavailable<VocabularyResponse>> {
+  return send("/api/vision/vocabulary", "PUT", patch);
 }

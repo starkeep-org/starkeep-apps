@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   PhotoProvider,
   PhotoUrlProvider,
@@ -7,7 +7,8 @@ import {
   usePhotoContext,
   VisionPanel,
   PeopleView,
-  SearchView,
+  SearchBar,
+  type SearchMatches,
 } from "@/photos-ui";
 import {
   addPhotoFromPath,
@@ -23,6 +24,14 @@ import { downsizeImage } from "./src/lib/image-utils";
 import { resolveAppApiSource } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
+
+/**
+ * How many matches the search filter admits, and how much "Show more" widens it by.
+ *
+ * A filter width rather than a page size: §5.3 rejects an absolute score cutoff
+ * because cosine is uncalibrated, so top-k is what stands in for one.
+ */
+const SEARCH_PAGE = 120;
 
 
 function useFullSizeUrlCache() {
@@ -129,7 +138,27 @@ function PhotosAppInner() {
   // being re-derived from the build flag here.
   const [showVision, setShowVision] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
-  const [showSearch, setShowSearch] = useState(false);
+  // Search filters the main grid rather than opening its own. `limit` is the filter's
+  // width, not a page size — §5.3 rules out an absolute cutoff, so top-k *is* the
+  // filter and "Show more" widens it.
+  const [searchMatches, setSearchMatches] = useState<SearchMatches>({
+    recordIds: null,
+    total: 0,
+  });
+  const [searchLimit, setSearchLimit] = useState(SEARCH_PAGE);
+
+  /**
+   * Stable by necessity, not by habit: `SearchBar` has this in its debounce effect's
+   * dependency chain, so a new identity each render would re-fire the search forever.
+   */
+  const onMatchesChange = useCallback((matches: SearchMatches) => {
+    setSearchMatches(matches);
+    // Clearing the box also forgets a widened filter, so the next query starts at the
+    // default width. Guarded so an unchanged value does not cost a render.
+    if (matches.recordIds === null) {
+      setSearchLimit((prev) => (prev === SEARCH_PAGE ? prev : SEARCH_PAGE));
+    }
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
     () => (localStorage.getItem("thumbnail-strategy") as ThumbnailStrategy) ?? "browser",
@@ -165,6 +194,26 @@ function PhotosAppInner() {
     }
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
+
+  /**
+   * The search filter, applied to the list the grid already renders.
+   *
+   * Matched ids are **originals** (the scan set is originals-only), while the grid
+   * shows thumbnails whose `parentId` is the original — so a display image is matched
+   * by its original id, which is `parentId` for a thumbnail and `id` for a
+   * fallback original.
+   *
+   * Date order and grouping survive; the ranking decides *membership* rather than
+   * position. That is the tradeoff of filtering instead of showing a second list:
+   * within the matches you keep the chronological layout you already know how to
+   * read, and lose the relevance order between them.
+   */
+  const visibleImages = useMemo(() => {
+    const matched = searchMatches.recordIds;
+    if (matched === null) return displayImages;
+    const wanted = new Set(matched);
+    return displayImages.filter((img) => wanted.has(img.parentId ?? img.id));
+  }, [displayImages, searchMatches]);
 
   // Backfill thumbnails for orphan originals. A ref prevents the same ID from
   // being submitted more than once per session, even if the effect re-fires.
@@ -337,16 +386,6 @@ function PhotosAppInner() {
             </button>
           )}
 
-          {!FORCE_REMOTE && (
-            <button
-              onClick={() => setShowSearch(true)}
-              title="Search by person or description"
-              style={toolbarButtonStyle}
-            >
-              Search
-            </button>
-          )}
-
           <button
             onClick={handleAddClick}
             disabled={adding}
@@ -405,10 +444,18 @@ function PhotosAppInner() {
           </div>
         )}
 
+        {!FORCE_REMOTE && (
+          <SearchBar
+            limit={searchLimit}
+            onWiden={() => setSearchLimit((n) => n + SEARCH_PAGE)}
+            onMatchesChange={onMatchesChange}
+          />
+        )}
+
         <CoverImageBanner />
 
         <PhotoGrid
-          images={displayImages}
+          images={visibleImages}
           loading={state.loading}
           hasMore={false}
           onLoadMore={() => {}}
@@ -438,30 +485,6 @@ function PhotosAppInner() {
 
         {showPeople && <PeopleView onClose={() => setShowPeople(false)} />}
 
-        {showSearch && (
-          <SearchView
-            onClose={() => setShowSearch(false)}
-            // Search returns *original* record ids (the scan set is originals-only),
-            // while the grid renders thumbnails whose `parentId` is the original. So
-            // a result is resolved to its thumbnail where one exists, and to the
-            // original otherwise — the same fallback the grid itself makes.
-            thumbnailUrl={(recordId) => {
-              const display =
-                displayImages.find((img) => img.parentId === recordId) ??
-                displayImages.find((img) => img.id === recordId);
-              return display ? getFullSizeSrc(display.id) ?? undefined : undefined;
-            }}
-            onSelect={(recordId) => {
-              const display =
-                displayImages.find((img) => img.parentId === recordId) ??
-                displayImages.find((img) => img.id === recordId);
-              if (display) {
-                dispatch({ type: "SET_SELECTED_ID", id: display.id });
-                setShowSearch(false);
-              }
-            }}
-          />
-        )}
       </div>
     </PhotoUrlProvider>
   );

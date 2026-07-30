@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { mergeVisionConfig, readVisionConfig, writeVisionConfig } from "@/vision/config";
 import { publishFaceLabels, retractFaceLabels } from "@/vision/label-publish";
+import { readConfirmedTags } from "@/vision/confirmed-tags";
 import { remoteNotImplemented } from "@/vision/remote";
 
 export const runtime = "nodejs";
@@ -27,6 +28,10 @@ export async function PUT(req: NextRequest): Promise<Response> {
   // A toggle that only gates *future* writes would leave the names it already
   // published on the shared plane after being turned off, which makes it a lie
   // about the disclosure it exists to control.
+  //
+  // The one toggle covers names, face counts, and user-confirmed tags: all three are
+  // the same disclosure decision — "let other apps see what I know about my photos" —
+  // and splitting it would offer a choice nobody has a basis to make differently.
   let labels: unknown = null;
   if (next.faces.publishLabels !== previous.faces.publishLabels) {
     const creds = await loadAppCredentials("photos");
@@ -41,12 +46,18 @@ export async function PUT(req: NextRequest): Promise<Response> {
         { status: 200 },
       );
     }
-    const fetchAs = (path: string, init: RequestInit) =>
+    // `init` is optional because the tag read is a plain GET, while the label
+    // writes are POSTs — one fetcher serves both.
+    const fetchAs = (path: string, init?: RequestInit) =>
       signedFetch(creds, path, init as Parameters<typeof signedFetch>[2]);
     try {
+      // The confirmed tags come from `image_enriched` over the network, unlike
+      // everything else the publisher folds. Read once, here, so the plan stays a
+      // pure function of what it is given.
+      const confirmed = await readConfirmedTags(fetchAs);
       labels = next.faces.publishLabels
-        ? await publishFaceLabels(fetchAs)
-        : await retractFaceLabels(fetchAs);
+        ? await publishFaceLabels(fetchAs, confirmed)
+        : await retractFaceLabels(fetchAs, [...confirmed.keys()]);
     } catch (err) {
       return NextResponse.json(
         {

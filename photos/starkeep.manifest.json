@@ -35,6 +35,10 @@
       {
         "key": "face-count",
         "description": "How many faces on-device detection found in this photo, as a small integer. Absent (never zero) when there are none, so ?label=photos/face-count means 'has at least one face'."
+      },
+      {
+        "key": "tags",
+        "description": "A tag the user has confirmed or typed on this photo. Multi-valued: one row per tag, so ?label=photos/tags&labelValue=the%20beach finds every photo the user agreed is a beach. Only user-confirmed tags are published — machine suggestions are not, because their similarity scores are uncalibrated and must not become another app's ground truth."
       }
     ],
     "appSpecificSyncable": {

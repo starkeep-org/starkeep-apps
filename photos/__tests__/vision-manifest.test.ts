@@ -24,6 +24,9 @@ interface Manifest {
   id: string;
   infraRequirements?: {
     labelKeys?: Array<{ key: string; description?: string }>;
+    appSpecificSyncable?: {
+      tables?: Array<{ name: string; columns?: Array<{ name: string; type: string }> }>;
+    };
   };
 }
 
@@ -72,9 +75,24 @@ describe("label keys", () => {
     expect(count.description).toMatch(/absent|never zero/i);
   });
 
+  it("declares `tags`, and says only confirmed ones are published", () => {
+    // §7's rule has to be discoverable from the registry, not only from Photos'
+    // source: another app reading `photos/tags` needs to know it is looking at human
+    // judgements rather than uncalibrated similarity scores. That distinction is the
+    // whole reason the key is safe to consume.
+    expect(declaredKeys).toContain("tags");
+    expect(PHOTOS_LABEL_KEYS.tags).toBe("tags");
+    const tags = declared.find((k) => k.key === "tags")!;
+    expect(tags.description).toMatch(/multi-valued/i);
+    expect(tags.description).toMatch(/confirm/i);
+    expect(tags.description).toMatch(/suggest/i);
+  });
+
   it("stays within the platform's 64-key-per-app cap with room to spare", () => {
-    // The cap exists to force keys to be schema. Objects and scene are still to
-    // come; this is a smoke alarm, not a limit.
+    // The cap exists to force keys to be schema. This is a smoke alarm, not a limit —
+    // objects deliberately publishes nothing, since a detection is not something a
+    // human agreed with and `?label=photos/objects&labelValue=dog` would be asserting
+    // a machine's guess as fact.
     expect(declaredKeys.length).toBeLessThan(16);
   });
 });
@@ -86,5 +104,30 @@ describe("mirrored platform constants", () => {
     // dependency for two numbers. Pinned here so the copy is at least visible.
     expect(LABEL_VALUE_MAX_BYTES).toBe(128);
     expect(LABEL_VALUES_PER_KEY_MAX).toBe(32);
+  });
+});
+
+describe("the syncable table", () => {
+  const enriched = manifest.infraRequirements?.appSpecificSyncable?.tables?.find(
+    (t) => t.name === "image_enriched",
+  );
+
+  it("declares the column user tag edits are stored in", () => {
+    // §3.6's trap: access is granted at install time from the manifest, so a column
+    // that is not declared here does not exist until Photos is re-installed — and the
+    // symptom is a rejected write, not a missing column.
+    expect(enriched).toBeDefined();
+    const columns = (enriched!.columns ?? []).map((c) => c.name);
+    expect(columns).toContain("tag_edits");
+  });
+
+  it("keeps the columns that were already there", () => {
+    // Adding `tag_edits` must not disturb the others: the partial upsert the tag
+    // route uses relies on caption, title, and date_taken_override surviving a write
+    // that does not mention them.
+    const columns = (enriched!.columns ?? []).map((c) => c.name);
+    for (const existing of ["record_id", "caption", "title", "date_taken_override"]) {
+      expect(columns).toContain(existing);
+    }
   });
 });

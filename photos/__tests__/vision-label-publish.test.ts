@@ -16,7 +16,11 @@ import { newPerson, readPeople, writePeople } from "@/vision/people";
 import { writeFaceSidecar } from "@/vision/sidecars";
 import { FACE_MODEL_ID } from "@/vision/models";
 import { FACE_SIDECAR_VERSION, type DetectedFace } from "@/vision/types";
-import { LABEL_VALUES_PER_KEY_MAX } from "@/photos-lib";
+import {
+  LABEL_VALUE_MAX_BYTES,
+  LABEL_VALUES_PER_KEY_MAX,
+  PHOTOS_LABEL_KEYS,
+} from "@/photos-lib";
 
 let root: string;
 let previousDir: string | undefined;
@@ -67,9 +71,9 @@ function seed(recordId: string, angles: number[]): void {
 /** Collects the bodies a publish sends, and always succeeds. */
 function recordingFetcher() {
   const batches: Array<{ labels: LabelValueWrite[] }> = [];
-  const fetcher = async (path: string, init: RequestInit) => {
+  const fetcher = async (path: string, init?: RequestInit) => {
     expect(path).toBe("/data/labels/values");
-    batches.push(JSON.parse(String(init.body)) as { labels: LabelValueWrite[] });
+    batches.push(JSON.parse(String(init?.body)) as { labels: LabelValueWrite[] });
     return new Response("{}", { status: 200 });
   };
   return { batches, fetcher };
@@ -306,5 +310,101 @@ describe("retractFaceLabels", () => {
     expect(all).toHaveLength(4);
     expect(all.every((w) => w.values.length === 0)).toBe(true);
     expect(new Set(all.map((w) => w.key))).toEqual(new Set(["faces", "face-count"]));
+  });
+});
+
+describe("publishing user-confirmed tags", () => {
+  it("publishes only what the user confirmed or typed", async () => {
+    // §7's rule, and the reason it is a rule: a suggestion is an uncalibrated cosine
+    // that shifted the last time the vocabulary changed, so publishing it would make
+    // that number another app's ground truth. Only `added` — tags a human typed or
+    // explicitly kept — is passed in, so the plan has no way to publish a suggestion
+    // even by accident.
+    seed("photo", [0]);
+    const plan = planLabelPublish(new Map([["photo", ["the beach", "birthday"]]]));
+    const tags = plan.writes.find((w) => w.key === PHOTOS_LABEL_KEYS.tags);
+    expect(tags?.values).toEqual(["birthday", "the beach"]);
+    expect(plan.tagsPublished).toBe(2);
+  });
+
+  it("writes an explicit empty set for a photo whose tags were all removed", async () => {
+    // Not a no-op: the set-valued write reads empty as "this key holds nothing",
+    // which is what retracts a tag the user just deleted. Omitting it would leave the
+    // old rows published forever.
+    seed("photo", [0]);
+    const plan = planLabelPublish(new Map([["photo", []]]));
+    const tags = plan.writes.find((w) => w.key === PHOTOS_LABEL_KEYS.tags);
+    expect(tags).toBeDefined();
+    expect(tags?.values).toEqual([]);
+  });
+
+  it("publishes tags for a photo with no face sidecar", async () => {
+    // Tags are keyed on their own record set. Iterating the face store would silently
+    // drop every photo the user tagged but never face-scanned.
+    const plan = planLabelPublish(new Map([["untouched-by-faces", ["a sunset"]]]));
+    expect(plan.writes).toEqual([
+      { recordId: "untouched-by-faces", key: PHOTOS_LABEL_KEYS.tags, values: ["a sunset"] },
+    ]);
+  });
+
+  it("omits the tags key entirely for photos with no edits", async () => {
+    // Nothing to publish and nothing to retract, so no row is spent on it.
+    seed("photo", [0]);
+    const plan = planLabelPublish();
+    expect(plan.writes.some((w) => w.key === PHOTOS_LABEL_KEYS.tags)).toBe(false);
+  });
+
+  it("drops an over-long tag rather than truncating it", async () => {
+    // A truncated tag is a *different* tag, matching a query for neither.
+    const long = "x".repeat(LABEL_VALUE_MAX_BYTES + 1);
+    const plan = planLabelPublish(new Map([["photo", [long, "ok"]]]));
+    const tags = plan.writes.find((w) => w.key === PHOTOS_LABEL_KEYS.tags);
+    expect(tags?.values).toEqual(["ok"]);
+  });
+
+  it("caps values per key, stably", async () => {
+    const many = Array.from({ length: LABEL_VALUES_PER_KEY_MAX + 10 }, (_, i) =>
+      `tag-${String(i).padStart(3, "0")}`,
+    );
+    const first = planLabelPublish(new Map([["photo", many]]));
+    const second = planLabelPublish(new Map([["photo", [...many].reverse()]]));
+    const values = (p: ReturnType<typeof planLabelPublish>) =>
+      p.writes.find((w) => w.key === PHOTOS_LABEL_KEYS.tags)?.values;
+    expect(values(first)).toHaveLength(LABEL_VALUES_PER_KEY_MAX);
+    // Sorted before truncating, so the surviving subset does not depend on order.
+    expect(values(first)).toEqual(values(second));
+  });
+
+  it("de-duplicates and trims", async () => {
+    const plan = planLabelPublish(new Map([["photo", ["a", " a ", "a", "", "  "]]]));
+    const tags = plan.writes.find((w) => w.key === PHOTOS_LABEL_KEYS.tags);
+    expect(tags?.values).toEqual(["a"]);
+  });
+
+  it("sends the tags through the same set-valued write", async () => {
+    seed("photo", [0]);
+    const { batches, fetcher } = recordingFetcher();
+    const result = await publishFaceLabels(fetcher, new Map([["photo", ["the beach"]]]));
+    expect(result.tagsPublished).toBe(1);
+    expect(valuesFor(batches, "photo", PHOTOS_LABEL_KEYS.tags)).toEqual(["the beach"]);
+  });
+
+  it("retracts tags for tagged records, even ones with no faces", async () => {
+    // Turning the toggle off has to un-publish everything it published, or it is a
+    // lie about the disclosure it exists to control.
+    seed("with-face", [0]);
+    const { batches, fetcher } = recordingFetcher();
+    await retractFaceLabels(fetcher, ["with-face", "tags-only"]);
+    expect(valuesFor(batches, "with-face", PHOTOS_LABEL_KEYS.tags)).toEqual([]);
+    expect(valuesFor(batches, "tags-only", PHOTOS_LABEL_KEYS.tags)).toEqual([]);
+    expect(valuesFor(batches, "with-face", PHOTOS_LABEL_KEYS.faces)).toEqual([]);
+  });
+
+  it("retracts nothing extra when no photo was tagged", async () => {
+    seed("with-face", [0]);
+    const { batches, fetcher } = recordingFetcher();
+    await retractFaceLabels(fetcher);
+    const all = batches.flatMap((b) => b.labels);
+    expect(all.some((w) => w.key === PHOTOS_LABEL_KEYS.tags)).toBe(false);
   });
 });

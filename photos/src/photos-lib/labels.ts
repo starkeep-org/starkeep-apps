@@ -28,8 +28,8 @@ export const PHOTOS_APP_ID = "photos";
  * (`POST /data/labels/values`) instead, or the old value would sit beside the
  * new one with nothing to say which is current.
  *
- * `faces` and `face-count` are exactly that updated case, and both go through
- * `/data/labels/values` — see `src/vision/label-publish.ts`.
+ * `faces`, `face-count`, and `tags` are exactly that updated case, and all three go
+ * through `/data/labels/values` — see `src/vision/label-publish.ts`.
  */
 export const PHOTOS_LABEL_KEYS = {
   /** The child is a derived thumbnail of its parent. */
@@ -53,6 +53,18 @@ export const PHOTOS_LABEL_KEYS = {
    * make the presence query match every processed image.
    */
   faceCount: "face-count",
+  /**
+   * One value per tag the user has **confirmed or typed** on the photo.
+   * Multi-valued, like `faces`.
+   *
+   * Deliberately *not* every suggested tag. §7's argument: raw CLIP cosine is
+   * uncalibrated and vocabulary-dependent, so a suggestion is a number that shifted
+   * when the candidate list last changed. Publishing that would make an
+   * uncalibrated score into another app's ground truth. Only what a human agreed
+   * with crosses the plane — the same precedent as `faces`, where only *named*
+   * clusters are published and never raw detections.
+   */
+  tags: "tags",
 } as const;
 
 /**

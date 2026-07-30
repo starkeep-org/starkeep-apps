@@ -50,9 +50,11 @@ export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionCon
   const scene = section(patch, "scene");
   const objects = section(patch, "objects");
   const tags = section(patch, "tags");
+  const search = section(patch, "search");
   const threshold = faces?.threshold;
   const objectThreshold = objects?.threshold;
   const tagThreshold = tags?.threshold;
+  const denseFloor = search?.denseFloor;
   return {
     faces: {
       enabled: bool(faces, "enabled", base.faces.enabled),
@@ -64,6 +66,14 @@ export function mergeVisionConfig(base: VisionConfig, patch: unknown): VisionCon
     },
     scene: {
       enabled: bool(scene, "enabled", base.scene.enabled),
+    },
+    search: {
+      // Clamped to a band where the value can still mean something: cross-modal
+      // cosines live near zero, so anything past 0.5 admits nothing on any query.
+      denseFloor:
+        typeof denseFloor === "number" && Number.isFinite(denseFloor)
+          ? Math.min(0.5, Math.max(-1, denseFloor))
+          : base.search.denseFloor,
     },
     tags: {
       // Strings only, trimmed, de-duplicated, and capped. The cap is not

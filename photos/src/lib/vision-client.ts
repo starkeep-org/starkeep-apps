@@ -19,6 +19,7 @@ export interface VisionConfigShape {
   scene: { enabled: boolean };
   objects: { enabled: boolean; threshold: number };
   tags: { vocabulary: string[]; threshold: number };
+  search: { denseFloor: number };
 }
 
 export interface VisionScanState {

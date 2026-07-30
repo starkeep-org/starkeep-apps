@@ -158,8 +158,9 @@ describe("search", () => {
     expect(embedQueries).toHaveBeenCalledWith(["at the beach", "a photo of at the beach"]);
     expect(response.residual).toBe("at the beach");
     expect(response.terms).toEqual([]);
-    // The pool minimum normalizes to zero and is dropped — see `ranking.ts`.
-    expect(response.results.map((r) => r.recordId)).toEqual(["beachy", "middling"]);
+    // All three clear the dense membership floor, so all three are returned — the
+    // weakest is no longer discarded just for being the pool's minimum.
+    expect(response.results.map((r) => r.recordId)).toEqual(["beachy", "middling", "indoors"]);
   });
 
   it("filters exactly for a pure-name query", async () => {

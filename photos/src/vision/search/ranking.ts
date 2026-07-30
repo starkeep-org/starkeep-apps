@@ -42,6 +42,52 @@ export interface RankingWeights {
  */
 export const DEFAULT_WEIGHTS: RankingWeights = { person: 2, object: 1.5, dense: 1 };
 
+/**
+ * Raw cosine below which a photo is not a description match at all.
+ *
+ * **This is a membership test, and it is deliberately absolute** — which §5.3 argued
+ * against, on the grounds that cosine is uncalibrated and its useful range shifts per
+ * query. That argument is sound and the measurements bear it out: on a real library
+ * `"a lake"` spans 0.033–0.076 while `"water"` spans 0.020–0.066, so one constant does
+ * behave differently per phrasing.
+ *
+ * It is used anyway because every *relative* alternative is worse, and measurably so.
+ * Min-max normalization and z-scores are both scale-invariant, so they assign the top
+ * photo a high score whether or not anything matches: `"a plate of sushi"` on a
+ * library containing no food scores every photo **negative**, yet three photos clear
+ * a median/MAD z of 1.0. A relative rule cannot express "nothing matched", and that
+ * is the one thing a filter must be able to say.
+ *
+ * What the floor buys, from the same measurements: it excludes the clearly-absent
+ * outright (sushi, a subway train — both largely negative). What it cannot do is
+ * separate a weak real match from noise, because the model does not separate them
+ * either — `"a spaceship"` peaks at 0.037 on a library with no spacecraft while a
+ * genuine `"water"` match sits at 0.035. That band is ambiguous in the *model*, not
+ * in this code, and no threshold fixes it. §5.4's complementarity argument is the
+ * real answer there: the detector knows what a boat is.
+ *
+ * **Measured outcomes at this default, on a 7-photo library.** Worth recording,
+ * because they show what the floor does and does not buy:
+ *
+ *     a plate of sushi   0/7   ✓ correctly nothing
+ *     a subway train     0/7   ✓ correctly nothing
+ *     a dog              2/7   ✓ the dog photo first, by 2×
+ *     water              4/7   ~ three photos actually contain water
+ *     a spaceship        5/7   ✗ false positives survive
+ *     a lake             7/7   ✗ the whole library
+ *
+ * `"a lake"` is the instructive failure: its baseline sits around 0.035, so a 0.03
+ * floor admits everything. That is §5.3's objection reproduced — a single constant
+ * cannot suit every phrasing, because the *offset* moves with the wording.
+ *
+ * So this floor fixes membership being unexpressible; it does **not** fix relevance.
+ * Removing the remaining false positives needs the per-query offset estimated rather
+ * than assumed, and estimating it wants a library of thousands — the median of seven
+ * photos, three of which match, is itself a match. Deliberately left as a tunable
+ * constant rather than a statistic invented on too little data.
+ */
+export const DEFAULT_DENSE_FLOOR = 0.03;
+
 export interface Candidate {
   recordId: string;
   /** Which structured terms this photo satisfies. */
@@ -60,8 +106,28 @@ export interface ScoredResult {
   matched: StructuredTerm[];
 }
 
+export interface RankingOptions {
+  weights?: RankingWeights;
+  /** Raw-cosine membership floor for description matches. */
+  denseFloor?: number;
+}
+
 /**
- * Min-max normalize the dense scores **across this query's pool**, then fuse.
+ * Decide membership, then fuse and order the survivors.
+ *
+ * **Membership and ranking are separate steps, and conflating them was a real bug.**
+ * The previous version let min-max normalization decide both: the pool minimum
+ * normalizes to exactly 0, scores 0, and was dropped — so a description query over a
+ * pool of *every indexed photo* always returned `poolSize − 1` results, whatever was
+ * typed and whether or not anything matched. On a small library that is almost the
+ * whole library; on a large one it is silently always exactly `limit`. Either way
+ * there was no reachable "nothing matched".
+ *
+ * A candidate is admitted if it carries **any exact signal** (a person or a class —
+ * those are lookups, not similarities) **or** a raw cosine at or above the floor.
+ * Normalization then happens over the admitted pool and only sets the *weighting* of
+ * the description term against the structured ones, which is all it was ever suited
+ * for.
  *
  * Normalization is the part that must not be skipped. Raw cosine sits in a
  * narrow, uncalibrated, query-dependent band — for SigLIP typically well above
@@ -70,28 +136,33 @@ export interface ScoredResult {
  * per query rather than globally is what adapts to wherever the band happens to
  * sit for this particular phrasing (§5.3).
  *
- * Dropping everything that scores zero preserves exactness for pure-structured
- * queries: `"photos of Alice"` has no residual, so there is no dense term, and
- * everything that matched nothing is excluded — which is exactly a filter, with no
- * special case for it.
- *
- * One consequence worth naming rather than discovering: min-max normalization puts
- * the pool's dense *minimum* at 0, so a dense query silently drops its single
- * worst match. Over a real library the pool is every indexed photo, so that is one
- * photo out of thousands and beneath notice — but it is why a two-candidate pool
- * returns one result, which looks like a bug in a test and is not.
+ * Exactness for pure-structured queries falls out of the same rule: `"photos of
+ * Alice"` has no residual, so `dense` is null throughout and only photos carrying the
+ * exact match are admitted — a filter, with no special case for it.
  */
 export function rankCandidates(
   candidates: readonly Candidate[],
-  weights: RankingWeights = DEFAULT_WEIGHTS,
+  options: RankingWeights | RankingOptions = {},
 ): ScoredResult[] {
-  const dense = candidates.map((c) => c.dense).filter((d): d is number => d !== null);
+  // Accepts bare weights for the callers that predate the options object.
+  const opts: RankingOptions = "dense" in options ? { weights: options } : options;
+  const weights = opts.weights ?? DEFAULT_WEIGHTS;
+  const floor = opts.denseFloor ?? DEFAULT_DENSE_FLOOR;
+
+  const admitted = candidates.filter(
+    (c) => c.matched.length > 0 || (c.dense !== null && c.dense >= floor),
+  );
+
+  // Normalized over the *admitted* pool, not every candidate: including rejects would
+  // let a photo that failed the floor set the bottom of the range and compress
+  // everything that passed it into the top of the scale.
+  const dense = admitted.map((c) => c.dense).filter((d): d is number => d !== null);
   const lowest = dense.length > 0 ? Math.min(...dense) : 0;
   const highest = dense.length > 0 ? Math.max(...dense) : 0;
   const span = highest - lowest;
 
   const scored: ScoredResult[] = [];
-  for (const candidate of candidates) {
+  for (const candidate of admitted) {
     let structured = 0;
     for (const term of candidate.matched) structured += weightFor(term, weights);
 
@@ -102,11 +173,11 @@ export function rankCandidates(
     const normalized =
       candidate.dense === null ? null : span > 1e-9 ? (candidate.dense - lowest) / span : 1;
 
-    const score = structured + (normalized === null ? 0 : weights.dense * normalized);
-    if (score <= 0) continue;
+    // No `score <= 0` drop: membership was decided above, and using the score for it
+    // is what discarded the weakest admitted match on every query.
     scored.push({
       recordId: candidate.recordId,
-      score,
+      score: structured + (normalized === null ? 0 : weights.dense * normalized),
       structured,
       dense: normalized,
       matched: candidate.matched,

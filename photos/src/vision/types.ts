@@ -148,6 +148,15 @@ export const OBJECT_SIDECAR_VERSION = 1;
 export const DEFAULT_OBJECT_THRESHOLD = 0.35;
 
 /**
+ * Mirrors `search/ranking.ts`'s `DEFAULT_DENSE_FLOOR`.
+ *
+ * Duplicated rather than imported for the same reason the object threshold is:
+ * `ranking.ts` reaches this module, so importing back would close a cycle.
+ * `vision-search-ranking.test.ts` pins the two to each other.
+ */
+export const DEFAULT_DENSE_FLOOR = 0.03;
+
+/**
  * **Empty on purpose — tag suggestions are parked.**
  *
  * A hand-authored seed list of ~70 phrases used to live here, and measuring it
@@ -258,6 +267,16 @@ export interface VisionConfig {
      */
     enabled: boolean;
   };
+  search: {
+    /**
+     * Raw cosine below which a photo is not a description match.
+     *
+     * Exposed because the measurements say one constant cannot be right for every
+     * phrasing — see `DEFAULT_DENSE_FLOOR` for why it is absolute anyway, and why the
+     * default is a compromise rather than a finding.
+     */
+    denseFloor: number;
+  };
   tags: {
     /**
      * The candidate list zero-shot tagging scores against.
@@ -310,6 +329,7 @@ export function defaultVisionConfig(): VisionConfig {
     faces: { enabled: false, threshold: 0.45, publishLabels: false },
     scene: { enabled: false },
     objects: { enabled: false, threshold: DEFAULT_OBJECT_THRESHOLD },
+    search: { denseFloor: DEFAULT_DENSE_FLOOR },
     tags: { vocabulary: [...DEFAULT_TAG_VOCABULARY], threshold: DEFAULT_TAG_THRESHOLD },
   };
 }

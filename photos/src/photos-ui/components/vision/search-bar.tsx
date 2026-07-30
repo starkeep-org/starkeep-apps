@@ -17,9 +17,11 @@ import {
  * ranking is not wasted, it decides *membership* rather than position, which is what
  * makes "filter the library I already know how to read" work.
  *
- * §5.3 rules out an absolute cutoff — cosine is uncalibrated, so a fixed threshold
- * returns the library or nothing depending on phrasing. So the filter is top-k, and
- * `limit` is the knob: raising it widens the filter rather than extending a page.
+ * Counted as "results" rather than "matches", and that is not hedging. Membership is
+ * a raw-cosine floor (`ranking.ts`), and measurement shows the band just above it
+ * genuinely mixes weak real matches with noise — a query for something absent from
+ * the library can still score as highly as a real but faint match. Calling those
+ * "matches" would assert something the model does not support.
  *
  * The component owns the query and reports matches upward; the parent owns the grid.
  * It renders nothing at all when the vision routes answer 501, so a cloud-served
@@ -138,7 +140,7 @@ export function SearchBar({ onMatchesChange, limit, onWiden }: SearchBarProps) {
           <span style={countStyle}>
             {busy && response === null
               ? "searching…"
-              : `${response?.total ?? 0} match${(response?.total ?? 0) === 1 ? "" : "es"}`}
+              : `${response?.total ?? 0} result${(response?.total ?? 0) === 1 ? "" : "s"}`}
             {busy && response !== null ? " …" : ""}
           </span>
         )}

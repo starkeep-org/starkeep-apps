@@ -15,6 +15,7 @@
 
 import { listTaskRecordIds, readAllFaceSidecars, readAllObjectSidecars } from "../sidecars";
 import { className } from "../coco-classes";
+import { readVisionConfig } from "../config";
 import { readPeople } from "../people";
 import { readSceneIndex, scoreAgainstIndex } from "../scene-index";
 import { embedQueries } from "./query-controller";
@@ -32,7 +33,9 @@ export interface SearchOptions {
   /** Chip keys (`person:<id>`) the user has dismissed — §5.2. */
   dropped?: ReadonlySet<string>;
   weights?: RankingWeights;
-  /** How many results to return. §5.3: top-k with "show more", never a threshold. */
+  /** Overrides the configured raw-cosine membership floor. */
+  denseFloor?: number;
+  /** How many results to return, once membership has been decided. */
   limit?: number;
 }
 
@@ -208,7 +211,10 @@ export async function search(query: string, options: SearchOptions = {}): Promis
     });
   }
 
-  const ranked = rankCandidates(candidates, options.weights ?? DEFAULT_WEIGHTS);
+  const ranked = rankCandidates(candidates, {
+    weights: options.weights ?? DEFAULT_WEIGHTS,
+    denseFloor: options.denseFloor ?? readVisionConfig().search.denseFloor,
+  });
   const limited = ranked.slice(0, limit);
 
   return {

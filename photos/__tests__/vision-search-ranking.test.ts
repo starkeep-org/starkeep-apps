@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   bandResults,
+  DEFAULT_DENSE_FLOOR,
   DEFAULT_WEIGHTS,
   rankCandidates,
   type Candidate,
 } from "@/vision/search/ranking";
+import { defaultVisionConfig } from "@/vision/types";
 import type { StructuredTerm } from "@/vision/search/parse";
 
 /**
@@ -47,14 +49,14 @@ describe("the additive invariant", () => {
       candidate("neither", 0.03),
     ]);
 
-    // The plan's table has a fourth row, "neither", at ~0.0. It is absent here
-    // rather than last: it is the pool's dense minimum, so it normalizes to 0,
-    // scores 0, and `requireSignal` drops it. Over a real library the pool is every
-    // indexed photo, so this only ever discards the single worst match.
+    // All four rows of §5.1's table, in its order. The fourth used to be missing:
+    // membership was decided by normalization, so the pool's dense minimum scored 0
+    // and was dropped on every query. It clears the floor, so it belongs here.
     expect(ranked.map((r) => r.recordId)).toEqual([
       "alice-at-beach",
       "alice-indoors",
       "best-beach-no-alice",
+      "neither",
     ]);
 
     const byId = new Map(ranked.map((r) => [r.recordId, r.score]));
@@ -98,29 +100,41 @@ describe("per-query normalization", () => {
     // Raw cosine sits in a narrow, uncalibrated, query-dependent band. Without
     // this the weight would have to absorb the band's position, which is what makes
     // weights untunable.
+    // All three clear the membership floor, so normalization only sets the weighting.
     const ranked = rankCandidates([
       candidate("high", 0.11),
-      candidate("mid", 0.065),
-      candidate("low", 0.02),
+      candidate("mid", 0.075),
+      candidate("low", 0.04),
     ]);
     const byId = new Map(ranked.map((r) => [r.recordId, r.dense]));
     expect(byId.get("high")).toBeCloseTo(1, 6);
     expect(byId.get("mid")).toBeCloseTo(0.5, 6);
-    // The floor normalizes to 0 and is therefore dropped by `requireSignal` —
-    // present in the pool, absent from the results, which is the intended shape.
-    expect(ranked.map((r) => r.recordId)).toEqual(["high", "mid"]);
+    // The weakest admitted candidate normalizes to 0 and is still *returned* — that
+    // is the bug this separation fixed. It sorts last; it does not vanish.
+    expect(byId.get("low")).toBeCloseTo(0, 6);
+    expect(ranked.map((r) => r.recordId)).toEqual(["high", "mid", "low"]);
   });
 
-  it("adapts to wherever the band happens to sit", () => {
-    // Two queries whose absolute cosines differ tenfold must rank identically,
-    // because the normalization is relative to the pool rather than global.
+  it("adapts to wherever the band happens to sit, among admitted candidates", () => {
+    // The weighting is pool-relative, so two queries whose cosines differ tenfold
+    // rank identically — provided both clear the floor.
     const order = (scale: number) =>
       rankCandidates([
         candidate("a", 0.1 * scale),
-        candidate("b", 0.05 * scale),
-        candidate("c", 0.01 * scale),
+        candidate("b", 0.07 * scale),
+        candidate("c", 0.04 * scale),
       ]).map((r) => r.recordId);
     expect(order(1)).toEqual(order(10));
+  });
+
+  it("is deliberately NOT scale-invariant about membership", () => {
+    // The trade the floor buys, stated as a test. A purely relative rule ranks a
+    // library of non-matches exactly as confidently as a library of matches — measured
+    // on real photos, "a plate of sushi" scores every photo *negative* and still puts
+    // three of them above a median/MAD z of 1.0. Being absolute here is what lets
+    // "nothing matched" exist at all.
+    expect(rankCandidates([candidate("a", 0.1), candidate("b", 0.05)])).toHaveLength(2);
+    expect(rankCandidates([candidate("a", 0.01), candidate("b", 0.005)])).toEqual([]);
   });
 
   it("does not divide by zero when every cosine is identical", () => {
@@ -210,5 +224,57 @@ describe("bandResults", () => {
 
   it("returns nothing for no results", () => {
     expect(bandResults([])).toEqual([]);
+  });
+});
+
+describe("the dense membership floor", () => {
+  it("matches the default the config ships", () => {
+    // Duplicated across modules to avoid an import cycle, so pinned to each other.
+    expect(DEFAULT_DENSE_FLOOR).toBe(defaultVisionConfig().search.denseFloor);
+  });
+
+  it("excludes a photo whose description score is below the floor", () => {
+    const ranked = rankCandidates([candidate("match", 0.08), candidate("noise", 0.01)]);
+    expect(ranked.map((r) => r.recordId)).toEqual(["match"]);
+  });
+
+  it("returns nothing when no photo clears the floor", () => {
+    // The state that was previously unreachable: a description query always returned
+    // `poolSize − 1` results, so "nothing matched" could not be expressed.
+    expect(rankCandidates([candidate("a", 0.01), candidate("b", 0.02), candidate("c", -0.03)])).toEqual([]);
+  });
+
+  it("admits an exact match whatever its description score", () => {
+    // A person or a class is a lookup, not a similarity — the floor is a statement
+    // about uncalibrated cosines and has no business gating an exact signal.
+    const ranked = rankCandidates([candidate("alice-in-the-dark", -0.05, [alice])]);
+    expect(ranked.map((r) => r.recordId)).toEqual(["alice-in-the-dark"]);
+  });
+
+  it("honours an overridden floor", () => {
+    const candidates = [candidate("a", 0.08), candidate("b", 0.05), candidate("c", 0.02)];
+    expect(rankCandidates(candidates, { denseFloor: 0 })).toHaveLength(3);
+    expect(rankCandidates(candidates, { denseFloor: 0.06 })).toHaveLength(1);
+  });
+
+  it("normalizes over the admitted pool, not every candidate", () => {
+    // Including rejects would let a photo that failed the floor set the bottom of the
+    // range and compress everything that passed it into the top of the scale.
+    const withReject = rankCandidates([
+      candidate("high", 0.10),
+      candidate("low", 0.05),
+      candidate("rejected", -0.20),
+    ]);
+    const without = rankCandidates([candidate("high", 0.10), candidate("low", 0.05)]);
+    expect(withReject.map((r) => r.dense)).toEqual(without.map((r) => r.dense));
+  });
+
+  it("still accepts bare weights, for callers that pass them positionally", () => {
+    const ranked = rankCandidates([candidate("a", 0.08, [alice])], {
+      person: 0.5,
+      object: 1.5,
+      dense: 1,
+    });
+    expect(ranked[0].structured).toBe(0.5);
   });
 });

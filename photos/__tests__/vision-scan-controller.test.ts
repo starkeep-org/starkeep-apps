@@ -67,7 +67,7 @@ describe("startScan refusals", () => {
   });
 
   it("refuses without the models, naming which are missing", async () => {
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
     const result = await startScan();
     expect(result).toMatchObject({ ok: false, status: 409 });
     expect(result.ok === false && result.error).toContain("scrfd_10g_bnkps.onnx");
@@ -77,7 +77,7 @@ describe("startScan refusals", () => {
   it("treats a wrong-size model file as missing", async () => {
     // A truncated download must not present as installed — the failure would
     // otherwise surface as an opaque ONNX load error mid-scan.
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
     mkdirSync(modelsDir(), { recursive: true });
     for (const model of FACE_MODELS) {
       writeFileSync(join(modelsDir(), model.fileName), Buffer.alloc(1024));
@@ -94,7 +94,7 @@ describe("startScan refusals", () => {
     // `workerBundlePath`), so the only way to test its absence is to make it
     // absent. Moved aside and restored rather than deleted: on a dev machine
     // this file is a real build output.
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
     installFakeModels();
 
     const bundle = workerBundlePath();
@@ -112,7 +112,7 @@ describe("startScan refusals", () => {
 
   it("spawns nothing on any refusal", async () => {
     // Models absent, so this refuses before it would reach the worker at all.
-    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 } });
+    writeVisionConfig({ faces: { enabled: true, threshold: 0.45, publishLabels: false }, scene: { enabled: false }, objects: { enabled: false, threshold: 0.35 }, tags: { vocabulary: [], threshold: 0.06 }, search: { denseFloor: 0.03 } });
     await startScan();
     expect(isScanning()).toBe(false);
   });

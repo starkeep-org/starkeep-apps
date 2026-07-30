@@ -114,6 +114,7 @@ describe("config", () => {
       scene: { enabled: true },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     };
     writeVisionConfig(config);
     expect(readVisionConfig()).toEqual(config);
@@ -133,12 +134,14 @@ describe("config", () => {
       scene: { enabled: true },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     };
     expect(mergeVisionConfig(base, { faces: { enabled: false } })).toEqual({
       faces: { enabled: false, threshold: 0.6, publishLabels: true },
       scene: { enabled: true },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     });
   });
 
@@ -152,12 +155,14 @@ describe("config", () => {
       scene: { enabled: false },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     };
     expect(mergeVisionConfig(base, { scene: { enabled: true } })).toEqual({
       faces: { enabled: true, threshold: 0.6, publishLabels: true },
       scene: { enabled: true },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     });
   });
 
@@ -283,6 +288,7 @@ describe("enabled tasks and their models", () => {
       scene: { enabled: false },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     };
     expect(enabledTaskIds(facesOnly)).toEqual(["faces"]);
     expect(taskEnabled(facesOnly, "faces")).toBe(true);
@@ -293,6 +299,7 @@ describe("enabled tasks and their models", () => {
       scene: { enabled: true },
       objects: { enabled: false, threshold: 0.35 },
       tags: { vocabulary: [], threshold: 0.06 },
+      search: { denseFloor: 0.03 },
     };
     expect(enabledTaskIds(sceneOnly)).toEqual(["scene"]);
 

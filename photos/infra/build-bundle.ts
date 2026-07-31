@@ -25,6 +25,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -42,6 +43,72 @@ const BUNDLE_OUT = process.env.STARKEEP_BUNDLE_OUT;
 if (!BUNDLE_OUT) {
   console.error("Error: STARKEEP_BUNDLE_OUT env var is required (abs path to write dist.zip).");
   process.exit(1);
+}
+
+/** [major, minor, patch] of a version string, for ordering comparisons. */
+function versionParts(version: string): [number, number, number] {
+  const [major, minor, patch] = version
+    .split("-")[0]
+    .split(".")
+    .map((n) => Number.parseInt(n, 10) || 0);
+  return [major ?? 0, minor ?? 0, patch ?? 0];
+}
+
+/** Lowest version a `^x.y.z` / `>=x.y.z` / `x.y.z` range accepts. */
+function rangeFloor(range: string): string | undefined {
+  return /^[\^~>=]*\s*(\d+\.\d+\.\d+)/.exec(range.trim())?.[1];
+}
+
+/**
+ * Exact sharp version to pin the Lambda's install to: the one the photos
+ * workspace actually has installed, so the resize handler runs the same sharp
+ * the app is built and tested against.
+ *
+ * Read from the installed package rather than the `^x.y.z` range in
+ * package.json because the range is still floating. Note this repo gitignores
+ * pnpm-lock.yaml, so "installed" means whatever the last `pnpm install` on this
+ * machine resolved — hence the floor check below, which turns a node_modules
+ * tree that has fallen behind package.json into a loud failure instead of a
+ * bundle that silently ships an old sharp.
+ */
+function resolveSharpVersion(): string {
+  const require = createRequire(join(PHOTOS_DIR, "package.json"));
+  let pkgPath: string;
+  try {
+    pkgPath = require.resolve("sharp/package.json");
+  } catch {
+    console.error(
+      `Error: sharp is not installed in ${PHOTOS_DIR}; run \`pnpm install\` before bundling.`,
+    );
+    process.exit(1);
+  }
+  const version = JSON.parse(readFileSync(pkgPath, "utf8")).version;
+  if (typeof version !== "string" || version.length === 0) {
+    console.error(`Error: could not read a version from ${pkgPath}.`);
+    process.exit(1);
+  }
+
+  // Guard against a stale tree: sharp carries the libvips CVE surface, and
+  // every resize/crop/vision pass runs user-uploaded bytes through it, so
+  // bundling something older than package.json asks for is a security
+  // regression, not a nuisance.
+  const declared = JSON.parse(
+    readFileSync(join(PHOTOS_DIR, "package.json"), "utf8"),
+  ).dependencies?.sharp;
+  const floor = typeof declared === "string" ? rangeFloor(declared) : undefined;
+  if (floor) {
+    const [a, b] = [versionParts(version), versionParts(floor)];
+    const older = a[0] !== b[0] ? a[0] < b[0] : a[1] !== b[1] ? a[1] < b[1] : a[2] < b[2];
+    if (older) {
+      console.error(
+        `Error: photos has sharp ${version} installed but package.json declares ${declared}.\n` +
+          `Run \`pnpm install\` to refresh node_modules — bundling now would ship sharp ${version} to the Lambda.`,
+      );
+      process.exit(1);
+    }
+  }
+
+  return version;
 }
 
 async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<void> {
@@ -232,9 +299,17 @@ export async function handler(event, context) {
     //    @img/sharp-libvips-linux-x64, leaving the bundle with sharp's JS but
     //    no native binary, and the Lambda fails at require("sharp") with
     //    "Could not load the sharp module using the linux-x64 runtime".
-    console.log("\nInstalling sharp for linux/x64 (glibc)…");
+    //
+    //    The version is pinned to whatever the photos workspace resolved from
+    //    pnpm-lock.yaml — an unpinned `npm install sharp` here would ship npm's
+    //    current latest, so the deployed Lambda would not be reproducible from
+    //    the repo and could differ from the sharp the app is developed against.
+    //    sharp pins its own @img/sharp-* native packages to exact versions, so
+    //    pinning sharp pins the binaries too.
+    const sharpVersion = resolveSharpVersion();
+    console.log(`\nInstalling sharp@${sharpVersion} for linux/x64 (glibc)…`);
     execSync(
-      "npm install --os=linux --cpu=x64 --libc=glibc --no-package-lock --no-save sharp",
+      `npm install --os=linux --cpu=x64 --libc=glibc --no-package-lock --no-save sharp@${sharpVersion}`,
       { cwd: stagingDir, stdio: "inherit" },
     );
 

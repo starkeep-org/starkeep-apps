@@ -66,6 +66,50 @@ export function variantSrc(image: AppImage, targetLongEdge: number): DisplaySour
   };
 }
 
+/** Whether a record is a video, from its own type. */
+export function isVideoRecord(image: Pick<AppImage, "mimeType">): boolean {
+  return image.mimeType.startsWith("video/");
+}
+
+/**
+ * The best *still* rendition — what a grid tile paints, for a photo or a clip.
+ *
+ * Necessary because a video's children include a poster and a transcode at the
+ * same long edge (`video-poster-720p` and `video-720p` are both 1280), and
+ * resolution by size alone breaks the tie on id. Painting a tile from whatever
+ * came back would eventually put an MP4 in an `<img>`.
+ *
+ * Variants with no declared type are treated as stills. That keeps a
+ * still-only library working against a server that does not send the type, and
+ * it is the safe direction: the alternative — assuming video — would blank the
+ * grid for everyone.
+ */
+export function posterSrc(image: AppImage, targetLongEdge: number): DisplaySource | null {
+  return variantSrc(filterVariants(image, (t) => !t.startsWith("video/")), targetLongEdge);
+}
+
+/**
+ * The best playable rendition, or `null` when there is none yet.
+ *
+ * `null` is a real answer and means "show the poster and do not offer play" —
+ * a clip whose transcode has not been derived is not broken, it is not ready.
+ * Falling back to the original here would be worse than useless: it is the
+ * 4 GB file the transcode exists to avoid streaming, and on a phone it is the
+ * one thing guaranteed not to play.
+ */
+export function playbackSrc(image: AppImage, targetLongEdge: number): DisplaySource | null {
+  return variantSrc(filterVariants(image, (t) => t.startsWith("video/")), targetLongEdge);
+}
+
+function filterVariants(image: AppImage, keep: (type: string) => boolean): AppImage {
+  return {
+    ...image,
+    variants: Object.fromEntries(
+      Object.entries(image.variants).filter(([, v]) => keep(v.type ?? "image/")),
+    ),
+  };
+}
+
 /**
  * The sizes a grid tile asks for.
  *

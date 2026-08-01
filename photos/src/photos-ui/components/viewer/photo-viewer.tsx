@@ -1,6 +1,8 @@
 import { useCallback, useState, useEffect } from "react";
 import type { AppImage } from "@/photos-lib";
+import { isVideoRecord } from "@/photos-lib";
 import { PhotoInfoPanel } from "./photo-info-panel";
+import { VideoPlayer } from "./video-player";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { FaceOverlay } from "../vision/face-overlay";
 import type { ImageFaces } from "../../../lib/vision-client";
@@ -23,6 +25,7 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // render the browser's broken-image glyph while its signed URL is still being
   // fetched (a cache miss on open) and while the original downloads.
   const fullSizeSrc = getFullSizeSrc(image.id) ?? undefined;
+  const isVideo = isVideoRecord(image);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     setLoaded(false);
@@ -150,7 +153,10 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
             overflow: "hidden",
           }}
         >
-          {!loaded && (
+          {/* Video has no `onLoad`, so `loaded` never flips for it and the
+              skeleton would pulse forever behind a playing clip. The player
+              draws its own poster while it buffers. */}
+          {!loaded && !isVideo && (
             <div
               aria-hidden
               data-testid="photo-skeleton"
@@ -161,7 +167,8 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
               }}
             />
           )}
-          {fullSizeSrc && (
+          {isVideo && <VideoPlayer image={image} onToggleInfo={() => setInfoVisible((v) => !v)} />}
+          {!isVideo && fullSizeSrc && (
             <img
               src={fullSizeSrc}
               alt={image.originalFilename}

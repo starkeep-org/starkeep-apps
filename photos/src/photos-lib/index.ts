@@ -98,6 +98,9 @@ export {
 } from "./import/import-run";
 export {
   variantSrc,
+  posterSrc,
+  playbackSrc,
+  isVideoRecord,
   tileTargetLongEdge,
   viewportTargetLongEdge,
   type DisplaySource,

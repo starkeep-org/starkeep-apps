@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
-import { canThumbnail, findThumbnailFor, PHOTOS_LABEL_KEYS } from "@/photos-lib";
+import { precheckThumbnail, PHOTOS_LABEL_KEYS } from "@/photos-lib";
 
 export const runtime = "nodejs";
 
@@ -56,28 +56,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Record has no attached file" }, { status: 422 });
   }
 
-  // Both questions below used to be answered by `parent_id`, and both were
-  // wrong once crops existed — a crop has a parent too. They now read the
-  // typed edge, via the same helpers the cloud resize Lambda and the grid use.
-  // One list, hydrated with labels, answers both.
-  const existingRes = await signedFetch(creds, `/data/records?limit=1000&include=labels`);
-  if (existingRes.ok) {
-    const { records } = (await existingRes.json()) as {
-      records: Array<{
-        id: string;
-        parent_id: string | null;
-        labels?: Array<{ app_id: string; key: string }>;
-      }>;
-    };
-
-    if (!canThumbnail(records, targetId)) {
-      return NextResponse.json({ error: "Record is already a thumbnail" }, { status: 400 });
-    }
-
-    const existing = findThumbnailFor(records, targetId);
-    if (existing) {
-      return NextResponse.json({ ok: true, thumbnailId: existing.id, skipped: true });
-    }
+  // Two targeted queries, not a scan of the library. Both questions used to be
+  // answered by listing every record and filtering client-side, which was
+  // O(library) — and wrong above the page limit, since a record outside the
+  // first 1000 read as "no thumbnail yet" and got one derived again.
+  const precheck = await precheckThumbnail(targetId, (p) => signedFetch(creds, p));
+  if (precheck.alreadyThumbnail) {
+    return NextResponse.json({ error: "Record is already a thumbnail" }, { status: 400 });
+  }
+  if (precheck.existingThumbnailId) {
+    return NextResponse.json({ ok: true, thumbnailId: precheck.existingThumbnailId, skipped: true });
   }
 
   // Fetch the source image file

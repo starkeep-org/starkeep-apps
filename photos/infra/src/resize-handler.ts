@@ -17,8 +17,7 @@ import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import {
-  canThumbnail,
-  findThumbnailFor,
+  precheckThumbnail,
   PHOTOS_LABEL_KEYS,
 } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
@@ -77,29 +76,19 @@ export async function handler(event: APIGatewayEvent) {
     const { record } = (await recordRes.json()) as { record: BrokerPhotoRecord };
 
     if (!record.object_storage_key) return clientErr("Record has no attached file", 422);
-    // Both questions below used to be answered by `parent_id`, and both were
-    // wrong once crops existed — a crop has a parent too. They now read the
-    // typed edge. A type-less list is server-scoped to the app's granted
-    // types, returning every image; hydrating labels answers both from one
-    // request.
-    const existingRes = await signedFetch(creds, `/data/records?limit=1000&include=labels`);
-    if (existingRes.ok) {
-      const { records } = (await existingRes.json()) as {
-        records: Array<{
-          id: string;
-          parent_id: string | null;
-          labels?: Array<{ app_id: string; key: string }>;
-        }>;
-      };
-      // Both rules come from photos-lib, shared with the Next /api/resize
-      // route this handler mirrors line for line — a rule kept in both would
-      // eventually be fixed in only one.
-      if (!canThumbnail(records, targetId)) {
-        return clientErr("Record is already a thumbnail", 400);
-      }
-
-      const existing = findThumbnailFor(records, targetId);
-      if (existing) return ok({ ok: true, thumbnailId: existing.id, skipped: true });
+    // Two targeted queries, not a scan of the library. Both questions used to
+    // be answered by listing every readable record and filtering client-side,
+    // which was O(library) — and wrong above the page limit, since a record
+    // outside the first 1000 read as "no thumbnail yet" and got one derived
+    // again. The rules live in photos-lib, shared with the Next /api/resize
+    // route this handler mirrors line for line: a rule kept in both would
+    // eventually be fixed in only one.
+    const precheck = await precheckThumbnail(targetId, (p) => signedFetch(creds, p));
+    if (precheck.alreadyThumbnail) {
+      return clientErr("Record is already a thumbnail", 400);
+    }
+    if (precheck.existingThumbnailId) {
+      return ok({ ok: true, thumbnailId: precheck.existingThumbnailId, skipped: true });
     }
 
     // Presigned URL for the source file — direct S3 fetch, no broker hop for

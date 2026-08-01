@@ -11,7 +11,9 @@ export {
   isThumbnail,
   findThumbnailFor,
   canThumbnail,
+  precheckThumbnail,
   type LabelledRecord,
+  type ThumbnailPrecheck,
 } from "./labels";
 export type { GoogleAlbum, GoogleMediaItem } from "./types/google";
 

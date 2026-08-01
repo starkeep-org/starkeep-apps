@@ -60,7 +60,27 @@ export interface AppImage {
    * derived yet. Both read the same way to a consumer: fall back to the inline
    * placeholder.
    */
-  variants: Record<string, { url: string; width: number; height: number }>;
+  variants: Record<
+    string,
+    {
+      url: string;
+      width: number;
+      height: number;
+      /**
+       * The variant's own Starkeep type (`image/jpeg`, `video/mp4`).
+       *
+       * Necessary, not decorative: a video's children include a poster *and* a
+       * transcode at the same long edge — `video-poster-720p` and `video-720p`
+       * are both 1280 — so resolution by size alone can hand back either, with
+       * the tie broken on id. Without the type a client cannot tell them apart
+       * and will eventually put a JPEG in a `<video>` element.
+       *
+       * Optional because a server that predates this still resolves correctly
+       * for stills, where the ambiguity does not arise.
+       */
+      type?: string;
+    }
+  >;
 
   /**
    * Base64 ThumbHash — a ~25-byte inline placeholder, rendered client-side with

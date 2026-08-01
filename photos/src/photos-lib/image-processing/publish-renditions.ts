@@ -225,6 +225,43 @@ export async function publishThumbHash(
   }
 }
 
+/**
+ * Tell the platform this record's derived ladder is complete.
+ *
+ * The decision is deliberately split. Only Photos knows what a complete ladder
+ * *is* — the platform must never learn what `image-medium` means, and a
+ * platform-side check would have to. So the app asserts completeness, and the
+ * platform independently applies its own floors (object size, cloud exclusion)
+ * before tagging. Neither side alone can freeze anything: an app that is wrong
+ * about its ladder still cannot archive a small file, and a platform that
+ * wanted to be clever still cannot archive a record whose renditions do not
+ * exist.
+ *
+ * Tagging is not transitioning. The lifecycle rule performs the move after the
+ * hold period, which is what buys a week to catch a derivation bug before the
+ * input is behind a 48-hour thaw.
+ *
+ * Best-effort: a record that stays un-tagged simply stays in the instant tier,
+ * costing a little more and behaving identically. Failing an ingest because an
+ * optimisation did not apply would be the wrong trade.
+ */
+export async function assertLadderComplete(
+  signedFetch: SignedFetch,
+  parentId: string,
+): Promise<{ tagged: boolean; refusals: string[] }> {
+  const res = await signedFetch(`/data/records/${parentId}/archive-gate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ladderComplete: true }),
+  });
+  if (!res.ok) {
+    console.warn(`[renditions] archive gate for ${parentId} returned ${res.status}`);
+    return { tagged: false, refusals: [`gate returned ${res.status}`] };
+  }
+  const body = (await res.json()) as { tagged?: boolean; refusals?: string[] };
+  return { tagged: body.tagged === true, refusals: body.refusals ?? [] };
+}
+
 /** The label ref a caller uses to ask the server which rungs a record has. */
 export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}`;
 

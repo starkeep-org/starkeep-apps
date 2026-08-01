@@ -12,9 +12,30 @@ export {
   findThumbnailFor,
   canThumbnail,
   precheckThumbnail,
+  renditionClassOf,
+  THUMBNAIL_SIZE_CLASS,
   type LabelledRecord,
   type ThumbnailPrecheck,
 } from "./labels";
+export {
+  STILL_LADDER,
+  VIDEO_LADDER,
+  DEFAULT_DISABLED_CLASSES,
+  SKIM_MIN_SPEED,
+  SKIM_TARGET_SECONDS,
+  SKIM_FPS,
+  applicableStillClasses,
+  applicableVideoClasses,
+  renditionLongEdge,
+  topApplicableStillClass,
+  isOwnTopOfLadder,
+  transcodeWouldChangeAnything,
+  skimSpeedFactor,
+  type SizeClass,
+  type StillClassSpec,
+  type VideoClassSpec,
+  type VideoSource,
+} from "./ladder";
 export type { GoogleAlbum, GoogleMediaItem } from "./types/google";
 
 // EXIF reader

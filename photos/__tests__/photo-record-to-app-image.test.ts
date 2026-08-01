@@ -92,7 +92,7 @@ describe("photoRecordToAppImage", () => {
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "photos", key: "thumbnail", value: "", label: "photos/thumbnail" },
+            { app_id: "photos", key: "rendition", value: "image-thumb", label: "photos/rendition" },
           ],
         }),
         null,
@@ -137,7 +137,7 @@ describe("photoRecordToAppImage", () => {
           parent_id: "PARENT",
           labels: [
             { app_id: "other-app", key: "crop", value: "", label: "other-app/crop" },
-            { app_id: "other-app", key: "thumbnail", value: "", label: "other-app/thumbnail" },
+            { app_id: "other-app", key: "rendition", value: "image-thumb", label: "other-app/rendition" },
           ],
         }),
         null,
@@ -151,7 +151,7 @@ describe("photoRecordToAppImage", () => {
           parent_id: "PARENT",
           labels: [
             { app_id: "other-app", key: "faces-detected", value: "", label: "other-app/faces-detected" },
-            { app_id: "photos", key: "thumbnail", value: "", label: "photos/thumbnail" },
+            { app_id: "photos", key: "rendition", value: "image-thumb", label: "photos/rendition" },
           ],
         }),
         null,

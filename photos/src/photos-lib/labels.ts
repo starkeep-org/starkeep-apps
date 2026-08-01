@@ -32,8 +32,23 @@ export const PHOTOS_APP_ID = "photos";
  * `/data/labels/values` — see `src/vision/label-publish.ts`.
  */
 export const PHOTOS_LABEL_KEYS = {
-  /** The child is a derived thumbnail of its parent. */
-  thumbnail: "thumbnail",
+  /**
+   * Which rung of the rendition ladder this child is — `image-medium`,
+   * `video-720p`, and so on. See `ladder.ts` for the vocabulary.
+   *
+   * Replaces the old bare `thumbnail` flag, which could only express one
+   * derived size. It is **single-valued**: a record is one rung, so it is
+   * written through the set-valued endpoint (`POST /data/labels/values`), which
+   * upserts the new value and tombstones the rest. A plain label write would
+   * leave the old rung sitting beside the new one after a respec, with nothing
+   * to say which is current.
+   *
+   * There is deliberately no `native` value. The original is not a rendition —
+   * it is the thing renditions are derived *from* — and giving it a rung would
+   * make "every applicable class is present" unsatisfiable and let variant
+   * resolution serve an archived original.
+   */
+  rendition: "rendition",
   /** The child is a user-made crop of its parent. */
   crop: "crop",
   /**
@@ -65,6 +80,16 @@ export const PHOTOS_LABEL_KEYS = {
  * server enforces them for real, and a write that exceeds either is rejected as
  * a whole batch.
  */
+/**
+ * The rung the current resize path produces.
+ *
+ * Named here rather than inlined because the resize path predates the ladder
+ * and still generates exactly one size; when derivation generates the whole
+ * ladder (item 7) this constant is what disappears, and everything referring to
+ * it is the list of places that assumed one derived size.
+ */
+export const THUMBNAIL_SIZE_CLASS = "image-thumb";
+
 export const LABEL_VALUE_MAX_BYTES = 128;
 export const LABEL_VALUES_PER_KEY_MAX = 32;
 
@@ -77,7 +102,7 @@ export const LABEL_VALUES_PER_KEY_MAX = 32;
  * carries every app's labels and must not be read as a key→label map.
  */
 export interface LabelledRecord {
-  labels?: Array<{ app_id: string; key: string }>;
+  labels?: Array<{ app_id: string; key: string; value?: string }>;
 }
 
 /**
@@ -96,14 +121,39 @@ export interface LabelledRecord {
 export function derivedKindOf(record: LabelledRecord): DerivedKind | null {
   for (const label of record.labels ?? []) {
     if (label.app_id !== PHOTOS_APP_ID) continue;
-    if (label.key === PHOTOS_LABEL_KEYS.thumbnail) return "thumbnail";
+    if (label.key === PHOTOS_LABEL_KEYS.rendition) return "thumbnail";
     if (label.key === PHOTOS_LABEL_KEYS.crop) return "crop";
   }
   return null;
 }
 
+/**
+ * True when the record is any rung of the ladder.
+ *
+ * The name is now broader than it reads: with one derived size there was only
+ * ever a thumbnail, and the questions callers ask ("may this be derived from?",
+ * "should the grid show it?") are about derivedness rather than about a
+ * particular size. Kept as-is so the two resize paths and the grid keep asking
+ * the same question — {@link renditionClassOf} is what to use when the actual
+ * rung matters.
+ */
 export function isThumbnail(record: LabelledRecord): boolean {
   return derivedKindOf(record) === "thumbnail";
+}
+
+/**
+ * Which rung this record is, or null if it is not a rendition.
+ *
+ * Note this is deliberately not exposed to the UI: consumers request pixel
+ * sizes and the server resolves. It exists for derivation and respec logic,
+ * which genuinely does reason about classes.
+ */
+export function renditionClassOf(record: LabelledRecord): string | null {
+  for (const label of record.labels ?? []) {
+    if (label.app_id !== PHOTOS_APP_ID) continue;
+    if (label.key === PHOTOS_LABEL_KEYS.rendition) return label.value ?? null;
+  }
+  return null;
 }
 
 /**
@@ -176,7 +226,8 @@ export async function precheckThumbnail(
   // is the bug `parent_id` alone used to have.
   const existingRes = await fetchPath(
     `/data/records?parentId=${encodeURIComponent(targetId)}` +
-      `&label=${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.thumbnail}&limit=1`,
+      `&label=${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}` +
+      `&labelValue=${THUMBNAIL_SIZE_CLASS}&limit=1`,
   );
   let existingThumbnailId: string | null = null;
   if (existingRes.ok) {

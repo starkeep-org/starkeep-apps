@@ -211,11 +211,21 @@ export async function publishThumbHash(
   signedFetch: SignedFetch,
   parentId: string,
   thumbHash: string,
+  perceptualHash?: string,
 ): Promise<void> {
+  // Written together because they are the same kind of thing — both derived
+  // deterministically from the bytes during one decode — and because two
+  // metadata writes for one record is two round trips for no reason.
   const res = await signedFetch(`/data/records/${parentId}/metadata`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ typeId: "image", metadata: { thumb_hash: thumbHash } }),
+    body: JSON.stringify({
+      typeId: "image",
+      metadata: {
+        thumb_hash: thumbHash,
+        ...(perceptualHash ? { perceptual_hash: perceptualHash } : {}),
+      },
+    }),
   });
   if (!res.ok) {
     console.warn(

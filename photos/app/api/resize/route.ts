@@ -95,7 +95,8 @@ export async function POST(req: NextRequest) {
   // produces the whole ladder. Decoding once and encoding N times is the point:
   // decoding a 48 MP source is the expensive part, and doing it per rung would
   // multiply it for output that is collectively smaller than the source.
-  const { deriveStillLadder, computeThumbHash, readSourceDimensions } = await import(
+  const { deriveStillLadder, computeThumbHash, computePerceptualHash, readSourceDimensions } =
+    await import(
     "@/photos-lib/image-processing/derive-ladder"
   );
   const { publishRendition, existingRenditionClasses, publishThumbHash, assertLadderComplete } =
@@ -153,6 +154,10 @@ export async function POST(req: NextRequest) {
       (p2, i) => signedFetch(creds, p2, i),
       targetId,
       await computeThumbHash(inputBuffer),
+      // The near-duplicate finder's input. Computed here for the same reason as
+      // the placeholder: the decoded bitmap is already in hand, and a separate
+      // pass would mean decoding a 48 MP source twice for sixteen characters.
+      await computePerceptualHash(inputBuffer),
     );
   } catch (err) {
     // Best-effort by design: a missing placeholder is a grey tile for a few

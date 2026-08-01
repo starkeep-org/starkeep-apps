@@ -81,6 +81,7 @@ export { openImportStore, importDir, type ImportStore } from "./import/import-st
 export {
   runImport,
   walkImportable,
+  isVideoPath,
   type ImportDeps,
   type ImportProgress,
 } from "./import/run-import";
@@ -123,6 +124,16 @@ export {
   type SkimOptions,
   type FfmpegToolsOptions,
 } from "./video/video-tools";
+export {
+  publishVideoFacts,
+  publishVideoRendition,
+} from "./video/publish-video";
+export {
+  deriveAndPublishVideo,
+  isTerminalVideoError,
+  type VideoIngestResult,
+  type VideoIngestDeps,
+} from "./video/derive-and-publish";
 export {
   deriveVideoLadder,
   videoSourceOf,

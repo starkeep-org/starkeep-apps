@@ -76,9 +76,31 @@ export interface VideoTools {
   /** Whether the tools are actually present. Cheap; result is cached. */
   available(): Promise<boolean>;
   probe(path: string): Promise<VideoFacts>;
-  extractPoster(path: string, options: PosterOptions): Promise<Uint8Array>;
-  transcode(path: string, options: TranscodeOptions): Promise<Uint8Array>;
-  skim(path: string, options: SkimOptions): Promise<Uint8Array>;
+  extractPoster(path: string, options: PosterOptions): Promise<DerivedOutput>;
+  transcode(path: string, options: TranscodeOptions): Promise<DerivedOutput>;
+  skim(path: string, options: SkimOptions): Promise<DerivedOutput>;
+}
+
+/**
+ * Produced bytes together with their real dimensions.
+ *
+ * Dimensions are **measured from the output**, not computed from the source and
+ * the requested maximum. The scale filter rounds the free axis to an even number
+ * (`-2`), so a computed value is off by one often enough to matter — and these
+ * numbers are what variant resolution orders renditions by. A rendition whose
+ * dimensions are missing is invisible to resolution and becomes storage nobody
+ * ever reads; one whose dimensions are subtly wrong is worse, because it sorts
+ * into the wrong place and is served at the wrong size.
+ *
+ * The measurement is free: the output is already on disk for `faststart`, so
+ * this is one ffprobe against a local file, against seconds of encoding.
+ */
+export interface DerivedOutput {
+  readonly bytes: Uint8Array;
+  readonly width: number;
+  readonly height: number;
+  /** Present for video outputs; posters are a single frame. */
+  readonly durationMs?: number;
 }
 
 /**
@@ -139,16 +161,26 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
 
   let availability: Promise<boolean> | null = null;
 
-  async function ffmpegToStdout(args: string[]): Promise<Uint8Array> {
-    const { stdout } = await run(ffmpeg, args, {
-      timeout,
-      maxBuffer,
-      // Binary out. Without this the buffer is decoded as UTF-8 and every byte
-      // outside ASCII becomes U+FFFD — a corrupt file that still has a
-      // plausible length.
-      encoding: "buffer",
-    });
-    return new Uint8Array(stdout as Buffer);
+  /** Measure a produced file, so dimensions are observed rather than predicted. */
+  async function measure(path: string): Promise<{ width: number; height: number; durationMs?: number }> {
+    const { stdout } = await run(
+      ffprobe,
+      ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path],
+      { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const json = JSON.parse(stdout) as {
+      streams?: Array<{ codec_type?: string; width?: number; height?: number }>;
+      format?: { duration?: string };
+    };
+    const stream = json.streams?.find((s) => s.codec_type === "video");
+    const durationSeconds = Number(json.format?.duration ?? 0);
+    return {
+      width: stream?.width ?? 0,
+      height: stream?.height ?? 0,
+      ...(Number.isFinite(durationSeconds) && durationSeconds > 0
+        ? { durationMs: Math.round(durationSeconds * 1000) }
+        : {}),
+    };
   }
 
   /**
@@ -165,11 +197,23 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
    * cleanly, but it carries per-fragment overhead and is the wrong shape for
    * progressive seeking. A temp file is the cheaper trade.
    */
-  async function ffmpegToFile(args: (out: string) => string[], suffix: string): Promise<Uint8Array> {
+  async function ffmpegToFile(
+    args: (out: string) => string[],
+    suffix: string,
+  ): Promise<DerivedOutput> {
     const out = join(await mkdtemp(join(tmpdir(), "photos-video-")), `out${suffix}`);
     try {
       await run(ffmpeg, args(out), { timeout, maxBuffer: 1024 * 1024, encoding: "buffer" });
-      return new Uint8Array(await readFile(out));
+      // Measured while the file is still on disk. Predicting these from the
+      // source and the requested maximum would be wrong by the scale filter's
+      // even-number rounding, and these are the numbers variant resolution
+      // orders by.
+      const measured = await measure(out);
+      const bytes = new Uint8Array(await readFile(out));
+      if (bytes.byteLength > maxBuffer) {
+        throw new Error(`derived output is ${bytes.byteLength} bytes, over the ${maxBuffer} cap`);
+      }
+      return { bytes, ...measured };
     } finally {
       await rm(dirname(out), { recursive: true, force: true });
     }
@@ -210,25 +254,29 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
       return facts;
     },
 
-    async extractPoster(path: string, opts: PosterOptions): Promise<Uint8Array> {
+    async extractPoster(path: string, opts: PosterOptions): Promise<DerivedOutput> {
       const facts = await this.probe(path);
-      return ffmpegToStdout([
-        // -ss before -i seeks by keyframe without decoding everything up to
-        // that point. On a long clip the difference is seconds versus minutes.
-        "-ss", String(opts.atSeconds),
-        "-i", path,
-        "-frames:v", "1",
-        // Apply the display matrix. Without it a portrait source yields a
-        // sideways poster, since ffmpeg works in encoded orientation.
-        "-vf", `${transposeFilter(facts.rotation)}${scaleFilter(opts.maxLongEdge, facts.height > facts.width)}`,
-        "-f", "image2",
-        "-c:v", "mjpeg",
-        "-q:v", "3",
-        "pipe:1",
-      ]);
+      // To a file rather than a pipe, for the same reason the video outputs
+      // are: the dimensions have to be measured from the result, and variant
+      // resolution depends on them being exact.
+      return ffmpegToFile(
+        (out) => [
+          "-y",
+          // -ss before -i seeks by keyframe without decoding everything up to
+          // that point. On a long clip the difference is seconds versus minutes.
+          "-ss", String(opts.atSeconds),
+          "-i", path,
+          "-frames:v", "1",
+          "-vf", `${transposeFilter(facts.rotation)}${scaleFilter(opts.maxLongEdge, facts.height > facts.width)}`,
+          "-c:v", "mjpeg",
+          "-q:v", "3",
+          out,
+        ],
+        ".jpg",
+      );
     },
 
-    async transcode(path: string, opts: TranscodeOptions): Promise<Uint8Array> {
+    async transcode(path: string, opts: TranscodeOptions): Promise<DerivedOutput> {
       const facts = await this.probe(path);
       const vp9 = opts.codec === "vp9";
       return ffmpegToFile(
@@ -254,7 +302,7 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
       );
     },
 
-    async skim(path: string, opts: SkimOptions): Promise<Uint8Array> {
+    async skim(path: string, opts: SkimOptions): Promise<DerivedOutput> {
       const facts = await this.probe(path);
       return ffmpegToFile(
         (out) => [

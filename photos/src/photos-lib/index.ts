@@ -39,6 +39,9 @@ export {
 export {
   deriveStillLadder,
   readSourceDimensions,
+  computeThumbHash,
+  computePerceptualHash,
+  perceptualDistance,
   missingRenditionClasses,
   ladderIsComplete,
   cloudCanDecode,
@@ -66,12 +69,31 @@ export {
   type DerivationAttempt,
 } from "./image-processing/derivation-attempts";
 export {
+  findDuplicate,
+  captureFingerprint,
+  PERCEPTUAL_DISTANCE_THRESHOLD,
+  type DuplicateTier,
+  type DuplicateFinding,
+  type ImportCandidate,
+  type LibraryEntry,
+} from "./import/duplicate-tiers";
+export {
+  shouldAttempt,
+  summarize,
+  isComplete,
+  DEFAULT_PACING,
+  DEFAULT_IMPORT_DELAY_MS,
+  type ImportItem,
+  type ImportItemStatus,
+  type ImportRunSummary,
+  type ImportPacing,
+} from "./import/import-run";
+export {
   variantSrc,
   tileTargetLongEdge,
   viewportTargetLongEdge,
   type DisplaySource,
 } from "./variant-src";
-export type { GoogleAlbum, GoogleMediaItem } from "./types/google";
 
 // EXIF reader
 export { extractExif } from "./metadata/exif-reader";

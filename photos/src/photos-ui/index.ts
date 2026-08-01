@@ -12,7 +12,6 @@ export { PhotoViewer } from "./components/viewer/photo-viewer";
 export { PhotoInfoPanel } from "./components/viewer/photo-info-panel";
 
 // Google import
-export { GoogleImportPanel } from "./components/google/google-import-panel";
 
 // On-device vision (local target only — these render nothing when the routes
 // answer 501, so the toolbar can mount them unconditionally)

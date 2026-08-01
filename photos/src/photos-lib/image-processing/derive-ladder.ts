@@ -286,3 +286,79 @@ export async function computeThumbHash(imageBytes: Uint8Array): Promise<string> 
   const hash = rgbaToThumbHash(info.width, info.height, data);
   return Buffer.from(hash).toString("base64");
 }
+
+// ---------------------------------------------------------------------------
+// Perceptual hash
+// ---------------------------------------------------------------------------
+
+/**
+ * A 64-bit perceptual hash (difference hash), as 16 hex characters.
+ *
+ * Deliberately **not** an identity. It matches re-encodes, resizes and
+ * recompressions — which is exactly what makes it useful for finding import
+ * duplicates, and exactly what makes it unsafe as a key. Two genuinely
+ * different photos can collide; a burst of near-identical frames will collide
+ * on purpose. `contentHash` decides identity; this only proposes candidates for
+ * a human or a stricter tier to confirm.
+ *
+ * dHash rather than aHash or pHash: it compares adjacent pixels, so it is
+ * invariant to overall brightness and contrast changes (a Storage Saver
+ * re-encode, an auto-levels pass) in a way an average hash is not, and it needs
+ * no DCT.
+ *
+ * Computed during derivation because the decoded bitmap is already in hand.
+ */
+export async function computePerceptualHash(imageBytes: Uint8Array): Promise<string> {
+  const { default: sharp } = (await import("sharp")) as {
+    default: typeof import("sharp").default;
+  };
+
+  // 9×8 greyscale: each row yields 8 comparisons between horizontally adjacent
+  // pixels, for 64 bits total.
+  const { data } = await sharp(Buffer.from(imageBytes))
+    .rotate()
+    .greyscale()
+    .resize(9, 8, { fit: "fill" })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  // Built a nibble at a time rather than as a 64-bit integer: this project
+  // targets below ES2020, so BigInt literals are unavailable, and a pair of
+  // 32-bit halves would be more moving parts than the hex string it produces.
+  let hex = "";
+  for (let row = 0; row < 8; row++) {
+    for (let nibble = 0; nibble < 2; nibble++) {
+      let value = 0;
+      for (let bit = 0; bit < 4; bit++) {
+        const col = nibble * 4 + bit;
+        const left = data[row * 9 + col]!;
+        const right = data[row * 9 + col + 1]!;
+        value = (value << 1) | (left > right ? 1 : 0);
+      }
+      hex += value.toString(16);
+    }
+  }
+  return hex;
+}
+
+/**
+ * Hamming distance between two perceptual hashes, in bits.
+ *
+ * The comparison a threshold is applied to. Returns 64 (maximum distance) for
+ * malformed input rather than throwing, so one bad stored hash cannot abort a
+ * whole import scan — and 64 means "as different as possible", which is the
+ * safe direction: it will never cause a false duplicate.
+ */
+export function perceptualDistance(a: string, b: string): number {
+  if (!/^[0-9a-f]{16}$/.test(a) || !/^[0-9a-f]{16}$/.test(b)) return 64;
+  // Nibble by nibble, for the same ES-target reason as the hash itself.
+  let distance = 0;
+  for (let i = 0; i < 16; i++) {
+    let diff = parseInt(a[i]!, 16) ^ parseInt(b[i]!, 16);
+    while (diff > 0) {
+      distance += diff & 1;
+      diff >>= 1;
+    }
+  }
+  return distance;
+}

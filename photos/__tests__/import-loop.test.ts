@@ -179,6 +179,90 @@ describe("not holding files in memory", () => {
   });
 });
 
+describe("Live Photo pairing through the import", () => {
+  const registrations: Array<{ name: string; parentId?: string; labels?: unknown }> = [];
+
+  const pairingDeps = () =>
+    deps({
+      pairLivePhotos: true,
+      registerFile: async (
+        _p: string,
+        name: string,
+        _h: string,
+        _s: number,
+        options?: { parentId?: string; labels?: Array<{ key: string; value?: string }> },
+      ) => {
+        registrations.push({ name, ...options });
+        return { recordId: `rec-${registrations.length}`, deduped: false };
+      },
+    });
+
+  beforeEach(() => {
+    registrations.length = 0;
+  });
+
+  it("registers the clip as a child of the still", async () => {
+    await seed({ "IMG_1.heic": "still", "IMG_1.mov": "motion" });
+    const result = await runImport(dir, store, pairingDeps(), { delayMs: 0, maxItemsPerRun: null });
+
+    expect(result.livePhotosPaired).toBe(1);
+    const clip = registrations.find((r) => r.name === "IMG_1.mov")!;
+    const stillReg = registrations.find((r) => r.name === "IMG_1.heic")!;
+    expect(clip.parentId).toBe("rec-1");
+    expect(stillReg.parentId).toBeUndefined();
+    expect(clip.labels).toEqual([{ key: "live-photo", value: "filename" }]);
+  });
+
+  // The walk gives no guarantee the still is reached first. `IMG_1.heic` sorts
+  // before `IMG_1.mov` on most filesystems, which is exactly the kind of
+  // "usually true" that breaks on somebody else's disk.
+  it("attaches the clip even when the still is walked second", async () => {
+    // `a.mov` sorts before `b.heic`, but they pair by neither — so force the
+    // ordering question with a stem that sorts the clip first.
+    await seed({ "sub/IMG_1.mov": "motion", "sub/IMG_1.heic": "still" });
+    const result = await runImport(dir, store, pairingDeps(), { delayMs: 0, maxItemsPerRun: null });
+    expect(result.livePhotosPaired).toBe(1);
+    expect(registrations.find((r) => r.name === "IMG_1.mov")!.parentId).toBeDefined();
+  });
+
+  it("imports both halves exactly once", async () => {
+    await seed({ "IMG_1.heic": "still", "IMG_1.mov": "motion" });
+    await runImport(dir, store, pairingDeps(), { delayMs: 0, maxItemsPerRun: null });
+    expect(registrations).toHaveLength(2);
+    expect(store.summary().imported).toBe(2);
+  });
+
+  // Losing the pairing costs a tidier grid. Dropping the file loses somebody's
+  // video, and the two are not close.
+  it("still imports the clip when its still failed", async () => {
+    await seed({ "IMG_1.heic": "still", "IMG_1.mov": "motion" });
+    await runImport(
+      dir,
+      store,
+      deps({
+        pairLivePhotos: true,
+        registerFile: async (_p: string, name: string) => {
+          if (name.endsWith(".heic")) throw new Error("network went away");
+          registrations.push({ name });
+          return { recordId: "rec-clip", deduped: false };
+        },
+      }),
+      { delayMs: 0, maxItemsPerRun: null },
+    );
+    expect(registrations.map((r) => r.name)).toContain("IMG_1.mov");
+  });
+
+  it("does no pairing work when it was not asked for", async () => {
+    await seed({ "IMG_1.heic": "still", "IMG_1.mov": "motion" });
+    const result = await runImport(dir, store, pairingDeps.call(null) && deps(), {
+      delayMs: 0,
+      maxItemsPerRun: null,
+    });
+    expect(result.livePhotosPaired).toBe(0);
+    expect(store.summary().imported).toBe(2);
+  });
+});
+
 describe("resuming", () => {
   it("does not re-register anything already imported", async () => {
     await seed({ "a.jpg": "one", "b.jpg": "two" });
@@ -224,13 +308,22 @@ describe("resuming", () => {
   // The distinction that makes a resume useful. Without it, every subsequent
   // run spends itself re-failing on the same unreadable files — which on a
   // large import is indistinguishable from the tool being broken.
+  //
+  // The fixture is libvips' **real** message, verbatim. It previously said
+  // "undecodable-here: no HEIC decoder", which no decoder has ever produced —
+  // it was written to match the classifier rather than to reproduce a failure,
+  // so it passed while every actual HEIC was misclassified as transient and
+  // retried forever. A fixture that cannot fail the way production fails is
+  // not evidence of anything.
   it("never retries a file this build cannot decode", async () => {
     await seed({ "a.heic": "one" });
     let attempts = 0;
     const undecodable = deps({
       registerFile: async () => {
         attempts += 1;
-        throw new Error("undecodable-here: no HEIC decoder");
+        throw new Error(
+          "heif: Error while loading plugin: Support for this compression format has not been built in (11.6003)",
+        );
       },
     });
     await runImport(dir, store, undecodable, { delayMs: 0, maxItemsPerRun: null });
@@ -238,6 +331,23 @@ describe("resuming", () => {
 
     await runImport(dir, store, undecodable, { delayMs: 0, maxItemsPerRun: null });
     expect(attempts, "re-attempted a file it can never read").toBe(1);
+  });
+
+  // The other half of the same distinction, and the direction that loses data
+  // if it is wrong: an unfamiliar error must stay retryable.
+  it("retries an error it does not recognise, rather than abandoning the file", async () => {
+    await seed({ "b.jpg": "one" });
+    let attempts = 0;
+    const flaky = deps({
+      registerFile: async () => {
+        attempts += 1;
+        throw new Error("ENOSPC: no space left on device");
+      },
+    });
+    await runImport(dir, store, flaky, { delayMs: 0, maxItemsPerRun: null });
+    expect(store.summary().failed).toBe(1);
+    await runImport(dir, store, flaky, { delayMs: 0, maxItemsPerRun: null });
+    expect(attempts).toBe(2);
   });
 });
 

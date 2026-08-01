@@ -33,6 +33,12 @@ import type { ImportItem, ImportPacing } from "./import-run";
 import { DEFAULT_PACING, shouldAttempt } from "./import-run";
 import type { ImportStore } from "./import-store";
 import { findDuplicate, type DuplicateFinding, type LibraryEntry } from "./duplicate-tiers";
+import { isNoDecoderError } from "../image-processing/decode-errors";
+import { findLivePhotoPairs, toCandidate, type PairCandidate } from "./live-photo";
+import { PHOTOS_LABEL_KEYS } from "../labels";
+
+/** The label a paired motion clip carries. */
+const PHOTOS_LIVE_PHOTO_KEY = PHOTOS_LABEL_KEYS.livePhoto;
 
 /** Still extensions worth opening. */
 const IMPORTABLE_STILLS = new Set([
@@ -77,7 +83,27 @@ export interface ImportDeps {
     fileName: string,
     contentHash: string,
     sizeBytes: number,
+    options?: { parentId?: string; labels?: Array<{ key: string; value?: string }> },
   ) => Promise<{ recordId: string; deduped: boolean }>;
+  /**
+   * Enable Live Photo pairing, which costs one extra pass over the walk.
+   *
+   * Off unless asked for: the pass reads names rather than bytes so it is
+   * cheap, but a caller importing a folder that cannot contain Live Photos
+   * should not pay for it at all.
+   */
+  readonly pairLivePhotos?: boolean;
+  /**
+   * Facts about a candidate that pairing needs, without decoding it.
+   *
+   * Both fields are optional answers. Pairing degrades from `identifier` to
+   * `filename` confidence when the content identifier is unavailable, and
+   * declines to pair a suspiciously long clip only when a duration is known —
+   * so a caller that supplies neither still gets filename pairing.
+   */
+  readonly pairingFacts?: (
+    path: string,
+  ) => Promise<{ contentIdentifier?: string | null; durationMs?: number | null }>;
   /**
    * The library's fingerprints, fetched once per run for tiers 2 and 3.
    *
@@ -107,6 +133,8 @@ export interface ImportProgress {
   readonly findings: readonly (DuplicateFinding & { sourcePath: string })[];
   /** True when the run stopped because it hit `maxItemsPerRun`, not because it finished. */
   readonly stoppedEarly: boolean;
+  /** How many motion clips were attached to a still as a Live Photo. */
+  readonly livePhotosPaired: number;
 }
 
 /** Every importable file under `root`, depth-first. */
@@ -146,11 +174,33 @@ export async function runImport(
   let processed = 0;
   let stoppedEarly = false;
 
+  // Live Photo pairing has to be decided while the sibling files are still
+  // visible together. Once they are two records with different ids and
+  // different arrival times, the only thing connecting them is a filename the
+  // user is free to change — so the evidence is gone. That means one pass over
+  // the walk *before* importing anything, which is affordable because it reads
+  // names and not bytes.
+  const pairs = deps.pairLivePhotos
+    ? findLivePhotoPairs(await collectCandidates(root, deps))
+    : [];
+  // Keyed by the motion file's path: the still is imported normally and the
+  // clip becomes its child, so the lookup happens when the clip comes round.
+  const motionFor = new Map(pairs.map((p) => [p.motion.path, p]));
+  const stillPaths = new Set(pairs.map((p) => p.still.path));
+  const stillRecordIds = new Map<string, string>();
+
   for await (const path of walkImportable(root)) {
     if (pacing.maxItemsPerRun !== null && processed >= pacing.maxItemsPerRun) {
       stoppedEarly = true;
       break;
     }
+
+    // A motion half is deferred to the end of the run, not skipped. It has to
+    // be registered as a child of its still, and the walk gives no guarantee
+    // the still was reached first — `IMG_1.heic` sorts before `IMG_1.mov` on
+    // most filesystems, which is exactly the kind of "usually true" that breaks
+    // on somebody else's disk.
+    if (motionFor.has(path)) continue;
 
     let sizeBytes: number;
     let contentHash: string;
@@ -210,13 +260,18 @@ export async function runImport(
       }
 
       store.put(item(contentHash, path, sizeBytes, "imported", { recordId }));
+      // Remembered so the deferred motion half can be attached to it below.
+      if (stillPaths.has(path)) stillRecordIds.set(path, recordId);
       await deps.onImported?.(recordId, path);
     } catch (err) {
       const message = (err as Error).message;
-      // A decode failure is terminal for this build; anything else might not
-      // recur. Deciding here rather than inferring from an error string later
-      // is what keeps `unsupported` meaning something.
-      const terminal = /unsupported|undecodable|unsupported image format/i.test(message);
+      // Typed, not matched. This used to test the message against
+      // /unsupported|undecodable/i — and libvips' actual message for an iPhone
+      // photo ("Support for this compression format has not been built in")
+      // contains neither word, so every HEIC was classified transient and
+      // retried on every run forever. The test covering it used a fixture that
+      // did match, so the suite stayed green while the real thing looped.
+      const terminal = isNoDecoderError(err);
       store.put(
         item(contentHash, path, sizeBytes, terminal ? "unsupported" : "failed", {
           detail: message,
@@ -230,7 +285,52 @@ export async function runImport(
     await pause(pacing.delayMs);
   }
 
-  return { processed, findings, stoppedEarly };
+  // The deferred motion halves, now that every still has a record id.
+  //
+  // A pair whose still failed to import is imported as an ordinary standalone
+  // clip rather than dropped. Losing the pairing costs a tidier grid; dropping
+  // the file loses somebody's video, and the two are not close.
+  let paired = 0;
+  for (const [motionPath, pair] of motionFor) {
+    if (stoppedEarly) break;
+    const parentId = stillRecordIds.get(pair.still.path);
+    try {
+      const sizeBytes = (await stat(motionPath)).size;
+      const contentHash = await hashFile(motionPath);
+      if (!shouldAttempt(store.get(contentHash))) continue;
+
+      const { recordId, deduped } = await deps.registerFile(
+        motionPath,
+        motionPath.slice(motionPath.lastIndexOf("/") + 1),
+        contentHash,
+        sizeBytes,
+        parentId
+          ? {
+              parentId,
+              labels: [{ key: PHOTOS_LIVE_PHOTO_KEY, value: pair.confidence }],
+            }
+          : {},
+      );
+      if (parentId) paired += 1;
+      store.put(
+        item(contentHash, motionPath, sizeBytes, deduped ? "skipped" : "imported", {
+          recordId,
+          ...(deduped ? { duplicateTier: "identical" } : {}),
+        }),
+      );
+      if (!deduped) await deps.onImported?.(recordId, motionPath);
+    } catch (err) {
+      store.put(
+        item(motionPath, motionPath, 0, isNoDecoderError(err) ? "unsupported" : "failed", {
+          detail: (err as Error).message,
+        }),
+      );
+    }
+    processed += 1;
+    await pause(pacing.delayMs);
+  }
+
+  return { processed, findings, stoppedEarly, livePhotosPaired: paired };
 }
 
 function item(
@@ -281,4 +381,20 @@ async function hashFile(path: string): Promise<string> {
   const hash = createHash("sha256");
   await pipeline(createReadStream(path), hash);
   return hash.digest("hex");
+}
+
+/**
+ * One name-only pass over the walk, for pairing.
+ *
+ * Reads directory entries and whatever cheap facts the caller can supply — no
+ * bytes. That is what makes a second pass affordable on a folder of fifty
+ * thousand files.
+ */
+async function collectCandidates(root: string, deps: ImportDeps): Promise<PairCandidate[]> {
+  const out: PairCandidate[] = [];
+  for await (const path of walkImportable(root)) {
+    const facts = deps.pairingFacts ? await deps.pairingFacts(path) : {};
+    out.push(toCandidate(path, facts));
+  }
+  return out;
 }

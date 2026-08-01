@@ -68,6 +68,21 @@ export const PHOTOS_LABEL_KEYS = {
    * make the presence query match every processed image.
    */
   faceCount: "face-count",
+  /**
+   * This child is the motion half of its parent's Live Photo.
+   *
+   * A child rather than a merged record: the clip is real user data with its
+   * own bytes, and merging would either discard it or invent a record type
+   * whose halves live in different storage. Parent/child already says "these
+   * belong together" and every consumer understands it.
+   *
+   * The value records *how* the pairing was decided — `identifier` when both
+   * files carried Apple's shared content identifier, `filename` when it was
+   * inferred from matching names. Kept because the two are not equally
+   * trustworthy, and a user unpicking a wrong pairing deserves to know which
+   * kind of evidence produced it.
+   */
+  livePhoto: "live-photo",
 } as const;
 
 /**

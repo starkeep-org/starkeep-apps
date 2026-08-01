@@ -35,6 +35,8 @@ import {
   type SizeClass,
   type StillClassSpec,
 } from "../ladder";
+import { decodeSource } from "./decode-source";
+import type { PlatformDecoder } from "./platform-decoder";
 
 export interface DerivedRendition {
   readonly sizeClass: SizeClass;
@@ -59,6 +61,18 @@ export interface DeriveLadderOptions {
   readonly codec?: "avif" | "webp" | "jpeg";
   /** Restrict output to these classes. Defaults to every applicable class. */
   readonly only?: readonly SizeClass[];
+  /**
+   * The source's Starkeep type, so raw and HEIC can be routed to a decoder that
+   * can actually read them.
+   *
+   * Optional, and omitting it means "these bytes are already something sharp
+   * reads". That keeps every existing caller correct: JPEG and PNG need no
+   * normalisation, and a caller that does not know the type is better off
+   * trying than guessing wrong.
+   */
+  readonly sourceType?: string;
+  /** Used only for HEIC/HEIF; ignored for everything else. */
+  readonly platformDecoder?: PlatformDecoder;
 }
 
 const CODEC_TYPES: Record<NonNullable<DeriveLadderOptions["codec"]>, {
@@ -115,8 +129,18 @@ export async function deriveStillLadder(
   const codec = options.codec ?? "avif";
   const { type, contentType } = CODEC_TYPES[codec];
 
-  const source = Buffer.from(imageBytes);
-  const dims = await readSourceDimensions(imageBytes);
+  // Raw and HEIC are normalised first: raw to its embedded preview, HEIC via
+  // the platform decoder. Both throw UndecodableError when this node cannot
+  // read the format, which is what makes the outcome terminal rather than
+  // something the sweeper retries daily forever.
+  const decoded = options.sourceType
+    ? await decodeSource(imageBytes, options.sourceType, {
+        ...(options.platformDecoder ? { platformDecoder: options.platformDecoder } : {}),
+      })
+    : { bytes: imageBytes, via: "direct" as const };
+
+  const source = Buffer.from(decoded.bytes);
+  const dims = await readSourceDimensions(decoded.bytes);
   if (dims.longEdge === 0) {
     throw new Error("Cannot derive a ladder from an image with no readable dimensions");
   }

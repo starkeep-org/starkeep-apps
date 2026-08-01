@@ -185,19 +185,45 @@ export async function addPhotoFromPath(
   const contentHash = await sha256Hex(fileBytes);
   const objectStorageKey = dataRecordObjectKey("image", contentHash);
 
-  const { url: uploadUrl } = await request<{ url: string }>(
-    "/files/presign",
-    source,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
-    },
-  );
+  const presign = await request<{
+    url: string;
+    checksumSha256?: string;
+    storageClass?: string;
+    tagging?: Record<string, string>;
+  }>("/files/presign", source, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      key: objectStorageKey,
+      contentType: mimeType,
+      // The original is the one thing in the library that can tolerate a slow
+      // read: once its derived ladder exists, nothing interactive ever needs
+      // it — export, print and re-derivation do, and all three can wait.
+      //
+      // Declaring `archive` does not freeze anything by itself. It tags the
+      // object; the transition happens only after the archive gate confirms
+      // the ladder is complete and the hold period has passed.
+      intent: "archive",
+    }),
+  });
 
-  const s3Res = await fetch(uploadUrl, {
+  const s3Res = await fetch(presign.url, {
     method: "PUT",
-    headers: { "Content-Type": mimeType },
+    headers: {
+      "Content-Type": mimeType,
+      // Mandatory when present: each is inside the signature, so dropping one
+      // fails the request rather than uploading something unverified, untiered
+      // or untagged.
+      ...(presign.checksumSha256 ? { "x-amz-checksum-sha256": presign.checksumSha256 } : {}),
+      ...(presign.storageClass ? { "x-amz-storage-class": presign.storageClass } : {}),
+      ...(presign.tagging && Object.keys(presign.tagging).length > 0
+        ? {
+            "x-amz-tagging": Object.entries(presign.tagging)
+              .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+              .join("&"),
+          }
+        : {}),
+    },
     body: fileBytes as unknown as BodyInit,
   });
   if (!s3Res.ok) {

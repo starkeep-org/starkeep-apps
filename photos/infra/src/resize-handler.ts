@@ -162,7 +162,21 @@ export async function handler(event: APIGatewayEvent) {
     // variant resolution orders by long edge, so a rendition without them is
     // excluded from resolution entirely and becomes storage nobody reads.
 
-    return ok({ ok: true, published });
+    // The archive gate, asserted only when every applicable rung actually
+    // exists. The platform trusts this claim — that is the point of the split —
+    // so making it loosely is the one way an app could freeze an original with
+    // nothing readable in its place.
+    const finalClasses = await existingRenditionClasses(
+      (p, i) => signedFetch(creds, p, i),
+      targetId,
+    );
+    const sourceDims = await readSourceDimensions(inputBuffer);
+    let archiveGate: { tagged: boolean; refusals: string[] } | null = null;
+    if (ladderIsComplete(sourceDims.longEdge, finalClasses)) {
+      archiveGate = await assertLadderComplete((p, i) => signedFetch(creds, p, i), targetId);
+    }
+
+    return ok({ ok: true, published, archiveGate });
   } catch (e) {
     console.error("[resize] handler error:", e);
     return {

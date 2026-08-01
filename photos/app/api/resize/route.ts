@@ -95,12 +95,12 @@ export async function POST(req: NextRequest) {
   // produces the whole ladder. Decoding once and encoding N times is the point:
   // decoding a 48 MP source is the expensive part, and doing it per rung would
   // multiply it for output that is collectively smaller than the source.
-  const { deriveStillLadder, computeThumbHash } = await import(
+  const { deriveStillLadder, computeThumbHash, readSourceDimensions } = await import(
     "@/photos-lib/image-processing/derive-ladder"
   );
-  const { publishRendition, existingRenditionClasses, publishThumbHash } = await import(
-    "@/photos-lib/image-processing/publish-renditions"
-  );
+  const { publishRendition, existingRenditionClasses, publishThumbHash, assertLadderComplete } =
+    await import("@/photos-lib/image-processing/publish-renditions");
+  const { ladderIsComplete } = await import("@/photos-lib/image-processing/derive-ladder");
 
   let derived;
   try {
@@ -160,5 +160,16 @@ export async function POST(req: NextRequest) {
     console.warn(`[resize] thumb_hash failed for ${targetId}: ${(err as Error).message}`);
   }
 
-  return NextResponse.json({ ok: true, published });
+  // The archive gate. Only asserted when every applicable rung actually
+  // exists — the point of the split is that the platform trusts this claim, so
+  // making it loosely would be the one way an app could freeze an original
+  // that has nothing readable in its place.
+  const finalClasses = await existingRenditionClasses((p2, i) => signedFetch(creds, p2, i), targetId);
+  const sourceDims = await readSourceDimensions(inputBuffer);
+  let archiveGate: { tagged: boolean; refusals: string[] } | null = null;
+  if (ladderIsComplete(sourceDims.longEdge, finalClasses)) {
+    archiveGate = await assertLadderComplete((p2, i) => signedFetch(creds, p2, i), targetId);
+  }
+
+  return NextResponse.json({ ok: true, published, archiveGate });
 }

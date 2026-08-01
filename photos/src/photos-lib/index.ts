@@ -49,6 +49,8 @@ export {
 export {
   publishRendition,
   existingRenditionClasses,
+  publishThumbHash,
+  assertLadderComplete,
   RenditionPublishError,
   RENDITION_LABEL_REF,
   type PublishedRendition,

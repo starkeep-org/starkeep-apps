@@ -77,6 +77,13 @@ export {
   type ImportCandidate,
   type LibraryEntry,
 } from "./import/duplicate-tiers";
+export { openImportStore, importDir, type ImportStore } from "./import/import-store";
+export {
+  runImport,
+  walkImportable,
+  type ImportDeps,
+  type ImportProgress,
+} from "./import/run-import";
 export {
   shouldAttempt,
   summarize,

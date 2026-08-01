@@ -102,6 +102,37 @@ export {
   type DisplaySource,
 } from "./variant-src";
 
+// Video (items 26/27)
+export {
+  parseProbeOutput,
+  parseFrameRate,
+  normalizeRotation,
+  displayLongEdge,
+  type VideoFacts,
+} from "./video/probe";
+export {
+  createFfmpegTools,
+  posterTimestamp,
+  scaleFilter,
+  transposeFilter,
+  UnsupportedVideoError,
+  POSTER_MAX_OFFSET_SECONDS,
+  type VideoTools,
+  type PosterOptions,
+  type TranscodeOptions,
+  type SkimOptions,
+  type FfmpegToolsOptions,
+} from "./video/video-tools";
+export {
+  deriveVideoLadder,
+  videoSourceOf,
+  missingVideoClasses,
+  videoLadderIsComplete,
+  type DerivedVideoRendition,
+  type VideoDerivationFailure,
+  type VideoLadderResult,
+} from "./video/derive-video-ladder";
+
 // EXIF reader
 export { extractExif } from "./metadata/exif-reader";
 export type { ExifFields } from "./metadata/exif-generator";

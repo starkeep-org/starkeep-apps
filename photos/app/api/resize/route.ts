@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
-import { precheckThumbnail, PHOTOS_LABEL_KEYS } from "@/photos-lib";
+import { precheckThumbnail, PHOTOS_LABEL_KEYS, THUMBNAIL_SIZE_CLASS } from "@/photos-lib";
 
 export const runtime = "nodejs";
 
@@ -143,7 +143,9 @@ export async function POST(req: NextRequest) {
       // a thumbnail is derived, not something the user uploaded.
       // The `photos/` namespace comes from our authenticated identity, so
       // no prefix is sent. Originals stay unlabelled.
-      labels: [{ key: PHOTOS_LABEL_KEYS.thumbnail }],
+      // The rung, not a bare flag. Written with its class value so variant
+      // resolution can order it against the record's other renditions.
+      labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: THUMBNAIL_SIZE_CLASS }],
     }),
   });
   if (!createRes.ok) {

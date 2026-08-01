@@ -18,6 +18,7 @@ import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
 import {
   precheckThumbnail,
+  THUMBNAIL_SIZE_CLASS,
   PHOTOS_LABEL_KEYS,
 } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
@@ -161,7 +162,9 @@ export async function handler(event: APIGatewayEvent) {
         // a thumbnail is derived, not something the user uploaded.
         // The `photos/` namespace comes from our authenticated identity, so
         // no prefix is sent. Originals stay unlabelled.
-        labels: [{ key: PHOTOS_LABEL_KEYS.thumbnail }],
+        // The rung, not a bare flag. Written with its class value so variant
+        // resolution can order it against the record's other renditions.
+        labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: THUMBNAIL_SIZE_CLASS }],
       }),
     });
     if (!createRes.ok) {

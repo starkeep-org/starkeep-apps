@@ -29,13 +29,13 @@ export interface ListedRecord {
  * Read off Photos' **own labels**, not `parent_id` — a crop has a parent too,
  * and `parentId !== null` meaning "is a thumbnail" is the exact bug
  * `photos-lib/labels.ts` was extracted to stop repeating. Scoped to the `photos`
- * namespace for the same reason: another app is free to declare a `thumbnail`
+ * namespace for the same reason: another app is free to declare a `rendition`
  * key meaning something else, and namespaces exist so that is not a collision.
  */
 export function isOriginal(record: ListedRecord): boolean {
   if (record.parent_id !== null) return false;
   return !(record.labels ?? []).some(
-    (l) => l.app_id === "photos" && (l.key === "thumbnail" || l.key === "crop"),
+    (l) => l.app_id === "photos" && (l.key === "rendition" || l.key === "crop"),
   );
 }
 

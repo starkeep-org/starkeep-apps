@@ -23,7 +23,7 @@ let registered: string[];
 
 function deps(over: Partial<Parameters<typeof runImport>[2]> = {}) {
   return {
-    registerFile: async (_b: Uint8Array, name: string) => {
+    registerFile: async (_path: string, name: string) => {
       registered.push(name);
       return { recordId: `rec-${registered.length}`, deduped: false };
     },
@@ -88,6 +88,15 @@ describe("walking a folder", () => {
     for await (const p of walkImportable(dir)) found.push(p);
     expect(found).toHaveLength(3);
   });
+
+  // A camera roll is photos and clips together. An import that silently walked
+  // past every .mov would leave half of it behind without saying so.
+  it("includes video, which the manifest grants and a camera roll is full of", async () => {
+    await seed({ "clip.mov": "1", "clip.mp4": "2", "clip.m4v": "3", "notes.txt": "x" });
+    const found: string[] = [];
+    for await (const p of walkImportable(dir)) found.push(p);
+    expect(found).toHaveLength(3);
+  });
 });
 
 describe("importing", () => {
@@ -124,6 +133,49 @@ describe("importing", () => {
     await runImport(dir, store, deps(), { delayMs: 0, maxItemsPerRun: null });
     expect(store.all()).toHaveLength(1);
     expect(registered).toHaveLength(1);
+  });
+});
+
+describe("not holding files in memory", () => {
+  // The reason registerFile takes a path rather than bytes. The loop used to
+  // read each file whole in order to hash it — unremarkable for a 3 MB still,
+  // an OOM for a 4 GB clip, and video is now importable.
+  it("hands the registrar a path, never the contents", async () => {
+    await seed({ "clip.mov": "footage bytes" });
+    let seen: unknown;
+    await runImport(
+      dir,
+      store,
+      deps({
+        registerFile: async (path: string) => {
+          seen = path;
+          return { recordId: "rec-1", deduped: false };
+        },
+      }),
+      { delayMs: 0, maxItemsPerRun: null },
+    );
+    expect(typeof seen).toBe("string");
+    expect(seen).toContain("clip.mov");
+  });
+
+  it("still identifies a file by the hash of its contents", async () => {
+    // Streaming the hash must not change what the hash is, or every previously
+    // imported file looks new and the whole library re-imports.
+    await seed({ "a.jpg": "identical" });
+    let hash = "";
+    await runImport(
+      dir,
+      store,
+      deps({
+        registerFile: async (_p: string, _n: string, contentHash: string) => {
+          hash = contentHash;
+          return { recordId: "rec-1", deduped: false };
+        },
+      }),
+      { delayMs: 0, maxItemsPerRun: null },
+    );
+    const { createHash } = await import("node:crypto");
+    expect(hash).toBe(createHash("sha256").update("identical").digest("hex"));
   });
 });
 
@@ -231,6 +283,29 @@ describe("advisory findings", () => {
     expect(store.summary().imported).toBe(1);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]!.tier).toBe("similar");
+  });
+
+  // Decoding a clip to invent a perceptual hash would be the most expensive
+  // operation in the loop, producing a number nothing compares against.
+  it("does not fingerprint video", async () => {
+    await seed({ "clip.mov": "footage" });
+    let fingerprinted = 0;
+    await runImport(
+      dir,
+      store,
+      deps({
+        loadLibraryIndex: async () => [
+          { recordId: "existing", contentHash: "z".repeat(64), perceptualHash: "ffffffffffffffff" },
+        ],
+        fingerprint: async () => {
+          fingerprinted += 1;
+          return { contentHash: "" };
+        },
+      }),
+      { delayMs: 0, maxItemsPerRun: null },
+    );
+    expect(store.summary().imported).toBe(1);
+    expect(fingerprinted, "decoded a video to compute a perceptual hash").toBe(0);
   });
 
   // A library with no extracted metadata cannot be compared against, and

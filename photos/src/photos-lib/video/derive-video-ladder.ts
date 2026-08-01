@@ -32,6 +32,23 @@ export interface DerivedVideoRendition {
   /** MIME type of the produced bytes — posters are stills, the rest are video. */
   readonly contentType: string;
   readonly kind: VideoClassSpec["kind"];
+  /**
+   * Measured from the produced bytes, never predicted.
+   *
+   * Variant resolution orders renditions by long edge, so a rendition with no
+   * dimensions is invisible to it — storage nobody ever reads.
+   */
+  readonly width: number;
+  readonly height: number;
+  readonly durationMs?: number;
+  /**
+   * The core type this record registers as.
+   *
+   * A poster is genuinely an image and must register as one: it is what the
+   * grid paints, and an image-granted app that cannot see it would be looking
+   * at a library with holes where the videos are.
+   */
+  readonly type: "image" | "video";
 }
 
 export interface VideoDerivationFailure {
@@ -102,40 +119,60 @@ async function deriveOne(
   source: VideoSource,
 ): Promise<DerivedVideoRendition> {
   switch (spec.kind) {
-    case "poster":
+    case "poster": {
+      const out = await tools.extractPoster(path, {
+        atSeconds: posterTimestamp(source.durationSeconds),
+        maxLongEdge: spec.maxLongEdge,
+      });
       return {
         sizeClass: spec.sizeClass,
-        bytes: await tools.extractPoster(path, {
-          atSeconds: posterTimestamp(source.durationSeconds),
-          maxLongEdge: spec.maxLongEdge,
-        }),
+        bytes: out.bytes,
+        width: out.width,
+        height: out.height,
         contentType: "image/jpeg",
         kind: "poster",
+        // Registered as an image, not a video: it is what the grid paints, and
+        // an image-granted app that could not see it would show a library with
+        // holes where the videos are.
+        type: "image",
       };
-    case "skim":
+    }
+    case "skim": {
+      const out = await tools.skim(path, {
+        maxLongEdge: spec.maxLongEdge,
+        speedFactor: skimSpeedFactor(source.durationSeconds),
+        fps: SKIM_FPS,
+      });
       return {
         sizeClass: spec.sizeClass,
-        bytes: await tools.skim(path, {
-          maxLongEdge: spec.maxLongEdge,
-          speedFactor: skimSpeedFactor(source.durationSeconds),
-          fps: SKIM_FPS,
-        }),
+        bytes: out.bytes,
+        width: out.width,
+        height: out.height,
+        ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
         contentType: "video/mp4",
         kind: "skim",
+        type: "video",
       };
-    case "transcode":
+    }
+    case "transcode": {
+      const out = await tools.transcode(path, {
+        maxLongEdge: spec.maxLongEdge,
+        // applicableVideoClasses only yields a transcode class when it would
+        // change something, so maxBitrate is always set by then. The fallback
+        // exists so a hand-built spec cannot produce `-b:v undefined`.
+        maxBitrate: spec.maxBitrate ?? 1_500_000,
+      });
       return {
         sizeClass: spec.sizeClass,
-        bytes: await tools.transcode(path, {
-          maxLongEdge: spec.maxLongEdge,
-          // applicableVideoClasses only yields a transcode class when it would
-          // change something, so maxBitrate is always set by then. The fallback
-          // exists so a hand-built spec cannot produce `-b:v undefined`.
-          maxBitrate: spec.maxBitrate ?? 1_500_000,
-        }),
+        bytes: out.bytes,
+        width: out.width,
+        height: out.height,
+        ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
         contentType: "video/mp4",
         kind: "transcode",
+        type: "video",
       };
+    }
   }
 }
 

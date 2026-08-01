@@ -25,31 +25,58 @@
  */
 
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import type { ImportItem, ImportPacing } from "./import-run";
 import { DEFAULT_PACING, shouldAttempt } from "./import-run";
 import type { ImportStore } from "./import-store";
 import { findDuplicate, type DuplicateFinding, type LibraryEntry } from "./duplicate-tiers";
 
-/** Extensions worth opening. Anything else is not an image we can import. */
-const IMPORTABLE = new Set([
+/** Still extensions worth opening. */
+const IMPORTABLE_STILLS = new Set([
   ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".avif",
   ".bmp", ".tif", ".tiff", ".dng", ".cr2", ".cr3", ".nef", ".arw",
   ".raf", ".orf", ".rw2",
 ]);
 
+/**
+ * Video extensions, matching the `video/*` types the manifest grants.
+ *
+ * A camera roll is photos and clips together, and an import that silently
+ * walked past every `.mov` would leave half of it behind without saying so.
+ */
+const IMPORTABLE_VIDEO = new Set([
+  ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg", ".wmv", ".flv",
+]);
+
+const IMPORTABLE = new Set([...IMPORTABLE_STILLS, ...IMPORTABLE_VIDEO]);
+
+/** Whether a path is video, by extension — the only signal available pre-open. */
+export function isVideoPath(path: string): boolean {
+  const dot = path.lastIndexOf(".");
+  return dot >= 0 && IMPORTABLE_VIDEO.has(path.slice(dot).toLowerCase());
+}
+
 export interface ImportDeps {
   /**
    * Register one file and return the resulting record.
+   *
+   * Takes a **path**, not bytes. Video made that mandatory: this loop used to
+   * read each file whole to hash it and hand the buffer on, which is
+   * unremarkable for a 3 MB still and an outright OOM for a 4 GB clip. The
+   * hash is now computed by streaming, and the uploader reads from disk on its
+   * own terms — so no whole file is ever resident here.
    *
    * `deduped` is the server's answer to tier 1 — authoritative, because it is
    * the same check the library enforces on every write.
    */
   readonly registerFile: (
-    bytes: Uint8Array,
+    path: string,
     fileName: string,
     contentHash: string,
+    sizeBytes: number,
   ) => Promise<{ recordId: string; deduped: boolean }>;
   /**
    * The library's fingerprints, fetched once per run for tiers 2 and 3.
@@ -60,13 +87,19 @@ export interface ImportDeps {
    */
   readonly loadLibraryIndex: () => Promise<LibraryEntry[]>;
   readonly perceptualDistance: (a: string, b: string) => number;
-  /** Fingerprints for one candidate file, for tiers 2 and 3. */
+  /**
+   * Fingerprints for one candidate file, for tiers 2 and 3.
+   *
+   * Only called for stills. A perceptual hash of a video is not defined here,
+   * and decoding a clip to invent one would cost the most expensive operation
+   * in the loop to produce a number nothing compares against.
+   */
   readonly fingerprint: (
-    bytes: Uint8Array,
+    path: string,
     contentHash: string,
   ) => Promise<Omit<LibraryEntry, "recordId">>;
   /** Called after a successful registration so the ladder gets derived. */
-  readonly onImported?: (recordId: string) => Promise<void>;
+  readonly onImported?: (recordId: string, path: string) => Promise<void>;
 }
 
 export interface ImportProgress {
@@ -119,13 +152,11 @@ export async function runImport(
       break;
     }
 
-    let bytes: Buffer;
     let sizeBytes: number;
     let contentHash: string;
     try {
-      bytes = await readFile(path);
       sizeBytes = (await stat(path)).size;
-      contentHash = createHash("sha256").update(bytes as unknown as Uint8Array).digest("hex");
+      contentHash = await hashFile(path);
     } catch (err) {
       // Unreadable *right now* — locked, or on a volume that went away. Worth
       // trying again, so it is not recorded as unsupported.
@@ -142,9 +173,10 @@ export async function runImport(
 
     try {
       const { recordId, deduped } = await deps.registerFile(
-        bytes,
+        path,
         path.slice(path.lastIndexOf("/") + 1),
         contentHash,
+        sizeBytes,
       );
 
       if (deduped) {
@@ -164,10 +196,13 @@ export async function runImport(
       // Tiers 2 and 3 are advisory. They run *after* the import, not instead of
       // it: the file is already in the library, and the finding is a note for a
       // human to review — never a reason to have withheld it.
-      if (library.length > 0) {
+      // Stills only: a perceptual hash of a video is not defined here, and
+      // decoding a clip to invent one would be the most expensive operation in
+      // the loop, producing a number nothing compares against.
+      if (library.length > 0 && !isVideoPath(path)) {
         // Spread first, then pin the hash: the fingerprint provider has no
         // business overriding the identity of the file it was handed.
-        const candidate = { ...(await deps.fingerprint(bytes, contentHash)), contentHash };
+        const candidate = { ...(await deps.fingerprint(path, contentHash)), contentHash };
         const finding = findDuplicate(candidate, library, deps.perceptualDistance);
         if (finding && finding.action === "report") {
           findings.push({ ...finding, sourcePath: path });
@@ -175,7 +210,7 @@ export async function runImport(
       }
 
       store.put(item(contentHash, path, sizeBytes, "imported", { recordId }));
-      await deps.onImported?.(recordId);
+      await deps.onImported?.(recordId, path);
     } catch (err) {
       const message = (err as Error).message;
       // A decode failure is terminal for this build; anything else might not
@@ -231,4 +266,19 @@ function recordFailure(
 
 function pause(ms: number): Promise<void> {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
+/**
+ * Content hash, computed by streaming.
+ *
+ * Deliberately not `readFile` then hash. The hash *is* the identity, so it has
+ * to be computed before anything else can happen — which means a buffered read
+ * would put every file in memory whole, including the 4 GB clip. Reading a file
+ * to hash it stays cheap next to decoding and deriving from it, so the ordering
+ * is right; it just must not be resident.
+ */
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }

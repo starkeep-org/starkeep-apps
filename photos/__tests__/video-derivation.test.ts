@@ -244,6 +244,31 @@ describe("deriving the ladder", () => {
     if (mdat >= 0) expect(moov).toBeLessThan(mdat);
   }, 120_000);
 
+  // Variant resolution orders renditions by long edge, so a rendition with no
+  // dimensions is invisible to it — storage nobody ever reads. Measured from
+  // the output rather than computed from the source, because the scale filter
+  // rounds the free axis to an even number and a predicted value is off by one
+  // often enough to sort a rendition into the wrong place.
+  ffmpeg()("reports dimensions that match the bytes it produced", async () => {
+    const result = await deriveVideoLadder(landscape, tools);
+    for (const rendition of result.renditions) {
+      const probed = await probeBytes(rendition.bytes, `dim-${rendition.sizeClass}.bin`);
+      expect(rendition.width, rendition.sizeClass).toBe(probed.streams[0]!.width);
+      expect(rendition.height, rendition.sizeClass).toBe(probed.streams[0]!.height);
+      expect(rendition.width, `${rendition.sizeClass} has no dimensions`).toBeGreaterThan(0);
+    }
+  }, 180_000);
+
+  // A poster is genuinely a still and must register as an image: it is what the
+  // grid paints, and an image-granted app that could not see it would show a
+  // library with holes where the clips are.
+  ffmpeg()("registers posters as images and moving renditions as video", async () => {
+    const result = await deriveVideoLadder(landscape, tools);
+    for (const r of result.renditions) {
+      expect(r.type, r.sizeClass).toBe(r.kind === "poster" ? "image" : "video");
+    }
+  }, 120_000);
+
   // The no-op clause. A 640x480 source is already below every 720p ceiling, and
   // re-encoding it produces a file that is no better, probably larger, and
   // definitely lossier.

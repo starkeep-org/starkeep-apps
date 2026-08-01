@@ -36,6 +36,33 @@ export {
   type VideoClassSpec,
   type VideoSource,
 } from "./ladder";
+export {
+  deriveStillLadder,
+  readSourceDimensions,
+  missingRenditionClasses,
+  ladderIsComplete,
+  cloudCanDecode,
+  CLOUD_DECODABLE_TYPES,
+  type DerivedRendition,
+  type DeriveLadderOptions,
+} from "./image-processing/derive-ladder";
+export {
+  publishRendition,
+  existingRenditionClasses,
+  RenditionPublishError,
+  RENDITION_LABEL_REF,
+  type PublishedRendition,
+  type SignedFetch,
+} from "./image-processing/publish-renditions";
+export {
+  shouldAttemptDerivation,
+  recordAttempt,
+  backoffMs,
+  fallbackIsDue,
+  DERIVATION_FALLBACK_HOURS,
+  type AttemptOutcome,
+  type DerivationAttempt,
+} from "./image-processing/derivation-attempts";
 export type { GoogleAlbum, GoogleMediaItem } from "./types/google";
 
 // EXIF reader

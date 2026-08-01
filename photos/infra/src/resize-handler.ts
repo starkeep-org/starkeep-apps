@@ -15,12 +15,12 @@
 
 import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
-import { resizeForThumbnail } from "../../src/photos-lib/image-processing/resize.js";
+import { deriveStillLadder } from "../../src/photos-lib/image-processing/derive-ladder.js";
 import {
-  precheckThumbnail,
-  THUMBNAIL_SIZE_CLASS,
-  PHOTOS_LABEL_KEYS,
-} from "../../src/photos-lib/labels.js";
+  publishRendition,
+  existingRenditionClasses,
+} from "../../src/photos-lib/image-processing/publish-renditions.js";
+import { precheckThumbnail } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
 function dataRecordObjectKey(typeId: string, contentHash: string): string {
@@ -84,12 +84,16 @@ export async function handler(event: APIGatewayEvent) {
     // again. The rules live in photos-lib, shared with the Next /api/resize
     // route this handler mirrors line for line: a rule kept in both would
     // eventually be fixed in only one.
+    // May this record be derived *from*? A rendition may not — that would
+    // recurse. A crop may: it is a user artifact that needs its own tile.
+    //
+    // There is deliberately no "already has one, stop" check any more. With a
+    // ladder, one existing rung says nothing about the others, and the old
+    // early return would have frozen every record at whatever it happened to
+    // have. Which rungs to skip is decided per rung, below.
     const precheck = await precheckThumbnail(targetId, (p) => signedFetch(creds, p));
     if (precheck.alreadyThumbnail) {
-      return clientErr("Record is already a thumbnail", 400);
-    }
-    if (precheck.existingThumbnailId) {
-      return ok({ ok: true, thumbnailId: precheck.existingThumbnailId, skipped: true });
+      return clientErr("Record is already a rendition", 400);
     }
 
     // Presigned URL for the source file — direct S3 fetch, no broker hop for
@@ -110,85 +114,55 @@ export async function handler(event: APIGatewayEvent) {
     }
     const inputBuffer = Buffer.from(await sourceRes.arrayBuffer());
 
-    const MAX_WIDTH = 400;
-    const resizeResult = await resizeForThumbnail(inputBuffer, MAX_WIDTH);
-    const resizedBytes = new Uint8Array(resizeResult.data);
-
-    // Upload via presigned S3 PUT, then register by content hash — same flow
-    // as POST /api/photos. The inline form 413s on real photo bytes once the
-    // request rides through API Gateway.
-    const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
-    const objectStorageKey = dataRecordObjectKey("image", contentHash);
-
-    const presignRes = await signedFetch(creds, `/files/presign`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: objectStorageKey, contentType: resizeResult.contentType }),
-    });
-    if (!presignRes.ok) {
-      const errBody = await presignRes.text().catch(() => "");
-      console.error(`[resize] presign → ${presignRes.status}: ${errBody}`);
-      return clientErr(`presign failed: ${presignRes.status}`, 502);
-    }
-    const { url: uploadUrl } = (await presignRes.json()) as { url: string };
-
-    const s3Res = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": resizeResult.contentType },
-      body: resizedBytes,
-    });
-    if (!s3Res.ok) {
-      console.error(`[resize] S3 PUT → ${s3Res.status} ${s3Res.statusText}`);
-      return clientErr(`S3 PUT failed: ${s3Res.status}`, 502);
+    // Derive every applicable rung from one decode, not just a thumbnail.
+    // Which rungs apply is a function of the source's long edge, so a small
+    // original produces fewer and a large one produces the whole ladder.
+    let derived;
+    try {
+      derived = await deriveStillLadder(inputBuffer);
+    } catch (err) {
+      // A format this node cannot decode. The cloud fallback covers JPEG, PNG,
+      // WebP and AVIF only — the custom libvips build that would add HEIC and
+      // raw is rejected for now — so this is an expected outcome for a
+      // phone-captured library, not an anomaly. Reported distinctly from a
+      // transient failure so a sweeper records "undecodable here" once instead
+      // of retrying the same file every day forever.
+      console.error(`[resize] decode failed for ${targetId}: ${(err as Error).message}`);
+      return clientErr(`undecodable-here: ${(err as Error).message}`, 422);
     }
 
-    // Create the thumbnail DataRecord — key-ref form, links to source via parentId.
-    const createRes = await signedFetch(creds, `/data/records`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        // The thumbnail is re-encoded as JPEG above, so its type is image/jpeg.
-        type: "image/jpeg",
-        fileName: `thumb_${record.original_filename ?? "image"}`,
-        contentType: resizeResult.contentType,
-        contentHash,
-        sizeBytes: resizedBytes.byteLength,
-        parentId: targetId,
-        // Types the parent edge. `parent_id` says *which* record this came
-        // from; this says *how*, which the column alone cannot express — and
-        // without it a crop is indistinguishable from a thumbnail.
-        //
-        // Doubles as the interest marker for other image-declaring apps:
-        // a thumbnail is derived, not something the user uploaded.
-        // The `photos/` namespace comes from our authenticated identity, so
-        // no prefix is sent. Originals stay unlabelled.
-        // The rung, not a bare flag. Written with its class value so variant
-        // resolution can order it against the record's other renditions.
-        labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: THUMBNAIL_SIZE_CLASS }],
-      }),
-    });
-    if (!createRes.ok) {
-      const errBody = await createRes.text().catch(() => "");
-      console.error(`[resize] create thumb → ${createRes.status}: ${errBody}`);
-      return clientErr(`Failed to create thumbnail: ${errBody}`, 502);
-    }
-    const { record: thumbnailRecord } = (await createRes.json()) as { record: { id: string } };
-
-    // Write image dimensions into shared metadata. Non-fatal.
-    const metaRes = await signedFetch(creds, `/data/records/${thumbnailRecord.id}/metadata`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        typeId: "image",
-        metadata: { width: resizeResult.width ?? 0, height: resizeResult.height ?? 0 },
-      }),
-    });
-    if (!metaRes.ok) {
-      const errBody = await metaRes.text().catch(() => "");
-      console.warn(`[resize] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
+    // Skip rungs that already exist: this handler is re-runnable, and a retry
+    // after a partial failure should finish the job rather than duplicate it.
+    const already = new Set(
+      await existingRenditionClasses((p, i) => signedFetch(creds, p, i), targetId),
+    );
+    const published: Array<{ sizeClass: string; recordId: string }> = [];
+    for (const rendition of derived) {
+      if (already.has(rendition.sizeClass)) continue;
+      const contentHash = createHash("sha256").update(rendition.data).digest("hex");
+      const objectStorageKey = dataRecordObjectKey("image", contentHash);
+      try {
+        const result = await publishRendition(
+          (p, i) => signedFetch(creds, p, i),
+          { id: targetId, originalFilename: record.original_filename },
+          rendition,
+          contentHash,
+          objectStorageKey,
+        );
+        published.push({ sizeClass: result.sizeClass, recordId: result.recordId });
+      } catch (err) {
+        // Partial success is the honest outcome: the rungs already published
+        // are real and useful, and re-running finishes the rest.
+        console.error(`[resize] ${(err as Error).message}`);
+        return clientErr((err as Error).message, 502);
+      }
     }
 
-    return ok({ ok: true, thumbnailId: thumbnailRecord.id });
+    // Dimensions are written per rendition inside publishRendition, not here:
+    // variant resolution orders by long edge, so a rendition without them is
+    // excluded from resolution entirely and becomes storage nobody reads.
+
+    return ok({ ok: true, published });
   } catch (e) {
     console.error("[resize] handler error:", e);
     return {

@@ -56,16 +56,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Record has no attached file" }, { status: 422 });
   }
 
-  // Two targeted queries, not a scan of the library. Both questions used to be
-  // answered by listing every record and filtering client-side, which was
-  // O(library) — and wrong above the page limit, since a record outside the
-  // first 1000 read as "no thumbnail yet" and got one derived again.
+  // May this record be derived *from*? A rendition may not — that would
+  // recurse. A crop may: it is a user artifact that needs its own tile, and
+  // rejecting every record with a parent left crops with no thumbnail and
+  // therefore invisible.
+  //
+  // There is deliberately no "already has one, stop" check any more. With a
+  // ladder, one existing rung says nothing about the others, and the old early
+  // return would have frozen every record at whatever it happened to have.
+  // Which rungs to skip is decided per rung, below.
   const precheck = await precheckThumbnail(targetId, (p) => signedFetch(creds, p));
   if (precheck.alreadyThumbnail) {
-    return NextResponse.json({ error: "Record is already a thumbnail" }, { status: 400 });
-  }
-  if (precheck.existingThumbnailId) {
-    return NextResponse.json({ ok: true, thumbnailId: precheck.existingThumbnailId, skipped: true });
+    return NextResponse.json({ error: "Record is already a rendition" }, { status: 400 });
   }
 
   // Fetch the source image file
@@ -86,94 +88,61 @@ export async function POST(req: NextRequest) {
   }
   const inputBuffer = Buffer.from(await sourceRes.arrayBuffer());
 
-  const { resizeForThumbnail } = await import("@/photos-lib/image-processing/resize");
-  const MAX_WIDTH = 400;
-  const resizeResult = await resizeForThumbnail(inputBuffer, MAX_WIDTH);
-  const mimeType = resizeResult.contentType;
-  const outputMeta = { width: resizeResult.width, height: resizeResult.height };
-  const resizedBytes = new Uint8Array(resizeResult.data);
+  // Derive every applicable rung from one decode, not just a thumbnail.
+  //
+  // Which rungs apply is a function of the source's long edge (a class never
+  // upscales), so a small original produces fewer of them and a large one
+  // produces the whole ladder. Decoding once and encoding N times is the point:
+  // decoding a 48 MP source is the expensive part, and doing it per rung would
+  // multiply it for output that is collectively smaller than the source.
+  const { deriveStillLadder } = await import("@/photos-lib/image-processing/derive-ladder");
+  const { publishRendition, existingRenditionClasses } = await import(
+    "@/photos-lib/image-processing/publish-renditions"
+  );
 
-  // Upload via presigned S3 PUT, then register by content hash — same flow as
-  // the canonical add-photo path (addPhotoFromPath). Avoids the API Gateway
-  // 7 MB cap on inline JSON bodies.
-  const contentHash = createHash("sha256").update(resizedBytes).digest("hex");
-  const objectStorageKey = dataRecordObjectKey("image", contentHash);
-
-  const presignRes = await signedFetch(creds, `/files/presign`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
-  });
-  if (!presignRes.ok) {
-    const errBody = await presignRes.text().catch(() => "");
-    console.error(`[resize] presign → ${presignRes.status}: ${errBody}`);
-    return NextResponse.json({ error: `Failed to presign upload: ${errBody}` }, { status: 502 });
-  }
-  const { url: uploadUrl } = (await presignRes.json()) as { url: string };
-
-  const s3Res = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: { "Content-Type": mimeType },
-    body: resizedBytes,
-  });
-  if (!s3Res.ok) {
-    console.error(`[resize] S3 PUT → ${s3Res.status} ${s3Res.statusText}`);
+  let derived;
+  try {
+    derived = await deriveStillLadder(inputBuffer);
+  } catch (err) {
+    // A format this node cannot decode. Reported distinctly from a transient
+    // failure so a sweeper can record "undecodable here" once instead of
+    // retrying the same file every day forever.
+    console.error(`[resize] decode failed for ${targetId}: ${(err as Error).message}`);
     return NextResponse.json(
-      { error: `S3 PUT failed: ${s3Res.status} ${s3Res.statusText}` },
-      { status: 502 },
+      { error: "undecodable-here", detail: (err as Error).message },
+      { status: 422 },
     );
   }
 
-  const createRes = await signedFetch(creds, `/data/records`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      // The thumbnail is re-encoded as JPEG above, so its type is image/jpeg.
-      type: "image/jpeg",
-      fileName: `thumb_${record.original_filename ?? "image"}`,
-      contentType: mimeType,
-      contentHash,
-      sizeBytes: resizedBytes.byteLength,
-      parentId: targetId,
-      // Types the parent edge. `parent_id` says *which* record this came
-      // from; this says *how*, which the column alone cannot express — and
-      // without it a crop is indistinguishable from a thumbnail.
-      //
-      // Doubles as the interest marker for other image-declaring apps:
-      // a thumbnail is derived, not something the user uploaded.
-      // The `photos/` namespace comes from our authenticated identity, so
-      // no prefix is sent. Originals stay unlabelled.
-      // The rung, not a bare flag. Written with its class value so variant
-      // resolution can order it against the record's other renditions.
-      labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: THUMBNAIL_SIZE_CLASS }],
-    }),
-  });
-  if (!createRes.ok) {
-    const errBody = await createRes.text().catch(() => "");
-    console.error(`[resize] create thumb → ${createRes.status}: ${errBody}`);
-    return NextResponse.json({ error: `Failed to create thumbnail record: ${errBody}` }, { status: 502 });
-  }
-  const { record: thumbnailRecord } = await createRes.json() as { record: { id: string } };
-
-  // Write image dimensions into the shared metadata table.
-  const metaBody = JSON.stringify({
-    typeId: "image",
-    metadata: { width: outputMeta.width ?? 0, height: outputMeta.height ?? 0 },
-  });
-  const metaRes = await signedFetch(creds, `/data/records/${thumbnailRecord.id}/metadata`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: metaBody,
-  });
-  if (!metaRes.ok) {
-    // Non-fatal: thumbnail exists; metadata write failure shouldn't abort the response.
-    const errBody = await metaRes.text().catch(() => "");
-    console.warn(`[resize] metadata write failed (non-fatal): ${metaRes.status} ${errBody}`);
+  // Skip rungs that already exist — the route is re-runnable, and a retry after
+  // a partial failure should finish the job rather than duplicate it.
+  const already = new Set(await existingRenditionClasses((p, i) => signedFetch(creds, p, i), targetId));
+  const published = [];
+  for (const rendition of derived) {
+    if (already.has(rendition.sizeClass)) continue;
+    const contentHash = createHash("sha256").update(rendition.data).digest("hex");
+    const objectStorageKey = dataRecordObjectKey("image", contentHash);
+    try {
+      published.push(
+        await publishRendition(
+          (p, i) => signedFetch(creds, p, i),
+          { id: targetId, originalFilename: record.original_filename },
+          rendition,
+          contentHash,
+          objectStorageKey,
+        ),
+      );
+    } catch (err) {
+      // Partial success is the honest outcome: the rungs already published are
+      // real and useful, and re-running finishes the rest. Failing the whole
+      // request would throw away work that succeeded.
+      console.error(`[resize] ${(err as Error).message}`);
+      return NextResponse.json(
+        { ok: false, published, error: (err as Error).message },
+        { status: 502 },
+      );
+    }
   }
 
-  // No explicit sync kick: the shared-record write above emits
-  // `local-change-recorded`, and core's sync supervisor auto-schedules the
-  // Drive-channel push. Sync scheduling is core-owned; the app just writes.
-
-  return NextResponse.json({ ok: true, thumbnailId: thumbnailRecord.id });
+  return NextResponse.json({ ok: true, published });
 }

@@ -1,0 +1,230 @@
+/**
+ * Publishing derived renditions as shared child records.
+ *
+ * Shared by the Next `/api/resize` route and the cloud resize Lambda, which are
+ * otherwise line-for-line copies of each other — the codebase's existing rule
+ * is that anything kept in both eventually gets fixed in only one, and this is
+ * a multi-step flow (presign → PUT → register → metadata) where a divergence
+ * would be silent.
+ *
+ * ## Renditions are shared image records, not app-private data
+ *
+ * They are child records with `parent_id` set, exactly as thumbnails were,
+ * because after originals are archived the renditions *are* the accessible form
+ * of the library — so any image-granted app needs them. Two costs were accepted
+ * for that: they outlive a Photos uninstall, and the label namespace stays
+ * `photos/`.
+ */
+
+import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS } from "../labels";
+import type { DerivedRendition } from "./derive-ladder";
+
+/** Minimal view of the record a rendition is derived from. */
+export interface RenditionParent {
+  readonly id: string;
+  readonly originalFilename: string | null;
+}
+
+/**
+ * Something that can issue authenticated data-plane requests.
+ *
+ * Headers are a plain record rather than `HeadersInit`, matching what both
+ * callers' `signedFetch` already accepts. Widening to `HeadersInit` here would
+ * force every caller to handle the array and `Headers` forms it never receives.
+ */
+export interface SignedFetchInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export type SignedFetch = (path: string, init?: SignedFetchInit) => Promise<Response>;
+
+export interface PublishedRendition {
+  readonly sizeClass: string;
+  readonly recordId: string;
+  readonly contentHash: string;
+  readonly sizeBytes: number;
+}
+
+export class RenditionPublishError extends Error {
+  constructor(
+    readonly stage: "presign" | "upload" | "register",
+    readonly sizeClass: string,
+    readonly status: number,
+    detail: string,
+  ) {
+    super(`Publishing ${sizeClass} failed at ${stage} (${status}): ${detail}`);
+    this.name = "RenditionPublishError";
+  }
+}
+
+/**
+ * Publish one derived rendition: upload the bytes, register the record, write
+ * its dimensions.
+ *
+ * Bytes go up via presigned PUT rather than inline, because the API Gateway
+ * body cap is 7 MB and an `image-large` AVIF can approach it — but more
+ * importantly because that is the path where the broker pins a checksum, so the
+ * upload is verified rather than merely accepted.
+ *
+ * Dimensions are written because variant resolution orders renditions by long
+ * edge. A rendition with no dimensions is invisible to resolution — it cannot
+ * be ordered, so it is excluded — which would make it storage nobody ever
+ * reads. Hence the metadata write is **not** best-effort here, unlike the
+ * caption-style metadata elsewhere.
+ */
+export async function publishRendition(
+  signedFetch: SignedFetch,
+  parent: RenditionParent,
+  rendition: DerivedRendition,
+  contentHash: string,
+  objectStorageKey: string,
+): Promise<PublishedRendition> {
+  const presignRes = await signedFetch(`/files/presign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      key: objectStorageKey,
+      contentType: rendition.contentType,
+      // Renditions are what the library is read from once originals are cold,
+      // so every rung is `instant`. Only the original is ever `archive`.
+      intent: "instant",
+    }),
+  });
+  if (!presignRes.ok) {
+    throw new RenditionPublishError(
+      "presign",
+      rendition.sizeClass,
+      presignRes.status,
+      await presignRes.text().catch(() => ""),
+    );
+  }
+  const presign = (await presignRes.json()) as {
+    url: string;
+    checksumSha256?: string;
+    storageClass?: string;
+    tagging?: Record<string, string>;
+  };
+
+  const uploadRes = await fetch(presign.url, {
+    method: "PUT",
+    headers: {
+      "Content-Type": rendition.contentType,
+      // Mandatory when present — they are inside the signature, so dropping one
+      // fails the request rather than uploading something unverified.
+      ...(presign.checksumSha256 ? { "x-amz-checksum-sha256": presign.checksumSha256 } : {}),
+      ...(presign.storageClass ? { "x-amz-storage-class": presign.storageClass } : {}),
+      ...(presign.tagging && Object.keys(presign.tagging).length > 0
+        ? {
+            "x-amz-tagging": Object.entries(presign.tagging)
+              .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+              .join("&"),
+          }
+        : {}),
+    },
+    // Copied into a fresh view: the DOM fetch types accept ArrayBufferView but
+    // not the generic Uint8Array<ArrayBufferLike> that sharp's output widens to.
+    body: new Uint8Array(rendition.data),
+  });
+  if (!uploadRes.ok) {
+    throw new RenditionPublishError(
+      "upload",
+      rendition.sizeClass,
+      uploadRes.status,
+      uploadRes.statusText,
+    );
+  }
+
+  const createRes = await signedFetch(`/data/records`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: rendition.type,
+      fileName: renditionFileName(parent.originalFilename, rendition.sizeClass),
+      contentType: rendition.contentType,
+      contentHash,
+      sizeBytes: rendition.data.byteLength,
+      parentId: parent.id,
+      // `parent_id` says *which* record this came from; the label says *how*,
+      // which the column alone cannot express — without it a crop is
+      // indistinguishable from a rendition. The `photos/` namespace comes from
+      // the authenticated identity, so no prefix is sent.
+      labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: rendition.sizeClass }],
+    }),
+  });
+  if (!createRes.ok) {
+    throw new RenditionPublishError(
+      "register",
+      rendition.sizeClass,
+      createRes.status,
+      await createRes.text().catch(() => ""),
+    );
+  }
+  const { record } = (await createRes.json()) as { record: { id: string } };
+
+  // Not best-effort: variant resolution orders by long edge, so a rendition
+  // with no dimensions cannot be ordered and is excluded entirely — storage
+  // nobody ever reads. A failure here is worth surfacing, though the rendition
+  // itself already exists and a later metadata write repairs it.
+  const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      typeId: "image",
+      metadata: { width: rendition.width, height: rendition.height },
+    }),
+  });
+  if (!metaRes.ok) {
+    console.warn(
+      `[renditions] dimensions write failed for ${rendition.sizeClass} of ${parent.id} ` +
+        `(${metaRes.status}) — this rendition is invisible to variant resolution until repaired`,
+    );
+  }
+
+  return {
+    sizeClass: rendition.sizeClass,
+    recordId: record.id,
+    contentHash,
+    sizeBytes: rendition.data.byteLength,
+  };
+}
+
+function renditionFileName(originalFilename: string | null, sizeClass: string): string {
+  const base = originalFilename ?? "image";
+  return `${sizeClass}_${base}`;
+}
+
+/** The label ref a caller uses to ask the server which rungs a record has. */
+export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}`;
+
+/**
+ * Which rungs already exist for a record, read from the server.
+ *
+ * The `parentId` + `label` combination is one indexed lookup — this is the
+ * query that makes "derivation state is a query, not a field" affordable, and
+ * it is the same query the ladder-complete gate needs, so the two cannot
+ * disagree.
+ */
+export async function existingRenditionClasses(
+  signedFetch: SignedFetch,
+  parentId: string,
+): Promise<string[]> {
+  const res = await signedFetch(
+    `/data/records?parentId=${encodeURIComponent(parentId)}` +
+      `&label=${RENDITION_LABEL_REF}&include=labels&limit=50`,
+  );
+  if (!res.ok) return [];
+  const { records } = (await res.json()) as {
+    records: Array<{ labels?: Array<{ app_id: string; key: string; value?: string }> }>;
+  };
+  const classes: string[] = [];
+  for (const record of records) {
+    for (const label of record.labels ?? []) {
+      if (label.app_id === PHOTOS_APP_ID && label.key === PHOTOS_LABEL_KEYS.rendition) {
+        if (label.value) classes.push(label.value);
+      }
+    }
+  }
+  return classes;
+}

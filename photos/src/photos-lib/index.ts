@@ -147,6 +147,46 @@ export {
   type VideoLadderResult,
 } from "./video/derive-video-ladder";
 
+// Decoding (items 30/32)
+export {
+  UndecodableError,
+  isNoDecoderError,
+  classifyDecodeError,
+} from "./image-processing/decode-errors";
+export {
+  createSipsDecoder,
+  needsPlatformDecoder,
+  NO_PLATFORM_DECODER,
+  NEEDS_PLATFORM_DECODER,
+  type PlatformDecoder,
+} from "./image-processing/platform-decoder";
+export {
+  findEmbeddedPreviews,
+  extractLargestPreview,
+  isRawType,
+  RAW_TYPES,
+  type EmbeddedPreview,
+} from "./image-processing/dng-preview";
+export {
+  decodeSource,
+  canDecodeHere,
+  type DecodedSource,
+  type DecodeSourceOptions,
+} from "./image-processing/decode-source";
+
+// Live Photo pairing (item 31)
+export {
+  findLivePhotoPairs,
+  pairConfidence,
+  toCandidate,
+  isStillCandidate,
+  isMotionCandidate,
+  MAX_MOTION_DURATION_MS,
+  type PairCandidate,
+  type LivePhotoPair,
+  type PairConfidence,
+} from "./import/live-photo";
+
 // EXIF reader
 export { extractExif } from "./metadata/exif-reader";
 export type { ExifFields } from "./metadata/exif-generator";

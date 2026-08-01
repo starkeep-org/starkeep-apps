@@ -39,6 +39,10 @@
         "description": "A person the user has named in this photo. Multi-valued: one row per named person, so ?label=photos/faces&labelValue=Alice finds every photo of Alice. Written only when on-device face recognition is enabled AND the user opts in to publishing; unnamed clusters are never published."
       },
       {
+        "key": "live-photo",
+        "description": "This record is the motion half of its parent's Live Photo — a short clip belonging to the still it is a child of, not an item in its own right. The value says how the pairing was decided: 'identifier' when both files carried Apple's shared content identifier (authoritative), 'filename' when it was inferred from matching names in the same folder (circumstantial). Other apps should render the parent still and treat this child as a detail of it; a grid that listed it separately would show every Live Photo twice."
+      },
+      {
         "key": "face-count",
         "description": "How many faces on-device detection found in this photo, as a small integer. Absent (never zero) when there are none, so ?label=photos/face-count means 'has at least one face'."
       }

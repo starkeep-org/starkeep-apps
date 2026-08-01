@@ -134,3 +134,55 @@ export function canThumbnail<T extends LabelledRecord & { id: string }>(
   const target = records.find((r) => r.id === targetId);
   return !target || !isThumbnail(target);
 }
+
+/**
+ * The two questions the resize paths must answer before deriving a thumbnail,
+ * asked as two targeted queries instead of a scan of the library.
+ *
+ * Both used to be answered by listing `/data/records?limit=1000&include=labels`
+ * and filtering client-side. That was O(library) to learn two bits — and worse,
+ * it was *wrong* above the limit: on a library larger than the page, a record
+ * outside the first 1000 read as "no thumbnail exists yet", so the same
+ * thumbnail was derived over and over.
+ *
+ * `canThumbnail`/`findThumbnailFor` remain for callers that already hold a
+ * hydrated page (the grid does) — they are the same rules over an in-memory
+ * list. This is the same rules asked of the server.
+ */
+export interface ThumbnailPrecheck {
+  /** The target is itself a thumbnail, so thumbnailing it would recurse. */
+  readonly alreadyThumbnail: boolean;
+  /** An existing thumbnail child of the target, if one has been derived. */
+  readonly existingThumbnailId: string | null;
+}
+
+export async function precheckThumbnail(
+  targetId: string,
+  fetchPath: (path: string) => Promise<Response>,
+): Promise<ThumbnailPrecheck> {
+  // Q1: is the target itself a thumbnail? One record, its own labels.
+  const selfRes = await fetchPath(
+    `/data/records/${encodeURIComponent(targetId)}?include=labels`,
+  );
+  let alreadyThumbnail = false;
+  if (selfRes.ok) {
+    const { record } = (await selfRes.json()) as { record: LabelledRecord };
+    alreadyThumbnail = isThumbnail(record);
+  }
+
+  // Q2: does a thumbnail child already exist? The label filter and the parent
+  // filter combined — "a thumbnail *of this record*" — which is one indexed
+  // lookup rather than a scan. A crop of the same parent does not match, which
+  // is the bug `parent_id` alone used to have.
+  const existingRes = await fetchPath(
+    `/data/records?parentId=${encodeURIComponent(targetId)}` +
+      `&label=${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.thumbnail}&limit=1`,
+  );
+  let existingThumbnailId: string | null = null;
+  if (existingRes.ok) {
+    const { records } = (await existingRes.json()) as { records: Array<{ id: string }> };
+    existingThumbnailId = records[0]?.id ?? null;
+  }
+
+  return { alreadyThumbnail, existingThumbnailId };
+}

@@ -246,3 +246,43 @@ export const CLOUD_DECODABLE_TYPES: readonly string[] = [
 export function cloudCanDecode(type: string): boolean {
   return CLOUD_DECODABLE_TYPES.includes(type);
 }
+
+// ---------------------------------------------------------------------------
+// ThumbHash
+// ---------------------------------------------------------------------------
+
+/**
+ * A ~25-byte inline placeholder, base64-encoded for storage on the record.
+ *
+ * This is stage zero of progressive presentation, and the reason it lives on
+ * the record rather than in object storage is the whole point: it costs **zero
+ * requests**. A grid can paint every tile before a single byte of image data is
+ * fetched. Putting it in object storage — or deriving it lazily — would make
+ * the placeholder cost exactly what it exists to avoid.
+ *
+ * Computed here because derivation already holds a decoded bitmap. Doing it
+ * separately would mean a second full decode for 25 bytes.
+ *
+ * ThumbHash rather than a tiny JPEG or a dominant colour: it encodes enough
+ * structure to read as *this* photo (and carries alpha), while a dominant
+ * colour reads as a loading state and a tiny JPEG is an order of magnitude
+ * larger and still needs decoding.
+ */
+export async function computeThumbHash(imageBytes: Uint8Array): Promise<string> {
+  const { default: sharp } = (await import("sharp")) as {
+    default: typeof import("sharp").default;
+  };
+  const { rgbaToThumbHash } = await import("thumbhash");
+
+  // ThumbHash requires a source of at most 100×100. `fit: "inside"` preserves
+  // aspect ratio, which the format encodes and the decoder reproduces.
+  const { data, info } = await sharp(Buffer.from(imageBytes))
+    .rotate()
+    .resize(100, 100, { fit: "inside", withoutEnlargement: true })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const hash = rgbaToThumbHash(info.width, info.height, data);
+  return Buffer.from(hash).toString("base64");
+}

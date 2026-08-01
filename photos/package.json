@@ -24,7 +24,8 @@
     "open-next": "^3.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "thumbhash": "^0.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.51.1",

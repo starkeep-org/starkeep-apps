@@ -95,8 +95,10 @@ export async function POST(req: NextRequest) {
   // produces the whole ladder. Decoding once and encoding N times is the point:
   // decoding a 48 MP source is the expensive part, and doing it per rung would
   // multiply it for output that is collectively smaller than the source.
-  const { deriveStillLadder } = await import("@/photos-lib/image-processing/derive-ladder");
-  const { publishRendition, existingRenditionClasses } = await import(
+  const { deriveStillLadder, computeThumbHash } = await import(
+    "@/photos-lib/image-processing/derive-ladder"
+  );
+  const { publishRendition, existingRenditionClasses, publishThumbHash } = await import(
     "@/photos-lib/image-processing/publish-renditions"
   );
 
@@ -142,6 +144,20 @@ export async function POST(req: NextRequest) {
         { status: 502 },
       );
     }
+  }
+
+  // Stage zero of progressive presentation, written on the *parent*: a ~25-byte
+  // placeholder the grid paints before fetching any image bytes at all.
+  try {
+    await publishThumbHash(
+      (p2, i) => signedFetch(creds, p2, i),
+      targetId,
+      await computeThumbHash(inputBuffer),
+    );
+  } catch (err) {
+    // Best-effort by design: a missing placeholder is a grey tile for a few
+    // hundred milliseconds, not a broken record.
+    console.warn(`[resize] thumb_hash failed for ${targetId}: ${(err as Error).message}`);
   }
 
   return NextResponse.json({ ok: true, published });

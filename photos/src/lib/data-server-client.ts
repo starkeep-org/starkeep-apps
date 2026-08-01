@@ -1,6 +1,7 @@
 import { resolveDataSource } from "./data-client";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
+import { RENDITION_LABEL_REF } from "../photos-lib/image-processing/publish-renditions";
 
 export interface PhotoRecord {
   id: string;
@@ -22,6 +23,18 @@ export interface PhotoRecord {
    * backfill).
    */
   metadata?: PhotoMetadataRow | null;
+  /**
+   * Renditions the server resolved for this record, keyed by the pixel size
+   * that was requested (`?variant=…&variantLongEdge=400,1280`).
+   *
+   * Absent unless asked for. The client asks in pixels and looks up what it
+   * asked for — the *classes* these came from are never named on the wire in
+   * either direction.
+   */
+  variants?: Record<
+    string,
+    { id: string; type: string; object_storage_key: string; width: number; height: number; long_edge: number; url?: string }
+  >;
   /**
    * Cross-app labels, embedded when the list is fetched with
    * `?include=labels`. `undefined` when not requested; `[]` when requested and
@@ -68,6 +81,8 @@ export interface PhotoMetadataRow {
   gps_lat?: number | null;
   gps_lon?: number | null;
   orientation?: number | null;
+  /** Base64 ThumbHash — the inline, zero-request placeholder. */
+  thumb_hash?: string | null;
 }
 
 // Statuses that mean the request was shed before our handler ever ran (API
@@ -264,23 +279,62 @@ async function extractImageMetadata(
   return out;
 }
 
+/**
+ * The query the library view is built from.
+ *
+ * Three things happen here that used to happen on the client, badly.
+ *
+ * `notLabel` excludes renditions **server-side**. With a ladder, a 60k-item
+ * library is 300k+ records; a page that mixes originals and renditions is a
+ * page the client cannot use, because it cannot tell how far to keep reading.
+ * Filtering after the fact would page through five times as much data to find
+ * the same photos.
+ *
+ * `variant`/`variantLongEdge` ask the server to resolve which rendition answers
+ * each pixel size, per record, and return it with a signed URL. Two sizes are
+ * requested because progressive presentation needs both: the tile now, and the
+ * viewport size ready for the moment someone opens one. They ride the request
+ * that was being made anyway, so resolution costs no extra round trip.
+ *
+ * No size class is named. The client asks in pixels; which rung answers is the
+ * server's business, and changing the ladder changes nothing here.
+ */
+function libraryQuery(extra = ""): string {
+  const params = [
+    "limit=500",
+    "include=metadata,labels",
+    `notLabel=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+    `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+    `variantLongEdge=${LIBRARY_VARIANT_TARGETS.join(",")}`,
+  ];
+  return `/data/records?${params.join("&")}${extra}`;
+}
+
+/**
+ * The pixel sizes the library view asks for.
+ *
+ * A tile at 3× device pixel ratio, and a large-viewport size for the opened
+ * view. Deliberately fixed rather than measured per client: they ride a list
+ * request made before anything is laid out, and asking for the exact viewport
+ * would mean a different cache key per window size for no visible benefit.
+ * The viewer refines with a measured request when it needs to.
+ */
+const LIBRARY_VARIANT_TARGETS = [540, 2048];
+
 // No `type` filter: a type-less query is server-scoped to the app's granted
 // types, which for Photos are exactly the image types — so this returns every
 // image the app can see in one request, across all of image/jpeg/png/heic/…
 // rather than a single hardcoded type.
 export async function listPhotos(): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
-  const result = await request<{ records: PhotoRecord[] }>(
-    "/data/records?limit=500&include=metadata,labels",
-    source,
-  );
+  const result = await request<{ records: PhotoRecord[] }>(libraryQuery(), source);
   return result.records;
 }
 
 export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
   const source = await resolveDataSource();
   const result = await request<{ records: PhotoRecord[] }>(
-    `/data/records?limit=500&include=metadata,labels&updated_after=${encodeURIComponent(updatedAfter)}`,
+    libraryQuery(`&updated_after=${encodeURIComponent(updatedAfter)}`),
     source,
   );
   return result.records;

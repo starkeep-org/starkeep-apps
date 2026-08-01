@@ -195,6 +195,36 @@ function renditionFileName(originalFilename: string | null, sizeClass: string): 
   return `${sizeClass}_${base}`;
 }
 
+/**
+ * Write the parent record's inline placeholder.
+ *
+ * Deliberately on the **parent**, not on a rendition. The placeholder exists so
+ * a grid can paint a tile for a record before fetching anything — and the grid
+ * lists originals, so a hash hanging off a child would be one join away from
+ * the thing that needs it, which is exactly the round trip it exists to avoid.
+ *
+ * Best-effort: a missing placeholder costs a grey tile for a few hundred
+ * milliseconds, which is a worse-looking version of what happened before rather
+ * than a broken one.
+ */
+export async function publishThumbHash(
+  signedFetch: SignedFetch,
+  parentId: string,
+  thumbHash: string,
+): Promise<void> {
+  const res = await signedFetch(`/data/records/${parentId}/metadata`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ typeId: "image", metadata: { thumb_hash: thumbHash } }),
+  });
+  if (!res.ok) {
+    console.warn(
+      `[renditions] thumb_hash write failed for ${parentId} (${res.status}) — ` +
+        `the grid will show a plain placeholder for this record`,
+    );
+  }
+}
+
 /** The label ref a caller uses to ask the server which rungs a record has. */
 export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}`;
 

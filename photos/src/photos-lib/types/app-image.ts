@@ -48,6 +48,27 @@ export interface AppImage {
    */
   derivedKind: DerivedKind | null;
 
+  /**
+   * Resolved renditions, keyed by the pixel size that was **requested**.
+   *
+   * The client asks the server for target long edges and looks up exactly what
+   * it asked for. It never names a size class, and never computes which class
+   * it wants — it cannot, because classes are per-record maxima, so a class
+   * named for 2560 px holds a 900 px file when its source was 900 px.
+   *
+   * Empty when the caller did not ask for variants, or when a record has none
+   * derived yet. Both read the same way to a consumer: fall back to the inline
+   * placeholder.
+   */
+  variants: Record<string, { url: string; width: number; height: number }>;
+
+  /**
+   * Base64 ThumbHash — a ~25-byte inline placeholder, rendered client-side with
+   * **zero requests**. Stage zero of progressive presentation: the grid paints
+   * every tile before a single byte of image data is fetched.
+   */
+  thumbHash: string | null;
+
   // From shared_record_image_metadata
   width: number;
   height: number;

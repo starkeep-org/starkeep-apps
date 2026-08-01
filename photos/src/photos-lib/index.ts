@@ -63,6 +63,12 @@ export {
   type AttemptOutcome,
   type DerivationAttempt,
 } from "./image-processing/derivation-attempts";
+export {
+  variantSrc,
+  tileTargetLongEdge,
+  viewportTargetLongEdge,
+  type DisplaySource,
+} from "./variant-src";
 export type { GoogleAlbum, GoogleMediaItem } from "./types/google";
 
 // EXIF reader

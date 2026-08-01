@@ -50,6 +50,8 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
     updatedAt: "2026-01-01T00:00:00.000Z",
     parentId: "orig-1",
     derivedKind: "thumbnail",
+    variants: {},
+    thumbHash: null,
     width: 400,
     height: 300,
     exif: {
@@ -130,41 +132,79 @@ describe("PhotoThumbnail lazy loading", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("never requests a URL for a placeholder original, even in view", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/never");
-    renderThumbnail(appImage({ id: "orig-2", parentId: null, derivedKind: null }), getSrc);
+  // ---- The library now shows originals, not renditions --------------------
+  //
+  // The three tests replaced here asserted that an original, a crop, and an
+  // unlabelled record all rendered as *placeholders* — because the grid used
+  // to display only records carrying the thumbnail label, i.e. the renditions
+  // themselves. That inverted what a library is: it made a photo unclickable
+  // until something derived from it, and a grid of a fresh import was a grid of
+  // grey boxes.
+  //
+  // The grid now lists originals and displays a *rendition of* each, resolved
+  // server-side from a requested pixel size.
+
+  it("shows the rendition the server resolved for the tile size", () => {
+    const getSrc = vi.fn().mockReturnValue("https://signed/original");
+    renderThumbnail(
+      appImage({
+        id: "orig-2",
+        parentId: null,
+        derivedKind: null,
+        variants: { "540": { url: "https://signed/tile", width: 540, height: 360 } },
+      }),
+      getSrc,
+    );
 
     act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
+    expect(screen.getByRole("img").getAttribute("src")).toBe("https://signed/tile");
+    // The original's own bytes are never fetched when a rendition exists —
+    // that is the entire economic argument for the ladder.
     expect(getSrc).not.toHaveBeenCalled();
-    expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("does not render a CROP as if it were its source's thumbnail", () => {
-    // The bug this discriminator change exists to fix. A crop sets parentId
-    // exactly like a thumbnail does, so the old `parentId !== null` test
-    // matched it and drew the crop into the grid as its source's tile.
-    const getSrc = vi.fn().mockReturnValue("https://signed/crop");
+  it("does not fetch a large original's bytes just to fill a 180px tile", () => {
+    // A record mid-derivation has no renditions yet. Serving the original into
+    // a tile would mean downloading tens of megabytes for a thumbnail, which is
+    // exactly the cost the ladder exists to avoid — so it shows a placeholder
+    // and waits.
+    const getSrc = vi.fn().mockReturnValue("https://signed/huge");
     renderThumbnail(
-      appImage({ id: "crop-1", parentId: "orig-1", derivedKind: "crop" }),
+      appImage({ id: "big", parentId: null, derivedKind: null, sizeBytes: 40_000_000 }),
       getSrc,
     );
 
     act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
     expect(getSrc).not.toHaveBeenCalled();
-    expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("treats a derived record whose label has not arrived yet as a placeholder", () => {
-    // A record and its labels share a request but not a transaction, so a
-    // thumbnail can briefly exist unlabelled. Showing a placeholder for a
-    // moment is the safe direction; mis-typing the edge is not.
-    const getSrc = vi.fn().mockReturnValue("https://signed/pending");
+  it("serves a small original directly when it has no renditions yet", () => {
+    // Below the direct-serve floor the round trip through derivation is not
+    // worth waiting for, and the bytes are about the size of a rendition
+    // anyway.
+    const getSrc = vi.fn().mockReturnValue("https://signed/small");
     renderThumbnail(
-      appImage({ id: "thumb-pending", parentId: "orig-1", derivedKind: null }),
+      appImage({ id: "small", parentId: null, derivedKind: null, sizeBytes: 20_000 }),
       getSrc,
     );
 
     act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
-    expect(getSrc).not.toHaveBeenCalled();
+    expect(getSrc).toHaveBeenCalledWith("small");
+  });
+
+  it("still asks for nothing until the tile is near the viewport", () => {
+    const getSrc = vi.fn().mockReturnValue("https://signed/x");
+    renderThumbnail(
+      appImage({
+        id: "orig-3",
+        parentId: null,
+        derivedKind: null,
+        variants: { "540": { url: "https://signed/tile", width: 540, height: 360 } },
+      }),
+      getSrc,
+    );
+
+    act(() => FakeIntersectionObserver.instances[0]!.intersect(false));
+    expect(screen.queryByRole("img")).toBeNull();
   });
 });

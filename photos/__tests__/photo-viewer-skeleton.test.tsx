@@ -25,6 +25,8 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
     updatedAt: "2026-01-01T00:00:00.000Z",
     parentId: null,
     derivedKind: null,
+  variants: {},
+  thumbHash: null,
     width: 4000,
     height: 3000,
     exif: {

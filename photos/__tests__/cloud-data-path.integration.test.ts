@@ -124,7 +124,18 @@ describe("cloud data path (client → proxy → data server)", () => {
     expect(dataReq, "no /data/records request reached the data server").toBeTruthy();
     // include=metadata rides along (and is HMAC-signed) through the proxy so
     // the list arrives enriched with per-record dimensions/EXIF.
-    expect(dataReq!.path).toBe("/data/records?limit=500&include=metadata,labels");
+    // Asserted by parts rather than as one string: the library query carries
+    // the rendition exclusion and the variant request, and pinning the whole
+    // URL would make every future tuning of the requested pixel sizes look
+    // like a broken integration.
+    const params = new URLSearchParams(dataReq!.path.split("?")[1]);
+    expect(params.get("include")).toBe("metadata,labels");
+    // Renditions are excluded server-side — a page mixing them with originals
+    // is a page the client cannot page through.
+    expect(params.get("notLabel")).toBe("photos/rendition");
+    // And the client asks in pixels, never naming a size class.
+    expect(params.get("variant")).toBe("photos/rendition");
+    expect(params.get("variantLongEdge")).toMatch(/^\d+(,\d+)*$/);
     // ...but now signed, because it went through the proxy rather than direct.
     expect(dataReq!.headers.appId).toBe("photos");
     expect(dataReq!.headers.sig).toBeTruthy();

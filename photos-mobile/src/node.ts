@@ -36,6 +36,9 @@ import {
   type SyncTransport,
 } from "@starkeep/sync-engine";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
+import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias.js";
+import { DeviceMediaObjectStorage } from "./storage/device-media-storage.js";
+import type { ExpoFileSystem } from "./storage/expo-object-storage.js";
 
 /**
  * How many records one exchange page carries on a phone.
@@ -93,11 +96,41 @@ export interface MobileNodeOptions {
   /** Replicas elsewhere required before this node may drop its only copy. */
   readonly minimumReplicas?: number;
   readonly wallClock?: () => number;
+  /**
+   * Let this node's object storage read the device's own camera roll.
+   *
+   * Supplying this turns on aliasing: import records a photo without copying
+   * its bytes, and the blob for such a record resolves to the MediaStore asset
+   * that already holds them (`import-loop-design.md` §2). Absent — on a laptop,
+   * or in a test that does not care — the node behaves exactly as before.
+   *
+   * The wrapping happens *here* rather than at the app's edge because the alias
+   * table lives in this node's database, which does not exist until this
+   * function creates it. Handing the caller a half-built object storage to
+   * finish assembling later would put the one invariant that matters — that the
+   * engine and the importer see the *same* view of what this node holds — in
+   * the caller's hands.
+   */
+  readonly deviceMedia?: { readonly fs: ExpoFileSystem };
 }
 
 export interface MobileNode {
   readonly databaseAdapter: DatabaseAdapter;
+  /**
+   * What this node holds — including, when `deviceMedia` was supplied, the
+   * camera-roll assets it has aliased rather than copied.
+   */
   readonly objectStorage: ObjectStorageAdapter;
+  /**
+   * The alias table, or null when this node does not read a camera roll.
+   *
+   * Exposed because the import loop writes to it and the residency inspector
+   * reads it. It is deliberately *not* something the sync engine can see: an
+   * aliased blob is `resident` through `localStorage.has()` like any other, and
+   * teaching the engine otherwise would be the first crack in the seam that
+   * keeps mobile a configuration of the node rather than a fork of it.
+   */
+  readonly mediaAliases: MediaAliasStore | null;
   readonly engine: SyncEngine;
   /**
    * Null when no retention policy was supplied — meaning this node wants every
@@ -124,7 +157,23 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     driver: options.sqliteDriver,
   });
   await databaseAdapter.init();
-  await options.localObjectStorage.init();
+
+  // The alias table is created before anything else touches object storage,
+  // because from here on `localObjectStorage` *is* the overlay and every
+  // `has()` on it may consult the table.
+  const mediaAliases = options.deviceMedia
+    ? createSqliteMediaAliasStore({ db: databaseAdapter.getRawDatabase() })
+    : null;
+  const localObjectStorage =
+    mediaAliases && options.deviceMedia
+      ? new DeviceMediaObjectStorage({
+          inner: options.localObjectStorage,
+          aliases: mediaAliases,
+          fs: options.deviceMedia.fs,
+        })
+      : options.localObjectStorage;
+
+  await localObjectStorage.init();
 
   const clock = createHLCClock({
     nodeId: options.nodeId,
@@ -150,7 +199,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     ? createResidencyManager({
         localDb: databaseAdapter.getRawDatabase(),
         databaseAdapter,
-        localObjectStorage: options.localObjectStorage,
+        localObjectStorage,
         classLabel: options.classLabel ?? { appId: "photos", key: "rendition" },
         // A phone is never the cloud node. `starkeep/no-cloud` is a constraint
         // about cloud storage; a handset holding such a record is the intended
@@ -164,7 +213,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
 
   const engine = createSyncEngine({
     localDatabaseAdapter: databaseAdapter,
-    localObjectStorage: options.localObjectStorage,
+    localObjectStorage,
     remoteObjectStorage: options.remoteObjectStorage,
     transport: options.transport,
     clock,
@@ -176,13 +225,14 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
 
   return {
     databaseAdapter,
-    objectStorage: options.localObjectStorage,
+    objectStorage: localObjectStorage,
+    mediaAliases,
     engine,
     residency,
     exchange: () => engine.exchange(),
     async close() {
       await databaseAdapter.close();
-      await options.localObjectStorage.close();
+      await localObjectStorage.close();
     },
   };
 }

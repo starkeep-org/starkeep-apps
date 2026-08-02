@@ -21,7 +21,9 @@
 import { open as openOpSqlite } from "@op-engineering/op-sqlite";
 import { Directory, File, Paths } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
+import { sha256 } from "js-sha256";
 import { createSessionStore } from "./auth/session-store";
+import type { HashFactory } from "./media/import";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
 import type { DeviceMediaModule, MediaQuery } from "./media/device-library";
 import {
@@ -114,3 +116,36 @@ export const deviceMedia: DeviceMediaModule = {
   newQuery: () => wrapQuery(new MediaLibrary.Query()),
   uriFor: (id: string) => new MediaLibrary.Asset(id).getUri(),
 };
+
+/**
+ * The SHA-256 the import loop hashes originals with.
+ *
+ * `js-sha256` rather than `node:crypto`, which does not exist here, and rather
+ * than a lazy `require` of it, which is worse — these are ESM packages, so
+ * `require` is undefined and every hash would throw at runtime while
+ * typechecking perfectly. `@starkeep/storage-adapter` reached the same
+ * conclusion for its stream verifier and documents the two failures it cost.
+ *
+ * Content-addressed keys make this load-bearing rather than incidental: the
+ * digest below *is* the object storage key, so a hash that is wrong here does
+ * not fail loudly — it silently makes a record that no other node can match to
+ * its bytes.
+ */
+export const sha256HashFactory: HashFactory = () => {
+  const hash = sha256.create();
+  return {
+    update: (chunk) => void hash.update(chunk),
+    digestHex: () => hash.hex(),
+  };
+};
+
+/**
+ * What `createMobileNode` needs in order to alias the camera roll.
+ *
+ * Passing the same filesystem port the object store uses is the whole trick:
+ * expo-file-system 57 resolves a `content://` URI to a `ContentProviderFile`
+ * with `exists`, `length()`, `inputStream()` and a seekable handle, so reading
+ * an aliased original is the same code path as reading a stored blob with a
+ * different string in it. There is no second module and no native shim.
+ */
+export const deviceMediaStorage = { fs: expoFileSystem };

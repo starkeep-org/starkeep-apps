@@ -159,48 +159,7 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
   }
 
   async getStream(key: string, range?: ByteRange): Promise<ReadableStream<Uint8Array> | null> {
-    const file = this.fs.file(this.pathFor(key));
-    if (!file.exists) return null;
-    if (!range) return file.readableStream();
-
-    // Ranged reads go through a handle rather than the stream, because a stream
-    // has no way to start anywhere but the beginning — reading from zero and
-    // discarding the prefix would satisfy every assertion about content while
-    // turning a seek to the ten-minute mark of a video into a ten-minute read.
-    const size = file.size ?? 0;
-    const end = Math.min(range.end ?? size - 1, size - 1);
-    const length = end - range.start + 1;
-    if (length <= 0) return emptyStream();
-
-    const handle = file.open();
-    handle.offset = range.start;
-    // Chunked rather than one `readBytes(length)`: a range can legitimately be
-    // most of a large file, and materialising it whole is the thing streaming
-    // exists to avoid.
-    const CHUNK = 256 * 1024;
-    let remaining = length;
-    return new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (remaining <= 0) {
-          handle.close();
-          controller.close();
-          return;
-        }
-        const chunk = handle.readBytes(Math.min(CHUNK, remaining));
-        if (chunk.byteLength === 0) {
-          handle.close();
-          controller.close();
-          return;
-        }
-        remaining -= chunk.byteLength;
-        controller.enqueue(chunk);
-      },
-      cancel() {
-        // A reader that stops early must not leak the handle — on a phone the
-        // open-file limit is low enough that this matters within one session.
-        handle.close();
-      },
-    });
+    return streamFromFile(this.fs.file(this.pathFor(key)), range);
   }
 
   async putStream(
@@ -339,6 +298,65 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
       return null;
     }
   }
+}
+
+/**
+ * Read a file, whole or by range, as a stream. Null when it does not exist.
+ *
+ * Exported because the device-media overlay (`device-media-storage.ts`) reads
+ * `content://` URIs through the *same* `ExpoFile` port — expo-file-system 57
+ * resolves a content URI to a `ContentProviderFile` with `inputStream()`,
+ * `length()` and a seekable handle, so an aliased original and a stored blob
+ * differ only in the path handed to `fs.file()`. A second copy of the handle
+ * and chunking logic below is exactly the kind of near-duplicate that drifts:
+ * one of the two would eventually learn to close its handle on cancel and the
+ * other would not.
+ */
+export function streamFromFile(
+  file: ExpoFile,
+  range?: ByteRange,
+): ReadableStream<Uint8Array> | null {
+  if (!file.exists) return null;
+  if (!range) return file.readableStream();
+
+  // Ranged reads go through a handle rather than the stream, because a stream
+  // has no way to start anywhere but the beginning — reading from zero and
+  // discarding the prefix would satisfy every assertion about content while
+  // turning a seek to the ten-minute mark of a video into a ten-minute read.
+  const size = file.size ?? 0;
+  const end = Math.min(range.end ?? size - 1, size - 1);
+  const length = end - range.start + 1;
+  if (length <= 0) return emptyStream();
+
+  const handle = file.open();
+  handle.offset = range.start;
+  // Chunked rather than one `readBytes(length)`: a range can legitimately be
+  // most of a large file, and materialising it whole is the thing streaming
+  // exists to avoid.
+  const CHUNK = 256 * 1024;
+  let remaining = length;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (remaining <= 0) {
+        handle.close();
+        controller.close();
+        return;
+      }
+      const chunk = handle.readBytes(Math.min(CHUNK, remaining));
+      if (chunk.byteLength === 0) {
+        handle.close();
+        controller.close();
+        return;
+      }
+      remaining -= chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      // A reader that stops early must not leak the handle — on a phone the
+      // open-file limit is low enough that this matters within one session.
+      handle.close();
+    },
+  });
 }
 
 function emptyStream(): ReadableStream<Uint8Array> {

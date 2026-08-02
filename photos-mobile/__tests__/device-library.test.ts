@@ -27,6 +27,7 @@ function asset(overrides: Partial<AssetMetadataLike> & { id: string }): AssetMet
     height: 3024,
     duration: null,
     creationTime: 1_700_000_000_000,
+    modificationTime: 1_700_000_000_000,
     ...overrides,
   };
 }
@@ -94,8 +95,19 @@ describe("listing recent media", () => {
         height: 3024,
         durationMs: 12_500,
         createdAt: 1_700_000_000_000,
+        modifiedAt: 1_700_000_000_000,
       },
     ]);
+  });
+
+  it("carries the modification time through, since import compares against it", async () => {
+    // The alias staleness check has no other source: a `content://` URI resolves
+    // to a `ContentProviderFile`, whose `lastModified()` is always null. Dropping
+    // this field here would make an edited photo indistinguishable from an
+    // untouched one, silently leaving a record's content hash describing bytes
+    // that no longer exist.
+    const { media } = fakeMedia([asset({ id: "content://5", modificationTime: null })]);
+    expect(await listRecentMedia(media, { limit: 10 })).toMatchObject([{ modifiedAt: null }]);
   });
 
   it("keeps the nulls the media store admits to", async () => {

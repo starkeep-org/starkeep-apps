@@ -43,6 +43,19 @@ export interface AssetMetadataLike {
   readonly height: number | null;
   readonly duration: number | null;
   readonly creationTime: number | null;
+  /**
+   * When the media store last saw these bytes change.
+   *
+   * Carried because import aliases a record's blob to this asset rather than
+   * copying it (see `import-loop-design.md` §2), which makes "are these still
+   * the bytes we hashed" a question the node has to be able to ask. The media
+   * store is the only place that can answer it: a `content://` URI resolves to
+   * a `ContentProviderFile`, whose `lastModified()` is unconditionally `null`.
+   *
+   * Null when the store recorded none, which is treated as "cannot be verified
+   * by time" rather than "unchanged" — see {@link DeviceMediaItem.modifiedAt}.
+   */
+  readonly modificationTime: number | null;
 }
 
 export interface MediaQuery {
@@ -71,6 +84,11 @@ export interface DeviceMediaItem {
   readonly height: number | null;
   readonly durationMs: number | null;
   readonly createdAt: number | null;
+  /**
+   * The alias staleness signal. Null means the media store recorded none, which
+   * the import loop must read as "unverifiable", not as "unchanged".
+   */
+  readonly modifiedAt: number | null;
 }
 
 /**
@@ -162,6 +180,7 @@ export async function listRecentMedia(
       height: row.height,
       durationMs: row.duration,
       createdAt: row.creationTime,
+      modifiedAt: row.modificationTime,
     });
   }
   return items;

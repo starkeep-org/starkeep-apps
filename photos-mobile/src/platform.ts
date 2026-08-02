@@ -23,7 +23,14 @@ import { Directory, File, Paths } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
 import { generateId, type HLCClock } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
+import * as SecureStore from "expo-secure-store";
+import {
+  createHttpSyncTransport,
+  HttpObjectStorageAdapter,
+} from "@starkeep/sync-engine";
 import { createSessionStore } from "./auth/session-store";
+import { loadDeviceKey, type DeviceKey } from "./auth/device-key";
+import { loadCloudConfig } from "./config";
 import type { HashBytes, ImportDeps } from "./media/import";
 import { createMobileNode, type MobileNode } from "./node";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
@@ -181,17 +188,67 @@ export const deviceMediaStorage = { fs: expoFileSystem };
  * for a PRNG that Hermes only has after `react-native-get-random-values` has
  * run; see the note at the top of `index.ts`.
  */
-export async function bringUpNode(): Promise<{ node: MobileNode; identity: NodeIdentity }> {
+export async function bringUpNode(): Promise<{
+  node: MobileNode;
+  identity: NodeIdentity;
+  deviceKey: DeviceKey;
+}> {
   const identity = await loadNodeIdentity(expoFileSystem, NODE_IDENTITY_PATH, generateId);
+  const deviceKey = await loadDeviceKey({
+    store: SecureStore,
+    deviceId: identity.nodeId,
+    randomBytes: (length) => Crypto.getRandomValues(new Uint8Array(length)),
+  });
+  const config = loadCloudConfig();
+
   const node = await createMobileNode({
     nodeId: identity.nodeId,
     databasePath: DATABASE_PATH,
     sqliteDriver: opSqliteDriver,
     localObjectStorage: createLocalObjectStorage(),
     deviceMedia: deviceMediaStorage,
+    ...(config?.baseUrl ? { cloud: driveChannel(config.baseUrl, deviceKey) } : {}),
   });
-  return { node, identity };
+  return { node, identity, deviceKey };
 }
+
+/**
+ * The Drive channel — how shared records reach the cloud.
+ *
+ * Drive, not `photos`, and that is the protocol rather than a choice:
+ * `data-roles-and-permissions.md` routes *all* shared-record sync through the
+ * always-on User-Data-Owner channel, and the photographs are shared records.
+ * The `photos` channel carries app-specific rows — captions — and is a second
+ * engine against a second base URL, not needed to answer "did my photos sync".
+ *
+ * **Configured even when this device is not paired yet.** The engine exists and
+ * every request 401s until the operator pairs it, which is a far better state
+ * than no engine at all: the failure is visible, attributable and fixed by
+ * pairing, where a missing engine looks exactly like a device with nothing to
+ * send. That was the actual bug — signing in changed nothing because
+ * `bringUpNode` passed no cloud, so `exchange()` was a no-op.
+ */
+function driveChannel(baseUrl: string, deviceKey: DeviceKey) {
+  const channelUrl = `${baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
+  const signRequest = (method: string, path: string, body?: string | Uint8Array) =>
+    deviceKey.signRequest(
+      DRIVE_APP_ID,
+      method,
+      path,
+      typeof body === "string" ? new TextEncoder().encode(body) : body,
+    );
+
+  return {
+    transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest }),
+    remoteObjectStorage: new HttpObjectStorageAdapter({
+      baseUrl: `${channelUrl}/files`,
+      signRequest,
+    }),
+  };
+}
+
+/** The User-Data-Owner app id. Must match `sync-supervisor.ts`'s constant. */
+export const DRIVE_APP_ID = "starkeep-drive";
 
 /**
  * Throw away everything this node has indexed.

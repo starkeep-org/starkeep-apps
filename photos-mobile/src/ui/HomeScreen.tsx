@@ -168,6 +168,8 @@ export function HomeScreen({
    * is about to happen is more informative than a generic "Are you sure?".
    */
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
 
   const baseUrl = config?.baseUrl;
@@ -366,6 +368,52 @@ export function HomeScreen({
         </Section>
 
         <Section title="Sync">
+          {node.status === "ready" ? (
+            <>
+              <Pressable
+                onPress={() => {
+                  setSyncing(true);
+                  void node.node
+                    .exchange()
+                    .then(() => {
+                      setSyncError(null);
+                      return library.reload();
+                    })
+                    .catch((err: unknown) => setSyncError(String(err)))
+                    .finally(() => setSyncing(false));
+                }}
+                disabled={syncing || node.node.engine === null}
+                style={[
+                  styles.button,
+                  syncing || node.node.engine === null ? styles.buttonDisabled : null,
+                ]}
+              >
+                <Text style={styles.buttonLabel}>{syncing ? "Syncing…" : "Sync now"}</Text>
+              </Pressable>
+              {node.node.engine === null ? (
+                <Text style={styles.muted}>
+                  No cloud is configured in this build, so there is nothing to exchange with.
+                </Text>
+              ) : null}
+              {syncError ? <Text style={styles.error}>{syncError}</Text> : null}
+
+              {/* The pairing details. On screen because pairing is done from
+                  admin-web — a device cannot authenticate its own first
+                  registration, so the operator approves it from the privileged
+                  console. Until then every request is refused, which is the
+                  honest state and is what the error above will say. */}
+              <Text style={styles.muted}>
+                To let this device sync, pair it in admin-web with these values:
+              </Text>
+              <Text style={styles.mono} selectable>
+                {node.deviceKey.deviceId}
+              </Text>
+              <Text style={styles.mono} selectable>
+                {node.deviceKey.publicKeySpki}
+              </Text>
+            </>
+          ) : null}
+
           {session ? (
             <>
               <Text style={styles.muted}>

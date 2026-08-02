@@ -15,7 +15,7 @@ import { createHLCClock } from "@starkeep/protocol-primitives";
 import { createMobileNode, type MobileNode } from "../src/node";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
-import { importDeviceMedia, type HashFactory } from "../src/media/import";
+import { importDeviceMedia, type HashBytes } from "../src/media/import";
 import { listLibrary, summarizeLibrary } from "../src/library";
 import type { AssetMetadataLike, DeviceMediaModule, MediaQuery } from "../src/media/device-library";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
@@ -38,10 +38,7 @@ function fakeOpSqlite() {
   return { open: () => connection };
 }
 
-const nodeHash: HashFactory = () => {
-  const h = createHash("sha256");
-  return { update: (c) => void h.update(c), digestHex: () => h.digest("hex") };
-};
+const nodeHash: HashBytes = async (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function fakeMedia(rows: AssetMetadataLike[]): DeviceMediaModule {
   const query = (): MediaQuery => ({

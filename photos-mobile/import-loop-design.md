@@ -313,6 +313,38 @@ interoperable until then.
 
 ---
 
+## 5b. What import actually costs, measured
+
+Ten files on a real handset, instrumented per asset. The numbers were not what
+reasoning predicted, and they are recorded here because the wrong conclusion was
+reached twice before measuring.
+
+| file | size | read (JSI) | hash (JS) |
+|---|---|---|---|
+| Screenshot .png | 0.29 MB | 19 ms | 217 ms |
+| PXL .jpg | 2.95 MB | 52 ms | 2,100 ms |
+| PXL .mp4 | 23.4 MB | 216 ms | 16,715 ms |
+| PXL .mp4 | 47.0 MB | 506 ms | 33,793 ms |
+| PXL .jpg | 4.26 MB | 104 ms | 3,100 ms |
+
+Totals across all ten: **79.5 MB, 1.05 s reading, 57.1 s hashing.**
+
+- **Read (`bytesSync` across JSI): ~76 MB/s.** Not a problem, and not worth a
+  native module to avoid. The whole-file materialisation that §2 was uneasy
+  about is cheap.
+- **Hash (`js-sha256` on Hermes): ~1.39 MB/s**, with essentially no variance
+  across format or size. **98% of import time.**
+
+Two beliefs died here. That pulling whole assets across the bridge was the
+expensive part — it is 2% of it. And that a portable JS digest was an acceptable
+default on a phone — at 1.4 MB/s a 60k-item library would hash for days.
+
+**The fix is `expo-crypto`**: the same digest in platform code, keeping the read
+in JS because the read is fine. The custom native module (item 13b) is still
+worth building, but its justification is *streaming* — removing the need to hold
+anything whole, which is what {@link MAX_INLINE_READ_BYTES} exists to bound —
+not speed, which expo-crypto already recovers.
+
 ## 6. What can go wrong, stated plainly
 
 - **Asset deleted before its blob was pushed.** Unrecoverable. The record survives, demoted to

@@ -27,7 +27,7 @@ import { createInProcessSyncTransport } from "@starkeep/sync-engine";
 import { createMobileNode, type MobileNode } from "../src/node";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
-import { importDeviceMedia, type HashFactory } from "../src/media/import";
+import { importDeviceMedia, type HashBytes } from "../src/media/import";
 import type {
   AssetMetadataLike,
   DeviceMediaModule,
@@ -53,10 +53,7 @@ function fakeOpSqlite() {
   return { open: () => connection };
 }
 
-const nodeHash: HashFactory = () => {
-  const h = createHash("sha256");
-  return { update: (c) => void h.update(c), digestHex: () => h.digest("hex") };
-};
+const nodeHash: HashBytes = async (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 const PHOTO_URI = "content://media/external/images/media/1";
 const PHOTO = new Uint8Array(Array.from({ length: 4096 }, (_, i) => i % 256));

@@ -22,9 +22,9 @@ import { open as openOpSqlite } from "@op-engineering/op-sqlite";
 import { Directory, File, Paths } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
 import { generateId, type HLCClock } from "@starkeep/protocol-primitives";
-import { sha256 } from "js-sha256";
+import * as Crypto from "expo-crypto";
 import { createSessionStore } from "./auth/session-store";
-import type { HashFactory, ImportDeps } from "./media/import";
+import type { HashBytes, ImportDeps } from "./media/import";
 import { createMobileNode, type MobileNode } from "./node";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { clearNodeFiles } from "./node-reset";
@@ -47,14 +47,17 @@ import {
  * it to fail.
  */
 /**
- * Note what this file does *not* have to install: a SHA-256.
+ * On the two SHA-256s in this app, which are not the same one.
  *
- * The storage adapter verifies streamed writes against the record's content
- * hash, and used to do it with `node:crypto` at module scope — which does not
- * merely fail on React Native, it makes the whole package unbundleable there.
- * Its default is now a portable implementation, so the phone needs no wiring at
- * all and the *servers* opt into the faster native one instead. Correct by
- * default, fast where it is worth configuring.
+ * `@starkeep/storage-adapter` carries a portable JS digest to verify streamed
+ * writes, so the package bundles on React Native at all — it used to import
+ * `node:crypto` at module scope, which does not merely fail here but makes the
+ * whole package unbundleable, in an error pointing at the importer. That one
+ * stays as it is: it runs per streamed write, which on this device is nothing.
+ *
+ * The *import* hash is a different matter and is wired below with
+ * {@link sha256Bytes}. It runs over every byte of every original, and the
+ * portable implementation turned out to cost 98% of import time.
  */
 
 export const opSqliteModule: OpSqliteModule = {
@@ -123,25 +126,35 @@ export const deviceMedia: DeviceMediaModule = {
 };
 
 /**
- * The SHA-256 the import loop hashes originals with.
+ * The SHA-256 the import loop hashes originals with — the platform's, not JS's.
  *
- * `js-sha256` rather than `node:crypto`, which does not exist here, and rather
- * than a lazy `require` of it, which is worse — these are ESM packages, so
- * `require` is undefined and every hash would throw at runtime while
- * typechecking perfectly. `@starkeep/storage-adapter` reached the same
- * conclusion for its stream verifier and documents the two failures it cost.
+ * ## Why this is native
  *
- * Content-addressed keys make this load-bearing rather than incidental: the
- * digest below *is* the object storage key, so a hash that is wrong here does
- * not fail loudly — it silently makes a record that no other node can match to
- * its bytes.
+ * It was `js-sha256`, which is correct everywhere and is the right *default*
+ * for a library. As an import loop on a handset it was catastrophic, and the
+ * device said so precisely: **~1.4 MB/s**, unwavering across ten files of every
+ * size and format. A 47 MB video took 34 seconds to hash and half a second to
+ * read. Hashing was 98% of import.
+ *
+ * `expo-crypto` runs the same digest in platform code. The bytes still cross
+ * JSI to get here — measured at ~76 MB/s, which is not worth a native module to
+ * avoid — so this buys nearly the whole difference for one dependency.
+ *
+ * ## Why getting this wrong is quiet
+ *
+ * Content-addressed keys make the digest load-bearing rather than incidental:
+ * it *is* the object storage key. A hash that disagrees with every other node's
+ * does not fail — it makes a record whose bytes nobody else can match, which
+ * surfaces as photos mysteriously failing to deduplicate long after the cause.
+ * So the algorithm is named explicitly and the hex encoding is done here rather
+ * than trusted to a helper.
  */
-export const sha256HashFactory: HashFactory = () => {
-  const hash = sha256.create();
-  return {
-    update: (chunk) => void hash.update(chunk),
-    digestHex: () => hash.hex(),
-  };
+export const sha256Bytes: HashBytes = async (bytes) => {
+  const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes as BufferSource);
+  const out = new Uint8Array(digest);
+  let hex = "";
+  for (const byte of out) hex += byte.toString(16).padStart(2, "0");
+  return hex;
 };
 
 /**
@@ -225,6 +238,6 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
     database: node.databaseAdapter,
     clock,
     fs: expoFileSystem,
-    hash: sha256HashFactory,
+    hash: sha256Bytes,
   };
 }

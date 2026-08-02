@@ -15,7 +15,7 @@ import { createHLCClock } from "@starkeep/protocol-primitives";
 import { createMobileNode, type MobileNode } from "../src/node";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
-import { importDeviceMedia, type HashFactory } from "../src/media/import";
+import { importDeviceMedia, type HashBytes } from "../src/media/import";
 import { clearNodeFiles } from "../src/node-reset";
 import { listLibrary } from "../src/library";
 import type { AssetMetadataLike, DeviceMediaModule, MediaQuery } from "../src/media/device-library";
@@ -28,10 +28,7 @@ const SESSION = "/docs/starkeep/session.json";
 const PHOTO_A = "content://media/external/images/media/1";
 const PHOTO_B = "content://media/external/images/media/2";
 
-const nodeHash: HashFactory = () => {
-  const h = createHash("sha256");
-  return { update: (c) => void h.update(c), digestHex: () => h.digest("hex") };
-};
+const nodeHash: HashBytes = async (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function fakeOpSqlite() {
   const db = new DatabaseSync(":memory:");

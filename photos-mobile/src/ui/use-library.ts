@@ -12,6 +12,7 @@ import { createHLCClock, type HLCClock } from "@starkeep/protocol-primitives";
 import { listLibrary, summarizeLibrary, type LibraryItem, type LibrarySummary } from "../library";
 import { importDeviceMedia, type ImportOutcome, type ImportProgress } from "../media/import";
 import type { NodeIdentity } from "../node-identity";
+import type { DeviceKey } from "../auth/device-key";
 import type { MobileNode } from "../node";
 import { bringUpNode, clearNodeData, importDepsFor } from "../platform";
 
@@ -28,6 +29,8 @@ export type NodeState =
       readonly node: MobileNode;
       readonly identity: NodeIdentity;
       readonly clock: HLCClock;
+      /** Shown on screen so the operator can pair this device in admin-web. */
+      readonly deviceKey: DeviceKey;
     }
   | { readonly status: "failed"; readonly error: string };
 
@@ -63,7 +66,7 @@ export function useNode(): NodeHandle {
     let opened: MobileNode | null = null;
 
     void bringUpNode()
-      .then(({ node, identity }) => {
+      .then(({ node, identity, deviceKey }) => {
         opened = node;
         if (cancelled) {
           // Brought up after the screen went away — close it rather than leak
@@ -77,6 +80,7 @@ export function useNode(): NodeHandle {
           node,
           identity,
           clock: createHLCClock({ nodeId: identity.nodeId }),
+          deviceKey,
         });
       })
       .catch((err: unknown) => {

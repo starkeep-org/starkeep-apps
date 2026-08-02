@@ -49,7 +49,7 @@ import {
 } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import type { ExpoFileSystem } from "../storage/expo-object-storage";
-import { streamFromFile } from "../storage/expo-object-storage";
+import { isContentUri, streamFromFile } from "../storage/expo-object-storage";
 import { listRecentMedia, type DeviceMediaItem, type DeviceMediaModule } from "./device-library";
 import type { MediaAliasStore } from "./media-alias";
 
@@ -78,6 +78,35 @@ export interface ImportDeps {
   readonly hash: HashFactory;
   /** Injected so tests can assert `addedAtMs` rather than tolerate it. */
   readonly now?: () => number;
+  /**
+   * Called after each asset, with what it cost.
+   *
+   * Exists because "very slow" is not a diagnosis. Reading a `content://` asset
+   * pulls it whole across JSI and then hashes it in JavaScript, and which of
+   * those two dominates decides what is worth fixing — a question no amount of
+   * reasoning settles as cheaply as measuring it on the device that is slow.
+   */
+  readonly onProgress?: (progress: ImportProgress) => void;
+  /**
+   * Yield between assets, so the JS thread is not held for the whole batch.
+   *
+   * Defaults to a real yield. Tests pass a no-op to stay synchronous, and the
+   * reason it is injectable rather than unconditional is that a `setTimeout`
+   * per asset in a suite of 200 tests is slower than the work being tested.
+   */
+  readonly yieldToUi?: () => Promise<void>;
+}
+
+/** One asset's cost, reported as the loop goes rather than at the end. */
+export interface ImportProgress {
+  readonly done: number;
+  readonly total: number;
+  readonly filename: string | null;
+  readonly sizeBytes: number;
+  /** Milliseconds pulling the bytes into JS. */
+  readonly readMs: number;
+  /** Milliseconds hashing them. */
+  readonly hashMs: number;
 }
 
 export interface ImportOptions {
@@ -159,12 +188,19 @@ export async function importDeviceMedia(
   const fail = (item: DeviceMediaItem, reason: string) =>
     failures.push({ assetId: item.id, filename: item.filename, reason });
 
-  for (const item of items) {
+  const yieldToUi = deps.yieldToUi ?? (() => new Promise<void>((r) => setTimeout(r, 0)));
+
+  for (const [index, item] of items.entries()) {
     try {
       if (await alreadyImported(deps, item)) {
         skipped += 1;
         continue;
       }
+      // Between assets, not inside one: the JS thread is single, and holding it
+      // for a whole batch is what made the button say "Adding…" and then freeze
+      // — the frame that would have shown progress could never be drawn.
+      await yieldToUi();
+
       const record = await importOne(deps, item, { originAppId, nowMs: now() });
       if ("reason" in record) {
         fail(item, record.reason);
@@ -172,6 +208,14 @@ export async function importDeviceMedia(
       }
       records.push(record.record);
       imported += 1;
+      deps.onProgress?.({
+        done: index + 1,
+        total: items.length,
+        filename: item.filename,
+        sizeBytes: record.sizeBytes,
+        readMs: record.readMs,
+        hashMs: record.hashMs,
+      });
     } catch (err) {
       // Same argument as the skip inside `listRecentMedia`: one asset the media
       // store cannot produce costs one record, and throwing would cost the run.
@@ -205,14 +249,16 @@ async function importOne(
   deps: ImportDeps,
   item: DeviceMediaItem,
   context: { readonly originAppId: string; readonly nowMs: number },
-): Promise<{ record: DataRecord } | { reason: string }> {
+): Promise<({ record: DataRecord } & Omit<ImportProgress, "done" | "total" | "filename">) | { reason: string }> {
+  // `exists` and `size` are one `file` rather than two. On a content URI both
+  // are content-resolver round trips — `exists()` literally opens an input
+  // stream — and the old code built the file twice and asked twice.
   const file = deps.fs.file(item.uri);
-  if (!file.exists) {
+  const size = file.size;
+  if (size === null) {
     return { reason: `the media store has no readable asset at ${item.uri}` };
   }
-
-  const size = file.size;
-  if (size !== null && size > MAX_INLINE_READ_BYTES) {
+  if (size > MAX_INLINE_READ_BYTES) {
     return {
       reason: `${size} bytes is larger than this device can hash without streaming (${MAX_INLINE_READ_BYTES})`,
     };
@@ -250,44 +296,70 @@ async function importOne(
   });
 
   await deps.database.put(record);
-  return { record };
+  return { record, sizeBytes: digest.sizeBytes, readMs: digest.readMs, hashMs: digest.hashMs };
 }
 
 /**
  * SHA-256 the asset by streaming it, counting bytes as it goes.
  *
- * Streamed rather than read whole for the obvious reason and one less obvious
- * one: a 4K video is hundreds of megabytes, and materialising it to hash it
- * would OOM the app on exactly the files whose originals matter most.
+ * Streamed where streaming is possible. It is not possible for a `content://`
+ * asset (see `streamFromFile`), and for those the bytes are taken directly
+ * rather than pushed through a `ReadableStream` first — wrapping an
+ * already-materialised buffer in a stream only to read it back in chunks is
+ * pure overhead on the hottest path in the app, and it is the path every
+ * camera-roll photo takes.
  *
- * The size comes from the stream rather than from the media store's metadata
- * because it is what the alias's staleness check is later compared against —
- * taking it from a different source than the bytes were read from is how a
- * check comes to pass against a file it never examined.
+ * The size comes from the bytes actually read rather than from the media
+ * store's metadata, because it is what the alias's staleness check is later
+ * compared against — taking it from a different source than the bytes were
+ * read from is how a check comes to pass against a file it never examined.
  */
 async function hashFile(
   deps: ImportDeps,
   uri: string,
-): Promise<{ hex: string; sizeBytes: number } | null> {
-  const stream = streamFromFile(deps.fs.file(uri));
-  if (!stream) return null;
-
+): Promise<{ hex: string; sizeBytes: number; readMs: number; hashMs: number } | null> {
+  const file = deps.fs.file(uri);
   const hash = deps.hash();
   let sizeBytes = 0;
-  const reader = stream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        hash.update(value);
-        sizeBytes += value.byteLength;
+  let readMs = 0;
+  let hashMs = 0;
+
+  if (isContentUri(uri)) {
+    const readStart = Date.now();
+    const bytes = file.bytesSync();
+    readMs = Date.now() - readStart;
+
+    const hashStart = Date.now();
+    hash.update(bytes);
+    hashMs = Date.now() - hashStart;
+    sizeBytes = bytes.byteLength;
+  } else {
+    const stream = streamFromFile(file);
+    if (!stream) return null;
+    const reader = stream.getReader();
+    try {
+      for (;;) {
+        const readStart = Date.now();
+        const { done, value } = await reader.read();
+        readMs += Date.now() - readStart;
+        if (done) break;
+        if (value) {
+          const hashStart = Date.now();
+          hash.update(value);
+          hashMs += Date.now() - hashStart;
+          sizeBytes += value.byteLength;
+        }
       }
+    } finally {
+      reader.releaseLock();
     }
-  } finally {
-    reader.releaseLock();
   }
-  return { hex: hash.digestHex(), sizeBytes };
+
+  const digestStart = Date.now();
+  const hex = hash.digestHex();
+  hashMs += Date.now() - digestStart;
+
+  return { hex, sizeBytes, readMs, hashMs };
 }
 
 /**

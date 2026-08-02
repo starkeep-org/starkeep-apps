@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AppImage } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
 import { withBasePath } from "@/lib/base-path";
 import { backfillImageMetadata } from "@/lib/data-server-client";
 import { formatBytes, formatMegapixels, formatOrientation } from "./info-format";

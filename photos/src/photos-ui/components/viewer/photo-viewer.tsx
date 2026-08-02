@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect } from "react";
-import type { AppImage } from "@/photos-lib";
-import { isVideoRecord } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
+import { isVideoRecord } from "@/photos-lib/client";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { VideoPlayer } from "./video-player";
 import { usePhotoUrls } from "../../context/photo-url-context";

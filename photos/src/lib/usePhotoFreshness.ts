@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
-import type { AppImage } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
 import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
 import { listPhotos, listPhotosSince } from "./data-server-client";

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { AppImage } from "@/photos-lib";
-import { variantSrc, tileTargetLongEdge } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
+import { variantSrc, tileTargetLongEdge } from "@/photos-lib/client";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { useInView } from "../../hooks/use-in-view";
 

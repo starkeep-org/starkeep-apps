@@ -95,6 +95,7 @@ function deps() {
     clock: createHLCClock({ nodeId: "phone" }),
     fs: fs.fs,
     hash: nodeHash,
+    yieldToUi: () => Promise.resolve(),
     now: () => 1_700_000_500_000,
   };
 }

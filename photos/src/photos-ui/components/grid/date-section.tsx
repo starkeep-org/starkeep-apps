@@ -1,5 +1,5 @@
 import React from "react";
-import type { AppImage } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
 import { PhotoThumbnail } from "./photo-thumbnail";
 
 interface DateSectionProps {

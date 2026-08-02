@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import type { AppImage } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
 import { DateSection } from "./date-section";
 
 interface PhotoGridProps {

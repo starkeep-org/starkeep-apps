@@ -54,19 +54,32 @@ import { listRecentMedia, type DeviceMediaItem, type DeviceMediaModule } from ".
 import type { MediaAliasStore } from "./media-alias";
 
 /**
- * An incremental SHA-256, supplied by the app's edge.
+ * SHA-256 over a whole buffer, supplied by the app's edge.
  *
- * Declared here rather than imported so this module and its tests run in Node:
+ * ## Why one-shot rather than incremental
+ *
+ * It was incremental, on the reasonable assumption that streaming a large file
+ * past a running hash beats materialising it. On this platform neither half of
+ * that holds. A `content://` asset cannot be streamed at all (see
+ * `streamFromFile`), so the bytes are already whole by the time anything can
+ * hash them — and {@link MAX_INLINE_READ_BYTES} exists precisely because that
+ * is unavoidable. Given the buffer is in hand either way, an incremental
+ * interface only prevents the edge from handing over a *native* digest, which
+ * is the entire performance story here.
+ *
+ * ## Measured on a real handset
+ *
+ * `js-sha256` on Hermes runs at **~1.4 MB/s**, dead consistent across ten
+ * files. Pulling those same bytes across JSI runs at **~76 MB/s**. So hashing
+ * was 98% of import — a 47 MB video cost 34 seconds to hash and half a second
+ * to read. The read was never the problem, and the whole-file materialisation
+ * this interface accepts is cheap next to what it enables.
+ *
+ * Declared here rather than imported so this module and its tests run in Node,
  * the same rule the storage adapter, the op-sqlite driver and the media module
- * all follow. `@starkeep/storage-adapter` exports the matching `HashFactory`
- * type and ships a portable default, so the edge has something to hand over.
+ * all follow.
  */
-export interface IncrementalHash {
-  update(chunk: Uint8Array): void;
-  digestHex(): string;
-}
-
-export type HashFactory = () => IncrementalHash;
+export type HashBytes = (bytes: Uint8Array) => Promise<string>;
 
 export interface ImportDeps {
   readonly media: DeviceMediaModule;
@@ -75,7 +88,7 @@ export interface ImportDeps {
   readonly clock: HLCClock;
   /** The same filesystem port everything else uses; content URIs go through it. */
   readonly fs: ExpoFileSystem;
-  readonly hash: HashFactory;
+  readonly hash: HashBytes;
   /** Injected so tests can assert `addedAtMs` rather than tolerate it. */
   readonly now?: () => number;
   /**
@@ -159,10 +172,19 @@ export interface ImportOutcome {
  * process death, and it is lifted by the native streaming read that item 13b
  * needs anyway.
  *
- * 256 MB covers essentially every still, including raw, and excludes the long
- * videos that would actually be dangerous.
+ * **64 MB, revised down from 256 MB.** The original number was chosen while the
+ * suspected cost was reading, and it was picked to be generous. Measurement
+ * moved the risk: reads run at ~76 MB/s, so 256 MB is over three seconds of
+ * transfer *and* a quarter-gigabyte buffer in a JS heap that was already
+ * reporting 127 MB of large objects at a fraction of that. A ceiling whose only
+ * job is to prevent an OOM should not itself be an OOM.
+ *
+ * 64 MB covers every still including raw, and the clips a phone actually takes
+ * — the largest in the test library was 47 MB. Longer video is excluded and
+ * *reported* as such, which is the honest state until the native streaming read
+ * (item 13b) removes the need to hold anything whole.
  */
-export const MAX_INLINE_READ_BYTES = 256 * 1024 * 1024;
+export const MAX_INLINE_READ_BYTES = 64 * 1024 * 1024;
 
 /**
  * Import one batch of the device's most recent media.
@@ -319,47 +341,40 @@ async function hashFile(
   uri: string,
 ): Promise<{ hex: string; sizeBytes: number; readMs: number; hashMs: number } | null> {
   const file = deps.fs.file(uri);
-  const hash = deps.hash();
-  let sizeBytes = 0;
-  let readMs = 0;
-  let hashMs = 0;
 
-  if (isContentUri(uri)) {
-    const readStart = Date.now();
-    const bytes = file.bytesSync();
-    readMs = Date.now() - readStart;
+  const readStart = Date.now();
+  const bytes = isContentUri(uri) ? file.bytesSync() : await collect(streamFromFile(file));
+  const readMs = Date.now() - readStart;
+  if (!bytes) return null;
 
-    const hashStart = Date.now();
-    hash.update(bytes);
-    hashMs = Date.now() - hashStart;
-    sizeBytes = bytes.byteLength;
-  } else {
-    const stream = streamFromFile(file);
-    if (!stream) return null;
-    const reader = stream.getReader();
-    try {
-      for (;;) {
-        const readStart = Date.now();
-        const { done, value } = await reader.read();
-        readMs += Date.now() - readStart;
-        if (done) break;
-        if (value) {
-          const hashStart = Date.now();
-          hash.update(value);
-          hashMs += Date.now() - hashStart;
-          sizeBytes += value.byteLength;
-        }
-      }
-    } finally {
-      reader.releaseLock();
+  const hashStart = Date.now();
+  const hex = await deps.hash(bytes);
+  const hashMs = Date.now() - hashStart;
+
+  return { hex, sizeBytes: bytes.byteLength, readMs, hashMs };
+}
+
+/** A stream, whole. Bounded by {@link MAX_INLINE_READ_BYTES} at the call site. */
+async function collect(stream: ReadableStream<Uint8Array> | null): Promise<Uint8Array | null> {
+  if (!stream) return null;
+  const chunks: Uint8Array[] = [];
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
     }
+  } finally {
+    reader.releaseLock();
   }
-
-  const digestStart = Date.now();
-  const hex = hash.digestHex();
-  hashMs += Date.now() - digestStart;
-
-  return { hex, sizeBytes, readMs, hashMs };
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out;
 }
 
 /**

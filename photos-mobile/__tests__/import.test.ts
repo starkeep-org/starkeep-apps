@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { createHLCClock, dataRecordObjectKey } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, type RawDatabase } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "../src/media/media-alias";
-import { importDeviceMedia, MAX_INLINE_READ_BYTES, type HashFactory } from "../src/media/import";
+import { importDeviceMedia, MAX_INLINE_READ_BYTES, type HashBytes } from "../src/media/import";
 import type {
   AssetMetadataLike,
   DeviceMediaModule,
@@ -25,11 +25,8 @@ import type {
 } from "../src/media/device-library";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
 
-/** node:crypto standing in for the phone's js-sha256 — same digest either way. */
-const nodeHash: HashFactory = () => {
-  const h = createHash("sha256");
-  return { update: (c) => void h.update(c), digestHex: () => h.digest("hex") };
-};
+/** node:crypto standing in for the phone's native digest — same bytes either way. */
+const nodeHash: HashBytes = async (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function rawDb(): RawDatabase {
   const db = new DatabaseSync(":memory:");

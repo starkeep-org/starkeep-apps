@@ -96,11 +96,19 @@ export function rawDatabaseFrom(connection: OpSqliteConnection): RawDatabase {
  * rest becomes the location. A phone has no meaningful notion of an absolute
  * filesystem path the app may choose, which is why the translation belongs here
  * rather than in the adapter.
+ *
+ * The `file://` scheme is dropped for the same reason. Paths on this platform
+ * originate from `expo-file-system`, whose `Paths.document.uri` is a URI, and
+ * expo's own `File`/`Directory` want it that way — but op-sqlite works in plain
+ * filesystem paths and merely warns before stripping the scheme itself. Both
+ * vocabularies are correct for their own module, so the conversion belongs at
+ * the boundary between them, which is here.
  */
 export function createOpSqliteDriver(op: OpSqliteModule): SqliteDriver {
   const connections = new WeakMap<RawDatabase, OpSqliteConnection>();
   return {
-    open(path: string): RawDatabase {
+    open(uriOrPath: string): RawDatabase {
+      const path = uriOrPath.replace(/^file:\/\//, "");
       const slash = path.lastIndexOf("/");
       const name = slash >= 0 ? path.slice(slash + 1) : path;
       const location = slash > 0 ? path.slice(0, slash) : undefined;

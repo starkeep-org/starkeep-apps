@@ -10,7 +10,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["node", "react"],
+    "types": [
+      "node",
+      "react"
+    ],
     "jsx": "react-jsx"
   },
   "include": [
@@ -20,5 +23,6 @@
     "App.tsx",
     "app.config.ts",
     "index.ts"
-  ]
+  ],
+  "extends": "expo/tsconfig.base"
 }

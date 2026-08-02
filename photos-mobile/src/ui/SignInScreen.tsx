@@ -19,11 +19,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { CognitoError, type AuthTokens, type CognitoClient } from "../auth/cognito";
 import { styles } from "./theme";
 

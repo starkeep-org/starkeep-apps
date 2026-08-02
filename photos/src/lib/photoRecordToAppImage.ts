@@ -1,5 +1,5 @@
-import type { AppImage } from "@/photos-lib";
-import { derivedKindOf } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
+import { derivedKindOf } from "@/photos-lib/client";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "./data-server-client";
 
 export function photoRecordToAppImage(

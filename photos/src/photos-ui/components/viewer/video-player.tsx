@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import type { AppImage } from "@/photos-lib";
-import { playbackSrc, posterSrc, viewportTargetLongEdge } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
+import { playbackSrc, posterSrc, viewportTargetLongEdge } from "@/photos-lib/client";
 
 /**
  * Playback for a video record (item 28).

@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createHLCClock, type HLCClock } from "@starkeep/protocol-primitives";
 import { listLibrary, summarizeLibrary, type LibraryItem, type LibrarySummary } from "../library";
-import { importDeviceMedia, type ImportOutcome } from "../media/import";
+import { importDeviceMedia, type ImportOutcome, type ImportProgress } from "../media/import";
 import type { NodeIdentity } from "../node-identity";
 import type { MobileNode } from "../node";
 import { bringUpNode, importDepsFor } from "../platform";
@@ -81,6 +81,8 @@ export interface LibraryState {
   readonly loading: boolean;
   readonly importing: boolean;
   readonly lastImport: ImportOutcome | null;
+  /** Non-null only while an import is running. */
+  readonly progress: ImportProgress | null;
   readonly error: string | null;
   reload: () => Promise<void>;
   importNow: () => Promise<void>;
@@ -93,6 +95,7 @@ export function useLibrary(node: NodeState): LibraryState {
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [lastImport, setLastImport] = useState<ImportOutcome | null>(null);
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const ready = node.status === "ready" ? node : null;
@@ -136,7 +139,25 @@ export function useLibrary(node: NodeState): LibraryState {
         return;
       }
 
-      setLastImport(await importDeviceMedia(deps, { limit: IMPORT_BATCH }));
+      setLastImport(
+        await importDeviceMedia(
+          {
+            ...deps,
+            onProgress: (p) => {
+              setProgress(p);
+              // Also to logcat, because the on-screen line is a summary and the
+              // per-asset split between "pulling bytes across JSI" and "hashing
+              // them in JavaScript" is what says which one to go and fix.
+              console.log(
+                `[starkeep:import] ${p.done}/${p.total} ${p.filename ?? "?"} ` +
+                  `${p.sizeBytes}B read=${p.readMs}ms hash=${p.hashMs}ms`,
+              );
+            },
+          },
+          { limit: IMPORT_BATCH },
+        ),
+      );
+      setProgress(null);
       setError(null);
       await reload();
     } catch (err) {
@@ -146,5 +167,5 @@ export function useLibrary(node: NodeState): LibraryState {
     }
   }, [ready, reload]);
 
-  return { items, summary, loading, importing, lastImport, error, reload, importNow };
+  return { items, summary, loading, importing, lastImport, progress, error, reload, importNow };
 }

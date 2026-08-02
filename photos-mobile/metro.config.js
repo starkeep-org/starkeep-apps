@@ -46,6 +46,29 @@ const config = getDefaultConfig(projectRoot);
 config.watchFolders = [workspaceRoot];
 
 /**
+ * Don't watch the sibling app's build output.
+ *
+ * The workspace has to be watched, because that is where the hoisted
+ * `node_modules` live. But it also contains `photos/`, and running that app's
+ * dev server writes into `photos/.next` continuously — so Metro saw thousands
+ * of file events that had nothing to do with this app and rebuilt on every one.
+ * The symptom is the mobile app refreshing over and over the moment the web app
+ * starts, with nothing in its logs to explain why, because nothing is wrong
+ * with the app: it is being told, correctly, that files it watches changed.
+ *
+ * Blocked rather than narrowing `watchFolders`, because the folder genuinely
+ * needs watching for its `node_modules` and only these subtrees are noise.
+ */
+config.resolver.blockList = [
+  /\/photos\/\.next\/.*/,
+  /\/photos\/\.open-next\/.*/,
+  /\/photos\/out\/.*/,
+  /\/photos\/test-results\/.*/,
+  /\/photos\/\.turbo\/.*/,
+  /\/node_modules\/\.cache\/.*/,
+];
+
+/**
  * Keep Hermes-incompatible code out of the graph.
  *
  * Kysely's barrel re-exports `FileMigrationProvider`, which does a dynamic

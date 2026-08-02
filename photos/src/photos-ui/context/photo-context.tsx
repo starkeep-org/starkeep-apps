@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer } from "react";
-import type { AppImage } from "@/photos-lib";
+import type { AppImage } from "@/photos-lib/client";
 
 type PhotoAction =
   | { type: "SET_IMAGES"; images: AppImage[] }

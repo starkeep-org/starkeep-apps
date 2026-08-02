@@ -236,7 +236,11 @@ export function HomeScreen({
               style={[styles.button, library.importing ? styles.buttonDisabled : null]}
             >
               <Text style={styles.buttonLabel}>
-                {library.importing ? "Adding…" : "Add photos from this device"}
+                {library.importing
+                  ? library.progress
+                    ? `Adding ${library.progress.done} of ${library.progress.total}…`
+                    : "Adding…"
+                  : "Add photos from this device"}
               </Text>
             </Pressable>
           ) : null}

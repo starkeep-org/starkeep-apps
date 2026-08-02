@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { createCognitoClient } from "./src/auth/cognito";
 import {
   loadStoredSession,
@@ -43,7 +44,21 @@ import { SignInScreen } from "./src/ui/SignInScreen";
  * the app's usability back on the far side of the network.
  */
 
+/**
+ * `SafeAreaProvider` sits outside the shell because both screens the shell
+ * chooses between use `SafeAreaView`, and the provider is what measures the
+ * insets they consume. Wrapping the shell rather than each screen keeps that
+ * single measurement across the switch between them.
+ */
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppShell />
+    </SafeAreaProvider>
+  );
+}
+
+function AppShell() {
   const config = useMemo(() => loadCloudConfig(), []);
   const client = useMemo(
     () =>

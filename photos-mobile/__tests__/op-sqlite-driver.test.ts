@@ -157,6 +157,15 @@ describe("the driver", () => {
     expect(op.opened[0]).toEqual({ name: "local.sqlite" });
   });
 
+  // Paths reach the driver from `expo-file-system`, which speaks URIs; op-sqlite
+  // speaks filesystem paths and only warns before stripping the scheme itself.
+  // Converting here keeps both modules in the vocabulary each expects.
+  it("drops the file:// scheme an expo-file-system path arrives with", () => {
+    const op = moduleFor(connection);
+    createOpSqliteDriver(op).open("file:///data/starkeep/local.sqlite");
+    expect(op.opened[0]).toEqual({ name: "local.sqlite", location: "/data/starkeep" });
+  });
+
   // RawDatabase deliberately has no `close()` — consumers of a connection have
   // no business closing one — so the driver keeps the pairing itself.
   it("closes the connection it opened", () => {

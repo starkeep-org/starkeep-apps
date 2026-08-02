@@ -26,7 +26,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, RefreshControl, SafeAreaView, ScrollView, Text, View } from "react-native";
+import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import type { ActiveSession } from "../auth/session-manager";
 import type { CloudConfig } from "../config";
 import {

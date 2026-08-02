@@ -100,12 +100,31 @@ describe("an aliased blob behaves like a stored one", () => {
     expect(await drain(await storage.getStream(KEY))).toEqual(PHOTO);
   });
 
-  it("serves a byte range from the asset without reading it whole", async () => {
+  it("serves a byte range from the asset", async () => {
     aliasAPhoto();
     const got = await drain(await storage.getStream(KEY, { start: 8, end: 11 }));
     expect(Array.from(got)).toEqual([8, 9, 10, 11]);
-    // A range served by reading from zero and discarding the prefix would pass
-    // the assertion above while turning a seek into a full read.
+  });
+
+  it("serves that range by reading whole, because a content URI cannot seek", async () => {
+    // Stated as a test rather than left implicit, because it is a real
+    // limitation with a real cost. `openHandle` throws for `ContentProviderFile`
+    // (see `streamFromFile`), so there is no seek available and the range is
+    // sliced out of memory. A native streaming read over `ContentResolver` —
+    // item 13b — is what would change this, and when it does, this test should
+    // start failing.
+    aliasAPhoto();
+    await drain(await storage.getStream(KEY, { start: 8, end: 11 }));
+    expect(fs.state.rangedReads).toHaveLength(0);
+  });
+
+  it("still seeks properly for a blob in the node's own object store", async () => {
+    // The seek path is not dead — it is what every stored blob uses, and a
+    // range served by reading from zero and discarding the prefix would turn a
+    // seek to the ten-minute mark of a video into a ten-minute read.
+    await inner.put("shared/image/cd/cdef", PHOTO);
+    const got = await drain(await storage.getStream("shared/image/cd/cdef", { start: 8, end: 11 }));
+    expect(Array.from(got)).toEqual([8, 9, 10, 11]);
     expect(fs.state.rangedReads.length).toBeGreaterThan(0);
   });
 

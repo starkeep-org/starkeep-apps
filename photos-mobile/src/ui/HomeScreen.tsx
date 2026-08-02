@@ -241,7 +241,15 @@ export function HomeScreen({
             </Pressable>
           ) : null}
           {library.lastImport ? (
-            <Text style={styles.muted}>{describeImport(library.lastImport)}</Text>
+            <>
+              <Text style={styles.muted}>{describeImport(library.lastImport)}</Text>
+              {/* The reason, not just the count. A screen that can only say
+                  "60 could not be read" cannot be acted on, and that is exactly
+                  what the first version of this said when every asset failed. */}
+              {library.lastImport.failures.length > 0 ? (
+                <Text style={styles.error}>{library.lastImport.failures[0]!.reason}</Text>
+              ) : null}
+            </>
           ) : null}
           {library.summary && library.summary.records > 0 ? (
             <Text style={styles.muted}>

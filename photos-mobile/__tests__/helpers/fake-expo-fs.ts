@@ -21,6 +21,25 @@ export function fakeExpoFs() {
   const dirs = new Set<string>();
   const state = { openHandles: 0, rangedReads: [] as Array<{ offset: number; length: number }> };
 
+  /**
+   * Refuse a file handle on a `content://` URI, exactly as expo does.
+   *
+   * `FileSystemFile.openHandle` dispatches on the resolved implementation and
+   * has branches for `JavaFile` and `SAFDocumentFile` only; a MediaStore URI
+   * resolves to `ContentProviderFile` and falls to `else -> throw`. Both
+   * `readableStream()` and ranged reads go through it.
+   *
+   * This fake used to stream content URIs perfectly happily, which is why every
+   * test passed while every asset on a real handset failed to import. A fake
+   * that is more permissive than the thing it stands in for does not merely
+   * miss bugs — it actively certifies them.
+   */
+  function refuseHandleForContentUri(path: string): void {
+    if (path.startsWith("content://")) {
+      throw new Error(`File handle is not supported for ${path}`);
+    }
+  }
+
   const file = (path: string): ExpoFile => ({
     get exists() {
       return files.has(path);
@@ -31,7 +50,13 @@ export function fakeExpoFs() {
     get uri() {
       return path;
     },
+    bytesSync() {
+      const bytes = files.get(path);
+      if (!bytes) throw new Error(`no such file: ${path}`);
+      return bytes;
+    },
     readableStream() {
+      refuseHandleForContentUri(path);
       const bytes = files.get(path);
       if (!bytes) throw new Error(`no such file: ${path}`);
       // Chunked, so a consumer that assumes one chunk fails here rather than on
@@ -67,6 +92,7 @@ export function fakeExpoFs() {
       });
     },
     open(): ExpoFileHandle {
+      refuseHandleForContentUri(path);
       const bytes = files.get(path) ?? new Uint8Array();
       state.openHandles += 1;
       const handle: ExpoFileHandle = {

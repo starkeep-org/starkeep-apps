@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { createHLCClock, dataRecordObjectKey } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, type RawDatabase } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "../src/media/media-alias";
-import { importDeviceMedia, type HashFactory } from "../src/media/import";
+import { importDeviceMedia, MAX_INLINE_READ_BYTES, type HashFactory } from "../src/media/import";
 import type {
   AssetMetadataLike,
   DeviceMediaModule,
@@ -210,6 +210,46 @@ describe("re-import", () => {
   });
 });
 
+describe("content:// assets, which cannot be streamed", () => {
+  it("imports one anyway", async () => {
+    // The regression this exists for: `File.readableStream()` throws for a
+    // MediaStore URI, because `openHandle` has no `ContentProviderFile` branch.
+    // Every asset on a real handset failed to import while every test passed,
+    // because the fake streamed content URIs happily. It no longer does.
+    const outcome = await importDeviceMedia(deps(), { limit: 10 });
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.imported).toBe(1);
+  });
+
+  it("hashes it identically to the same bytes in a file", async () => {
+    // The fallback path must not change the digest — a content-addressed key
+    // that depended on how the bytes were read would silently stop matching
+    // the same photo synced from a laptop.
+    const outcome = await importDeviceMedia(deps(), { limit: 10 });
+    expect(outcome.records[0]!.contentHash).toBe(
+      createHash("sha256").update(PHOTO).digest("hex"),
+    );
+  });
+
+  it("defers an asset too large to hold in memory rather than trying", async () => {
+    // Materialising a 4K video is the OOM streaming exists to prevent, and a
+    // named limit beats a process death.
+    putAsset(URI_1, PHOTO);
+    const huge = {
+      ...deps(),
+      fs: {
+        ...fs.fs,
+        file: (p: string) => ({ ...fs.fs.file(p), size: MAX_INLINE_READ_BYTES + 1 }),
+      },
+    };
+
+    const outcome = await importDeviceMedia(huge, { limit: 10 });
+
+    expect(outcome.imported).toBe(0);
+    expect(outcome.failures[0]!.reason).toMatch(/larger than this device can hash/);
+  });
+});
+
 describe("assets that cannot be read", () => {
   it("counts an unreadable asset as failed without abandoning the rest", async () => {
     // The media store can hand back an id whose bytes are on an unmounted
@@ -225,5 +265,10 @@ describe("assets that cannot be read", () => {
     expect(outcome.scanned).toBe(2);
     expect(outcome.imported).toBe(1);
     expect(outcome.failed).toBe(1);
+    // The reason travels with the failure. A count on its own is what made a
+    // total import failure undiagnosable from the screen.
+    expect(outcome.failures).toHaveLength(1);
+    expect(outcome.failures[0]!.assetId).toBe(gone);
+    expect(outcome.failures[0]!.reason).toBeTruthy();
   });
 });

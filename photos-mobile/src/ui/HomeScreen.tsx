@@ -157,8 +157,18 @@ export function HomeScreen({
 }: Props) {
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const node = useNode();
+  const { state: node, reset } = useNode();
   const library = useLibrary(node);
+  /**
+   * Whether the reset button is armed.
+   *
+   * Two taps rather than one, because this is destructive and irreversible.
+   * Not a modal: a confirm dialog for a developer affordance is heavier than
+   * the action deserves, and an inline label that changes to say exactly what
+   * is about to happen is more informative than a generic "Are you sure?".
+   */
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const baseUrl = config?.baseUrl;
 
@@ -260,6 +270,45 @@ export function HomeScreen({
               {formatBytes(library.summary.aliasedBytes)} of it is held by this device&rsquo;s media
               store rather than copied — Starkeep points at your photos instead of duplicating them.
             </Text>
+          ) : null}
+
+          {node.status === "ready" ? (
+            <View style={{ gap: 6, marginTop: 4 }}>
+              <Pressable
+                onPress={() => {
+                  if (!confirmingReset) {
+                    setConfirmingReset(true);
+                    return;
+                  }
+                  setConfirmingReset(false);
+                  setResetting(true);
+                  void reset()
+                    .then(() => library.reload())
+                    .finally(() => setResetting(false));
+                }}
+                disabled={resetting}
+                style={{ paddingVertical: 8 }}
+              >
+                <Text style={confirmingReset ? styles.error : styles.linkLabel}>
+                  {resetting
+                    ? "Clearing…"
+                    : confirmingReset
+                      ? "Tap again to clear this node"
+                      : "Clear this node's data"}
+                </Text>
+              </Pressable>
+              {confirmingReset ? (
+                // Says what is destroyed *and* what is not. The distinction is
+                // the whole reason this is safe: the originals were never
+                // copied here, so there is nothing to lose but the index.
+                <Text style={styles.muted}>
+                  Deletes {library.summary?.records ?? 0} record
+                  {library.summary?.records === 1 ? "" : "s"} and everything in this node&rsquo;s
+                  object store. Your photos are not touched — they live in the device&rsquo;s media
+                  store and Starkeep only points at them.
+                </Text>
+              ) : null}
+            </View>
           ) : null}
         </Section>
 

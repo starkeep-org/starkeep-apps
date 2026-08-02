@@ -7,13 +7,13 @@
  * failed node.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createHLCClock, type HLCClock } from "@starkeep/protocol-primitives";
 import { listLibrary, summarizeLibrary, type LibraryItem, type LibrarySummary } from "../library";
 import { importDeviceMedia, type ImportOutcome, type ImportProgress } from "../media/import";
 import type { NodeIdentity } from "../node-identity";
 import type { MobileNode } from "../node";
-import { bringUpNode, importDepsFor } from "../platform";
+import { bringUpNode, clearNodeData, importDepsFor } from "../platform";
 
 /** How many tiles the grid shows. A ceiling, not a page size — see `MediaGrid`. */
 export const LIBRARY_PAGE = 60;
@@ -39,8 +39,24 @@ export type NodeState =
  * says so is worth more than a red box, because the thing that failed is the
  * thing the user would otherwise be told is empty.
  */
-export function useNode(): NodeState {
+export interface NodeHandle {
+  readonly state: NodeState;
+  /**
+   * Delete everything this node has indexed and open a fresh one.
+   *
+   * Resolves once the replacement is up, so a caller can reload immediately
+   * afterwards without racing the node it is about to query.
+   */
+  reset: () => Promise<void>;
+}
+
+export function useNode(): NodeHandle {
   const [state, setState] = useState<NodeState>({ status: "starting" });
+  /** Bumped to force the effect to build a new node after a reset. */
+  const [generation, setGeneration] = useState(0);
+  const current = useRef<MobileNode | null>(null);
+  /** Resolved by the effect once the post-reset node is up. */
+  const opening = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +71,7 @@ export function useNode(): NodeState {
           void node.close();
           return;
         }
+        current.current = node;
         setState({
           status: "ready",
           node,
@@ -64,15 +81,44 @@ export function useNode(): NodeState {
       })
       .catch((err: unknown) => {
         if (!cancelled) setState({ status: "failed", error: String(err) });
+      })
+      .finally(() => {
+        opening.current?.();
+        opening.current = null;
       });
 
     return () => {
       cancelled = true;
-      if (opened) void opened.close();
+      // Only if this is still the live node. A reset closes the old one itself
+      // — it has to, before deleting the file out from under SQLite — and then
+      // bumps `generation`, which runs this cleanup for a node that is already
+      // shut. Closing twice is not free: the second `close()` runs against a
+      // handle that no longer has a database behind it.
+      if (opened && current.current === opened) {
+        current.current = null;
+        void opened.close();
+      }
     };
+  }, [generation]);
+
+  const reset = useCallback(async () => {
+    const node = current.current;
+    if (!node) return;
+    current.current = null;
+    setState({ status: "starting" });
+    await clearNodeData(node);
+
+    // Wait for the effect's replacement rather than building one here: two code
+    // paths creating nodes is two code paths that can disagree about how, and
+    // the effect already owns the lifecycle including cleanup.
+    const built = new Promise<void>((resolve) => {
+      opening.current = resolve;
+    });
+    setGeneration((n) => n + 1);
+    await built;
   }, []);
 
-  return state;
+  return { state, reset };
 }
 
 export interface LibraryState {

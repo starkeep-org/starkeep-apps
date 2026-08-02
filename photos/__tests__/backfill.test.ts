@@ -7,7 +7,11 @@
  * money and a 48-hour thaw when it is wrong; the second freezes an original
  * behind that thaw with nothing readable in front of it.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openBackfillStore } from "../src/photos-lib/backfill/backfill-store";
 import {
   runBackfill,
   assertLadderMeasured,
@@ -220,6 +224,62 @@ describe("paging and pacing", () => {
     );
     expect(result.processed).toBe(2);
     expect(result.stoppedEarly).toBe(true);
+  });
+});
+
+describe("the durable ledger", () => {
+  let dir: string;
+  let durable: ReturnType<typeof openBackfillStore>;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "photos-backfill-"));
+    process.env.STARKEEP_DIR = dir;
+    durable = openBackfillStore(`run-${Math.random().toString(36).slice(2)}`);
+  });
+
+  afterEach(async () => {
+    durable.close();
+    await rm(dir, { recursive: true, force: true });
+    delete process.env.STARKEEP_DIR;
+  });
+
+  it("survives a run and answers the resume question", async () => {
+    await runBackfill(durable, deps(), RUN);
+    expect(durable.get("r1")!.status).toBe("complete");
+    expect(durable.summary().complete).toBe(1);
+
+    readCalls = [];
+    await runBackfill(durable, deps(), RUN);
+    expect(readCalls, "re-derived a record the ledger said was done").toEqual([]);
+  });
+
+  it("round-trips the classes already produced", async () => {
+    await runBackfill(
+      durable,
+      deps({ deriveMissing: async () => ({ produced: ["image-thumb"], missing: ["image-large"] }) }),
+      RUN,
+    );
+    // Read back through SQLite, not from memory — a JSON column that did not
+    // survive the round trip would make every partial retry re-derive rungs it
+    // already has.
+    expect(durable.get("r1")!.producedClasses).toEqual(["image-thumb"]);
+  });
+
+  // A corrupt cell costs one record its progress and is re-derived. Throwing
+  // would abort a run of fifty thousand over one bad row.
+  it("treats an unreadable class list as empty rather than throwing", async () => {
+    durable.put({
+      recordId: "bad", status: "partial", producedClasses: [],
+      detail: null, attempts: 1, updatedAtMs: Date.now(),
+    });
+    expect(() => durable.all()).not.toThrow();
+  });
+
+  it("counts attempts across process restarts, not just within a run", async () => {
+    const failing = deps({ deriveMissing: async () => { throw new Error("network went away"); } });
+    await runBackfill(durable, failing, RUN);
+    await runBackfill(durable, failing, RUN);
+    expect(durable.get("r1")!.attempts).toBe(2);
   });
 });
 

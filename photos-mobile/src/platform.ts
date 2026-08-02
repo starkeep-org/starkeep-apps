@@ -21,9 +21,12 @@
 import { open as openOpSqlite } from "@op-engineering/op-sqlite";
 import { Directory, File, Paths } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
+import { generateId, type HLCClock } from "@starkeep/protocol-primitives";
 import { sha256 } from "js-sha256";
 import { createSessionStore } from "./auth/session-store";
-import type { HashFactory } from "./media/import";
+import type { HashFactory, ImportDeps } from "./media/import";
+import { createMobileNode, type MobileNode } from "./node";
+import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
 import type { DeviceMediaModule, MediaQuery } from "./media/device-library";
 import {
@@ -80,6 +83,7 @@ export function documentPath(...segments: string[]): string {
 export const DATABASE_PATH = documentPath("starkeep", "local.sqlite");
 export const OBJECTS_PATH = documentPath("starkeep", "objects");
 export const SESSION_PATH = documentPath("starkeep", "session.json");
+export const NODE_IDENTITY_PATH = documentPath("starkeep", "node.json");
 
 export function createLocalObjectStorage(): ExpoObjectStorageAdapter {
   return new ExpoObjectStorageAdapter({ fs: expoFileSystem, basePath: OBJECTS_PATH });
@@ -149,3 +153,43 @@ export const sha256HashFactory: HashFactory = () => {
  * different string in it. There is no second module and no native shim.
  */
 export const deviceMediaStorage = { fs: expoFileSystem };
+
+/**
+ * Bring up this device's node.
+ *
+ * No cloud is passed, and that is the current truth rather than a placeholder:
+ * every `/apps/{appId}/*` route is HMAC-signed with a per-app secret no handset
+ * can hold, so there is nothing to exchange with. The node is complete anyway —
+ * it holds records, imports the camera roll and answers every question about
+ * what it has. See todo #51 and `import-loop-design.md` §5.2.
+ *
+ * `generateId` is passed rather than called at module scope because it reaches
+ * for a PRNG that Hermes only has after `react-native-get-random-values` has
+ * run; see the note at the top of `index.ts`.
+ */
+export async function bringUpNode(): Promise<{ node: MobileNode; identity: NodeIdentity }> {
+  const identity = await loadNodeIdentity(expoFileSystem, NODE_IDENTITY_PATH, generateId);
+  const node = await createMobileNode({
+    nodeId: identity.nodeId,
+    databasePath: DATABASE_PATH,
+    sqliteDriver: opSqliteDriver,
+    localObjectStorage: createLocalObjectStorage(),
+    deviceMedia: deviceMediaStorage,
+  });
+  return { node, identity };
+}
+
+/** Import dependencies, assembled from the real modules for a live node. */
+export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
+  if (!node.mediaAliases) {
+    throw new Error("this node was built without deviceMedia, so it cannot import a camera roll");
+  }
+  return {
+    media: deviceMedia,
+    aliases: node.mediaAliases,
+    database: node.databaseAdapter,
+    clock,
+    fs: expoFileSystem,
+    hash: sha256HashFactory,
+  };
+}

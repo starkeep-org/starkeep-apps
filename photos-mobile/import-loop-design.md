@@ -337,9 +337,16 @@ interoperable until then.
    `__tests__/mobile-import-sync.test.ts` runs the whole chain: a photo that exists only in the
    media store is imported, counted as resident, and pushed to a peer, with nothing written to the
    phone's object store at any point. Confirmed non-vacuous by sabotaging alias resolution.
-4. Wire `createMobileNode` into `App.tsx` — it exists and is tested but nothing imports it, so
-   there is no live node in the running app today. **This is what makes the above reachable from
-   the UI**; until it lands, the import loop runs only under test.
+4. **Done** — the node is live in the app. `bringUpNode` in `platform.ts` opens it on launch with a
+   durable id (`node-identity.ts`), `useNode`/`useLibrary` own its lifecycle, and `LibraryGrid`
+   shows the node's records with a viewer on tap.
+
+   Two things fell out of doing it. `transport` and `remoteObjectStorage` became an optional
+   `cloud` group, because requiring them said no node exists without a cloud to talk to — the
+   sign-in gate this app removed twice, re-appearing as a type signature. And the app now shows
+   *two* grids on purpose: the camera roll (what is on this phone) and the library (what this node
+   holds). They agree today and stop agreeing the moment anything syncs or is deleted, and saying
+   so beats silently picking one.
 5. `photos-lib` split (§5.1) — required before either the grid or captions.
 6. Captions written to the local `image_enriched` table, offline. Testable without any cloud.
 7. Device registration (§5.2 option A), for both the `starkeep-drive` and `photos` channels.

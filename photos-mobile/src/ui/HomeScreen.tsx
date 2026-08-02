@@ -38,8 +38,11 @@ import {
   opSqliteDriver,
 } from "../platform";
 import { JOB_GRAPH, runnableJobs, type DeviceState } from "../work/job-graph";
+import type { ImportOutcome } from "../media/import";
+import { formatBytes, LibraryGrid } from "./LibraryGrid";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
+import { useLibrary, useNode } from "./use-library";
 
 interface Check {
   readonly name: string;
@@ -154,6 +157,8 @@ export function HomeScreen({
 }: Props) {
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const node = useNode();
+  const library = useLibrary(node);
 
   const baseUrl = config?.baseUrl;
 
@@ -209,6 +214,7 @@ export function HomeScreen({
               // offline session becomes live again without a force-quit.
               void Promise.all([
                 collect().then(setChecks),
+                library.reload(),
                 canRefreshSession ? onRefreshSession() : Promise.resolve(),
               ]).finally(() => setRefreshing(false));
             }}
@@ -219,6 +225,31 @@ export function HomeScreen({
           <Text style={styles.title}>Starkeep</Text>
           <Text style={styles.subtitle}>{sessionLabel(session, sessionKnown)}</Text>
         </View>
+
+        <Section title="This node's library">
+          <LibraryGrid items={library.items} loading={library.loading} />
+          {library.error ? <Text style={styles.error}>{library.error}</Text> : null}
+          {node.status === "ready" ? (
+            <Pressable
+              onPress={() => void library.importNow()}
+              disabled={library.importing}
+              style={[styles.button, library.importing ? styles.buttonDisabled : null]}
+            >
+              <Text style={styles.buttonLabel}>
+                {library.importing ? "Adding…" : "Add photos from this device"}
+              </Text>
+            </Pressable>
+          ) : null}
+          {library.lastImport ? (
+            <Text style={styles.muted}>{describeImport(library.lastImport)}</Text>
+          ) : null}
+          {library.summary && library.summary.records > 0 ? (
+            <Text style={styles.muted}>
+              {formatBytes(library.summary.aliasedBytes)} of it is held by this device&rsquo;s media
+              store rather than copied — Starkeep points at your photos instead of duplicating them.
+            </Text>
+          ) : null}
+        </Section>
 
         <Section title="On this device">
           <MediaGrid media={deviceMedia} />
@@ -248,6 +279,16 @@ export function HomeScreen({
         </Section>
 
         <Section title="This node">
+          {node.status === "ready" ? (
+            <Text style={styles.mono}>{node.identity.nodeId}</Text>
+          ) : node.status === "failed" ? (
+            // Named as a node failure rather than left to look like an empty
+            // library: "you have no photos" and "the database would not open"
+            // are the same screen otherwise, and only one of them is a bug.
+            <Text style={styles.error}>This node did not open: {node.error}</Text>
+          ) : (
+            <Text style={styles.muted}>Opening…</Text>
+          )}
           <Text style={styles.mono}>{DATABASE_PATH}</Text>
           <Text style={styles.mono}>{OBJECTS_PATH}</Text>
           <Text style={styles.muted}>
@@ -292,10 +333,11 @@ export function HomeScreen({
 
         <Section title="Not yet">
           <Text style={styles.muted}>
-            No photos are shown yet, for two reasons that are worth keeping apart. Nothing reads this
-            device&rsquo;s own camera roll — that is item 13, and it needs no cloud and no account.
-            And nothing has synced, because the cloud data plane requires a per-app signing secret a
-            handset has no way to hold. Neither is an empty library.
+            Nothing on this device has synced anywhere, and cannot yet: the cloud data plane signs
+            every request with a per-app secret a handset has no way to hold. So this node is the
+            only one that knows what it holds, and its photos have no second copy. Renditions are
+            not being derived either — nothing would read them until there is somewhere to send
+            them.
           </Text>
         </Section>
       </ScrollView>
@@ -319,6 +361,23 @@ function sessionLabel(session: ActiveSession | null, sessionKnown: boolean): str
   if (!session) return "local node · not connected";
   const who = session.email ?? "connected";
   return session.tokens ? who : `${who} · offline session`;
+}
+
+/**
+ * What one import pass did.
+ *
+ * `skipped` and `failed` are only mentioned when non-zero, because on the
+ * common second run everything is skipped and "60 skipped" is the sentence
+ * that explains why nothing appeared to happen. Silence there would read as
+ * the button not working.
+ */
+function describeImport(outcome: ImportOutcome): string {
+  const parts: string[] = [];
+  if (outcome.imported > 0) parts.push(`added ${outcome.imported}`);
+  if (outcome.skipped > 0) parts.push(`${outcome.skipped} already here`);
+  if (outcome.failed > 0) parts.push(`${outcome.failed} could not be read`);
+  if (parts.length === 0) return "Nothing on this device to add.";
+  return `${parts.join(", ")} — of ${outcome.scanned} looked at.`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

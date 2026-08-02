@@ -82,6 +82,18 @@ export const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
 
+  /** A record this node has but whose bytes are elsewhere. Not an error state. */
+  tilePlaceholder: { alignItems: "center", justifyContent: "center" },
+  tilePlaceholderMark: { color: colors.border, fontSize: 22 },
+
+  // The viewer deliberately goes black rather than using the app background:
+  // a photograph is the only thing on screen and every other pixel should get
+  // out of its way.
+  viewerSafe: { flex: 1, backgroundColor: "#000" },
+  viewerImageArea: { flex: 1, alignItems: "center", justifyContent: "center" },
+  viewerImage: { width: "100%", height: "100%" },
+  viewerFooter: { padding: 20, gap: 4, backgroundColor: colors.background },
+
   row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
   rowText: { flex: 1, gap: 2 },
   badge: { fontSize: 11, fontWeight: "700", paddingTop: 3, width: 34 },

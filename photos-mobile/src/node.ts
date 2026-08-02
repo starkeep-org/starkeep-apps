@@ -36,9 +36,9 @@ import {
   type SyncTransport,
 } from "@starkeep/sync-engine";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
-import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias.js";
-import { DeviceMediaObjectStorage } from "./storage/device-media-storage.js";
-import type { ExpoFileSystem } from "./storage/expo-object-storage.js";
+import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
+import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
+import type { ExpoFileSystem } from "./storage/expo-object-storage";
 
 /**
  * How many records one exchange page carries on a phone.
@@ -65,9 +65,24 @@ export interface MobileNodeOptions {
   readonly databasePath: string;
   readonly sqliteDriver: SqliteDriver;
   readonly localObjectStorage: ObjectStorageAdapter;
-  /** The cloud, reached over whatever transport the shell supplies. */
-  readonly transport: SyncTransport;
-  readonly remoteObjectStorage: ObjectStorageAdapter;
+  /**
+   * The cloud, reached over whatever transport the shell supplies.
+   *
+   * **Optional, and its absence is a supported way to run** — not a degraded
+   * one. A handset with no session holds its own photos, imports them, indexes
+   * them and answers every question about them; what it cannot do is exchange
+   * with anyone. Requiring a transport here said the opposite: that no node
+   * exists until there is a cloud to talk to, which is the sign-in gate the
+   * rest of this app spent two revisions removing, re-appearing as a type.
+   *
+   * Supplied together or not at all: a transport with no remote object storage
+   * could ship metadata and then fail every blob transfer, which is a worse
+   * state than being offline because it looks like it is working.
+   */
+  readonly cloud?: {
+    readonly transport: SyncTransport;
+    readonly remoteObjectStorage: ObjectStorageAdapter;
+  };
   /**
    * The phone's retention policy.
    *
@@ -131,13 +146,24 @@ export interface MobileNode {
    * keeps mobile a configuration of the node rather than a fork of it.
    */
   readonly mediaAliases: MediaAliasStore | null;
-  readonly engine: SyncEngine;
+  /**
+   * Null when no cloud was supplied, which is the ordinary state of a handset
+   * nobody has signed in on. Everything else on this node works regardless.
+   */
+  readonly engine: SyncEngine | null;
   /**
    * Null when no retention policy was supplied — meaning this node wants every
    * blob, exactly as an unconfigured laptop does.
    */
   readonly residency: ResidencyManager | null;
-  /** Run one exchange. Safe to abandon; the watermark makes it resumable. */
+  /**
+   * Run one exchange. Safe to abandon; the watermark makes it resumable.
+   *
+   * Returns null on a node with no cloud rather than throwing. A caller
+   * scheduling background work should not have to know whether this device has
+   * ever been signed in, and the alternative — an exception on the ordinary
+   * offline path — is how a job queue learns to swallow exceptions.
+   */
   exchange(): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -211,17 +237,22 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       })
     : null;
 
-  const engine = createSyncEngine({
-    localDatabaseAdapter: databaseAdapter,
-    localObjectStorage,
-    remoteObjectStorage: options.remoteObjectStorage,
-    transport: options.transport,
-    clock,
-    syncState,
-    pageLimit: MOBILE_PAGE_LIMIT,
-    scanPageSize: MOBILE_SCAN_PAGE_SIZE,
-    ...(residency ? { residency: residencyHooks(residency) } : {}),
-  });
+  // No cloud, no engine. Not a stub or an offline transport that queues: there
+  // is genuinely nobody to exchange with, and an engine that pretends otherwise
+  // would advance watermarks against a peer that does not exist.
+  const engine = options.cloud
+    ? createSyncEngine({
+        localDatabaseAdapter: databaseAdapter,
+        localObjectStorage,
+        remoteObjectStorage: options.cloud.remoteObjectStorage,
+        transport: options.cloud.transport,
+        clock,
+        syncState,
+        pageLimit: MOBILE_PAGE_LIMIT,
+        scanPageSize: MOBILE_SCAN_PAGE_SIZE,
+        ...(residency ? { residency: residencyHooks(residency) } : {}),
+      })
+    : null;
 
   return {
     databaseAdapter,
@@ -229,7 +260,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     mediaAliases,
     engine,
     residency,
-    exchange: () => engine.exchange(),
+    exchange: async () => (engine ? engine.exchange() : null),
     async close() {
       await databaseAdapter.close();
       await localObjectStorage.close();

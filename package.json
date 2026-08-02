@@ -7,7 +7,8 @@
       "sharp"
     ],
     "overrides": {
-      "sharp": "^0.35.3"
+      "sharp": "^0.35.3",
+      "@starkeep/photos-mobile>@starkeep/sync-engine": "link:../starkeep-core/packages/sync-engine"
     }
   }
 }

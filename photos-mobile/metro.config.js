@@ -43,7 +43,30 @@ const workspaceRoot = path.resolve(projectRoot, "..");
 
 const config = getDefaultConfig(projectRoot);
 
-config.watchFolders = [workspaceRoot];
+/**
+ * Currently linked: `@starkeep/sync-engine`.
+ *
+ * `HttpObjectStorageAdapter` moved into it from `apps/local-data-server` so the
+ * phone could have a `remoteObjectStorage` at all, and that change is not
+ * published yet. The scoped override in `../package.json` points this package
+ * (and only this package — `photos` keeps resolving from the registry) at the
+ * sibling checkout; the paths below are the other half of it.
+ *
+ * **Remove both when the change is published.** Both are needed: Metro resolves
+ * symlinks but only *serves* files under a watched folder, and only resolves
+ * modules from the `nodeModulesPaths` it is given. Miss either and the failure
+ * is a missing-module error pointing at the importer rather than at the link.
+ */
+const coreRoot = path.resolve(projectRoot, "../../starkeep-core");
+
+config.watchFolders = [workspaceRoot, coreRoot];
+config.resolver.nodeModulesPaths = [
+  // This app's own first, always. A linked package picking up a second copy of
+  // React is the classic cause of "invalid hook call" on a device.
+  path.resolve(projectRoot, "node_modules"),
+  path.resolve(workspaceRoot, "node_modules"),
+  path.resolve(coreRoot, "node_modules"),
+];
 
 /**
  * Don't watch the sibling app's build output.

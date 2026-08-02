@@ -8,8 +8,9 @@
  * The DNG half is tested against a TIFF built here byte by byte. That is not a
  * shortcut: the thing under test is an IFD walker, and a hand-built file is the
  * only way to control exactly which previews exist and how they are reachable.
- * It is *not* a substitute for verifying against real camera files, which is
- * recorded as an open gap.
+ * It is also not sufficient on its own — a real RICOH GR IV file found a bug
+ * none of these fixtures could have (see "skips the raw mosaic" below), and
+ * `dng-real-file.test.ts` is where that verification lives.
  */
 import { describe, it, expect, afterAll } from "vitest";
 import { execFile } from "node:child_process";
@@ -47,6 +48,8 @@ interface FakeIfd {
   height: number;
   compression: number;
   jpeg: Uint8Array;
+  /** Defaults to YCbCr — a viewable preview. 32803 is CFA sensor data. */
+  photometric?: number;
 }
 
 /**
@@ -58,7 +61,7 @@ interface FakeIfd {
  * preview.
  */
 function buildTiff(ifds: FakeIfd[]): Uint8Array {
-  const ENTRY_COUNT = 7;
+  const ENTRY_COUNT = 8;
   const ifdSize = 2 + ENTRY_COUNT * 12 + 4;
   const headerSize = 8;
   let cursor = headerSize + ifds.length * ifdSize;
@@ -91,7 +94,8 @@ function buildTiff(ifds: FakeIfd[]): Uint8Array {
     entry(3, 0x0103, 3, 1, f.compression);
     entry(4, 0x0111, 4, 1, jpegOffsets[i]!);
     entry(5, 0x0117, 4, 1, f.jpeg.byteLength);
-    entry(6, 0x0131, 2, 1, 0);
+    entry(6, 0x0106, 3, 1, f.photometric ?? 6);
+    entry(7, 0x0131, 2, 1, 0);
     // Chain to the next IFD, or 0 to end.
     view.setUint32(base + 2 + ENTRY_COUNT * 12, i + 1 < ifds.length ? base + ifdSize : 0, true);
     out.set(f.jpeg, jpegOffsets[i]!);
@@ -121,6 +125,33 @@ describe("finding a DNG's embedded previews", () => {
     expect(previews[0]!.width).toBe(4032);
     // And the extracted bytes are the big one's, not merely its dimensions.
     expect(extractLargestPreview(dng)![2]).toBe(0x02);
+  });
+
+  // The bug a real camera file found, kept reproducible without a 30 MB
+  // fixture. A DNG stores its raw sensor mosaic with Compression 7 — lossless
+  // JPEG — exactly like it stores a preview, and the raw is always the larger
+  // of the two. Filtering on compression alone therefore selects 14-bit
+  // lossless JPEG that no ordinary decoder opens, and it is most of the file,
+  // so the point of reading a preview instead of the raw is lost as well.
+  // PhotometricInterpretation is what actually says "a human can look at this".
+  it("skips the raw mosaic and takes the smaller real preview", () => {
+    const dng = buildTiff([
+      // Bigger, JPEG-compressed, and CFA — the sensor data.
+      { width: 6304, height: 4224, compression: 7, photometric: 32803, jpeg: jpegOf(0xaa) },
+      // Smaller, JPEG-compressed, YCbCr — the actual preview.
+      { width: 6192, height: 4128, compression: 7, photometric: 6, jpeg: jpegOf(0xbb) },
+    ]);
+    const previews = findEmbeddedPreviews(dng);
+    expect(previews).toHaveLength(1);
+    expect(previews[0]!.width).toBe(6192);
+    expect(extractLargestPreview(dng)![2]).toBe(0xbb);
+  });
+
+  it("also skips LinearRaw, the other non-viewable photometric", () => {
+    const dng = buildTiff([
+      { width: 6000, height: 4000, compression: 7, photometric: 34892, jpeg: jpegOf(0x01) },
+    ]);
+    expect(findEmbeddedPreviews(dng)).toEqual([]);
   });
 
   it("ignores IFDs that are not JPEG-compressed", () => {

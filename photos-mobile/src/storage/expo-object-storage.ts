@@ -64,6 +64,13 @@ export interface ExpoFile {
   delete(): void;
   text(): Promise<string>;
   write(contents: string | Uint8Array): void;
+  /**
+   * The whole file, at once.
+   *
+   * Needed because `content://` assets cannot be streamed — see
+   * {@link streamFromFile}. Every other caller should prefer the stream.
+   */
+  bytesSync(): Uint8Array;
   readonly uri: string;
 }
 
@@ -301,22 +308,66 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
 }
 
 /**
+ * Whether these bytes live behind a content provider rather than in a file.
+ *
+ * Load-bearing, and the reason is a real limitation rather than a preference —
+ * see {@link streamFromFile}.
+ */
+export function isContentUri(uri: string): boolean {
+  return uri.startsWith("content://");
+}
+
+/**
  * Read a file, whole or by range, as a stream. Null when it does not exist.
  *
  * Exported because the device-media overlay (`device-media-storage.ts`) reads
- * `content://` URIs through the *same* `ExpoFile` port — expo-file-system 57
- * resolves a content URI to a `ContentProviderFile` with `inputStream()`,
- * `length()` and a seekable handle, so an aliased original and a stored blob
- * differ only in the path handed to `fs.file()`. A second copy of the handle
- * and chunking logic below is exactly the kind of near-duplicate that drifts:
- * one of the two would eventually learn to close its handle on cancel and the
- * other would not.
+ * `content://` assets through the *same* `ExpoFile` port, so an aliased
+ * original and a stored blob differ only in the string handed to `fs.file()`.
+ * A second copy of the handle and chunking logic would be the kind of
+ * near-duplicate that drifts — one of them eventually learning to close its
+ * handle on cancel and the other not.
+ *
+ * ## Content URIs cannot be streamed, and that is expo's limitation not ours
+ *
+ * `File.readableStream()` calls `open()`, and `FileSystemFile.openHandle`
+ * dispatches on the resolved file implementation:
+ *
+ * ```kotlin
+ * is JavaFile        -> forJavaFile(...)
+ * is SAFDocumentFile -> forContentURI(...)
+ * else               -> throw "File handle is not supported for $uri"
+ * ```
+ *
+ * A MediaStore URI is a content URI but **not** a SAF one — `isSAFUri` requires
+ * `DocumentsContract.isDocumentUri` or `isTreeUri`, and neither holds for
+ * `content://media/external/images/media/N`. So it resolves to
+ * `ContentProviderFile`, falls to the `else`, and throws. Every camera-roll
+ * asset, every time.
+ *
+ * What *does* work for that implementation is `inputStream()`, which backs
+ * `bytes()`, `text()`, `base64()` and `md5`. So the fallback here reads the
+ * asset whole and serves the requested slice from memory.
+ *
+ * **The cost is real and is bounded by the caller, not here.** Materialising a
+ * 4K video is exactly the OOM streaming exists to avoid, so the import loop
+ * refuses anything above its own ceiling rather than trying (see
+ * `import.ts`'s `MAX_INLINE_READ_BYTES`). The honest fix is a native streaming
+ * read over `ContentResolver`, which is item 13b territory.
  */
 export function streamFromFile(
   file: ExpoFile,
   range?: ByteRange,
 ): ReadableStream<Uint8Array> | null {
   if (!file.exists) return null;
+
+  if (isContentUri(file.uri)) {
+    const all = file.bytesSync();
+    if (!range) return streamOf(all);
+    const end = Math.min(range.end ?? all.byteLength - 1, all.byteLength - 1);
+    if (end < range.start) return emptyStream();
+    return streamOf(all.subarray(range.start, end + 1));
+  }
+
   if (!range) return file.readableStream();
 
   // Ranged reads go through a handle rather than the stream, because a stream
@@ -355,6 +406,16 @@ export function streamFromFile(
       // A reader that stops early must not leak the handle — on a phone the
       // open-file limit is low enough that this matters within one session.
       handle.close();
+    },
+  });
+}
+
+/** One already-materialised buffer, as a stream. */
+function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
     },
   });
 }

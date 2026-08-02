@@ -93,6 +93,20 @@ export interface ImportOptions {
   readonly originAppId?: string;
 }
 
+/**
+ * Why one asset did not make it in.
+ *
+ * Carried rather than counted, because the first version of this counted. When
+ * every asset on a real device failed, the screen could say "60 could not be
+ * read" and nothing else — the reason had been caught and dropped one frame
+ * from where it was needed. A failure count with no failure is not a report.
+ */
+export interface ImportFailure {
+  readonly assetId: string;
+  readonly filename: string | null;
+  readonly reason: string;
+}
+
 /** What one import pass did, per asset, so a caller can report rather than guess. */
 export interface ImportOutcome {
   readonly scanned: number;
@@ -101,8 +115,25 @@ export interface ImportOutcome {
   readonly skipped: number;
   /** Considered and could not be read — counted, never thrown. */
   readonly failed: number;
+  /** One entry per failure, in the order they happened. */
+  readonly failures: readonly ImportFailure[];
   readonly records: readonly DataRecord[];
 }
+
+/**
+ * The largest asset this loop will read.
+ *
+ * A ceiling rather than a guess: `content://` assets cannot be streamed (see
+ * `streamFromFile`), so hashing one means holding it in memory, and a 4K video
+ * held whole is the OOM streaming exists to prevent. Above this the asset is
+ * reported as deferred rather than attempted — a named limitation beats a
+ * process death, and it is lifted by the native streaming read that item 13b
+ * needs anyway.
+ *
+ * 256 MB covers essentially every still, including raw, and excludes the long
+ * videos that would actually be dangerous.
+ */
+export const MAX_INLINE_READ_BYTES = 256 * 1024 * 1024;
 
 /**
  * Import one batch of the device's most recent media.
@@ -121,9 +152,12 @@ export async function importDeviceMedia(
   const items = await listRecentMedia(deps.media, { limit: options.limit });
 
   const records: DataRecord[] = [];
+  const failures: ImportFailure[] = [];
   let imported = 0;
   let skipped = 0;
-  let failed = 0;
+
+  const fail = (item: DeviceMediaItem, reason: string) =>
+    failures.push({ assetId: item.id, filename: item.filename, reason });
 
   for (const item of items) {
     try {
@@ -132,20 +166,21 @@ export async function importDeviceMedia(
         continue;
       }
       const record = await importOne(deps, item, { originAppId, nowMs: now() });
-      if (!record) {
-        failed += 1;
+      if ("reason" in record) {
+        fail(item, record.reason);
         continue;
       }
-      records.push(record);
+      records.push(record.record);
       imported += 1;
-    } catch {
+    } catch (err) {
       // Same argument as the skip inside `listRecentMedia`: one asset the media
       // store cannot produce costs one record, and throwing would cost the run.
-      failed += 1;
+      // The reason is kept, because a count on its own cannot be acted on.
+      fail(item, String(err));
     }
   }
 
-  return { scanned: items.length, imported, skipped, failed, records };
+  return { scanned: items.length, imported, skipped, failed: failures.length, failures, records };
 }
 
 /**
@@ -170,12 +205,21 @@ async function importOne(
   deps: ImportDeps,
   item: DeviceMediaItem,
   context: { readonly originAppId: string; readonly nowMs: number },
-): Promise<DataRecord | null> {
+): Promise<{ record: DataRecord } | { reason: string }> {
   const file = deps.fs.file(item.uri);
-  if (!file.exists) return null;
+  if (!file.exists) {
+    return { reason: `the media store has no readable asset at ${item.uri}` };
+  }
+
+  const size = file.size;
+  if (size !== null && size > MAX_INLINE_READ_BYTES) {
+    return {
+      reason: `${size} bytes is larger than this device can hash without streaming (${MAX_INLINE_READ_BYTES})`,
+    };
+  }
 
   const digest = await hashFile(deps, item.uri);
-  if (!digest) return null;
+  if (!digest) return { reason: `could not read the bytes of ${item.uri}` };
 
   const type = typeOf(item);
   const objectStorageKey = dataRecordObjectKey(type, digest.hex);
@@ -206,7 +250,7 @@ async function importOne(
   });
 
   await deps.database.put(record);
-  return record;
+  return { record };
 }
 
 /**

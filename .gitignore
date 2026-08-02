@@ -26,3 +26,9 @@ pnpm-lock.yaml
 .env
 .env.*
 !.env.example
+
+# Real camera raw files used by the DNG preview tests. Tens of MB each and
+# not something to carry in the repository; the tests skip when absent and
+# STARKEEP_REQUIRE_DNG=1 turns that skip into a failure where it matters.
+*.DNG
+*.dng

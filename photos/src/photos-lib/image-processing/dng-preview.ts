@@ -17,7 +17,10 @@
  * the first IFD, then a chain of IFDs, each an array of 12-byte entries with a
  * pointer to the next. Previews live either in the main IFD or in the SubIFDs
  * that tag 0x014A points to. This walks them, keeps every entry that describes
- * a JPEG, and returns the largest by pixel area.
+ * a **viewable** JPEG, and returns the largest by pixel area.
+ *
+ * "Viewable" is doing real work there: the raw sensor mosaic is JPEG-compressed
+ * too, and it is bigger than any preview. See {@link VIEWABLE_PHOTOMETRICS}.
  *
  * **Largest by area, not the first found.** Cameras write more than one
  * preview: a 160x120 thumbnail for the EXIF block and a full-resolution render
@@ -37,6 +40,7 @@ const TAG = {
   IMAGE_WIDTH: 0x0100,
   IMAGE_LENGTH: 0x0101,
   COMPRESSION: 0x0103,
+  PHOTOMETRIC_INTERPRETATION: 0x0106,
   STRIP_OFFSETS: 0x0111,
   STRIP_BYTE_COUNTS: 0x0117,
   SUB_IFDS: 0x014a,
@@ -44,8 +48,33 @@ const TAG = {
   JPEG_INTERCHANGE_FORMAT_LENGTH: 0x0202,
 } as const;
 
-/** TIFF compression values that mean "these bytes are a JPEG". */
+/** TIFF compression values that mean "these bytes are JPEG-coded". */
 const JPEG_COMPRESSIONS = new Set([6, 7, 0x884c]);
+
+/**
+ * PhotometricInterpretation values that mean "a human can look at this".
+ *
+ * **This is the discriminator, and compression is not.** A DNG stores its raw
+ * sensor data with `Compression = 7` — lossless JPEG — exactly like it stores a
+ * preview, so filtering on compression alone selects the raw mosaic. Verified
+ * against a real RICOH GR IV file, whose SubIFDs are:
+ *
+ *   6304x4224  Compression 7  Photometric 32803 (CFA)    28 MB  ← sensor data
+ *   6192x4128  Compression 7  Photometric 6     (YCbCr)  3.2 MB ← the preview
+ *
+ * Both are "the largest JPEG"; only one is an image. Picking the first yields
+ * 14-bit lossless JPEG that no ordinary decoder will open — sharp reports
+ * "Unsupported JPEG data precision 14" — and it is 28 MB of the 30 MB file, so
+ * the whole point of reading a preview instead of the raw is lost too.
+ *
+ * `BitsPerSample` looks like an appealing second check and is not usable here:
+ * it is an array of three shorts, so it lives behind an offset rather than
+ * inline, and reading it as a scalar yields garbage (470, 32690 in this file).
+ */
+const VIEWABLE_PHOTOMETRICS = new Set([
+  2, // RGB
+  6, // YCbCr — what a JPEG preview is
+]);
 
 export interface EmbeddedPreview {
   readonly offset: number;
@@ -126,6 +155,10 @@ function readIfd(
   let width = 0;
   let height = 0;
   let compression = 0;
+  // Defaults to a viewable value so an IFD that omits the tag entirely is not
+  // silently discarded — omission is rare, and rejecting on it would lose a
+  // preview that is probably fine. Raw IFDs always state 32803 or 34892.
+  let photometric = 6;
   let stripOffset = 0;
   let stripLength = 0;
   let jpegOffset = 0;
@@ -147,6 +180,9 @@ function readIfd(
         break;
       case TAG.COMPRESSION:
         compression = scalar(r, type, valueAt);
+        break;
+      case TAG.PHOTOMETRIC_INTERPRETATION:
+        photometric = scalar(r, type, valueAt);
         break;
       case TAG.STRIP_OFFSETS:
         // Only single-strip previews are taken. A multi-strip JPEG would need
@@ -181,6 +217,9 @@ function readIfd(
   if (nextIfd > 0) queue.push(nextIfd);
 
   if (!JPEG_COMPRESSIONS.has(compression)) return null;
+  // The check that separates a preview from the raw mosaic beside it. See
+  // VIEWABLE_PHOTOMETRICS — both carry Compression 7.
+  if (!VIEWABLE_PHOTOMETRICS.has(photometric)) return null;
   const offset = jpegOffset || stripOffset;
   const length = jpegLength || stripLength;
   if (offset <= 0 || length <= 0 || offset + length > bytes.byteLength) return null;

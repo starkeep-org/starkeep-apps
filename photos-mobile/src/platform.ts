@@ -27,6 +27,7 @@ import { createSessionStore } from "./auth/session-store";
 import type { HashFactory, ImportDeps } from "./media/import";
 import { createMobileNode, type MobileNode } from "./node";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
+import { clearNodeFiles } from "./node-reset";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
 import type { DeviceMediaModule, MediaQuery } from "./media/device-library";
 import {
@@ -177,6 +178,40 @@ export async function bringUpNode(): Promise<{ node: MobileNode; identity: NodeI
     deviceMedia: deviceMediaStorage,
   });
   return { node, identity };
+}
+
+/**
+ * Throw away everything this node has indexed.
+ *
+ * ## What this deletes, and what it emphatically does not
+ *
+ * It deletes the node's **database** — records, labels, sync watermarks and the
+ * alias table — and the node's **object store**, which holds renditions and any
+ * blobs fetched from a peer.
+ *
+ * It does not touch a single photograph. The originals were never copied here:
+ * import aliases them to the MediaStore assets that already hold them
+ * (`import-loop-design.md` §2), so what is being deleted is Starkeep's *index
+ * of* the camera roll, not the camera roll. Deleting a pointer is the only
+ * destructive operation available, and that is a property of the design worth
+ * relying on rather than a coincidence — the same reason
+ * `DeviceMediaObjectStorage.delete()` drops an alias row and never an asset.
+ *
+ * The **node identity survives**. It is not data, it is who this device is: it
+ * is stamped into every HLC timestamp, and regenerating it would make the phone
+ * look like a brand new peer to everyone it has ever synced with. The session
+ * survives too — signing out is a different action, offered separately.
+ *
+ * The node must be closed first and rebuilt after, which is why this takes one
+ * and the caller replaces it: SQLite holds the file open, and deleting it from
+ * underneath a live connection is how a database ends up half-there.
+ */
+export async function clearNodeData(node: MobileNode): Promise<void> {
+  await node.close();
+  clearNodeFiles(expoFileSystem, {
+    databasePath: DATABASE_PATH,
+    objectsPath: OBJECTS_PATH,
+  });
 }
 
 /** Import dependencies, assembled from the real modules for a live node. */

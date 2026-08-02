@@ -77,6 +77,8 @@ export interface ExpoFile {
 export interface ExpoDirectory {
   create(options?: { intermediates?: boolean; idempotent?: boolean }): void;
   list(): Array<ExpoFile | ExpoDirectory>;
+  /** Recursive. Only ever called on paths this app created. */
+  delete(): void;
   readonly exists: boolean;
   readonly uri: string;
 }

@@ -133,6 +133,17 @@ export function fakeExpoFs() {
     create() {
       dirs.add(path);
     },
+    delete() {
+      dirs.delete(path);
+      // Recursive, as expo's is: a reset that left the objects behind would
+      // report an empty node while its disk was still full.
+      for (const key of [...files.keys()]) {
+        if (key.startsWith(`${path}/`)) files.delete(key);
+      }
+      for (const key of [...dirs]) {
+        if (key.startsWith(`${path}/`)) dirs.delete(key);
+      }
+    },
     list() {
       return [];
     },

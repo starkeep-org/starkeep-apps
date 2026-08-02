@@ -95,12 +95,14 @@ beforeEach(async () => {
       fs: harness.fs,
       basePath: "/docs/objects",
     }),
-    remoteObjectStorage: cloudStorage,
-    transport: createInProcessSyncTransport({
-      databaseAdapter: cloudDb,
-      clock: createHLCClock({ nodeId: "cloud" }),
-      objectStorage: cloudStorage,
-    }),
+    cloud: {
+      remoteObjectStorage: cloudStorage,
+      transport: createInProcessSyncTransport({
+        databaseAdapter: cloudDb,
+        clock: createHLCClock({ nodeId: "cloud" }),
+        objectStorage: cloudStorage,
+      }),
+    },
   });
 });
 

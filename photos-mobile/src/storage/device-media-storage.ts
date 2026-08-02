@@ -44,8 +44,8 @@ import type {
   PutOptions,
   PutStreamOptions,
 } from "@starkeep/storage-adapter";
-import type { MediaAlias, MediaAliasStore } from "../media/media-alias.js";
-import { streamFromFile, type ExpoFileSystem } from "./expo-object-storage.js";
+import type { MediaAlias, MediaAliasStore } from "../media/media-alias";
+import { streamFromFile, type ExpoFileSystem } from "./expo-object-storage";
 
 export interface DeviceMediaObjectStorageOptions {
   /** The node's own object store — where renditions and fetched blobs live. */

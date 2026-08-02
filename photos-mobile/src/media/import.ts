@@ -48,10 +48,10 @@ import {
   type HLCClock,
 } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
-import type { ExpoFileSystem } from "../storage/expo-object-storage.js";
-import { streamFromFile } from "../storage/expo-object-storage.js";
-import { listRecentMedia, type DeviceMediaItem, type DeviceMediaModule } from "./device-library.js";
-import type { MediaAliasStore } from "./media-alias.js";
+import type { ExpoFileSystem } from "../storage/expo-object-storage";
+import { streamFromFile } from "../storage/expo-object-storage";
+import { listRecentMedia, type DeviceMediaItem, type DeviceMediaModule } from "./device-library";
+import type { MediaAliasStore } from "./media-alias";
 
 /**
  * An incremental SHA-256, supplied by the app's edge.

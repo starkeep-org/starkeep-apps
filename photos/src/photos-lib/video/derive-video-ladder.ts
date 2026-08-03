@@ -17,8 +17,8 @@
 
 import {
   applicableVideoClasses,
-  skimSpeedFactor,
-  SKIM_FPS,
+  SKIM_SEGMENT_SECONDS,
+  SKIM_INTERVAL_SECONDS,
   type SizeClass,
   type VideoClassSpec,
   type VideoSource,
@@ -140,8 +140,8 @@ async function deriveOne(
     case "skim": {
       const out = await tools.skim(path, {
         maxLongEdge: spec.maxLongEdge,
-        speedFactor: skimSpeedFactor(source.durationSeconds),
-        fps: SKIM_FPS,
+        segmentSeconds: SKIM_SEGMENT_SECONDS,
+        intervalSeconds: SKIM_INTERVAL_SECONDS,
       });
       return {
         sizeClass: spec.sizeClass,

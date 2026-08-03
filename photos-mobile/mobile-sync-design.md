@@ -210,6 +210,72 @@ A PoC (`scratchpad/device-sig-poc.mjs`) exercises the §2.2 scheme against the r
 Costs measured: signing a 1 MB body is **1.68 ms** (Ed25519 hashes internally, so body size barely
 matters), and a public key is **60 characters** as stored — well inside an SSM parameter.
 
+## 4.4 Investigated: QR pairing, admin-shows / phone-scans
+
+**Verdict: feasible. The phone half is easy; the cloud half changes something
+that is currently a useful invariant.**
+
+LAN is ruled out, so the direction settles everything. If the phone scans, the
+phone must then deliver its public key somewhere — and with no LAN, "somewhere"
+is the cloud. The phone is unpaired by definition, so it cannot sign that
+request, which means **a new route exempt from the signature gate** and **a
+pairing token that is a bearer credential**: whoever reads that QR inside its
+TTL can register a device and thereafter act as any installed app.
+
+### The phone half is cheap
+
+`expo-camera` 57.0.3 matches the installed SDK and does barcode scanning
+natively (`onBarcodeScanned`). One native dependency, one rebuild, one CAMERA
+permission. QR *generation* in admin-web is a pure-JS library. Nothing here is
+hard.
+
+### The cloud half is the real cost
+
+Today the data-plane Lambda is **read-only on SSM**: `ssm:GetParameter` on
+`app-creds/*` and nothing else — and the *foundational permissions boundary*
+caps it at `GetParameter` too, so the ceiling agrees with the grant. In this
+direction the phone talks to the cloud, so **the Lambda is what stores the
+device key**. That means granting the request-handling path the power to write
+a credential.
+
+That is the finding worth stating plainly: **nothing in the request path can
+currently mint a credential.** This would change that. The code is a day; the
+invariant is the thing being spent.
+
+Two ways to pay it:
+
+**(a) Direct — Lambda writes SSM.** Widen the inline policy *and* the
+foundational permissions boundary to allow `ssm:PutParameter` on a
+`device-keys/*` prefix. That is a bootstrap CloudFormation change. The boundary
+is measured at **5,420 of AWS's 6,144-char limit — 724 spare**, and the new
+statement is ~165, so it fits, but that ceiling is close enough that its own
+comments already describe statements being "folded together" to stay under it.
+Also needs `scripts/teardown-bootstrap.sh` updated to sweep the new prefix, and
+single-use token consumption needs `DeleteParameter` as well.
+
+**(b) S3 mailbox — Lambda parks, admin-web issues.** The phone POSTs to the new
+route; the Lambda validates the token (a read it is already allowed) and writes
+a small pending-pairing object into the files bucket; admin-web polls, validates
+and performs the privileged SSM write itself, then deletes the token.
+
+(b) is materially cheaper and lower-risk, because the boundary **already**
+permits `s3:PutObject` on `${stackPrefix}-files-*/*` — only the CDS inline
+policy changes, with no bootstrap deploy, no boundary edit and no teardown
+change. And the new cloud capability becomes "accept a blob and park it" rather
+than "issue a credential", which keeps credential-minting in admin-web where it
+already lives.
+
+### If we do it, do (b)
+
+Rough shape: admin-web mints a short-TTL single-use token, shows the QR, polls;
+cloud gains one unsigned route plus an S3 write on its inline policy; phone
+gains `expo-camera`, a scanner screen and one POST.
+
+**Not a blocker either way.** Copy/paste pairing already works end to end and is
+one small screen from being pleasant. The QR is an ergonomics upgrade whose
+price is a new unauthenticated route and a bearer token, and it is worth taking
+deliberately rather than as a detail of getting sync working.
+
 ## 5. What the phone does once it can authenticate
 
 `bringUpNode` currently passes no `cloud`, so `engine` is null and `exchange()` is a no-op — which

@@ -17,7 +17,8 @@ import { createHash } from "node:crypto";
 import { createHLCClock } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, MockObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createInProcessSyncTransport } from "@starkeep/sync-engine";
-import { createMobileNode, MOBILE_PAGE_LIMIT, type MobileNode } from "../src/node";
+import { createMobileNode, MOBILE_MAX_BYTES, MOBILE_MAX_ITEMS, type MobileNode } from "../src/node";
+import { describeVerify, verifyFoundProblem } from "../src/ui/verify-text";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
@@ -179,18 +180,29 @@ describe("the phone as a peer", () => {
     expect(new Set(records.map((r) => r.id)).size).toBe(5);
   });
 
-  // Pages are small on purpose: the OS decides when the app stops, and a page
-  // that takes thirty seconds to apply gets abandoned partway on a real handset
-  // over and over, making progress impossible rather than merely slow.
-  it("pages small enough that a round is short", async () => {
-    expect(MOBILE_PAGE_LIMIT).toBeLessThanOrEqual(100);
+  // Rounds are small on purpose: the OS decides when the app stops, and a round
+  // that takes thirty seconds gets abandoned partway on a real handset over and
+  // over, making progress impossible rather than merely slow. Bytes are the
+  // budget that binds here, because this channel carries photos.
+  it("bounds a round to a few photos' worth of bytes", async () => {
+    expect(MOBILE_MAX_BYTES).toBeLessThanOrEqual(16 * 1024 * 1024);
   });
 
-  it("carries more records than fit in one page, across rounds", async () => {
-    await seedCloud(MOBILE_PAGE_LIMIT + 20);
+  it("carries more records than fit in one round, across rounds", async () => {
+    await seedCloud(MOBILE_MAX_ITEMS + 20);
     for (let i = 0; i < 5; i += 1) await phone.exchange();
     const { records } = await phone.databaseAdapter.query({});
-    expect(records.length).toBe(MOBILE_PAGE_LIMIT + 20);
+    expect(records.length).toBe(MOBILE_MAX_ITEMS + 20);
+  }, 60_000);
+
+  // One tap must be one sync. A single round moves at most one round's budget,
+  // so a first upload of a real library needs hundreds of them.
+  it("sync() drains the backlog in one call", async () => {
+    await seedCloud(MOBILE_MAX_ITEMS + 20);
+    const result = await phone.sync();
+    expect(result?.complete).toBe(true);
+    const { records } = await phone.databaseAdapter.query({});
+    expect(records.length).toBe(MOBILE_MAX_ITEMS + 20);
   }, 60_000);
 });
 
@@ -209,5 +221,49 @@ describe("durability across a restart", () => {
     // has settled pulls nothing new.
     await phone.exchange();
     expect((await phone.databaseAdapter.query({})).records).toHaveLength(2);
+  });
+});
+
+/**
+ * What the phone tells a person about their backup.
+ *
+ * The sentence someone decides whether to wipe their phone on, so it has to be
+ * true in both directions. A check that only asks "is the cloud missing
+ * anything?" reports all-clear to a phone that has itself lost rows — which is
+ * the case where being wrong costs the most.
+ */
+describe("describing an integrity check", () => {
+  const base = { supported: true as const, localRows: 100, peerRows: 100 };
+
+  it("reports both counts when everything agrees", () => {
+    const text = describeVerify({ ...base, divergentBuckets: 0, missingLocally: 0 });
+    expect(text).toContain("100 of 100 rows");
+    expect(verifyFoundProblem({ ...base, divergentBuckets: 0, missingLocally: 0 })).toBe(false);
+  });
+
+  it("says so when the cloud is missing rows", () => {
+    const result = { ...base, divergentBuckets: 2, missingLocally: 0 };
+    expect(describeVerify(result)).toContain("The cloud is missing rows in 2 time ranges");
+    expect(verifyFoundProblem(result)).toBe(true);
+  });
+
+  it("says so when this phone is the one missing rows", () => {
+    // The direction a one-sided check cannot see.
+    const result = { ...base, divergentBuckets: 0, missingLocally: 1 };
+    expect(describeVerify(result)).toContain("this phone is missing rows in 1 time range");
+    expect(verifyFoundProblem(result)).toBe(true);
+  });
+
+  it("reports both when both sides have holes", () => {
+    const result = { ...base, divergentBuckets: 1, missingLocally: 1 };
+    const text = describeVerify(result);
+    expect(text).toContain("The cloud is missing rows");
+    expect(text).toContain("this phone is missing rows");
+  });
+
+  it("does not call an unanswerable check clean", () => {
+    const result = { supported: false, localRows: 0, peerRows: 0, divergentBuckets: 0, missingLocally: 0 };
+    expect(describeVerify(result)).toContain("nothing was verified");
+    expect(verifyFoundProblem(result)).toBe(true);
   });
 });

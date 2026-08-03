@@ -19,7 +19,7 @@
  *    policy wants every blob; a phone with 8 GB against a 60k-item library is
  *    the only honest consumer of `Elided`, and the reason the media plan calls
  *    this phase the validation of Phase 0's residency work.
- * 3. **Its pages are smaller.** See {@link MOBILE_PAGE_LIMIT}.
+ * 3. **Its rounds are smaller.** See {@link MOBILE_MAX_BYTES}.
  */
 
 import { createHLCClock } from "@starkeep/protocol-primitives";
@@ -33,6 +33,9 @@ import {
   type OverrideRule,
   type ResidencyManager,
   type SyncEngine,
+  type SyncOptions,
+  type SyncResult,
+  type VerifyResult,
   type SyncTransport,
 } from "@starkeep/sync-engine";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
@@ -41,23 +44,41 @@ import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
 
 /**
- * How many records one exchange page carries on a phone.
+ * Byte budget for one exchange round on a phone.
  *
- * Deliberately far below the server's 1000. Constraint 2 of the phase — no work
- * item may assume more than a few seconds — is not a suggestion here: the OS
- * decides when the app stops, and a page that takes thirty seconds to apply is
- * a page that gets abandoned partway on a real handset, over and over, making
- * progress impossible rather than merely slow.
+ * The budget that actually binds here, because a round on this channel is
+ * photos: at ~3 MB each this is three or four of them, roughly fifteen seconds
+ * on a mobile uplink. Constraint 2 of the phase — no work item may assume more
+ * than a few seconds — is not a suggestion on a handset, because the OS decides
+ * when the app stops, and a round that takes a minute is a round that gets
+ * abandoned partway over and over, making progress impossible rather than
+ * merely slow.
  *
- * Smaller pages mean more round trips, which is the correct trade when the
- * alternative is a round trip that never completes. The watermark makes an
- * abandoned page free to retry, so the only cost of being wrong in this
- * direction is bandwidth.
+ * Counting items instead would be the wrong unit: six photos is 18 MB and six
+ * captions is nothing. Smaller rounds mean more round trips, which is the right
+ * trade when the alternative is a round trip that never completes — and the
+ * watermark makes an abandoned round free to retry, so the only cost of being
+ * wrong in this direction is bandwidth.
+ *
+ * One item larger than this still ships alone; see `SyncEngineOptions.maxBytes`.
+ * That is what keeps a 400 MB video from stalling the channel forever.
  */
-export const MOBILE_PAGE_LIMIT = 100;
+export const MOBILE_MAX_BYTES = 10 * 1024 * 1024;
 
-/** Matching scan page — the responder-side equivalent of the same argument. */
-export const MOBILE_SCAN_PAGE_SIZE = 100;
+/**
+ * Item cap for one round, which binds only on rows carrying no blobs.
+ *
+ * Well above what {@link MOBILE_MAX_BYTES} implies for photos, deliberately:
+ * two hundred labels is a small request, and splitting it across rounds would
+ * be pure round-trip overhead for no durability gain.
+ */
+export const MOBILE_MAX_ITEMS = 200;
+
+/**
+ * Concurrent blob transfers per round. Below the engine's default of 4 because
+ * every in-flight transfer costs memory and a handset has little to spare.
+ */
+export const MOBILE_TRANSFER_CONCURRENCY = 3;
 
 export interface MobileNodeOptions {
   readonly nodeId: string;
@@ -157,7 +178,7 @@ export interface MobileNode {
    */
   readonly residency: ResidencyManager | null;
   /**
-   * Run one exchange. Safe to abandon; the watermark makes it resumable.
+   * Run one exchange round. Safe to abandon; the watermark makes it resumable.
    *
    * Returns null on a node with no cloud rather than throwing. A caller
    * scheduling background work should not have to know whether this device has
@@ -165,6 +186,30 @@ export interface MobileNode {
    * offline path — is how a job queue learns to swallow exceptions.
    */
   exchange(): Promise<unknown>;
+  /**
+   * Sync until both directions are drained, pulling before pushing.
+   *
+   * What a user means by "sync now". A single round moves at most one round's
+   * budget, so a first upload of a real library needs hundreds of them — one
+   * per tap is not a sync, it is a progress bar with a manual crank.
+   *
+   * Same null-on-no-cloud contract as {@link exchange}, and equally safe to
+   * abandon: each round persists its own watermarks, so backgrounding the app
+   * mid-loop costs at most the round in flight.
+   */
+  sync(options?: SyncOptions): Promise<SyncResult | null>;
+  /**
+   * Compare row counts with the cloud and arm a repair for anything it lacks.
+   *
+   * Answers the question a watermark cannot: a coverage watermark is a
+   * timestamp per author, so it can say "caught up" while the cloud is missing
+   * a row from the middle of a range — and it can never say *how many* rows are
+   * safely off this device, which is the thing a person actually wants to know
+   * about a backup.
+   *
+   * Occasional, not per-sync: a grouped scan on both sides.
+   */
+  verify(): Promise<VerifyResult | null>;
   close(): Promise<void>;
 }
 
@@ -248,8 +293,9 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         transport: options.cloud.transport,
         clock,
         syncState,
-        pageLimit: MOBILE_PAGE_LIMIT,
-        scanPageSize: MOBILE_SCAN_PAGE_SIZE,
+        maxBytes: MOBILE_MAX_BYTES,
+        maxItems: MOBILE_MAX_ITEMS,
+        transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
         ...(residency ? { residency: residencyHooks(residency) } : {}),
       })
     : null;
@@ -261,6 +307,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     engine,
     residency,
     exchange: async () => (engine ? engine.exchange() : null),
+    sync: async (syncOptions) => (engine ? engine.sync(syncOptions) : null),
+    verify: async () => (engine ? engine.verify() : null),
     async close() {
       await databaseAdapter.close();
       await localObjectStorage.close();

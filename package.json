@@ -8,7 +8,10 @@
     ],
     "overrides": {
       "sharp": "^0.35.3",
-      "@starkeep/photos-mobile>@starkeep/sync-engine": "link:../starkeep-core/packages/sync-engine"
+      "@starkeep/photos-mobile>@starkeep/sync-engine": "link:../starkeep-core/packages/sync-engine",
+      "@starkeep/photos-mobile>@starkeep/storage-adapter": "link:../starkeep-core/packages/storage-adapter",
+      "@starkeep/photos-mobile>@starkeep/storage-sqlite": "link:../starkeep-core/packages/storage-sqlite",
+      "@starkeep/photos-mobile>@starkeep/protocol-primitives": "link:../starkeep-core/packages/protocol-primitives"
     }
   }
 }

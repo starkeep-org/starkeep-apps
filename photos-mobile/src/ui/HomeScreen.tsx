@@ -43,6 +43,8 @@ import { formatBytes, LibraryGrid } from "./LibraryGrid";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
 import { useLibrary, useNode } from "./use-library";
+import { describeVerify, verifyFoundProblem } from "./verify-text";
+import type { VerifyResult } from "@starkeep/sync-engine";
 
 interface Check {
   readonly name: string;
@@ -170,6 +172,28 @@ export function HomeScreen({
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  /**
+   * Rounds completed and items moved so far in the running sync.
+   *
+   * Worth showing rather than a bare spinner: a round is deliberately small
+   * (see MOBILE_MAX_BYTES), so a first upload is hundreds of them and a user
+   * otherwise has no way to tell a working sync from a wedged one.
+   */
+  const [syncProgress, setSyncProgress] = useState<{ rounds: number; items: number } | null>(
+    null,
+  );
+  /**
+   * Result of the last integrity check.
+   *
+   * Worth its own control rather than folding into "Sync now": it is a grouped
+   * scan on both sides, and it answers a different question. A watermark says
+   * "caught up"; this says how many rows are actually on the other end, which
+   * is the only form of "your library is backed up" that is a statement of fact
+   * rather than of belief.
+   */
+  const [verifyState, setVerifyState] = useState<
+    { checking: true } | { checking: false; result: VerifyResult | null } | null
+  >(null);
   const [resetting, setResetting] = useState(false);
 
   const baseUrl = config?.baseUrl;
@@ -373,10 +397,31 @@ export function HomeScreen({
               <Pressable
                 onPress={() => {
                   setSyncing(true);
+                  setSyncProgress(null);
+                  // sync(), not exchange(): a round carries at most one round's
+                  // budget, so one tap per round would make a first upload of a
+                  // real library hundreds of taps. Abandoning mid-loop is free —
+                  // each round persists its own watermarks — so backgrounding
+                  // the app costs at most the round in flight.
+                  let items = 0;
                   void node.node
-                    .exchange()
-                    .then(() => {
-                      setSyncError(null);
+                    .sync({
+                      onRound: (result, rounds) => {
+                        items += result.applied + result.shipped;
+                        setSyncProgress({ rounds, items });
+                      },
+                    })
+                    .then((result) => {
+                      // A stalled sync is not an error and not a success: the
+                      // loop stopped because a round achieved nothing while work
+                      // was still outstanding, which in practice is a transfer
+                      // that will not go through. Saying nothing would show the
+                      // same quiet "Sync now" as a completed sync.
+                      setSyncError(
+                        result?.stalled
+                          ? "Sync stopped making progress — something could not transfer. It will retry."
+                          : null,
+                      );
                       return library.reload();
                     })
                     .catch((err: unknown) => setSyncError(String(err)))
@@ -390,12 +435,47 @@ export function HomeScreen({
               >
                 <Text style={styles.buttonLabel}>{syncing ? "Syncing…" : "Sync now"}</Text>
               </Pressable>
+              {syncing && syncProgress ? (
+                <Text style={styles.muted}>
+                  {syncProgress.items} item{syncProgress.items === 1 ? "" : "s"} in{" "}
+                  {syncProgress.rounds} round{syncProgress.rounds === 1 ? "" : "s"}…
+                </Text>
+              ) : null}
               {node.node.engine === null ? (
                 <Text style={styles.muted}>
                   No cloud is configured in this build, so there is nothing to exchange with.
                 </Text>
               ) : null}
               {syncError ? <Text style={styles.error}>{syncError}</Text> : null}
+
+              <Pressable
+                onPress={() => {
+                  setVerifyState({ checking: true });
+                  void node.node
+                    .verify()
+                    .then((result) => setVerifyState({ checking: false, result }))
+                    .catch((err: unknown) => {
+                      setSyncError(String(err));
+                      setVerifyState(null);
+                    });
+                }}
+                disabled={syncing || verifyState?.checking === true || node.node.engine === null}
+                style={[
+                  styles.button,
+                  syncing || verifyState?.checking === true || node.node.engine === null
+                    ? styles.buttonDisabled
+                    : null,
+                ]}
+              >
+                <Text style={styles.buttonLabel}>
+                  {verifyState?.checking ? "Checking…" : "Check backup"}
+                </Text>
+              </Pressable>
+              {verifyState && !verifyState.checking ? (
+                <Text style={verifyFoundProblem(verifyState.result) ? styles.error : styles.muted}>
+                  {describeVerify(verifyState.result)}
+                </Text>
+              ) : null}
 
               {/* The pairing details. On screen because pairing is done from
                   admin-web — a device cannot authenticate its own first

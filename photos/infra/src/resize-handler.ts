@@ -15,10 +15,15 @@
 
 import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
-import { deriveStillLadder } from "../../src/photos-lib/image-processing/derive-ladder.js";
+import {
+  deriveStillLadder,
+  ladderIsComplete,
+  readSourceDimensions,
+} from "../../src/photos-lib/image-processing/derive-ladder.js";
 import {
   publishRendition,
   existingRenditionClasses,
+  assertLadderComplete,
 } from "../../src/photos-lib/image-processing/publish-renditions.js";
 import { precheckThumbnail } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";

@@ -61,6 +61,14 @@ export interface ExpoFile {
   writableStream(): WritableStream<Uint8Array>;
   open(): ExpoFileHandle;
   create(options?: { intermediates?: boolean; overwrite?: boolean }): void;
+  /**
+   * Move this file over another path.
+   *
+   * The destination is passed as a file rather than a string because that is
+   * expo's own signature — it takes a `File` or `Directory` shared object, and
+   * a path string would have to be turned back into one at the edge.
+   */
+  moveSync(destination: ExpoFile, options?: { overwrite?: boolean }): void;
   delete(): void;
   text(): Promise<string>;
   write(contents: string | Uint8Array): void;
@@ -201,16 +209,12 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
       throw err;
     }
 
-    const final = this.fs.file(finalPath);
-    if (final.exists) final.delete();
-    // expo-file-system has no rename on the File class in this shape, so the
-    // bytes are read back and written across. That is a real cost this driver
-    // pays and the Node one does not — worth revisiting against the module's
-    // move API before this handles multi-GB video.
-    const bytes = await this.readAll(temp);
-    final.create({ intermediates: true, overwrite: true });
-    final.write(bytes);
-    temp.delete();
+    // Moved rather than read back and written across. The old copy materialized
+    // the whole object just to change its name — on a phone that is the same
+    // allocation the streaming write above exists to avoid, arriving one line
+    // after it succeeded. The temp file was created under the same shard
+    // directory, so this is a rename and the parent already exists.
+    temp.moveSync(this.fs.file(finalPath), { overwrite: true });
 
     if (options?.contentType || options?.metadata) {
       this.writeSidecar(key, { contentType: options.contentType, metadata: options.metadata });
@@ -219,6 +223,24 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
 
   async has(key: string): Promise<boolean> {
     return this.fs.file(this.pathFor(key)).exists;
+  }
+
+  /**
+   * Where these bytes are, as a file the platform can read.
+   *
+   * This is what lets a transfer hand the object to a native uploader instead
+   * of pulling it through the JS heap — see
+   * `ObjectStorageAdapter.localFileUriFor` for the negotiation and
+   * `native-blob-transfer-plan.md` for why a phone cannot afford the heap.
+   *
+   * Existence is checked rather than assumed, because returning a URI for a key
+   * this node does not hold would send the uploader at a missing file — the
+   * transfer would fail rather than falling back, which is the one outcome the
+   * capability must not produce.
+   */
+  localFileUriFor(key: string): string | null {
+    const file = this.fs.file(this.pathFor(key));
+    return file.exists ? file.uri : null;
   }
 
   async stat(key: string): Promise<ObjectFacts | null> {
@@ -267,23 +289,6 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
     // from a directory walk — and a listing that silently returned one shard
     // would be worse than one that says it does not exist.
     throw new Error("list() is not implemented on the phone; residency reads the database instead");
-  }
-
-  private async readAll(file: ExpoFile): Promise<Uint8Array> {
-    const reader = file.readableStream().getReader();
-    const chunks: Uint8Array[] = [];
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) chunks.push(value);
-    }
-    const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-    let at = 0;
-    for (const chunk of chunks) {
-      out.set(chunk, at);
-      at += chunk.byteLength;
-    }
-    return out;
   }
 
   private writeSidecar(key: string, value: unknown): void {
@@ -363,11 +368,28 @@ export function streamFromFile(
   if (!file.exists) return null;
 
   if (isContentUri(file.uri)) {
-    const all = file.bytesSync();
-    if (!range) return streamOf(all);
-    const end = Math.min(range.end ?? all.byteLength - 1, all.byteLength - 1);
-    if (end < range.start) return emptyStream();
-    return streamOf(all.subarray(range.start, end + 1));
+    // Read on the first pull, not here. Constructing a stream must not be the
+    // thing that allocates 24 MB: a caller that decides against reading — the
+    // transfer path, once it has handed the file to a native uploader — would
+    // otherwise pay the whole cost of the read it avoided.
+    return new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          const all = file.bytesSync();
+          if (!range) {
+            controller.enqueue(all);
+            controller.close();
+            return;
+          }
+          const end = Math.min(range.end ?? all.byteLength - 1, all.byteLength - 1);
+          if (end >= range.start) controller.enqueue(all.subarray(range.start, end + 1));
+          controller.close();
+        },
+      },
+      // The default high-water mark of 1 fires `pull` at construction, which
+      // would make the read eager again while looking lazy.
+      { highWaterMark: 0 },
+    );
   }
 
   if (!range) return file.readableStream();
@@ -408,16 +430,6 @@ export function streamFromFile(
       // A reader that stops early must not leak the handle — on a phone the
       // open-file limit is low enough that this matters within one session.
       handle.close();
-    },
-  });
-}
-
-/** One already-materialised buffer, as a stream. */
-function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
     },
   });
 }

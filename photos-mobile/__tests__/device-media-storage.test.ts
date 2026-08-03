@@ -118,6 +118,18 @@ describe("an aliased blob behaves like a stored one", () => {
     expect(fs.state.rangedReads).toHaveLength(0);
   });
 
+  // Constructing the stream must not be the thing that allocates the object.
+  // The transfer path asks for a URI first and only falls back to a stream when
+  // nothing can take one — an eager read would charge it the whole cost of the
+  // read it avoided, which for a 24 MB video is the crash all over again.
+  it("does not read the asset until the stream is pulled", async () => {
+    aliasAPhoto();
+    const stream = await storage.getStream(KEY);
+    expect(fs.state.wholeReads).toEqual([]);
+    expect(await drain(stream)).toEqual(PHOTO);
+    expect(fs.state.wholeReads).toEqual([URI]);
+  });
+
   it("still seeks properly for a blob in the node's own object store", async () => {
     // The seek path is not dead — it is what every stored blob uses, and a
     // range served by reading from zero and discarding the prefix would turn a
@@ -207,6 +219,48 @@ describe("the two destructive rules", () => {
       },
     });
     await expect(storage.putStream(KEY, body)).rejects.toThrow(/alias to the device media store/);
+  });
+});
+
+/**
+ * Naming the asset is what lets a transfer send it without reading it.
+ *
+ * A `content://` asset cannot be streamed, so every read of an aliased original
+ * materializes the whole thing — three times over, once the hash and the fetch
+ * body are counted. That is what crashed the app on its first video push. The
+ * URI goes to the platform's uploader instead, and no byte becomes a JS value.
+ */
+describe("naming an asset for the platform to send", () => {
+  it("names the aliased asset, not a copy of it", () => {
+    aliasAPhoto();
+    expect(storage.localFileUriFor(KEY)).toBe(URI);
+  });
+
+  it("names a blob in the node's own object store", async () => {
+    await inner.put("shared/image/cd/cdef", PHOTO);
+    expect(storage.localFileUriFor("shared/image/cd/cdef")).toBe("/objects/shared/image/cd/cdef");
+  });
+
+  // A dead alias falls through for the same reason has() and stat() do: the
+  // bytes may since have been fetched back from a peer into the inner store.
+  it("falls through to the object store when the asset is gone", async () => {
+    aliasAPhoto();
+    fs.fs.file(URI).delete();
+    expect(storage.localFileUriFor(KEY)).toBeNull();
+    await inner.put(KEY, PHOTO);
+    expect(storage.localFileUriFor(KEY)).toBe(`/objects/${KEY}`);
+  });
+
+  it("names nothing for a key that is neither aliased nor stored", () => {
+    expect(storage.localFileUriFor("shared/image/zz/nope")).toBeNull();
+  });
+
+  // Naming an asset is a read. The write refusals above are unchanged by it,
+  // and must be: the URI is handed out to be sent, never to be written to.
+  it("does not make an aliased key writable", () => {
+    aliasAPhoto();
+    expect(storage.localFileUriFor(KEY)).toBe(URI);
+    return expect(storage.put(KEY, PHOTO)).rejects.toThrow(/alias to the device media store/);
   });
 });
 

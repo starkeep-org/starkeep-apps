@@ -19,7 +19,7 @@
  */
 
 import { open as openOpSqlite } from "@op-engineering/op-sqlite";
-import { Directory, File, Paths } from "expo-file-system";
+import { Directory, File, Paths, UploadType } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
 import { generateId, type HLCClock } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
@@ -27,6 +27,7 @@ import * as SecureStore from "expo-secure-store";
 import {
   createHttpSyncTransport,
   HttpObjectStorageAdapter,
+  type UploadFile,
 } from "@starkeep/sync-engine";
 import { createSessionStore } from "./auth/session-store";
 import { loadDeviceKey, type DeviceKey } from "./auth/device-key";
@@ -77,6 +78,48 @@ export const opSqliteDriver = createOpSqliteDriver(opSqliteModule);
 export const expoFileSystem: ExpoFileSystem = {
   file: (path: string) => new File(path) as unknown as ExpoFile,
   directory: (path: string) => new Directory(path) as unknown as ExpoDirectory,
+};
+
+/**
+ * Send a file's bytes to a URL without them ever becoming a JS value.
+ *
+ * ## Why this exists at all
+ *
+ * The sync engine's blob transfer is streamed, and on this platform that was a
+ * fiction: `globalThis.fetch` is `expo/fetch` on SDK 57, and its
+ * `normalizeBodyInitAsync` drains a `ReadableStream` request body into a chunk
+ * array and then copies it into one full-size `Uint8Array`. Add the source-side
+ * read — a `content://` asset cannot be streamed, so `bytesSync()` returns the
+ * whole thing — and the hash over it, and pushing a 24 MB video allocated
+ * something like 3–4× its size in JS heap. On a handset the OS was already
+ * pruning, that was a fatal SIGSEGV inside Hermes, not a slow upload.
+ *
+ * `FileSystemUploadTask` builds an OkHttp request body straight from the file's
+ * `inputStream()` and writes it to the socket. `ContentProviderFile` — what a
+ * MediaStore URI resolves to — implements `inputStream()` and `length()`, which
+ * is precisely the capability that ranged reads over the same URI lack. So the
+ * camera roll can be *sent* natively even though it cannot be *read*
+ * incrementally, and that asymmetry is the whole fix.
+ *
+ * ## Two things that look like oversights and are not
+ *
+ * `BINARY_CONTENT` leaves the request body's content type null, so OkHttp adds
+ * no `Content-Type` of its own and the presigned headers are sent exactly as
+ * the server signed them. And no `Content-Length` is passed: the upload task
+ * takes it from the file's length, and a second one here would be a duplicate
+ * header on a signed request.
+ *
+ * A non-2xx response resolves rather than throws — a 403 from S3 is an answer,
+ * and the adapter needs the body to tell `AccessDenied` from
+ * `SignatureDoesNotMatch`.
+ */
+export const uploadFile: UploadFile = async (fileUri, url, init) => {
+  const result = await new File(fileUri).upload(url, {
+    httpMethod: init.method,
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: init.headers,
+  });
+  return { status: result.status, body: result.body };
 };
 
 /**
@@ -243,6 +286,10 @@ function driveChannel(baseUrl: string, deviceKey: DeviceKey) {
     remoteObjectStorage: new HttpObjectStorageAdapter({
       baseUrl: `${channelUrl}/files`,
       signRequest,
+      // Supplying this is what turns on `putFromFileUri`, and with it the path
+      // where a video's bytes go from the media store to S3 without passing
+      // through Hermes. See {@link uploadFile}.
+      uploadFile,
     }),
   };
 }

@@ -73,15 +73,33 @@ function rangeFloor(range: string): string | undefined {
  */
 function resolveSharpVersion(): string {
   const require = createRequire(join(PHOTOS_DIR, "package.json"));
-  let pkgPath: string;
+  let entry: string;
   try {
-    pkgPath = require.resolve("sharp/package.json");
+    // The package entry, not `sharp/package.json`: sharp's `exports` map
+    // declares only ".", so asking for the manifest subpath throws
+    // ERR_PACKAGE_PATH_NOT_EXPORTED even when sharp is installed perfectly —
+    // which this function then reported as "sharp is not installed", sending
+    // whoever hit it off to run an install that changes nothing.
+    entry = require.resolve("sharp");
   } catch {
     console.error(
       `Error: sharp is not installed in ${PHOTOS_DIR}; run \`pnpm install\` before bundling.`,
     );
     process.exit(1);
   }
+  // Walk up from the entry file to the package root. sharp's entry lives in
+  // lib/, which carries no package.json of its own, so the first one found is
+  // the package manifest.
+  let pkgDir = dirname(entry);
+  while (!existsSync(join(pkgDir, "package.json"))) {
+    const parent = dirname(pkgDir);
+    if (parent === pkgDir) {
+      console.error(`Error: could not locate sharp's package.json from ${entry}.`);
+      process.exit(1);
+    }
+    pkgDir = parent;
+  }
+  const pkgPath = join(pkgDir, "package.json");
   const version = JSON.parse(readFileSync(pkgPath, "utf8")).version;
   if (typeof version !== "string" || version.length === 0) {
     console.error(`Error: could not read a version from ${pkgPath}.`);

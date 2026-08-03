@@ -169,6 +169,38 @@ describe("streamed writes", () => {
     ).rejects.toThrow();
     expect([...harness.files.keys()].filter((p) => p.endsWith(".partial"))).toEqual([]);
   });
+
+  // The temp file used to be read whole and written across, because "expo-file-
+  // system has no rename on the File class in this shape". It does. The copy
+  // materialized the entire object one line after the streaming write that
+  // existed to avoid materializing it — on a phone, for a video, that is the
+  // allocation that kills the process.
+  it("renames the temporary file rather than copying its bytes", async () => {
+    await adapter.putStream(HASH, source(PAYLOAD));
+    expect(harness.state.moves).toEqual([
+      { from: `/docs/objects/ab/${HASH}.partial`, to: `/docs/objects/ab/${HASH}` },
+    ]);
+  });
+
+  it("overwrites an object already at the key", async () => {
+    await adapter.put(HASH, new Uint8Array([9, 9, 9]));
+    await adapter.putStream(HASH, source(PAYLOAD));
+    expect(Buffer.from((await adapter.get(HASH))!.data).equals(Buffer.from(PAYLOAD))).toBe(true);
+  });
+});
+
+describe("naming a file for the platform to send", () => {
+  it("names a stored object", async () => {
+    await adapter.put(HASH, PAYLOAD);
+    expect(adapter.localFileUriFor(HASH)).toBe(`/docs/objects/ab/${HASH}`);
+  });
+
+  // Handing back a URI for a key this node does not hold would point the
+  // uploader at a missing file: the transfer would fail rather than fall back
+  // to the stream path, which is the one outcome the capability must not have.
+  it("names nothing for a key it does not hold", () => {
+    expect(adapter.localFileUriFor(HASH)).toBeNull();
+  });
 });
 
 describe("what a phone cannot claim", () => {

@@ -19,7 +19,22 @@ import type {
 export function fakeExpoFs() {
   const files = new Map<string, Uint8Array>();
   const dirs = new Set<string>();
-  const state = { openHandles: 0, rangedReads: [] as Array<{ offset: number; length: number }> };
+  const state = {
+    openHandles: 0,
+    rangedReads: [] as Array<{ offset: number; length: number }>,
+    /**
+     * Recorded because a move that is secretly a read-and-write is the bug the
+     * object store's `putStream` had: it materialized the whole object just to
+     * rename it, one line after streaming it to disk to avoid exactly that.
+     */
+    moves: [] as Array<{ from: string; to: string }>,
+    /**
+     * Every whole-file read. A `content://` asset can only be read this way, so
+     * each entry is the full object in the JS heap — the allocation that has to
+     * happen once, lazily, or not at all.
+     */
+    wholeReads: [] as string[],
+  };
 
   /**
    * Refuse a file handle on a `content://` URI, exactly as expo does.
@@ -53,6 +68,7 @@ export function fakeExpoFs() {
     bytesSync() {
       const bytes = files.get(path);
       if (!bytes) throw new Error(`no such file: ${path}`);
+      state.wholeReads.push(path);
       return bytes;
     },
     readableStream() {
@@ -111,6 +127,16 @@ export function fakeExpoFs() {
     },
     create() {
       if (!files.has(path)) files.set(path, new Uint8Array());
+    },
+    moveSync(destination, options) {
+      const bytes = files.get(path);
+      if (bytes === undefined) throw new Error(`no such file: ${path}`);
+      if (files.has(destination.uri) && !options?.overwrite) {
+        throw new Error(`destination already exists: ${destination.uri}`);
+      }
+      files.set(destination.uri, bytes);
+      files.delete(path);
+      state.moves.push({ from: path, to: destination.uri });
     },
     delete() {
       files.delete(path);

@@ -47,9 +47,23 @@ import type {
 import type { MediaAlias, MediaAliasStore } from "../media/media-alias";
 import { streamFromFile, type ExpoFileSystem } from "./expo-object-storage";
 
+/**
+ * `ObjectStorageAdapter` plus the file-URI capability the sync engine
+ * negotiates.
+ *
+ * Declared here rather than taken from `@starkeep/storage-adapter` only because
+ * this app pins a published version of that package while `@starkeep/sync-engine`
+ * is linked to the core workspace, so the port has the member and the app's copy
+ * of the types does not yet. Delete this and import it once storage-adapter is
+ * published again; the shape must not drift in the meantime.
+ */
+export interface FileBackedObjectStorage extends ObjectStorageAdapter {
+  localFileUriFor?(key: string): string | null;
+}
+
 export interface DeviceMediaObjectStorageOptions {
   /** The node's own object store — where renditions and fetched blobs live. */
-  readonly inner: ObjectStorageAdapter;
+  readonly inner: FileBackedObjectStorage;
   readonly aliases: MediaAliasStore;
   /**
    * The same filesystem port the inner adapter uses.
@@ -63,8 +77,8 @@ export interface DeviceMediaObjectStorageOptions {
   readonly fs: ExpoFileSystem;
 }
 
-export class DeviceMediaObjectStorage implements ObjectStorageAdapter {
-  private readonly inner: ObjectStorageAdapter;
+export class DeviceMediaObjectStorage implements FileBackedObjectStorage {
+  private readonly inner: FileBackedObjectStorage;
   private readonly aliases: MediaAliasStore;
   private readonly fs: ExpoFileSystem;
 
@@ -172,6 +186,28 @@ export class DeviceMediaObjectStorage implements ObjectStorageAdapter {
     const resolved = this.resolve(key);
     if (!resolved) return this.inner.getStream(key, range);
     return streamFromFile(resolved.file, range);
+  }
+
+  /**
+   * The camera-roll asset's own URI, which is the whole payoff of aliasing.
+   *
+   * A `content://` MediaStore asset cannot be streamed at all (see
+   * `streamFromFile`), so every read of an aliased original materializes it —
+   * and a 24 MB video materialized three times over is what crashed this app on
+   * its first video push. Naming the asset instead lets the platform's uploader
+   * read it through `ContentResolver` and send it straight out, which is the
+   * one path on this device where the bytes never become a JS value.
+   *
+   * A read, not a write, so the alias rules are unchanged: this hands out a
+   * pointer to the user's photograph for sending, and nothing here can modify
+   * or delete it.
+   */
+  localFileUriFor(key: string): string | null {
+    const resolved = this.resolve(key);
+    if (resolved) return resolved.alias.contentUri;
+    // A dead alias falls through for the same reason `has` and `stat` do: the
+    // bytes may since have been fetched back into the inner store.
+    return this.inner.localFileUriFor?.(key) ?? null;
   }
 
   async setTags(key: string, tags: Record<string, string>): Promise<void> {

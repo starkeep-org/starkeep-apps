@@ -29,6 +29,10 @@ import {
   videoSourceOf,
   missingVideoClasses,
 } from "../src/photos-lib/video/derive-video-ladder";
+import {
+  skimDurationSeconds,
+  SKIM_INTERVAL_SECONDS,
+} from "../src/photos-lib/ladder";
 
 const run = promisify(execFile);
 
@@ -204,11 +208,38 @@ describe("deriving the ladder", () => {
     const skim = result.renditions.find((r) => r.sizeClass === "video-skim")!;
     const probed = await probeBytes(skim.bytes, "skim.mp4");
 
-    expect(Number(probed.format.duration)).toBeLessThan(3);
-    // A skim is played at speed with no sound; a silent audio track would cost
-    // bytes for nothing.
+    // A 3-second source falls inside one sampling window, so it yields a single
+    // segment. Read from the ladder, since the cadence is provisional.
+    expect(Number(probed.format.duration)).toBeCloseTo(skimDurationSeconds(3), 1);
+    // Audio sampled on the same cadence is a sequence of clicks, and a silent
+    // track would cost bytes for nothing.
     expect(probed.streams.some((s) => s.codec_type === "audio")).toBe(false);
   }, 120_000);
+
+  // The assertion that proves `setpts` follows `select`. Without it the dropped
+  // frames keep their original timestamps and the output is a full-length clip
+  // with a frozen frame between each segment — plausible bytes, ten times the
+  // size, and useless as a scrub.
+  ffmpeg()("samples across a long clip rather than taking its opening", async () => {
+    const long = join(dir, "long.mp4");
+    const sourceSeconds = SKIM_INTERVAL_SECONDS * 3;
+    await run("ffmpeg", [
+      "-y", "-f", "lavfi",
+      "-i", `testsrc=size=640x480:rate=30:duration=${sourceSeconds}`,
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", long,
+    ]);
+    const result = await deriveVideoLadder(long, tools);
+    const skim = result.renditions.find((r) => r.sizeClass === "video-skim")!;
+    const probed = await probeBytes(skim.bytes, "skim-long.mp4");
+
+    // One segment per window: taking only the opening would give one segment,
+    // and failing to renumber timestamps would give the whole source length.
+    expect(Number(probed.format.duration)).toBeCloseTo(
+      skimDurationSeconds(sourceSeconds),
+      1,
+    );
+    expect(Number(probed.format.duration)).toBeLessThan(sourceSeconds);
+  }, 240_000);
 
   // The transcode path escaped every other test here because a 640x480 fixture
   // hits the no-op clause, so nothing ever asked it to encode. It was broken:

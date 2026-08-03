@@ -18,9 +18,9 @@ import {
   topApplicableStillClass,
   isOwnTopOfLadder,
   transcodeWouldChangeAnything,
-  skimSpeedFactor,
-  SKIM_MIN_SPEED,
-  SKIM_TARGET_SECONDS,
+  skimDurationSeconds,
+  SKIM_SEGMENT_SECONDS,
+  SKIM_INTERVAL_SECONDS,
   type VideoSource,
 } from "../src/photos-lib/ladder";
 
@@ -85,7 +85,10 @@ describe("Rule 2 — generate when the original exceeds the next lower maximum",
   // the ladder-complete gate and the derivation sweeper rely on it, and neither
   // would be expressible if the set could have holes.
   it("produces a contiguous prefix from the bottom, never a gap", () => {
-    for (const original of [1, 400, 401, 1280, 1281, 2560, 2561, 4272, 50_000]) {
+    // Boundaries read off the ladder rather than written out, so a rung added
+    // or respecified is exercised at its own edges without editing this list.
+    const boundaries = STILL_LADDER.flatMap((s) => [s.maxLongEdge, s.maxLongEdge + 1]);
+    for (const original of [1, ...boundaries, 50_000]) {
       const got = classesFor(original);
       const expectedPrefix = STILL_LADDER.slice(0, got.length).map((s) => s.sizeClass);
       expect(got, `original=${original}`).toEqual(expectedPrefix);
@@ -173,19 +176,33 @@ describe("video — skim is exempt from the no-op clause", () => {
     );
   });
 
-  it("caps output length by speeding up longer clips more", () => {
-    const short = skimSpeedFactor(10);
-    const long = skimSpeedFactor(600);
-    expect(short).toBe(SKIM_MIN_SPEED);
-    expect(long).toBeGreaterThan(short);
-    // Whatever the input, the output lands around the target length.
-    expect(600 / long).toBeCloseTo(SKIM_TARGET_SECONDS, 5);
+  // One segment per interval, at source speed — so the output is a fixed
+  // fraction of the source rather than a fixed length. Asserted as a ratio
+  // rather than as seconds, because the cadence is provisional.
+  it("keeps one segment out of every interval", () => {
+    const ratio = SKIM_SEGMENT_SECONDS / SKIM_INTERVAL_SECONDS;
+    for (const duration of [SKIM_INTERVAL_SECONDS, 60, 600, 3600]) {
+      expect(skimDurationSeconds(duration), `${duration}s`).toBeCloseTo(duration * ratio, 5);
+    }
   });
 
-  it("never slows a clip down", () => {
-    for (const duration of [1, 5, 20, 160, 3600]) {
-      expect(skimSpeedFactor(duration)).toBeGreaterThanOrEqual(SKIM_MIN_SPEED);
+  it("samples across the whole clip, so length grows with the source", () => {
+    // The property the previous shape did not have: it capped output length,
+    // which meant a long clip was skimmed no more thoroughly than a short one.
+    expect(skimDurationSeconds(600)).toBeGreaterThan(skimDurationSeconds(60));
+  });
+
+  it("never produces a skim longer than its source", () => {
+    for (const duration of [0, 0.4, 1, 5, 10, 160, 3600]) {
+      expect(skimDurationSeconds(duration), `${duration}s`).toBeLessThanOrEqual(duration);
     }
+  });
+
+  it("gives a clip shorter than one interval a single partial segment", () => {
+    // A 3-second clip is 3 seconds of one window, so it skims to one segment;
+    // a clip shorter than a segment skims to itself.
+    expect(skimDurationSeconds(SKIM_INTERVAL_SECONDS - 1)).toBe(SKIM_SEGMENT_SECONDS);
+    expect(skimDurationSeconds(SKIM_SEGMENT_SECONDS / 2)).toBe(SKIM_SEGMENT_SECONDS / 2);
   });
 });
 

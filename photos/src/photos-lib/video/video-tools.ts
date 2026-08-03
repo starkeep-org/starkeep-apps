@@ -59,9 +59,10 @@ export interface TranscodeOptions {
 
 export interface SkimOptions {
   readonly maxLongEdge: number;
-  /** Playback speed multiplier — a 10x skim shows a 5-minute clip in 30 seconds. */
-  readonly speedFactor: number;
-  readonly fps: number;
+  /** Seconds of footage kept from the start of each interval, at source speed. */
+  readonly segmentSeconds: number;
+  /** How often a segment is taken, in seconds of source. */
+  readonly intervalSeconds: number;
 }
 
 /**
@@ -311,17 +312,25 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
           "-vf",
           [
             transposeFilter(facts.rotation).replace(/,$/, "") || null,
-            // setpts before fps: speed up the timeline first, then sample it.
-            // Reversed, the sampling happens at source speed and the result is
-            // a slideshow of the opening seconds rather than the whole clip.
-            `setpts=PTS/${opts.speedFactor}`,
-            `fps=${opts.fps}`,
+            // Keep every frame landing in the first `segmentSeconds` of each
+            // `intervalSeconds` window, at source speed and source frame rate.
+            // Quoted so the filtergraph parser does not read the commas inside
+            // the expression as filter separators.
+            `select='lt(mod(t\\,${opts.intervalSeconds})\\,${opts.segmentSeconds})'`,
+            // Mandatory, and the whole reason the output is short. `select`
+            // drops frames without touching their timestamps, so without this
+            // the segments keep their original presentation times: a 10-minute
+            // container with a one-second burst of motion every ten seconds and
+            // a frozen frame in between. Renumbering to N/FRAME_RATE makes the
+            // kept frames contiguous, which is what makes the file one tenth of
+            // the source rather than the same length with holes in it.
+            "setpts=N/FRAME_RATE/TB",
             scaleFilter(opts.maxLongEdge, facts.height > facts.width),
           ]
             .filter(Boolean)
             .join(","),
-          // No audio track at all. A skim plays at 10x with no sound; muxing a
-          // silent track would cost bytes for nothing.
+          // No audio track at all. Audio sampled on the same cadence is a
+          // sequence of clicks, and a silent track would cost bytes for nothing.
           "-an",
           "-c:v", "libx264",
           "-preset", "veryfast",

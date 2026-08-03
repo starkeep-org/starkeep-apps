@@ -37,6 +37,7 @@
  * only because Photos is the app that owns the ladder.
  */
 export type SizeClass =
+  | "image-xsmall"
   | "image-thumb"
   | "image-medium"
   | "image-screen"
@@ -67,6 +68,20 @@ export interface StillClassSpec {
  * "top applicable class" off that.
  */
 export const STILL_LADDER: readonly StillClassSpec[] = [
+  {
+    sizeClass: "image-xsmall",
+    maxLongEdge: 128,
+    // Not pushed below `image-thumb`'s quality even though artifacts hide more
+    // easily at this size. The absolute saving is a couple of kilobytes — both
+    // rungs are far under the 128 KB Intelligent-Tiering floor and cost the
+    // Standard rate either way — so a lower number buys nothing measurable and
+    // risks mush on the one asset a dense canvas paints hundreds of at once.
+    quality: 50,
+    // Below the point where a tile is read as an image at all: this is the rung
+    // for a canvas showing hundreds of records at once, where the alternative is
+    // shipping hundreds of 400 px tiles (~10× the pixels) to draw them at 128.
+    serves: "infinite canvas, dense contact-sheet grids, filmstrips",
+  },
   {
     sizeClass: "image-thumb",
     maxLongEdge: 400,
@@ -170,7 +185,7 @@ export interface VideoClassSpec {
    * below both of `video-720p`'s ceilings.
    */
   readonly maxBitrate?: number;
-  /** Poster and skim classes are stills / derived sequences, not transcodes. */
+  /** Poster and skim classes are stills / sampled sequences, not transcodes. */
   readonly kind: "poster" | "skim" | "transcode";
   /** Off unless the library enables it — see DEFAULT_DISABLED_CLASSES. */
   readonly optional?: boolean;
@@ -195,7 +210,7 @@ export const VIDEO_LADDER: readonly VideoClassSpec[] = [
   },
   {
     sizeClass: "video-skim",
-    maxLongEdge: 480,
+    maxLongEdge: 320,
     kind: "skim",
     serves: "hover / long-press identification",
   },
@@ -246,23 +261,53 @@ export function transcodeWouldChangeAnything(
 }
 
 /**
- * Speed-up factor for `video-skim`.
+ * The sampling cadence for `video-skim`: one second of footage out of every ten.
  *
  * Skim is **exempt from the no-op clause** and generated for every video,
  * because it differs from its source in the *time* dimension — a 15-second clip
- * has no smaller resolution worth making but still benefits from a 2-second
- * scrub. The factor caps output at roughly {@link SKIM_TARGET_SECONDS}.
+ * has no smaller resolution worth making but still benefits from a scrub.
  *
- * These parameters are a hypothesis, not a measurement — the plan says so
- * explicitly, and skim may well be better as an animated AVIF than as a video.
- * Measure against real clips of varying length before treating them as fixed.
+ * ## Why sampled segments rather than a sped-up whole
+ *
+ * The earlier shape played the entire clip at 8× and 2 fps. That is legible for
+ * a static scene and useless for anything with motion: at 2 fps a person walking
+ * across the frame is four disconnected poses, and speeding the timeline up
+ * strips the one cue — how things actually move — that tells you what a clip is
+ * of. Sampled segments keep real motion at real speed inside each window and
+ * simply skip what is between them, which is how a person scrubbing a timeline
+ * looks at a video anyway.
+ *
+ * ## The consequence to build against
+ *
+ * Output length is **proportional to the source**, at one tenth of it, where the
+ * previous shape capped it near 20 seconds however long the clip. A 2-minute
+ * clip skims in 12 seconds; a 1-hour clip skims in 6 minutes, and its skim is
+ * the largest derived asset that record has. If long-video libraries turn out to
+ * be common, the cap belongs here as a maximum segment count, not in the ffmpeg
+ * arguments.
+ *
+ * These parameters are a hypothesis, not a measurement, and skim may well be
+ * better as an animated AVIF than as a video. Measure against real clips of
+ * varying length before treating them as fixed.
  */
-export const SKIM_MIN_SPEED = 8;
-export const SKIM_TARGET_SECONDS = 20;
-export const SKIM_FPS = 2;
+export const SKIM_SEGMENT_SECONDS = 1;
+export const SKIM_INTERVAL_SECONDS = 10;
 
-export function skimSpeedFactor(durationSeconds: number): number {
-  return Math.max(SKIM_MIN_SPEED, durationSeconds / SKIM_TARGET_SECONDS);
+/**
+ * How long the skim of a clip this long comes out.
+ *
+ * A full segment per whole interval, plus whatever the trailing partial interval
+ * contributes — a 25-second clip samples at 0, 10 and 20 seconds for 3 seconds
+ * out, and a 10.5-second clip gets 1.5, not 2.
+ *
+ * Exists so callers can budget storage and so tests can assert the cadence
+ * without restating the arithmetic.
+ */
+export function skimDurationSeconds(durationSeconds: number): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 0;
+  const wholeIntervals = Math.floor(durationSeconds / SKIM_INTERVAL_SECONDS);
+  const trailing = durationSeconds - wholeIntervals * SKIM_INTERVAL_SECONDS;
+  return wholeIntervals * SKIM_SEGMENT_SECONDS + Math.min(trailing, SKIM_SEGMENT_SECONDS);
 }
 
 /** Which video classes apply to a source, honouring both maxima and the no-op clause. */

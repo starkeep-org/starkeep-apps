@@ -206,6 +206,68 @@ describe("the phone as a peer", () => {
   }, 60_000);
 });
 
+/**
+ * One engine, one operation at a time — on the phone too.
+ *
+ * `syncState` is read-modify-write with no compare-and-set: a round loads the
+ * watermarks, the repair floors and the inbound floors, decides where they
+ * should be, and writes them back. Two of those at once compute from the same
+ * snapshot and the later write wins, which costs a re-ship for a watermark and
+ * costs the repair entirely for a floor — the floor is the only record that a
+ * hole still needs filling.
+ *
+ * The local-data-server learned this when a tick's `exchange()` became a whole
+ * `sync()` drain (`engine-runner.ts`). The phone was single-flight only because
+ * `HomeScreen` disables its buttons, which is a lock made of UI state and stops
+ * being one the moment sync is scheduled as background work.
+ */
+describe("two callers at once", () => {
+  it("serializes concurrent syncs rather than interleaving their rounds", async () => {
+    await seedCloud(3);
+
+    // Overlap is counted at the responder's scan, which is inside a round and
+    // therefore the place two rounds running at once would show up.
+    let seen = 0;
+    let maxSeen = 0;
+    const original = cloudDb.querySince.bind(cloudDb);
+    cloudDb.querySince = async (...args: Parameters<typeof original>) => {
+      seen += 1;
+      maxSeen = Math.max(maxSeen, seen);
+      // Yield, so an unserialized second caller would overlap here.
+      await new Promise((r) => setTimeout(r, 1));
+      try {
+        return await original(...args);
+      } finally {
+        seen -= 1;
+      }
+    };
+
+    await Promise.all([phone.sync(), phone.sync(), phone.verify()]);
+
+    expect(maxSeen, "two operations touched the engine at once").toBe(1);
+    cloudDb.querySince = original;
+  });
+
+  it("hands the queue on after a failed round", async () => {
+    // A rejected predecessor must not wedge the node: the lock chains through
+    // rejections as well as fulfilments.
+    const original = cloudDb.querySince.bind(cloudDb);
+    let fail = true;
+    cloudDb.querySince = async (...args: Parameters<typeof original>) => {
+      if (fail) {
+        fail = false;
+        throw new Error("[test] one bad round");
+      }
+      return original(...args);
+    };
+
+    await expect(phone.sync()).rejects.toThrow();
+    fail = false;
+    cloudDb.querySince = original;
+    await expect(phone.sync()).resolves.not.toBeNull();
+  });
+});
+
 describe("durability across a restart", () => {
   // A phone is killed constantly. The watermark and the records must be in the
   // same file for this to hold — a watermark newer than the records it

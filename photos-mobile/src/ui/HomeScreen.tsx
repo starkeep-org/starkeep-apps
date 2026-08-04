@@ -25,8 +25,15 @@
  * library would quietly attribute both to "you have no photos".
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  AppState,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ActiveSession } from "../auth/session-manager";
 import type { CloudConfig } from "../config";
@@ -195,6 +202,28 @@ export function HomeScreen({
     { checking: true } | { checking: false; result: VerifyResult | null } | null
   >(null);
   const [resetting, setResetting] = useState(false);
+  /**
+   * Aborts the running sync when this screen goes away or the app leaves the
+   * foreground.
+   *
+   * A tap starts an unbounded drain — a first upload of a real library is
+   * hundreds of rounds and can run for as long as the OS lets it. Without a
+   * signal, backgrounding the app left that loop issuing requests until the
+   * platform froze the process mid-round, which is the one way to stop it that
+   * nobody chose. `sync()` checks the signal between rounds and returns what it
+   * has, and every round has already persisted its own watermarks, so stopping
+   * costs at most the round in flight and the next tap resumes in place.
+   */
+  const syncAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") syncAbort.current?.abort();
+    });
+    return () => {
+      subscription.remove();
+      syncAbort.current?.abort();
+    };
+  }, []);
 
   const baseUrl = config?.baseUrl;
 
@@ -403,9 +432,13 @@ export function HomeScreen({
                   // real library hundreds of taps. Abandoning mid-loop is free —
                   // each round persists its own watermarks — so backgrounding
                   // the app costs at most the round in flight.
+                  syncAbort.current?.abort();
+                  const abort = new AbortController();
+                  syncAbort.current = abort;
                   let items = 0;
                   void node.node
                     .sync({
+                      signal: abort.signal,
                       onRound: (result, rounds) => {
                         items += result.applied + result.shipped;
                         setSyncProgress({ rounds, items });

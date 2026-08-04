@@ -233,7 +233,13 @@ describe("durability across a restart", () => {
  * the case where being wrong costs the most.
  */
 describe("describing an integrity check", () => {
-  const base = { supported: true as const, localRows: 100, peerRows: 100 };
+  const base = {
+    supported: true as const,
+    localRows: 100,
+    peerRows: 100,
+    pendingUpload: 0,
+    pendingDownload: 0,
+  };
 
   it("reports both counts when everything agrees", () => {
     const text = describeVerify({ ...base, divergentBuckets: 0, missingLocally: 0 });
@@ -261,8 +267,28 @@ describe("describing an integrity check", () => {
     expect(text).toContain("this phone is missing rows");
   });
 
+  it("does not call a backlog a problem", () => {
+    // A phone mid-first-sync disagrees with the cloud in every bucket it has
+    // not pulled yet. Wording that as loss is the difference between "wait" and
+    // "something is wrong with my photos".
+    const result = { ...base, divergentBuckets: 0, missingLocally: 0, pendingDownload: 3 };
+    const text = describeVerify(result);
+    expect(text).toContain("Nothing is missing");
+    expect(text).toContain("3 time ranges are still syncing");
+    expect(text).not.toContain("missing rows");
+    expect(verifyFoundProblem(result)).toBe(false);
+  });
+
   it("does not call an unanswerable check clean", () => {
-    const result = { supported: false, localRows: 0, peerRows: 0, divergentBuckets: 0, missingLocally: 0 };
+    const result = {
+      supported: false,
+      localRows: 0,
+      peerRows: 0,
+      divergentBuckets: 0,
+      missingLocally: 0,
+      pendingUpload: 0,
+      pendingDownload: 0,
+    };
     expect(describeVerify(result)).toContain("nothing was verified");
     expect(verifyFoundProblem(result)).toBe(true);
   });

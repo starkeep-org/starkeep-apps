@@ -18,6 +18,12 @@ import type { VerifyResult } from "@starkeep/sync-engine";
  * where the cloud has more is ordinary data not pulled yet, not corruption — so
  * reusing it for the second would show a clean result to a phone that has
  * itself lost data, which is the case where being wrong costs the most.
+ *
+ * "Still to sync" is a third sentence, and it is not a problem. A phone
+ * mid-first-sync disagrees with the cloud in every bucket of its backlog; the
+ * engine reports those as `pendingUpload`/`pendingDownload` rather than as
+ * holes, and this says so in words a person can act on — waiting, rather than
+ * worrying about a library that is fine.
  */
 export function describeVerify(result: VerifyResult | null): string {
   if (!result) return "No cloud is configured, so there is nothing to check against.";
@@ -42,6 +48,14 @@ export function describeVerify(result: VerifyResult | null): string {
   }
   if (problems.length > 0) {
     return `${problems.join(", and ")}. The next sync will fill the gaps.`;
+  }
+  const pending = result.pendingUpload + result.pendingDownload;
+  if (pending > 0) {
+    // Nothing is wrong here — the two sides simply have not finished talking.
+    // Said plainly so it cannot be read as the sentence above it.
+    return `Nothing is missing; ${pending} time range${
+      pending === 1 ? "" : "s"
+    } are still syncing.`;
   }
   return `${result.peerRows} of ${result.localRows} rows are in the cloud.`;
 }

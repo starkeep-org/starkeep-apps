@@ -184,6 +184,11 @@ export interface MobileNode {
    * scheduling background work should not have to know whether this device has
    * ever been signed in, and the alternative — an exception on the ordinary
    * offline path — is how a job queue learns to swallow exceptions.
+   *
+   * Serialized against {@link sync} and {@link verify}: all three read, modify
+   * and write the same sync state, and two at once let the later write clobber
+   * a repair floor the earlier one was relying on. A second caller waits rather
+   * than racing.
    */
   exchange(): Promise<unknown>;
   /**
@@ -300,15 +305,50 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       })
     : null;
 
+  /**
+   * One engine, one operation at a time — the phone's copy of the rule the
+   * local-data-server learned the hard way (`engine-runner.ts`).
+   *
+   * `syncState` is read-modify-write throughout and has no compare-and-set: a
+   * round loads the watermarks, the repair floors and the inbound floors, works
+   * out where they should be, and writes them back. Two of those at once
+   * compute from the same snapshot and the later write wins — a watermark can
+   * go backwards (survivable, it costs a re-ship) and a repair floor can be
+   * dropped (not survivable, it is the only record that a hole still needs
+   * filling).
+   *
+   * Today the phone is single-flight only because `HomeScreen` disables the
+   * buttons while one is running, which is a lock made of UI state and stops
+   * being one the moment sync is scheduled as background work — which is
+   * exactly what item 14's work graph is for. Serializing here rather than there
+   * means the guarantee does not depend on which caller happens to be next.
+   *
+   * A queue rather than the LDS's coalescing drain: the callers here are a
+   * person pressing a button, and someone who presses "Check backup" during a
+   * sync wants the check, not a silent no-op.
+   */
+  let engineLock: Promise<unknown> = Promise.resolve();
+  function serialized<T>(body: () => Promise<T>): Promise<T> {
+    // `then(body, body)` rather than `then(body)`: a rejected predecessor must
+    // still hand the queue on, or one failed round wedges the node.
+    const next = engineLock.then(body, body);
+    engineLock = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   return {
     databaseAdapter,
     objectStorage: localObjectStorage,
     mediaAliases,
     engine,
     residency,
-    exchange: async () => (engine ? engine.exchange() : null),
-    sync: async (syncOptions) => (engine ? engine.sync(syncOptions) : null),
-    verify: async () => (engine ? engine.verify() : null),
+    exchange: async () => (engine ? serialized(() => engine.exchange()) : null),
+    sync: async (syncOptions) =>
+      engine ? serialized(() => engine.sync(syncOptions)) : null,
+    verify: async () => (engine ? serialized(() => engine.verify()) : null),
     async close() {
       await databaseAdapter.close();
       await localObjectStorage.close();

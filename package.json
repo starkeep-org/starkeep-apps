@@ -1,6 +1,9 @@
 {
   "private": true,
   "name": "starkeep-workspace",
+  "scripts": {
+    "test": "pnpm -r test"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",

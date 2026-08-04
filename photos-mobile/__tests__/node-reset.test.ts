@@ -188,7 +188,7 @@ describe("clearNodeFiles", () => {
 describe("the node after a reset", () => {
   it("comes back empty, and can import the same photos again", async () => {
     const before = await listLibrary(
-      { database: node.databaseAdapter, aliases: node.mediaAliases },
+      { database: node.databaseAdapter, objectStorage: node.objectStorage, aliases: node.mediaAliases },
       { limit: 10 },
     );
     expect(before.items).toHaveLength(2);
@@ -205,7 +205,7 @@ describe("the node after a reset", () => {
     });
 
     const after = await listLibrary(
-      { database: rebuilt.databaseAdapter, aliases: rebuilt.mediaAliases },
+      { database: rebuilt.databaseAdapter, objectStorage: rebuilt.objectStorage, aliases: rebuilt.mediaAliases },
       { limit: 10 },
     );
     expect(after.items).toEqual([]);

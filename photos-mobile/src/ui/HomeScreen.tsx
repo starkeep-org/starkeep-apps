@@ -292,7 +292,11 @@ export function HomeScreen({
         </View>
 
         <Section title="This node's library">
-          <LibraryGrid items={library.items} loading={library.loading} />
+          <LibraryGrid
+            items={library.items}
+            loading={library.loading}
+            onFetch={library.fetchBlob}
+          />
           {library.error ? <Text style={styles.error}>{library.error}</Text> : null}
           {node.status === "ready" ? (
             <Pressable

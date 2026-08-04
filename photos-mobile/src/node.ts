@@ -38,6 +38,7 @@ import {
   type VerifyResult,
   type SyncTransport,
 } from "@starkeep/sync-engine";
+import type { DataRecord } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
@@ -215,6 +216,24 @@ export interface MobileNode {
    * Occasional, not per-sync: a grouped scan on both sides.
    */
   verify(): Promise<VerifyResult | null>;
+  /**
+   * Fetch the bytes of a record this node holds a row for but not a blob.
+   *
+   * The reversal half of eliding, and the reason a budget on a phone is a
+   * budget rather than data loss. An elided record advances the watermark — that
+   * is what makes declining a blob a terminal state instead of a permanent
+   * retry — so the cloud will never offer those bytes again and no amount of
+   * syncing brings them back. This is the only route, which is why the phone,
+   * as the only node that actually elides anything, has to be the one that
+   * exposes it.
+   *
+   * Resolves false when there is no cloud to fetch from, when the record has no
+   * blob, or when the transfer failed. It does *not* resolve false for a key a
+   * sync round is already moving: that call joins the round's transfer and
+   * reports its outcome, because "wait a moment" and "it failed" are different
+   * answers and the placeholder should only stay for one of them.
+   */
+  fetchBlob(record: DataRecord): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -349,6 +368,40 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     sync: async (syncOptions) =>
       engine ? serialized(() => engine.sync(syncOptions)) : null,
     verify: async () => (engine ? serialized(() => engine.verify()) : null),
+    // Deliberately *not* serialized behind the engine lock. It writes no sync
+    // state, and making someone wait for a multi-minute drain before their
+    // photo appears would defeat the point of an on-demand fetch. The transfer
+    // layer already handles the overlap: a fetch for a key the round is moving
+    // joins that transfer rather than racing it.
+    async fetchBlob(record) {
+      if (!engine || !record.objectStorageKey) return false;
+      // Opening a photo is the strongest signal there is about what this device
+      // should keep, and it is recorded whether or not the fetch succeeds:
+      // eviction ordering reads it, and a failed network call does not make the
+      // photo less wanted.
+      residency?.markOpened(record.id, Date.now());
+      return engine.fetchBlob(
+        {
+          fileHash: record.contentHash || record.objectStorageKey,
+          objectStorageKey: record.objectStorageKey,
+          sizeBytes: record.sizeBytes,
+          ...(record.mimeType ? { mimeType: record.mimeType } : {}),
+        },
+        // The real candidate rather than one derived from the manifest, so the
+        // host's class resolver sees the record's labels and the bytes are
+        // charged to the budget they actually belong to.
+        {
+          recordId: record.id,
+          objectStorageKey: record.objectStorageKey,
+          sizeBytes: record.sizeBytes,
+          type: record.type,
+          parentId: record.parentId,
+          appId: null,
+          recencyAtMs: null,
+          lastOpenedAtMs: Date.now(),
+        },
+      );
+    },
     async close() {
       await databaseAdapter.close();
       await localObjectStorage.close();

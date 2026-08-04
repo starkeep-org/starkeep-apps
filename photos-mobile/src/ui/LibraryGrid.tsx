@@ -33,10 +33,30 @@ import { styles } from "./theme";
 interface Props {
   readonly items: readonly LibraryItem[];
   readonly loading: boolean;
+  /**
+   * Fetch a record whose bytes are not on this device.
+   *
+   * Required rather than optional, because a placeholder tile with no way to
+   * act on it is the state the residency design says must not exist: eliding
+   * advances the watermark, so nothing in a sync round will ever offer those
+   * bytes again and this is the only route back.
+   */
+  readonly onFetch: (item: LibraryItem) => Promise<boolean>;
 }
 
-export function LibraryGrid({ items, loading }: Props) {
+export function LibraryGrid({ items, loading, onFetch }: Props) {
   const [open, setOpen] = useState<LibraryItem | null>(null);
+  /** The key currently being fetched, so the tile can say so. */
+  const [fetching, setFetching] = useState<string | null>(null);
+
+  async function fetchNow(item: LibraryItem): Promise<boolean> {
+    setFetching(item.record.id);
+    try {
+      return await onFetch(item);
+    } finally {
+      setFetching(null);
+    }
+  }
 
   if (items.length === 0) {
     return (
@@ -70,7 +90,12 @@ export function LibraryGrid({ items, loading }: Props) {
         Tap one to open it.
       </Text>
 
-      <Viewer item={open} onClose={() => setOpen(null)} />
+      <Viewer
+        item={open}
+        busy={open !== null && fetching === open.record.id}
+        onFetch={fetchNow}
+        onClose={() => setOpen(null)}
+      />
     </View>
   );
 }
@@ -82,7 +107,17 @@ export function LibraryGrid({ items, loading }: Props) {
  * back, and the day there is a stack worth managing is the day to add one —
  * the same argument `App.tsx` makes about the shell.
  */
-function Viewer({ item, onClose }: { item: LibraryItem | null; onClose: () => void }) {
+function Viewer({
+  item,
+  busy,
+  onFetch,
+  onClose,
+}: {
+  item: LibraryItem | null;
+  busy: boolean;
+  onFetch: (item: LibraryItem) => Promise<boolean>;
+  onClose: () => void;
+}) {
   if (!item) return null;
   const { record, uri } = item;
 
@@ -108,6 +143,22 @@ function Viewer({ item, onClose }: { item: LibraryItem | null; onClose: () => vo
               place the difference between "a photo" and "a record" is visible,
               and because it is what a second device would match it by. */}
           <Text style={styles.mono}>{record.contentHash?.slice(0, 16) ?? "no hash"}…</Text>
+          {/* The reversal half of eliding, and the only one there is. A record
+              this node declined has already had its watermark advanced past it,
+              so no sync round will offer the bytes again — without this button
+              a budget on a phone would be indistinguishable from losing the
+              photo. */}
+          {uri ? null : (
+            <Pressable
+              onPress={() => void onFetch(item)}
+              disabled={busy}
+              style={{ paddingVertical: 8 }}
+            >
+              <Text style={styles.linkLabel}>
+                {busy ? "Fetching…" : "Fetch these bytes"}
+              </Text>
+            </Pressable>
+          )}
           <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
             <Text style={styles.linkLabel}>Close</Text>
           </Pressable>

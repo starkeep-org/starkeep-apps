@@ -14,11 +14,12 @@
  *
  * `residencyOf` derives residency from `localStorage.has(key)` — there is no
  * persisted status column, deliberately. So an aliased original is `resident`
- * through the ordinary path, `getFilesToPush` finds it, and the watermark
- * behaves. No new residency state, no `Elided` special case, and — the part
- * worth protecting — the sync engine never learns what a camera roll is. That
- * seam is what keeps the phone a *configuration* of the node rather than a
- * second implementation of it.
+ * through the ordinary path: the outbound scan selects its record like any
+ * other, `transferFile` reads the bytes straight out of the camera roll through
+ * `getStream`/`localFileUriFor`, and the watermark behaves. No new residency
+ * state, no `Elided` special case, and — the part worth protecting — the sync
+ * engine never learns what a camera roll is. That seam is what keeps the phone a
+ * *configuration* of the node rather than a second implementation of it.
  *
  * ## The two rules that matter
  *

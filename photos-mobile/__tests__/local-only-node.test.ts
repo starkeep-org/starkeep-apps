@@ -146,7 +146,7 @@ describe("a node built with no cloud", () => {
 describe("the library the UI reads", () => {
   it("lists imported records newest first", async () => {
     await importBoth();
-    const deps = { database: phone.databaseAdapter, aliases: phone.mediaAliases };
+    const deps = { database: phone.databaseAdapter, objectStorage: phone.objectStorage, aliases: phone.mediaAliases };
 
     const page = await listLibrary(deps, { limit: 10 });
 
@@ -159,7 +159,7 @@ describe("the library the UI reads", () => {
 
   it("gives every item a URI an Image can render", async () => {
     await importBoth();
-    const deps = { database: phone.databaseAdapter, aliases: phone.mediaAliases };
+    const deps = { database: phone.databaseAdapter, objectStorage: phone.objectStorage, aliases: phone.mediaAliases };
 
     const page = await listLibrary(deps, { limit: 10 });
 
@@ -175,7 +175,7 @@ describe("the library the UI reads", () => {
     phone.mediaAliases!.remove(records[0]!.objectStorageKey!);
 
     const page = await listLibrary(
-      { database: phone.databaseAdapter, aliases: phone.mediaAliases },
+      { database: phone.databaseAdapter, objectStorage: phone.objectStorage, aliases: phone.mediaAliases },
       { limit: 10 },
     );
 
@@ -187,6 +187,7 @@ describe("the library the UI reads", () => {
 
     const summary = await summarizeLibrary({
       database: phone.databaseAdapter,
+      objectStorage: phone.objectStorage,
       aliases: phone.mediaAliases,
     });
 
@@ -197,6 +198,7 @@ describe("the library the UI reads", () => {
   it("summarises an empty node as empty rather than failing", async () => {
     const summary = await summarizeLibrary({
       database: phone.databaseAdapter,
+      objectStorage: phone.objectStorage,
       aliases: phone.mediaAliases,
     });
     expect(summary).toEqual({ records: 0, aliasedBytes: 0 });

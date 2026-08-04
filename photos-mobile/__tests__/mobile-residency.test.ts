@@ -20,6 +20,7 @@ import { createHLCClock } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, MockObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createInProcessSyncTransport, type NodeRetentionPolicy } from "@starkeep/sync-engine";
 import { createMobileNode, type MobileNode } from "../src/node";
+import { listLibrary } from "../src/library";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
@@ -206,5 +207,95 @@ describe("keep: never", () => {
     // exactly what `Elided` is for, and what a phone on cellular wants.
     expect(state.total).toBe(3);
     expect(state.held).toEqual([]);
+  });
+});
+
+/**
+ * The way back from a decline, reached the way a person reaches it.
+ *
+ * Eliding **advances the watermark** — that is what makes declining a blob a
+ * terminal state rather than a permanent retry — so the cloud considers the
+ * record delivered and no number of sync rounds will ever offer those bytes
+ * again. An explicit fetch is the only route back, and until now it had no
+ * caller anywhere in either repo: the phone rendered a placeholder tile and
+ * there was no code path that could ever turn it into a photo.
+ *
+ * These go through `MobileNode.fetchBlob` — what the tile's button calls —
+ * rather than through the file-sync engine directly, because the thing that was
+ * missing was the wiring, not the transfer.
+ */
+describe("fetching back a declined photo", () => {
+  const declineEverything: NodeRetentionPolicy = {
+    rows: { "original:image": { keep: "never", budgetBytes: 1 } },
+    fallback: { keep: "never", budgetBytes: 1 },
+  };
+
+  it("brings down bytes no sync round would ever offer again", async () => {
+    const record = await seedCloud(10 * KB);
+    phone = await startPhone(declineEverything);
+    await phone.sync();
+
+    // Declined, and the cloud believes it landed.
+    expect(await phone.objectStorage.has(record.objectStorageKey!)).toBe(false);
+    const again = await phone.sync();
+    expect(again!.applied).toBe(0);
+    expect(await phone.objectStorage.has(record.objectStorageKey!)).toBe(false);
+
+    const held = (await phone.databaseAdapter.get(record.id))!;
+    expect(await phone.fetchBlob(held)).toBe(true);
+    expect(await phone.objectStorage.has(record.objectStorageKey!)).toBe(true);
+  });
+
+  it("makes the tile renderable, which is the point of fetching it", async () => {
+    // The user-visible half. A fetch that lands bytes the grid still cannot
+    // name is a fetch that changed nothing anyone can see.
+    const record = await seedCloud(10 * KB);
+    phone = await startPhone(declineEverything);
+    await phone.sync();
+
+    const deps = {
+      database: phone.databaseAdapter,
+      objectStorage: phone.objectStorage,
+      aliases: phone.mediaAliases,
+    };
+    const before = await listLibrary(deps, { limit: 10 });
+    expect(before.items[0]!.uri, "an elided record has no picture yet").toBeNull();
+
+    await phone.fetchBlob((await phone.databaseAdapter.get(record.id))!);
+
+    const after = await listLibrary(deps, { limit: 10 });
+    expect(after.items[0]!.uri).not.toBeNull();
+  });
+
+  it("says no, rather than throwing, on a phone with no cloud", async () => {
+    // The ordinary state of a handset nobody has signed in on. A button that
+    // threw here would have to be hidden behind a session check the rest of
+    // this app spent two revisions removing.
+    const harness = fakeExpoFs();
+    phone = await createMobileNode({
+      nodeId: "phone-offline",
+      databasePath: "/data/starkeep/local.sqlite",
+      sqliteDriver: createOpSqliteDriver(fakeOpSqlite()),
+      localObjectStorage: new ExpoObjectStorageAdapter({
+        fs: harness.fs,
+        basePath: "/docs/objects",
+      }),
+    });
+    const record = await seedCloud(10 * KB);
+    expect(await phone.fetchBlob(record)).toBe(false);
+  });
+
+  it("does not move the byte accounting when the fetch fails", async () => {
+    // The same rule a round's pull obeys: crediting a decision rather than an
+    // arrival lets a node with a flaky link slowly convince itself it is full
+    // of things it does not have.
+    const record = await seedCloud(10 * KB);
+    phone = await startPhone(declineEverything);
+    await phone.sync();
+
+    await cloudStorage.delete(record.objectStorageKey!);
+    const held = (await phone.databaseAdapter.get(record.id))!;
+    expect(await phone.fetchBlob(held)).toBe(false);
+    expect(phone.residency!.usageByClass()).toEqual({});
   });
 });

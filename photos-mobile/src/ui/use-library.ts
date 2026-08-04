@@ -136,6 +136,19 @@ export interface LibraryState {
   readonly error: string | null;
   reload: () => Promise<void>;
   importNow: () => Promise<void>;
+  /**
+   * Pull down a record whose bytes are not on this device.
+   *
+   * Exposed as an action rather than done automatically, because the whole point
+   * of eliding is that this node decided not to hold these bytes — fetching them
+   * back is a request, and it is the *only* route back: the watermark has moved
+   * past the record, so no sync round will ever offer it again.
+   *
+   * Resolves false when the fetch did not happen, which the caller surfaces
+   * rather than swallowing: on a phone with no session there is nowhere to fetch
+   * from, and silently doing nothing would read as a broken button.
+   */
+  fetchBlob: (item: LibraryItem) => Promise<boolean>;
 }
 
 /** The node's records, and the action that adds the camera roll to them. */
@@ -154,7 +167,11 @@ export function useLibrary(node: NodeState): LibraryState {
     if (!ready) return;
     setLoading(true);
     try {
-      const deps = { database: ready.node.databaseAdapter, aliases: ready.node.mediaAliases };
+      const deps = {
+        database: ready.node.databaseAdapter,
+        objectStorage: ready.node.objectStorage,
+        aliases: ready.node.mediaAliases,
+      };
       const [page, totals] = await Promise.all([
         listLibrary(deps, { limit: LIBRARY_PAGE }),
         summarizeLibrary(deps),
@@ -217,5 +234,43 @@ export function useLibrary(node: NodeState): LibraryState {
     }
   }, [ready, reload]);
 
-  return { items, summary, loading, importing, lastImport, progress, error, reload, importNow };
+  const fetchBlob = useCallback(
+    async (item: LibraryItem) => {
+      if (!ready) return false;
+      try {
+        const ok = await ready.node.fetchBlob(item.record);
+        if (!ok) {
+          setError(
+            ready.node.engine
+              ? "Could not fetch those bytes. Check the connection and try again."
+              : "This device is not signed in, so there is nowhere to fetch those bytes from.",
+          );
+          return false;
+        }
+        setError(null);
+        // Reload rather than patching the one item: the URI is derived from the
+        // object store, so the grid re-deriving it is the same code path that
+        // produced the placeholder — and there is exactly one of it.
+        await reload();
+        return true;
+      } catch (err) {
+        setError(String(err));
+        return false;
+      }
+    },
+    [ready, reload],
+  );
+
+  return {
+    items,
+    summary,
+    loading,
+    importing,
+    lastImport,
+    progress,
+    error,
+    reload,
+    importNow,
+    fetchBlob,
+  };
 }

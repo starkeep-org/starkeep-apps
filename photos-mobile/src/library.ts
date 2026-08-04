@@ -24,8 +24,21 @@
  */
 
 import type { DataRecord } from "@starkeep/protocol-primitives";
-import type { DatabaseAdapter } from "@starkeep/storage-adapter";
+import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
+
+/**
+ * What the library needs to answer a question about this node.
+ *
+ * `objectStorage` is the node's own overlay — the alias table and the file store
+ * together — which is what makes one lookup cover both an imported photo that
+ * was never copied and a blob that arrived by sync or an on-demand fetch.
+ */
+export interface LibraryDeps {
+  readonly database: DatabaseAdapter;
+  readonly objectStorage: ObjectStorageAdapter;
+  readonly aliases: MediaAliasStore | null;
+}
 
 /** One item as the UI needs it: a record, plus where to get a picture. */
 export interface LibraryItem {
@@ -61,7 +74,7 @@ export interface LibraryQuery {
  * wrong sort order, and nobody scrolls far enough to find out otherwise.
  */
 export async function listLibrary(
-  deps: { readonly database: DatabaseAdapter; readonly aliases: MediaAliasStore | null },
+  deps: LibraryDeps,
   query: LibraryQuery,
 ): Promise<LibraryPage> {
   const result = await deps.database.query({
@@ -75,7 +88,10 @@ export async function listLibrary(
   });
 
   return {
-    items: result.records.map((record) => ({ record, uri: uriFor(deps.aliases, record) })),
+    items: result.records.map((record) => ({
+      record,
+      uri: uriFor(deps.objectStorage, record),
+    })),
     nextCursor: result.nextCursor,
     hasMore: result.hasMore,
   };
@@ -84,17 +100,22 @@ export async function listLibrary(
 /**
  * Where to read a record's picture from.
  *
- * Only the alias is consulted, deliberately. A blob in the node's own object
- * store is at a path this function could construct — but constructing it here
- * would put a second copy of the adapter's sharding rule in the UI layer, and
- * the day that rule changes the grid would go blank for reasons no one would
- * connect to a storage refactor. When such records exist (they arrive by sync,
- * which does not work yet) the honest fix is an adapter method that hands back
- * a readable URI, not a path guess.
+ * Asked of the object store rather than reconstructed here. `localFileUriFor` is
+ * the adapter's own answer to "name a file holding these bytes", and on this
+ * node the store is the overlay — so one call covers an imported photo still
+ * living in the camera roll (through the alias) and a blob that arrived by sync
+ * or was fetched on demand (in the file store).
+ *
+ * Reading the alias table directly, as this used to, meant a record whose bytes
+ * had genuinely landed still rendered as a placeholder — which would have made
+ * the on-demand fetch look broken at the exact moment it started working.
+ *
+ * Null stays a real and expected answer: a record whose blob is elided or still
+ * owed has no file to name, and that is what a placeholder tile is for.
  */
-function uriFor(aliases: MediaAliasStore | null, record: DataRecord): string | null {
-  if (!aliases || !record.objectStorageKey) return null;
-  return aliases.get(record.objectStorageKey)?.contentUri ?? null;
+function uriFor(objectStorage: ObjectStorageAdapter, record: DataRecord): string | null {
+  if (!record.objectStorageKey) return null;
+  return objectStorage.localFileUriFor?.(record.objectStorageKey) ?? null;
 }
 
 /** What the node holds, for the status section. */
@@ -104,10 +125,7 @@ export interface LibrarySummary {
   readonly aliasedBytes: number;
 }
 
-export async function summarizeLibrary(deps: {
-  readonly database: DatabaseAdapter;
-  readonly aliases: MediaAliasStore | null;
-}): Promise<LibrarySummary> {
+export async function summarizeLibrary(deps: LibraryDeps): Promise<LibrarySummary> {
   // Counted by paging rather than by a `COUNT(*)`, because `DatabaseAdapter`
   // exposes no count and inventing one through the raw handle would put a
   // second SQL dialect assumption in the app. Fine at this size; a real number

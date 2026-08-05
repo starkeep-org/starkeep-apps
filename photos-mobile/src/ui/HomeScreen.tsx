@@ -49,7 +49,8 @@ import type { ImportOutcome } from "../media/import";
 import { formatBytes, LibraryGrid } from "./LibraryGrid";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
-import { useLibrary, useNode } from "./use-library";
+import { useLibrary, useNode, useStorage } from "./use-library";
+import type { EvictionOutcome } from "@starkeep/sync-engine";
 import { describeVerify, verifyFoundProblem } from "./verify-text";
 import type { VerifyResult } from "@starkeep/sync-engine";
 
@@ -168,6 +169,7 @@ export function HomeScreen({
   const [refreshing, setRefreshing] = useState(false);
   const { state: node, reset } = useNode();
   const library = useLibrary(node);
+  const storage = useStorage(node);
   /**
    * Whether the reset button is armed.
    *
@@ -296,6 +298,9 @@ export function HomeScreen({
             items={library.items}
             loading={library.loading}
             onFetch={library.fetchBlob}
+            onSetPinned={library.setPinned}
+            isPinned={library.isPinned}
+            onOpened={library.noteOpened}
           />
           {library.error ? <Text style={styles.error}>{library.error}</Text> : null}
           {node.status === "ready" ? (
@@ -369,6 +374,61 @@ export function HomeScreen({
               ) : null}
             </View>
           ) : null}
+        </Section>
+
+        <Section title="Storage">
+          {storage.report === null || !storage.report.configured ? (
+            <Text style={styles.muted}>
+              This node has no storage budget, so it keeps every byte it is offered. That is the
+              right default for a laptop and the wrong one for a phone.
+            </Text>
+          ) : (
+            <>
+              <Text style={styles.body}>
+                {formatBytes(storage.report.heldBytes)} held of{" "}
+                {formatBytes(storage.report.budgetBytes)} allowed
+              </Text>
+              {storage.report.classes
+                // Only rows that are doing something. A phone that has synced
+                // nothing would otherwise show twelve zeroes, which says less
+                // than one sentence does.
+                .filter((c) => c.heldBytes > 0)
+                .map((c) => (
+                  <View key={c.sizeClass} style={styles.row}>
+                    <View style={styles.rowText}>
+                      <Text style={styles.body}>{c.sizeClass}</Text>
+                      <Text style={styles.muted}>
+                        {formatBytes(c.heldBytes)} of {formatBytes(c.budgetBytes)} · {c.keep}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              {storage.report.classes.every((c) => c.heldBytes === 0) ? (
+                <Text style={styles.muted}>
+                  Nothing has been fetched from the cloud yet. Photos taken on this device are not
+                  counted here — Starkeep points at them in your camera roll rather than keeping a
+                  second copy, so they cost this budget nothing and cannot be reclaimed.
+                </Text>
+              ) : null}
+
+              {/* The other half of a budget. Declining bytes bounds new
+                  arrivals; nothing bounds what is already here, so a node that
+                  fills up used to simply stop fetching and stay full. */}
+              <Pressable
+                onPress={() => void storage.reclaim()}
+                disabled={storage.reclaiming}
+                style={[styles.button, storage.reclaiming ? styles.buttonDisabled : null]}
+              >
+                <Text style={styles.buttonLabel}>
+                  {storage.reclaiming ? "Reclaiming…" : "Free up space"}
+                </Text>
+              </Pressable>
+              {storage.lastPass ? (
+                <Text style={styles.muted}>{describeReclaim(storage.lastPass)}</Text>
+              ) : null}
+              {storage.error ? <Text style={styles.error}>{storage.error}</Text> : null}
+            </>
+          )}
         </Section>
 
         <Section title="On this device">
@@ -448,7 +508,7 @@ export function HomeScreen({
                         setSyncProgress({ rounds, items });
                       },
                     })
-                    .then((result) => {
+                    .then(async (result) => {
                       // A stalled sync is not an error and not a success: the
                       // loop stopped because a round achieved nothing while work
                       // was still outstanding, which in practice is a transfer
@@ -457,9 +517,24 @@ export function HomeScreen({
                       setSyncError(
                         result?.stalled
                           ? "Sync stopped making progress — something could not transfer. It will retry."
-                          : null,
+                          : result?.refusedAuthors?.length
+                            ? "Some of this device's records are not reaching the cloud. Check backup to try again."
+                            : result?.peerCoverageDegraded
+                              ? `The cloud could not report what it holds (${result.peerCoverageDegraded}), so this sync was conservative.`
+                              : null,
                       );
-                      return library.reload();
+                      await library.reload();
+                      // Sync is the event that fills the disk, so it is the
+                      // event that should notice the disk is full. Without a
+                      // caller here, a budget bounds new arrivals and nothing
+                      // bounds what is already held: `decideResidency` starts
+                      // answering `budget-exhausted`, the node quietly stops
+                      // fetching that class, and stays full forever.
+                      //
+                      // After the reload rather than before, so the grid is
+                      // already showing what arrived when the pass starts
+                      // deciding what to let go.
+                      await storage.reclaim();
                     })
                     .catch((err: unknown) => setSyncError(String(err)))
                     .finally(() => setSyncing(false));
@@ -597,6 +672,46 @@ function sessionLabel(session: ActiveSession | null, sessionKnown: boolean): str
  * that explains why nothing appeared to happen. Silence there would read as
  * the button not working.
  */
+/**
+ * What one reclaim pass did, in a sentence.
+ *
+ * The **refusals matter more than the deletions** here, which is why they come
+ * first and are stated as a reason rather than a count. A pass that freed
+ * nothing because there is no cloud to confirm anything survives elsewhere is
+ * working exactly as designed — this is the only code in the app that destroys a
+ * user's data, and "the budget is full" is not evidence that a photograph is
+ * safe somewhere. Reporting that as "0 removed" would read as a broken button
+ * and invite someone to make it try harder.
+ */
+function describeReclaim(outcomes: readonly EvictionOutcome[]): string {
+  const refusal = outcomes.find((o) => o.refusal !== null)?.refusal;
+  if (refusal) return refusal;
+
+  const freed = outcomes.reduce(
+    (n, o) => n + o.evicted.reduce((b, e) => b + e.sizeBytes, 0),
+    0,
+  );
+  const kept = outcomes.reduce((n, o) => n + o.kept.length, 0);
+  const corrupt = outcomes.flatMap((o) => o.corruptionSuspected);
+
+  if (corrupt.length > 0) {
+    // Not a "could not evict" condition — evidence that a copy somewhere is
+    // wrong, which should reach a person rather than merely suppressing a
+    // deletion.
+    return `${corrupt.length} object(s) disagree with the copy in the cloud about their size or checksum. Nothing was removed for those.`;
+  }
+  if (!outcomes.some((o) => o.triggered)) {
+    return "Everything is inside its budget — nothing needed removing.";
+  }
+  if (freed === 0) {
+    return `Nothing could be removed: ${kept} item(s) are pinned or not yet confirmed to exist anywhere else.`;
+  }
+  return (
+    `Freed ${formatBytes(freed)}` +
+    (kept > 0 ? `, and kept ${kept} that are pinned or not confirmed elsewhere.` : ".")
+  );
+}
+
 function describeImport(outcome: ImportOutcome): string {
   const parts: string[] = [];
   if (outcome.imported > 0) parts.push(`added ${outcome.imported}`);

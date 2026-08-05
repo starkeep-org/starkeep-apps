@@ -96,6 +96,18 @@ export interface ExpoFileSystem {
   directory(path: string): ExpoDirectory;
 }
 
+/**
+ * Whether a directory listing entry is a directory.
+ *
+ * expo's `Directory.list()` returns a union of `File` and `Directory` with no
+ * discriminator on it, so this tests for the one method only directories have.
+ * Structural, like every other assumption this module makes about the module it
+ * deliberately does not import.
+ */
+function isDirectory(entry: ExpoFile | ExpoDirectory): entry is ExpoDirectory {
+  return typeof (entry as ExpoDirectory).list === "function";
+}
+
 export interface ExpoObjectStorageOptions {
   readonly fs: ExpoFileSystem;
   /** Root directory for object storage, e.g. `documentDirectory + "objects"`. */
@@ -283,12 +295,47 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
     if (meta.exists) meta.delete();
   }
 
-  async list(_prefix: string, _options?: ListOptions): Promise<ListResult> {
-    // Deliberately unimplemented rather than half-implemented. Nothing on the
-    // phone path lists object storage — residency works from the database, not
-    // from a directory walk — and a listing that silently returned one shard
-    // would be worse than one that says it does not exist.
-    throw new Error("list() is not implemented on the phone; residency reads the database instead");
+  /**
+   * Every key under `prefix`, by walking the directory tree.
+   *
+   * This used to throw, on the argument that "residency works from the database,
+   * not from a directory walk". That was true and stopped being true: the
+   * resident-set index is a *cache* of what this store holds, and a cache with
+   * no way to be rebuilt drifts silently — a process killed between
+   * `localStorage.delete()` and the index update leaves a row claiming bytes
+   * that are gone, and nothing ever corrects it. `ResidentSetIndex.reconcile`
+   * is that correction, and this is the only thing that can answer it.
+   *
+   * Keys are paths relative to the base, which is exactly how `pathFor` writes
+   * them, so no reconstruction is needed. Two kinds of file are skipped: the
+   * `.meta.json` sidecars, which are this adapter's own bookkeeping and not
+   * objects, and `.tmp.*` files, which are `putStream` writes still in flight
+   * or abandoned — reporting either as a stored object would have the index
+   * adopt something that is not one.
+   *
+   * Unpaginated in practice: `nextCursor` is always null and the whole tree is
+   * walked. A phone's object store holds renditions and fetched blobs rather
+   * than a library, and the caller (a reconcile) needs the complete set anyway —
+   * a partial listing would read as "these keys are gone" and mark live rows
+   * departed, which is the wrong answer rather than a slow one.
+   */
+  async list(prefix: string, _options?: ListOptions): Promise<ListResult> {
+    const keys: string[] = [];
+    const walk = (dir: ExpoDirectory, relative: string): void => {
+      if (!dir.exists) return;
+      for (const entry of dir.list()) {
+        const name = entry.uri.replace(/\/$/, "").split("/").pop() ?? "";
+        const key = relative === "" ? name : `${relative}/${name}`;
+        if (isDirectory(entry)) {
+          walk(entry, key);
+          continue;
+        }
+        if (name.endsWith(".meta.json") || name.includes(".tmp.")) continue;
+        if (key.startsWith(prefix)) keys.push(key);
+      }
+    };
+    walk(this.fs.directory(this.basePath), "");
+    return { keys, nextCursor: null, hasMore: false };
   }
 
   private writeSidecar(key: string, value: unknown): void {

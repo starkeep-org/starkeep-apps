@@ -34,6 +34,7 @@ import { loadDeviceKey, type DeviceKey } from "./auth/device-key";
 import { loadCloudConfig } from "./config";
 import type { HashBytes, ImportDeps } from "./media/import";
 import { createMobileNode, type MobileNode } from "./node";
+import { PHONE_RETENTION, PHOTOS_APP_ID, PHOTOS_SIZE_CLASS_KEY } from "./retention";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { clearNodeFiles } from "./node-reset";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
@@ -250,6 +251,13 @@ export async function bringUpNode(): Promise<{
     sqliteDriver: opSqliteDriver,
     localObjectStorage: createLocalObjectStorage(),
     deviceMedia: deviceMediaStorage,
+    // The budget that makes this a phone rather than a laptop with a small
+    // disk. Without it `residency` is null and the entire residency half of the
+    // node — budgets, classes, pins, eviction — is present and unreachable,
+    // which is exactly the state it was in. See `retention.ts` for the numbers
+    // and for what this budget deliberately does *not* govern.
+    retention: PHONE_RETENTION,
+    sizeClassKeys: { [PHOTOS_APP_ID]: PHOTOS_SIZE_CLASS_KEY },
     ...(config?.baseUrl ? { cloud: driveChannel(config.baseUrl, deviceKey) } : {}),
   });
   return { node, identity, deviceKey };

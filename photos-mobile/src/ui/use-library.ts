@@ -13,7 +13,8 @@ import { listLibrary, summarizeLibrary, type LibraryItem, type LibrarySummary } 
 import { importDeviceMedia, type ImportOutcome, type ImportProgress } from "../media/import";
 import type { NodeIdentity } from "../node-identity";
 import type { DeviceKey } from "../auth/device-key";
-import type { MobileNode } from "../node";
+import type { MobileNode, StorageReport } from "../node";
+import type { EvictionOutcome } from "@starkeep/sync-engine";
 import { bringUpNode, clearNodeData, importDepsFor } from "../platform";
 
 /** How many tiles the grid shows. A ceiling, not a page size — see `MediaGrid`. */
@@ -149,6 +150,71 @@ export interface LibraryState {
    * from, and silently doing nothing would read as a broken button.
    */
   fetchBlob: (item: LibraryItem) => Promise<boolean>;
+  /** Pin or release a record on this device. Returns the state afterwards. */
+  setPinned: (recordId: string, pinned: boolean) => boolean;
+  isPinned: (recordId: string) => boolean;
+  /** Someone opened this record. Feeds the recency rules and eviction order. */
+  noteOpened: (recordId: string) => void;
+}
+
+/** What the Storage section shows, and the action that changes it. */
+export interface StorageState {
+  readonly report: StorageReport | null;
+  readonly reclaiming: boolean;
+  /** Result of the last pass, for the line under the button. */
+  readonly lastPass: readonly EvictionOutcome[] | null;
+  readonly error: string | null;
+  refresh: () => void;
+  reclaim: () => Promise<void>;
+}
+
+/**
+ * What this node is holding against what its policy allows, and the action that
+ * brings the two back together.
+ *
+ * A hook of its own rather than a field on {@link LibraryState}, because the two
+ * change for different reasons: the library changes when records arrive, and
+ * this changes when *bytes* do. Folding them together would reload a grid of
+ * sixty tiles every time an eviction pass moved a number.
+ */
+export function useStorage(node: NodeState): StorageState {
+  const [report, setReport] = useState<StorageReport | null>(null);
+  const [reclaiming, setReclaiming] = useState(false);
+  const [lastPass, setLastPass] = useState<readonly EvictionOutcome[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const ready = node.status === "ready" ? node : null;
+
+  const refresh = useCallback(() => {
+    if (!ready) return;
+    try {
+      setReport(ready.node.storageReport());
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [ready]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const reclaim = useCallback(async () => {
+    if (!ready) return;
+    setReclaiming(true);
+    try {
+      const outcomes = await ready.node.reclaimSpace();
+      setLastPass(outcomes);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setReclaiming(false);
+      refresh();
+    }
+  }, [ready, refresh]);
+
+  return { report, reclaiming, lastPass, error, refresh, reclaim };
 }
 
 /** The node's records, and the action that adds the camera roll to them. */
@@ -261,6 +327,25 @@ export function useLibrary(node: NodeState): LibraryState {
     [ready, reload],
   );
 
+  const setPinned = useCallback(
+    (recordId: string, pinned: boolean) => {
+      if (!ready) return false;
+      ready.node.setPinned(recordId, pinned);
+      return ready.node.isPinned(recordId);
+    },
+    [ready],
+  );
+
+  const isPinned = useCallback(
+    (recordId: string) => ready?.node.isPinned(recordId) ?? false,
+    [ready],
+  );
+
+  const noteOpened = useCallback(
+    (recordId: string) => ready?.node.noteOpened(recordId),
+    [ready],
+  );
+
   return {
     items,
     summary,
@@ -272,5 +357,8 @@ export function useLibrary(node: NodeState): LibraryState {
     reload,
     importNow,
     fetchBlob,
+    setPinned,
+    isPinned,
+    noteOpened,
   };
 }

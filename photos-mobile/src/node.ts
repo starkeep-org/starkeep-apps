@@ -29,15 +29,21 @@ import {
   createSqliteSyncStateStore,
   createResidencyManager,
   residencyHooks,
+  type EvictionOutcome,
   type NodeRetentionPolicy,
   type OverrideRule,
+  type ReplicaProbe,
   type ResidencyManager,
   type SyncEngine,
   type SyncOptions,
   type SyncResult,
   type VerifyResult,
+  parseSizeClass,
+  retentionRowFor,
+  PLATFORM_NAMESPACE,
   type SyncTransport,
 } from "@starkeep/sync-engine";
+import { totalBudgetBytes } from "./retention";
 import type { DataRecord } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
@@ -238,7 +244,94 @@ export interface MobileNode {
    * answers and the placeholder should only stay for one of them.
    */
   fetchBlob(record: DataRecord): Promise<boolean>;
+  /**
+   * Free space: reconcile what this node believes it holds against what it
+   * actually holds, then run an eviction pass over every class and namespace
+   * that is over budget.
+   *
+   * ## Why the two are one call
+   *
+   * Eviction chooses its candidates from the resident-set index, and the index
+   * is a *cache* of a fact the filesystem also knows. A pass run against a stale
+   * index deletes keys that are not there (harmless) and, worse, believes a
+   * class is full when its bytes are already gone — so it works to a target it
+   * has already passed. Reconciling first is what makes the pass's arithmetic
+   * describe the disk.
+   *
+   * ## What it will refuse to do
+   *
+   * Delete anything it cannot prove survives elsewhere. The probe is the cloud,
+   * so on a device that has never been paired there is nothing to ask and the
+   * pass frees nothing and says why (`EvictionOutcome.refusal`). That is the
+   * intended behaviour, not a degraded one: this is the only code in the app
+   * that destroys a user's data, and "the budget is full" is not evidence that
+   * a photograph is safe somewhere.
+   *
+   * It also cannot touch a photograph taken on this device. Those are aliases to
+   * the camera roll, so they are not in the index at all, and
+   * `DeviceMediaObjectStorage.delete()` drops an alias rather than an asset even
+   * if something asked.
+   *
+   * Returns one outcome per pass — empty on a node with no retention policy,
+   * where there is no budget to be over.
+   */
+  reclaimSpace(): Promise<EvictionOutcome[]>;
+  /**
+   * Keep this record on this device regardless of budget, or stop doing so.
+   *
+   * Node-local and deliberately not a label: a pin shared as a label would let
+   * one device's preference silently rewrite every other device's cache policy.
+   *
+   * Pins **win** over every budget and recency rule, and they still count
+   * against the class's budget — so pinning a lot makes the overage visible
+   * rather than swallowing it. They do not beat a record constraint: a
+   * `starkeep/no-cloud` record is refused by the cloud whatever this device
+   * wants.
+   */
+  setPinned(recordId: string, pinned: boolean): void;
+  isPinned(recordId: string): boolean;
+  /**
+   * Record that someone looked at this record on this device.
+   *
+   * The strongest signal there is about what a phone should keep, and until this
+   * had a caller on the *viewing* path it was recorded only when a fetch
+   * happened — which meant `last_opened_at_ms` was written exactly for records
+   * this device had already decided it did not want. Two rules read it, and both
+   * were dead as a result: `recent-only`'s "also keep anything opened within N
+   * days" could never match, and the eviction ordering's never-opened-first tier
+   * collapsed into a single tier where every candidate tied.
+   *
+   * Safe to call for a record whose bytes are not here: the pin table and the
+   * resident-set row are separate things, and a record with no held blob simply
+   * has no row to stamp yet.
+   */
+  noteOpened(recordId: string): void;
+  /**
+   * What this node is holding, per class, against what its policy allows.
+   *
+   * The numbers behind the Storage section. Reads the index rather than probing
+   * storage, which is the whole reason the index exists — asking the filesystem
+   * per record is hundreds of thousands of calls once renditions land.
+   */
+  storageReport(): StorageReport;
   close(): Promise<void>;
+}
+
+/** One class's line in the Storage section. */
+export interface StorageClassUsage {
+  readonly sizeClass: string;
+  readonly heldBytes: number;
+  readonly budgetBytes: number;
+  /** What the policy says about this class, for a one-word explanation. */
+  readonly keep: NodeRetentionPolicy["platform"]["fallback"]["keep"];
+}
+
+export interface StorageReport {
+  readonly classes: readonly StorageClassUsage[];
+  readonly heldBytes: number;
+  readonly budgetBytes: number;
+  /** False when this node has no retention policy, so nothing binds. */
+  readonly configured: boolean;
 }
 
 /**
@@ -410,6 +503,93 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         },
       );
     },
+    async reclaimSpace() {
+      if (!residency) return [];
+      // Reconcile first, always. See the doc comment: a pass run against a
+      // stale index works to a target it may already have passed.
+      //
+      // `unknownKeys` are bytes on disk that no budget knows about — a rendition
+      // some future derivation pass wrote, anything that arrived by a route
+      // other than a sync pull. They are *reported* and not adopted, because
+      // charging them to a budget means resolving which class they belong to,
+      // and that needs the record row. Logged rather than silently dropped: on
+      // this build the expected count is zero, and a non-zero one is worth
+      // knowing about before it becomes a budget that no longer describes the
+      // disk.
+      try {
+        const report = await residency.reconcile();
+        if (report.corrected > 0 || report.unknownKeys.length > 0) {
+          console.log(
+            `[starkeep:residency] reconciled: ${report.confirmed} confirmed, ` +
+              `${report.corrected} corrected, ${report.unknownKeys.length} unaccounted`,
+          );
+        }
+      } catch (err) {
+        // A reconcile that failed is a reason to be *more* careful, not to skip
+        // the pass: the index is then no less accurate than it was a moment ago,
+        // and the durability predicate is what actually authorizes a deletion.
+        console.warn(`[starkeep:residency] could not reconcile: ${String(err)}`);
+      }
+
+      // The cloud is this device's replica, and the only one it can interrogate.
+      // With no cloud there are no probes, which is not a degraded eviction pass
+      // — it is a pass that will refuse to delete anything needing proof, and
+      // say so. That is the correct behaviour for a handset that has never been
+      // paired: nothing on it is known to exist anywhere else.
+      const probes: ReplicaProbe[] = options.cloud
+        ? [{ nodeId: "cloud", storage: options.cloud.remoteObjectStorage }]
+        : [];
+      return residency.runEviction(probes);
+    },
+
+    setPinned(recordId, pinned) {
+      residency?.setPinned(recordId, pinned);
+    },
+
+    isPinned(recordId) {
+      return residency?.isPinned(recordId) ?? false;
+    },
+
+    noteOpened(recordId) {
+      residency?.markOpened(recordId, Date.now());
+    },
+
+    storageReport() {
+      if (!residency || !options.retention) {
+        return { classes: [], heldBytes: 0, budgetBytes: 0, configured: false };
+      }
+      const policy = options.retention;
+      const held = residency.usageByClass();
+      // Every class the policy names, plus any class actually holding bytes that
+      // it does not — an unrecognised rung is exactly the thing worth seeing,
+      // and a report built only from the policy would hide it.
+      const named = [
+        ...Object.keys(policy.platform.rows).map((rung) => `${PLATFORM_NAMESPACE}:${rung}`),
+        ...Object.entries(policy.apps).flatMap(([appId, app]) =>
+          Object.keys(app.rows).map((rung) => `${appId}:${rung}`),
+        ),
+      ];
+      const classes = [...new Set([...named, ...Object.keys(held)])]
+        .map((sizeClass) => {
+          const row = retentionRowFor(policy, parseSizeClass(sizeClass));
+          return {
+            sizeClass,
+            heldBytes: held[sizeClass] ?? 0,
+            budgetBytes: row.budgetBytes,
+            keep: row.keep,
+          };
+        })
+        // Biggest first: what is filling the disk is the question being asked.
+        .sort((a, b) => b.heldBytes - a.heldBytes);
+
+      return {
+        classes,
+        heldBytes: classes.reduce((sum, c) => sum + c.heldBytes, 0),
+        budgetBytes: totalBudgetBytes(policy),
+        configured: true,
+      };
+    },
+
     async close() {
       await databaseAdapter.close();
       await localObjectStorage.close();

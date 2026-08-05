@@ -128,8 +128,12 @@ export interface MobileNodeOptions {
    * quietly decided every future app's labels for it.
    *
    * Still configurable so the ladder can be respecified without a change here.
+   *
+   * A single entry, unlike a laptop's map of every installed app: an embedded
+   * node has no app registry to read, because it *is* the app. Its budget
+   * covers only its own bytes, so its own ladder is the only one it can see.
    */
-  readonly classLabel?: { readonly appId: string; readonly key: string };
+  readonly sizeClassKeys?: Readonly<Record<string, string>>;
   /** Replicas elsewhere required before this node may drop its only copy. */
   readonly minimumReplicas?: number;
   readonly wallClock?: () => number;
@@ -295,7 +299,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         localDb: databaseAdapter.getRawDatabase(),
         databaseAdapter,
         localObjectStorage,
-        classLabel: options.classLabel ?? { appId: "photos", key: "rendition" },
+        sizeClassKeys: options.sizeClassKeys ?? { photos: "rendition" },
         // A phone is never the cloud node. `starkeep/no-cloud` is a constraint
         // about cloud storage; a handset holding such a record is the intended
         // outcome, not a violation.
@@ -397,6 +401,10 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
           type: record.type,
           parentId: record.parentId,
           appId: null,
+          // Names the namespace a derivative is charged to when no app has
+          // labelled it with a rung — so an on-demand fetch lands in the same
+          // budget the sync path would have used.
+          originAppId: record.originAppId,
           recencyAtMs: null,
           lastOpenedAtMs: Date.now(),
         },

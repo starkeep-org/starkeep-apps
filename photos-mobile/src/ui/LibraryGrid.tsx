@@ -42,12 +42,37 @@ interface Props {
    * bytes again and this is the only route back.
    */
   readonly onFetch: (item: LibraryItem) => Promise<boolean>;
+  /**
+   * Keep this record on this device regardless of budget, or stop.
+   *
+   * Returns the state afterwards so the control can reflect it without the
+   * whole library being reloaded for one toggle.
+   */
+  readonly onSetPinned: (recordId: string, pinned: boolean) => boolean;
+  readonly isPinned: (recordId: string) => boolean;
+  /**
+   * Someone looked at this record.
+   *
+   * Reported from here rather than inferred, because opening a photo is the
+   * event — not fetching it, which is what used to be recorded and which only
+   * ever happened for records this device had already declined.
+   */
+  readonly onOpened: (recordId: string) => void;
 }
 
-export function LibraryGrid({ items, loading, onFetch }: Props) {
+export function LibraryGrid({
+  items,
+  loading,
+  onFetch,
+  onSetPinned,
+  isPinned,
+  onOpened,
+}: Props) {
   const [open, setOpen] = useState<LibraryItem | null>(null);
   /** The key currently being fetched, so the tile can say so. */
   const [fetching, setFetching] = useState<string | null>(null);
+  /** Pinned state of the open record, so the toggle is not a round trip. */
+  const [pinned, setPinned] = useState(false);
 
   async function fetchNow(item: LibraryItem): Promise<boolean> {
     setFetching(item.record.id);
@@ -56,6 +81,12 @@ export function LibraryGrid({ items, loading, onFetch }: Props) {
     } finally {
       setFetching(null);
     }
+  }
+
+  function openItem(item: LibraryItem): void {
+    onOpened(item.record.id);
+    setPinned(isPinned(item.record.id));
+    setOpen(item);
   }
 
   if (items.length === 0) {
@@ -72,7 +103,7 @@ export function LibraryGrid({ items, loading, onFetch }: Props) {
     <View style={{ gap: 8 }}>
       <View style={styles.grid}>
         {items.map((item) => (
-          <Pressable key={item.record.id} onPress={() => setOpen(item)} style={styles.tile}>
+          <Pressable key={item.record.id} onPress={() => openItem(item)} style={styles.tile}>
             {item.uri ? (
               <Image source={{ uri: item.uri }} style={styles.tileImage} resizeMode="cover" />
             ) : (
@@ -93,6 +124,8 @@ export function LibraryGrid({ items, loading, onFetch }: Props) {
       <Viewer
         item={open}
         busy={open !== null && fetching === open.record.id}
+        pinned={pinned}
+        onTogglePin={(item) => setPinned(onSetPinned(item.record.id, !pinned))}
         onFetch={fetchNow}
         onClose={() => setOpen(null)}
       />
@@ -110,11 +143,15 @@ export function LibraryGrid({ items, loading, onFetch }: Props) {
 function Viewer({
   item,
   busy,
+  pinned,
+  onTogglePin,
   onFetch,
   onClose,
 }: {
   item: LibraryItem | null;
   busy: boolean;
+  pinned: boolean;
+  onTogglePin: (item: LibraryItem) => void;
   onFetch: (item: LibraryItem) => Promise<boolean>;
   onClose: () => void;
 }) {
@@ -159,6 +196,23 @@ function Viewer({
               </Text>
             </Pressable>
           )}
+          {/* A pin is this device's own preference and travels with nothing —
+              deliberately not a label, because a pin shared as a label would let
+              one device's choice silently rewrite every other device's cache
+              policy. It beats every budget and recency rule, and it still counts
+              against the class's budget, so pinning a lot makes the overage
+              visible rather than swallowing it. */}
+          <Pressable onPress={() => onTogglePin(item)} style={{ paddingVertical: 8 }}>
+            <Text style={styles.linkLabel}>
+              {pinned ? "★ Kept on this device — tap to release" : "☆ Keep on this device"}
+            </Text>
+          </Pressable>
+          {pinned ? (
+            <Text style={styles.muted}>
+              This one stays whatever the storage budget says, and is never chosen when space is
+              reclaimed.
+            </Text>
+          ) : null}
           <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
             <Text style={styles.linkLabel}>Close</Text>
           </Pressable>

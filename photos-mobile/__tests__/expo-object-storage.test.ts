@@ -238,11 +238,40 @@ describe("what a phone cannot claim", () => {
     expect(await adapter.has(HASH)).toBe(true);
   });
 
-  // Deliberately absent rather than half-implemented: nothing on the phone path
-  // lists object storage, and a listing that quietly returned one shard would
-  // be worse than one that says it does not exist.
-  it("refuses to list rather than returning a partial answer", async () => {
-    await expect(adapter.list("shared/")).rejects.toThrow(/not implemented/);
+  // This used to throw, on the argument that nothing on the phone path lists
+  // object storage. That stopped being true when the resident-set index gained
+  // a reconcile: the index is a cache of what this store holds, and a cache
+  // with no way to be rebuilt drifts silently — a process killed between
+  // `delete()` and the index update leaves a row claiming bytes that are gone.
+  it("lists every stored key by walking the tree", async () => {
+    await adapter.put(HASH, PAYLOAD);
+    const other = "b".repeat(64);
+    await adapter.put(`shared/image/${other.slice(0, 2)}/${other}`, PAYLOAD);
+
+    const { keys } = await adapter.list("");
+    expect(keys).toContain(`shared/image/${other.slice(0, 2)}/${other}`);
+    expect(keys).toContain(`${HASH.slice(0, 2)}/${HASH}`);
+  });
+
+  it("filters by prefix", async () => {
+    await adapter.put(HASH, PAYLOAD);
+    const shared = `shared/image/aa/${"c".repeat(64)}`;
+    await adapter.put(shared, PAYLOAD);
+
+    expect((await adapter.list("shared/")).keys).toEqual([shared]);
+  });
+
+  // A sidecar is this adapter's own bookkeeping and a `.tmp.` file is a write
+  // still in flight. Reporting either as a stored object would have a reconcile
+  // adopt something that is not one — and, for the sidecar, charge a budget for
+  // a few bytes of JSON under a key no record names.
+  it("does not report sidecars or half-written files as objects", async () => {
+    await adapter.put(HASH, PAYLOAD, { contentType: "image/jpeg" });
+    harness.files.set(`/docs/objects/shared/image/aa/x.tmp.1`, PAYLOAD);
+
+    const { keys } = await adapter.list("");
+    expect(keys.some((k) => k.endsWith(".meta.json"))).toBe(false);
+    expect(keys.some((k) => k.includes(".tmp."))).toBe(false);
   });
 });
 

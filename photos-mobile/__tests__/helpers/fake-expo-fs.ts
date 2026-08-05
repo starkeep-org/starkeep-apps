@@ -151,7 +151,15 @@ export function fakeExpoFs() {
 
   const directory = (path: string): ExpoDirectory => ({
     get exists() {
-      return dirs.has(path);
+      // Also true when something lives under it, which is what a real
+      // filesystem says: `file.create({ intermediates: true })` brings the
+      // parent directories into being, and this fake models that as one map
+      // entry for the leaf rather than an entry per level.
+      if (dirs.has(path)) return true;
+      const under = `${path}/`;
+      for (const key of files.keys()) if (key.startsWith(under)) return true;
+      for (const key of dirs) if (key.startsWith(under)) return true;
+      return false;
     },
     get uri() {
       return path;
@@ -170,8 +178,42 @@ export function fakeExpoFs() {
         if (key.startsWith(`${path}/`)) dirs.delete(key);
       }
     },
+    /**
+     * The immediate children of this directory, files and subdirectories both.
+     *
+     * This returned `[]` while nothing walked the tree, which was honest then
+     * and became a trap the moment `ExpoObjectStorageAdapter.list()` existed: a
+     * reconcile against an empty listing reads as "storage holds nothing" and
+     * marks every live row departed. A fake that is *less* capable than the
+     * thing it stands in for certifies the caller as working when it does not,
+     * which is the same failure this file's own header describes from the
+     * permissive direction.
+     *
+     * Derived from the file and directory keys rather than tracked separately,
+     * so a `create({ intermediates: true })` that this fake models as one map
+     * entry still lists correctly.
+     */
     list() {
-      return [];
+      const under = `${path}/`;
+      const names = new Set<string>();
+      for (const candidate of [...files.keys(), ...dirs]) {
+        if (!candidate.startsWith(under)) continue;
+        const rest = candidate.slice(under.length);
+        if (rest === "") continue;
+        names.add(rest.split("/")[0]!);
+      }
+      return [...names].map((name) => {
+        const child = `${path}/${name}`;
+        // A name with anything below it is a directory; the leaf is a file.
+        // `dirs` alone is not enough, because `file.create({ intermediates })`
+        // never registered the parents.
+        const hasChildren = [...files.keys(), ...dirs].some((k) =>
+          k.startsWith(`${child}/`),
+        );
+        return hasChildren || (dirs.has(child) && !files.has(child))
+          ? directory(child)
+          : file(child);
+      });
     },
   });
 

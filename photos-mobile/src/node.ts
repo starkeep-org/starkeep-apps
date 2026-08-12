@@ -29,6 +29,9 @@ import {
   createSqliteSyncStateStore,
   createResidencyManager,
   residencyHooks,
+  runAcquisition,
+  scanForAcquirable,
+  type AcquisitionOutcome,
   type EvictionOutcome,
   type NodeRetentionPolicy,
   type OverrideRule,
@@ -49,6 +52,7 @@ import { totalBudgetBytes } from "./retention";
 import type { DataRecord } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
+import { createSqliteScanCursorStore } from "./work/scan-cursor";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
 
@@ -88,6 +92,16 @@ export const MOBILE_MAX_ITEMS = 200;
  * every in-flight transfer costs memory and a handset has little to spare.
  */
 export const MOBILE_TRANSFER_CONCURRENCY = 3;
+
+/**
+ * Records the catalogue scan looks at in one unit of work.
+ *
+ * Sized by the same constraint as everything else here — a few seconds — and
+ * generous, because a unit is a keyed resident-set lookup and a label read per
+ * record, with no network and no storage probe. A 60k-item library is a few
+ * dozen of these, spread over whatever windows the OS grants.
+ */
+export const MOBILE_SCAN_RECORDS = 2000;
 
 export interface MobileNodeOptions {
   readonly nodeId: string;
@@ -216,6 +230,47 @@ export interface MobileNode {
    * mid-loop costs at most the round in flight.
    */
   sync(options?: SyncOptions): Promise<SyncResult | null>;
+  /**
+   * Work through the acquisition queue: fetch the bytes this device wants most
+   * and does not have, best-first, until the tick's byte budget runs out.
+   *
+   * ## Why this exists at all
+   *
+   * A sync round walks the change log oldest-first, because forward order is
+   * the coverage claim the watermark makes. On a phone, whose budget actually
+   * binds, that used to mean the whole library crossed the network so the newest
+   * budget's worth of it could stay — 400 GB transferred to retain 19 GB, with
+   * the device's flash rewritten a budget at a time on the way. A round now
+   * declines a full line and writes the candidate down; this is what comes back
+   * for it, in the order the device actually wants.
+   *
+   * Safe to abandon and cheap when there is nothing to do: the queue is
+   * best-first, so the first candidate the budget declines proves nothing
+   * behind it can win, and a converged line costs one query.
+   *
+   * Serialized with {@link sync} for the same reason everything else here is —
+   * one engine, one operation at a time.
+   */
+  acquireQueued(options?: { readonly maxBytes?: number }): Promise<AcquisitionOutcome[]>;
+  /**
+   * Walk a page of the catalogue looking for records this device wants bytes
+   * for and has none of, and queue them.
+   *
+   * The correctness half of the queue. A round can only queue what it is
+   * currently being offered, which leaves out everything that matters most on a
+   * device that has been running for a while: the library that landed before
+   * this shipped, blobs evicted after their round completed, bytes that went
+   * away locally, and everything a raised budget newly affords. This is the one
+   * mechanism that finds any of them, and it is one walk for all four.
+   *
+   * Bounded and resumable: it takes a page, remembers where it stopped, and
+   * carries on from there next time. `complete` is how a caller tells "this
+   * device now knows everything it is missing" from "it knows about the first
+   * few thousand".
+   */
+  scanForAcquirable(options?: {
+    readonly maxRecords?: number;
+  }): Promise<{ readonly queued: number; readonly complete: boolean }>;
   /**
    * Compare row counts with the cloud and arm a repair for anything it lacks.
    *
@@ -455,6 +510,13 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
    * person pressing a button, and someone who presses "Check backup" during a
    * sync wants the check, not a silent no-op.
    */
+  // Only built where there is a policy to scan against: with no budget every
+  // blob is wanted and a round never declines one, so there is nothing to queue
+  // and nothing to sweep for.
+  const scanCursor = residency
+    ? createSqliteScanCursorStore({ db: databaseAdapter.getRawDatabase() })
+    : null;
+
   let engineLock: Promise<unknown> = Promise.resolve();
   function serialized<T>(body: () => Promise<T>): Promise<T> {
     // `then(body, body)` rather than `then(body)`: a rejected predecessor must
@@ -476,6 +538,48 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     exchange: async () => (engine ? serialized(() => engine.exchange()) : null),
     sync: async (syncOptions) =>
       engine ? serialized(() => engine.sync(syncOptions)) : null,
+
+    async acquireQueued(acquireOptions) {
+      // No cloud or no policy means no queue: a node that wants every blob
+      // never declines one, and a node with nobody to ask cannot fetch.
+      if (!engine || !residency || !options.retention) return [];
+      // Serialized behind the same lock as a round. Both read the resident set
+      // and both charge budgets, and two of them at once would each see the
+      // same apparent room — the overshoot reservations exist to bound within
+      // one engine, reintroduced between two operations of it.
+      return serialized(() =>
+        runAcquisition({
+          engine,
+          manager: residency,
+          databaseAdapter,
+          policy: options.retention!,
+          // One round's worth of bytes per tick, for the reason
+          // `MOBILE_MAX_BYTES` gives: the OS decides when the app stops, and a
+          // unit that takes a minute is a unit that gets abandoned partway,
+          // over and over.
+          maxBytes: acquireOptions?.maxBytes ?? MOBILE_MAX_BYTES,
+        }),
+      );
+    },
+
+    async scanForAcquirable(scanOptions) {
+      if (!residency || !scanCursor) return { queued: 0, complete: true };
+      // Not serialized behind the engine lock: it writes no sync state and
+      // transfers nothing. It writes deferred rows, and `index.defer` is
+      // structurally unable to disturb a row a concurrent round is landing.
+      const result = await scanForAcquirable({
+        databaseAdapter,
+        consider: (candidate) => residency.considerForAcquisition(candidate),
+        cursor: scanCursor.get(),
+        maxRecords: scanOptions?.maxRecords ?? MOBILE_SCAN_RECORDS,
+      });
+      // Written after the page rather than before it, so a process killed
+      // mid-page repeats that page rather than skipping it. Repeating is free —
+      // the scan is idempotent and its only output is deferred rows.
+      scanCursor.set(result.nextCursor);
+      return { queued: result.queued, complete: result.nextCursor === null };
+    },
+
     verify: async () => (engine ? serialized(() => engine.verify()) : null),
     // Deliberately *not* serialized behind the engine lock. It writes no sync
     // state, and making someone wait for a multi-minute drain before their

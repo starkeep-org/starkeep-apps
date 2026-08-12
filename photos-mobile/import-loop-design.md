@@ -109,6 +109,16 @@ to do is surface it, not hide it. See §6.
 Note `src/media/device-library.ts` does not currently map `modificationTime`. Small change, needed
 first.
 
+**The same rule binds the `scan-media-store` job when it is built, and the acquisition queue now
+depends on it.** A scan that reconciles by tombstoning would delete the user's cloud library from
+the device with the least right to — the hot path already gets this right
+(`storage/device-media-storage.ts`), and a background sweep must not be the place it goes wrong.
+The dependency is new since 2026-08-12: the catalogue scan
+(`plan-acquisition-order-2026-08-12.md` §4 step 5) skips `deleted_at IS NOT NULL`, so a wrongly
+tombstoned record is not merely mis-displayed — it is removed from the population that would
+otherwise queue its bytes for re-acquisition, which is the one mechanism that recovers from exactly
+this failure. Demote to blob-absent and the sweep fixes it on its own.
+
 ### 2.5 Aliased originals stay out of the resident-set index
 
 `resident-set.ts` is the budget and eviction index. Aliased originals must not be in it:

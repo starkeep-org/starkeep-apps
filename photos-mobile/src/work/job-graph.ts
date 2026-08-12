@@ -51,6 +51,8 @@ export interface JobConstraints {
 export type JobId =
   /** One metadata exchange round. Small, frequent, cheap. */
   | "sync-metadata"
+  /** Find records this node wants bytes for and has none of. */
+  | "scan-acquirable"
   /** Fetch blobs residency says this node wants. */
   | "fetch-blobs"
   /** Push local blobs the cloud does not have. */
@@ -167,6 +169,25 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     delegatedTransfer: true,
   },
   {
+    id: "scan-acquirable",
+    description: "Find records this device wants bytes for and does not have",
+    // No network: this is a walk over the local catalogue joined against the
+    // local resident set. It is the correctness half of the acquisition queue —
+    // the only thing that can find a library that landed before the queue
+    // existed, a blob this device evicted, bytes that went away locally, or
+    // everything a raised budget newly affords — and none of those questions
+    // needs the cloud to answer.
+    constraints: NO_NETWORK,
+    // A page of the catalogue per unit, resumed from a cursor. A 60k-item
+    // library is not a few seconds' work and is not attempted as such.
+    targetSecondsPerUnit: 2,
+    resumable: true,
+    // Scanning against a stale catalogue finds a stale set. Advisory, as
+    // everywhere here: a scan that runs first simply finds less.
+    after: ["sync-metadata"],
+    delegatedTransfer: false,
+  },
+  {
     id: "fetch-blobs",
     description: "Download the bytes residency says this node wants",
     constraints: {
@@ -178,8 +199,9 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     targetSecondsPerUnit: 5,
     resumable: true,
     // Fetching before the metadata round would be fetching against a stale idea
-    // of what exists.
-    after: ["sync-metadata"],
+    // of what exists — and before the scan, against a stale idea of what is
+    // missing. The queue this job drains is written by both of them.
+    after: ["sync-metadata", "scan-acquirable"],
     delegatedTransfer: true,
   },
   {

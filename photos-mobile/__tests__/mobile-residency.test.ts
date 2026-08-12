@@ -318,3 +318,86 @@ describe("fetching back a declined photo", () => {
     expect(phone.residency!.usageByClass()).toEqual({});
   });
 });
+
+/**
+ * The acquisition queue on the device it exists for.
+ *
+ * The core suite proves the ordering and the bound. What this covers is the
+ * hookup: that the phone actually writes a queue during a round, actually
+ * sweeps its catalogue for what no round will offer again, and actually drains
+ * the queue afterwards. `CLAUDE.md` is explicit that a module nobody calls
+ * creates the impression that more has been done than has been.
+ */
+describe("acquiring what a round declined", () => {
+  const tightPolicy: NodeRetentionPolicy = {
+    platform: {
+      rows: { "original:image": { prefetch: true, share: 1 } },
+      fallback: { prefetch: true, share: 0 },
+      budgetBytes: 25 * KB,
+    },
+    apps: {},
+    appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 25 * KB },
+  };
+
+  it("queues what the budget declined during the round", async () => {
+    for (let i = 0; i < 6; i += 1) await seedCloud(10 * KB);
+    phone = await startPhone(tightPolicy);
+    await phone.sync();
+
+    // Declined for want of room is not the same fact as declined outright, and
+    // a phone that dropped the difference had no way back but a user's tap.
+    expect(
+      phone.residency!.deferredCandidates("starkeep:original:image", 100).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("finds a blob it evicted, which no round will ever offer again", async () => {
+    for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
+    phone = await startPhone(tightPolicy);
+    await phone.sync();
+
+    const { held } = await residencyOf(phone);
+    const record = (await phone.databaseAdapter.get(held[0]!))!;
+    const key = record.objectStorageKey!;
+    await phone.objectStorage.delete(key);
+    phone.residency!.noteDeparture(key);
+
+    // The watermark moved past this record long ago, so the sweep is the only
+    // thing that can find it.
+    const scan = await phone.scanForAcquirable();
+    expect(scan.complete).toBe(true);
+    expect(
+      phone.residency!
+        .deferredCandidates("starkeep:original:image", 100)
+        .map((e) => e.objectStorageKey),
+    ).toContain(key);
+
+    await phone.acquireQueued();
+    expect(await phone.objectStorage.has(key)).toBe(true);
+  });
+
+  it("resumes a sweep it was killed part-way through", async () => {
+    for (let i = 0; i < 6; i += 1) await seedCloud(10 * KB);
+    phone = await startPhone(tightPolicy);
+    await phone.sync();
+
+    const first = await phone.scanForAcquirable({ maxRecords: 2 });
+    expect(first.complete).toBe(false);
+    // The cursor is on disk, so the next window carries on rather than starting
+    // the library again — which on a real library is the difference between a
+    // sweep that finishes and one that never does.
+    const second = await phone.scanForAcquirable({ maxRecords: 100 });
+    expect(second.complete).toBe(true);
+  });
+
+  it("does nothing at all on a phone with no budget", async () => {
+    for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
+    phone = await startPhone();
+    await phone.sync();
+
+    // No policy means every blob is wanted and none is ever declined, so there
+    // is no queue to drain and nothing to sweep for.
+    expect(await phone.acquireQueued()).toEqual([]);
+    expect(await phone.scanForAcquirable()).toEqual({ queued: 0, complete: true });
+  });
+});

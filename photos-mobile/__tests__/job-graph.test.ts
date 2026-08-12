@@ -144,6 +144,13 @@ describe("ordering", () => {
     expect(before("sync-metadata", "evict")).toBe(true);
   });
 
+  // The queue the fetch drains is written by the scan, so a fetch that ran
+  // first would work through yesterday's idea of what this device is missing.
+  it("scans for what is missing before fetching it", () => {
+    expect(before("scan-acquirable", "fetch-blobs")).toBe(true);
+    expect(before("sync-metadata", "scan-acquirable")).toBe(true);
+  });
+
   it("includes every job exactly once", () => {
     expect(order).toHaveLength(JOB_GRAPH.length);
     expect(new Set(order).size).toBe(JOB_GRAPH.length);

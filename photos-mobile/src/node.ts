@@ -38,6 +38,8 @@ import {
   type SyncOptions,
   type SyncResult,
   type VerifyResult,
+  budgetBytesFor,
+  budgetLineFor,
   parseSizeClass,
   retentionRowFor,
   PLATFORM_NAMESPACE,
@@ -282,8 +284,8 @@ export interface MobileNode {
    * Node-local and deliberately not a label: a pin shared as a label would let
    * one device's preference silently rewrite every other device's cache policy.
    *
-   * Pins **win** over every budget and recency rule, and they still count
-   * against the class's budget — so pinning a lot makes the overage visible
+   * Pins **win** over every budget, and they still count
+   * against the line's budget — so pinning a lot makes the overage visible
    * rather than swallowing it. They do not beat a record constraint: a
    * `starkeep/no-cloud` record is refused by the cloud whatever this device
    * wants.
@@ -296,10 +298,13 @@ export interface MobileNode {
    * The strongest signal there is about what a phone should keep, and until this
    * had a caller on the *viewing* path it was recorded only when a fetch
    * happened — which meant `last_opened_at_ms` was written exactly for records
-   * this device had already decided it did not want. Two rules read it, and both
-   * were dead as a result: `recent-only`'s "also keep anything opened within N
-   * days" could never match, and the eviction ordering's never-opened-first tier
-   * collapsed into a single tier where every candidate tied.
+   * this device had already decided it did not want, so the eviction ordering's
+   * never-opened-first tier collapsed into one tier where every candidate tied.
+   *
+   * It matters more now, not less. The column used to be one input among
+   * several — a date window, a keep rule, a budget — and it is now the *primary*
+   * term of the only ordering the system has, on both the eviction side and the
+   * admission side.
    *
    * Safe to call for a record whose bytes are not here: the pin table and the
    * resident-set row are separate things, and a record with no held blob simply
@@ -321,9 +326,16 @@ export interface MobileNode {
 export interface StorageClassUsage {
   readonly sizeClass: string;
   readonly heldBytes: number;
+  /** The budget of the line this class is charged to. Lines can be shared. */
   readonly budgetBytes: number;
-  /** What the policy says about this class, for a one-word explanation. */
-  readonly keep: NodeRetentionPolicy["platform"]["fallback"]["keep"];
+  /**
+   * Whether the class is pulled during a sync round.
+   *
+   * False reads as "kept once you open it" in the Storage section, and it is
+   * the whole of what the old four-value keep rule had left to say — the other
+   * three values were predictions of what the eviction order does anyway.
+   */
+  readonly prefetch: boolean;
 }
 
 export interface StorageReport {
@@ -571,12 +583,16 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       ];
       const classes = [...new Set([...named, ...Object.keys(held)])]
         .map((sizeClass) => {
-          const row = retentionRowFor(policy, parseSizeClass(sizeClass));
+          const budgetLine = budgetLineFor(policy, parseSizeClass(sizeClass));
           return {
             sizeClass,
             heldBytes: held[sizeClass] ?? 0,
-            budgetBytes: row.budgetBytes,
-            keep: row.keep,
+            // The line's budget, which several classes may share — an
+            // unrecognised rung is pooled with every other one. Reporting it
+            // per class is honest about the cap each is measured against; it
+            // just is not exclusive to that class.
+            budgetBytes: budgetBytesFor(policy, budgetLine),
+            prefetch: retentionRowFor(policy, budgetLine).prefetch,
           };
         })
         // Biggest first: what is filling the disk is the question being asked.

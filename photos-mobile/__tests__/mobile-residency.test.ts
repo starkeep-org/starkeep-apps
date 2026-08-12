@@ -130,14 +130,15 @@ describe("a budget that binds", () => {
   // Every original the cloud holds, against a budget that fits roughly two.
   const tightPolicy: NodeRetentionPolicy = {
     platform: {
-      rows: { "original:image": { keep: "all", budgetBytes: 25 * KB } },
-      fallback: { keep: "all", budgetBytes: 25 * KB },
+      rows: { "original:image": { prefetch: true, share: 1 } },
+      fallback: { prefetch: true, share: 0 },
+      budgetBytes: 25 * KB,
     },
     apps: {},
     appFallback: {
       rows: {},
-      fallback: { keep: "all", budgetBytes: 25 * KB },
-      totalBudgetBytes: 25 * KB,
+      fallback: { prefetch: true, share: 1 },
+      budgetBytes: 25 * KB,
     },
   };
 
@@ -201,16 +202,17 @@ describe("no policy at all", () => {
   });
 });
 
-describe("keep: never", () => {
+describe("a class with no share", () => {
   it("takes the records and none of the bytes", async () => {
     for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
     phone = await startPhone({
       platform: {
-        rows: { "original:image": { keep: "never", budgetBytes: 1 } },
-        fallback: { keep: "never", budgetBytes: 1 },
+        rows: { "original:image": { prefetch: true, share: 0 } },
+        fallback: { prefetch: true, share: 1 },
+        budgetBytes: 1,
       },
       apps: {},
-      appFallback: { rows: {}, fallback: { keep: "never", budgetBytes: 1 }, totalBudgetBytes: 1 },
+      appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 1 },
     });
     for (let i = 0; i < 2; i += 1) await phone.exchange();
 
@@ -239,11 +241,12 @@ describe("keep: never", () => {
 describe("fetching back a declined photo", () => {
   const declineEverything: NodeRetentionPolicy = {
     platform: {
-      rows: { "original:image": { keep: "never", budgetBytes: 1 } },
-      fallback: { keep: "never", budgetBytes: 1 },
+      rows: { "original:image": { prefetch: true, share: 0 } },
+      fallback: { prefetch: true, share: 1 },
+      budgetBytes: 1,
     },
     apps: {},
-    appFallback: { rows: {}, fallback: { keep: "never", budgetBytes: 1 }, totalBudgetBytes: 1 },
+    appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 1 },
   };
 
   it("brings down bytes no sync round would ever offer again", async () => {

@@ -18,18 +18,28 @@
  *
  * ## Where these numbers come from
  *
- * `media-implementation-plan.md` §6.2's default table, verbatim — 19 GB across
- * twelve rows, sized as **working sets rather than libraries**. They are not
- * tuned here, because inventing a second set of numbers beside a documented one
- * is how the two come to disagree.
+ * `media-implementation-plan.md` §6.2's default table, restated as one budget
+ * per namespace and shares within it — 19 GB total, 5 GB of originals and 14 GB
+ * of renditions, sized as **working sets rather than libraries**.
  *
- * The `keep` rules are this file's own choice, and they follow one rule: the
- * smaller the rendition, the more of the library it should cover. Thumbnails are
- * `all`, because a grid that cannot draw is a phone that looks broken offline
- * and 50,000 tiles fit in a gigabyte. The largest rungs are `on-demand-only`,
- * because they exist for zooming into one photo and fetching them speculatively
- * would spend the whole budget on things nobody looked at. Originals sit in the
- * middle at `recent-only`.
+ * The restatement is not cosmetic. The old table gave every row an absolute
+ * byte count *and* declared a separate namespace total, and nothing made the
+ * two agree: the photos rows summed to roughly 14.24 GB against a stated total
+ * of 14 GB, and the comment beside it confidently described the arithmetic it
+ * had drifted from. Shares cannot drift, because there is only one byte count
+ * to drift from.
+ *
+ * ## What the shares mean
+ *
+ * They are percentages of the namespace's budget and nothing depends on them
+ * summing to a hundred — only ratios matter. They follow one rule: the smaller
+ * the rendition, the more of the library it should cover. Thumbnails get enough
+ * to hold the whole grid, because a grid that cannot draw is a phone that looks
+ * broken offline. The largest rungs are not prefetched, because they exist for
+ * zooming into one photograph and pulling them speculatively would spend the
+ * budget on bytes nobody looked at — the one judgement here that a cache's
+ * eviction order genuinely cannot make for itself, since by the time it could,
+ * the download has happened.
  *
  * ## What this budget does *not* govern
  *
@@ -47,34 +57,10 @@ import type { NodeRetentionPolicy } from "@starkeep/sync-engine";
 const GB = 1024 * 1024 * 1024;
 const MB = 1024 * 1024;
 
-/**
- * How far back "recent" reaches, in days.
- *
- * One month rather than a year. The recency window is the axis a phone's budget
- * is most sensitive to — it multiplies straight into bytes — and the working-set
- * argument the budgets are built on says the same thing: what a person opens on
- * a handset is overwhelmingly what they took this month, and everything older is
- * one tap away through {@link MobileNode.fetchBlob}.
- */
-export const PHONE_RECENCY_WINDOW_DAYS = 30;
-
-/**
- * Also keep anything opened within this many days, however old it is.
- *
- * A library you actually browse has a shape that is not its calendar. Wider than
- * the recency window on purpose: opening a photograph from four years ago is a
- * much stronger signal about what this device should keep than the date on it,
- * and the cost of honouring that signal is bounded by the same budget.
- */
-export const PHONE_OPENED_WITHIN_DAYS = 90;
-
-const recent = (budgetBytes: number) =>
-  ({
-    keep: "recent-only",
-    recencyWindowDays: PHONE_RECENCY_WINDOW_DAYS,
-    openedWithinDays: PHONE_OPENED_WITHIN_DAYS,
-    budgetBytes,
-  }) as const;
+/** Pulled during a sync round, with a share of the namespace budget. */
+const prefetched = (share: number) => ({ prefetch: true, share }) as const;
+/** Held only once something asks for it, then cached within this share. */
+const onDemand = (share: number) => ({ prefetch: false, share }) as const;
 
 /**
  * The rungs of Photos' own ladder, from `media-implementation-plan.md` §3.
@@ -94,68 +80,72 @@ export const PHONE_RETENTION: NodeRetentionPolicy = {
     rows: {
       // Split photo/video because one 4K clip is worth hundreds of stills, and
       // under a pooled budget one silently starves the other depending on the
-      // order things happened to arrive.
-      "original:image": recent(2 * GB),
-      "original:video": recent(3 * GB),
+      // order things happened to arrive. 2 GB and 3 GB of the 5.
+      "original:image": prefetched(40),
+      "original:video": prefetched(60),
     },
     // A category this app has no ladder for — an audio file, a PDF someone put
-    // in Drive. On-demand rather than never: the record is browsable and one tap
-    // brings the bytes, which is the honest behaviour for something this app was
-    // not built to display anyway.
-    fallback: { keep: "on-demand-only", budgetBytes: 512 * MB },
+    // in Drive — pooled with every other unrecognised rung of the platform
+    // namespace. On demand rather than nothing: the record is browsable and one
+    // tap brings the bytes, which is the honest behaviour for something this
+    // app was not built to display anyway. Its share is deliberately small.
+    fallback: onDemand(10),
+    budgetBytes: 5 * GB + 512 * MB,
   },
   apps: {
     [PHOTOS_APP_ID]: {
       rows: {
         // Everything the grid needs to draw itself with no network at all.
-        "image-xsmall": { keep: "all", budgetBytes: 256 * MB },
-        "image-thumb": { keep: "all", budgetBytes: 1 * GB },
+        "image-xsmall": prefetched(2),
+        "image-thumb": prefetched(7),
         // The routine working rendition: fullscreen stage 1, share/export,
         // on-device AI. Worth keeping the whole library's worth if it fits.
-        "image-medium": { keep: "all", budgetBytes: 4 * GB },
-        // Fullscreen at retina. Recent only — this is where the budget starts to
-        // bite and where the recency window earns its place.
-        "image-screen": recent(2 * GB),
+        "image-medium": prefetched(28),
+        // Fullscreen at retina. The budget starts to bite here, which under the
+        // old table was spelled `recent-only` with a 30-day window — a rule
+        // that never once bound, because a rendition carries no capture date.
+        // A share does bind, and the eviction order decides which screens
+        // survive it.
+        "image-screen": prefetched(14),
         // 4K TV, zoom, print preview. Fetched when someone actually zooms.
-        "image-large": { keep: "on-demand-only", budgetBytes: 1 * GB },
-        "video-poster-thumb": { keep: "all", budgetBytes: 200 * MB },
-        "video-poster-720p": { keep: "all", budgetBytes: 300 * MB },
-        "video-skim": { keep: "all", budgetBytes: 512 * MB },
-        "video-720p": recent(4 * GB),
-        "video-1080p": { keep: "on-demand-only", budgetBytes: 1 * GB },
+        "image-large": onDemand(7),
+        "video-poster-thumb": prefetched(1),
+        "video-poster-720p": prefetched(2),
+        "video-skim": prefetched(4),
+        "video-720p": prefetched(28),
+        "video-1080p": onDemand(7),
       },
       // A rung this build does not know about — the ladder respecified on
-      // another node, or a class added since. Deliberately not `never`: an
-      // unrecognised rendition is still something an app derived on purpose, and
-      // declining it outright would make a respec invisible rather than merely
-      // conservative.
-      fallback: { keep: "on-demand-only", budgetBytes: 256 * MB },
-      // What makes rung invention safe. Without it an app naming a thousand
-      // rungs gets a thousand fallback budgets; with it, it still cannot exceed
-      // one number. 14 GB of renditions plus 5 GB of originals is the plan's
-      // 19 GB total.
-      totalBudgetBytes: 14 * GB,
+      // another node, or a class added since. Deliberately not zero: an
+      // unrecognised rendition is still something an app derived on purpose,
+      // and refusing it outright would make a respec invisible rather than
+      // merely conservative. One share between all of them, which is what makes
+      // rung invention cheap instead of free.
+      fallback: onDemand(2),
+      budgetBytes: 14 * GB,
     },
   },
   // Some other app's derivatives, on a handset that is only running Photos.
-  // Small and on-demand: they are real data and this device is not the place
+  // Small and on demand: they are real data and this device is not the place
   // for them.
   appFallback: {
     rows: {},
-    fallback: { keep: "on-demand-only", budgetBytes: 256 * MB },
-    totalBudgetBytes: 512 * MB,
+    fallback: onDemand(1),
+    budgetBytes: 512 * MB,
   },
 };
 
-/** Every byte this policy permits, for the Storage section's headline figure. */
+/**
+ * Every byte this policy permits, for the Storage section's headline figure.
+ *
+ * One line now. It used to sum the platform rows and then add each app's
+ * separate total, which quietly asserted that those two levels were
+ * commensurable — the assumption that let the rows and the total disagree in
+ * the first place.
+ */
 export function totalBudgetBytes(policy: NodeRetentionPolicy = PHONE_RETENTION): number {
-  const platform = Object.values(policy.platform.rows).reduce(
-    (sum, row) => sum + row.budgetBytes,
-    0,
+  return (
+    policy.platform.budgetBytes +
+    Object.values(policy.apps).reduce((sum, app) => sum + app.budgetBytes, 0)
   );
-  const apps = Object.values(policy.apps).reduce(
-    (sum, app) => sum + app.totalBudgetBytes,
-    0,
-  );
-  return platform + apps;
 }

@@ -398,7 +398,8 @@ export function HomeScreen({
                     <View style={styles.rowText}>
                       <Text style={styles.body}>{c.sizeClass}</Text>
                       <Text style={styles.muted}>
-                        {formatBytes(c.heldBytes)} of {formatBytes(c.budgetBytes)} · {c.keep}
+                        {formatBytes(c.heldBytes)} of {formatBytes(c.budgetBytes)} ·{" "}
+                        {c.prefetch ? "synced" : "kept when opened"}
                       </Text>
                     </View>
                   </View>

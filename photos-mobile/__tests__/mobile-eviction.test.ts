@@ -138,14 +138,15 @@ async function startPhone(
  */
 const tightPolicy: NodeRetentionPolicy = {
   platform: {
-    rows: { "original:image": { keep: "all", budgetBytes: 25 * KB } },
-    fallback: { keep: "all", budgetBytes: 25 * KB },
+    rows: { "original:image": { prefetch: true, share: 1 } },
+    fallback: { prefetch: true, share: 0 },
+    budgetBytes: 25 * KB,
   },
   apps: {},
   appFallback: {
     rows: {},
-    fallback: { keep: "all", budgetBytes: 25 * KB },
-    totalBudgetBytes: 25 * KB,
+    fallback: { prefetch: true, share: 1 },
+    budgetBytes: 25 * KB,
   },
 };
 
@@ -159,7 +160,8 @@ const tightPolicy: NodeRetentionPolicy = {
  * a test that synced against a tight budget and then expected a pass to trigger
  * was testing a situation the design does not produce.
  *
- * The situation it *does* produce is this one. `on-demand-only` fetches nothing
+ * The situation it *does* produce is this one. A class with `prefetch: false`
+ * fetches nothing
  * proactively, and an explicit `fetchBlob` is deliberately **not subject to the
  * policy** — refusing to show someone their own photograph to stay under a cache
  * budget is not a defensible behaviour, so the fetch lands the bytes and pushes
@@ -172,14 +174,15 @@ const tightPolicy: NodeRetentionPolicy = {
  */
 const onDemandPolicy: NodeRetentionPolicy = {
   platform: {
-    rows: { "original:image": { keep: "on-demand-only", budgetBytes: 25 * KB } },
-    fallback: { keep: "on-demand-only", budgetBytes: 25 * KB },
+    rows: { "original:image": { prefetch: false, share: 1 } },
+    fallback: { prefetch: false, share: 0 },
+    budgetBytes: 25 * KB,
   },
   apps: {},
   appFallback: {
     rows: {},
-    fallback: { keep: "on-demand-only", budgetBytes: 25 * KB },
-    totalBudgetBytes: 25 * KB,
+    fallback: { prefetch: false, share: 1 },
+    budgetBytes: 25 * KB,
   },
 };
 
@@ -212,12 +215,45 @@ describe("the phone's built-in policy", () => {
     expect(validateRetentionPolicy(PHONE_RETENTION)).toEqual([]);
   });
 
-  it("names a budget for every rung it declares", () => {
-    // N2's defect from the other side: a row with no usable budget validates as
-    // `never` and then defeats both the eviction pass and the projection.
+  it("gives every rung it declares a usable share", () => {
+    // N2's defect from the other side: a row whose budget was not a number
+    // defeated both the eviction pass and the projection. A share cannot be
+    // omitted independently of the budget any more — there is one budget, in
+    // the namespace — but a share that is zero or unparseable is still a rung
+    // this device silently holds none of.
     for (const [rung, row] of Object.entries(PHONE_RETENTION.apps[PHOTOS_APP_ID]!.rows)) {
-      expect(Number.isFinite(row.budgetBytes), `${rung} has no finite budget`).toBe(true);
-      expect(row.budgetBytes).toBeGreaterThan(0);
+      expect(Number.isFinite(row.share), `${rung} has no finite share`).toBe(true);
+      expect(row.share, `${rung} claims no share`).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * The bug this whole shape exists to make unwritable.
+   *
+   * The old table gave every row absolute bytes *and* declared a namespace
+   * total, with nothing forcing them to agree — and they did not: the photos
+   * rows summed to ~14.24 GB against a stated 14 GB, while the comment beside
+   * them described the arithmetic they had drifted from. Asserting the identity
+   * rather than the numbers, because the numbers are the plan's to choose and
+   * the identity is what stops them lying.
+   */
+  it("divides each namespace's budget exactly, with nothing left over or double-counted", () => {
+    for (const namespace of [PHONE_RETENTION.platform, PHONE_RETENTION.apps[PHOTOS_APP_ID]!]) {
+      const shares = [namespace.fallback, ...Object.values(namespace.rows)].reduce(
+        (sum, r) => sum + r.share,
+        0,
+      );
+      expect(shares).toBeGreaterThan(0);
+      const allocated = [namespace.fallback, ...Object.values(namespace.rows)].reduce(
+        (sum, r) => sum + Math.floor((namespace.budgetBytes * r.share) / shares),
+        0,
+      );
+      // Within rounding: `budgetBytesFor` floors each line, so the sum can fall
+      // a few bytes short of the total and can never exceed it.
+      expect(allocated).toBeLessThanOrEqual(namespace.budgetBytes);
+      expect(namespace.budgetBytes - allocated).toBeLessThan(
+        Object.keys(namespace.rows).length + 1,
+      );
     }
   });
 
@@ -234,7 +270,7 @@ describe("the phone's built-in policy", () => {
 describe("reclaiming space", () => {
   // The behaviour R1 says never runs: "A node that fills a budget never reclaims
   // space. `decideResidency` starts returning `budget-exhausted` → `elide`, so
-  // the node silently stops fetching that class and stays full. `evictClass`
+  // the node silently stops fetching that class and stays full. `evictLine`
   // exists to be the other half of that and is never invoked."
   it("frees bytes once browsing has pushed a class over its budget", async () => {
     const records: DataRecord[] = [];
@@ -276,8 +312,8 @@ describe("reclaiming space", () => {
     expect(phone.storageReport().heldBytes).toBe(before);
   });
 
-  // Declining is what keeps a `keep: "all"` class inside its budget, and it is
-  // why the pass above needed `on-demand-only` to have anything to do. Worth
+  // Declining is what keeps a prefetched class inside its budget, and it is
+  // why the pass above needed an unprefetched one to have anything to do. Worth
   // pinning, because it is the property that makes eviction the *rare* path
   // rather than a per-arrival one.
   it("has nothing to do while declining is keeping the class under budget", async () => {
@@ -409,7 +445,11 @@ describe("opening a photo", () => {
   // ever written by `markOpened`, which the LDS never calls." On the phone it
   // had one caller, in the fetch-back path — so it was recorded only for records
   // this device had already declined, which is the opposite of a working set.
-  it("records the open, so the recency rules and eviction order can read it", async () => {
+  //
+  // The policy field that read it is gone; the column matters more, not less.
+  // It is now the *primary* term of the only ordering the system has, on both
+  // the eviction side and the admission side.
+  it("records the open, so the eviction order can read it", async () => {
     const record = await seedCloud(10 * KB);
     phone = await startPhone(tightPolicy);
     await phone.sync();

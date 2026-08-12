@@ -35,11 +35,12 @@
  * summing to a hundred — only ratios matter. They follow one rule: the smaller
  * the rendition, the more of the library it should cover. Thumbnails get enough
  * to hold the whole grid, because a grid that cannot draw is a phone that looks
- * broken offline. The largest rungs are not prefetched, because they exist for
- * zooming into one photograph and pulling them speculatively would spend the
- * budget on bytes nobody looked at — the one judgement here that a cache's
- * eviction order genuinely cannot make for itself, since by the time it could,
- * the download has happened.
+ * broken offline. The largest rungs — `image-large`, `video-1080p`, and the
+ * originals themselves — are not prefetched, because they exist for zooming
+ * into one photograph and pulling them speculatively would spend the budget on
+ * bytes nobody looked at — the one judgement here that a cache's eviction order
+ * genuinely cannot make for itself, since by the time it could, the download has
+ * happened.
  *
  * ## What this budget does *not* govern
  *
@@ -81,8 +82,25 @@ export const PHONE_RETENTION: NodeRetentionPolicy = {
       // Split photo/video because one 4K clip is worth hundreds of stills, and
       // under a pooled budget one silently starves the other depending on the
       // order things happened to arrive. 2 GB and 3 GB of the 5.
-      "original:image": prefetched(40),
-      "original:video": prefetched(60),
+      //
+      // **On demand, not prefetched, and the shares stay non-zero.** An
+      // original is the largest thing in the ladder and the least often looked
+      // at: `image-medium` serves fullscreen, share, export and on-device AI,
+      // so the only reader of an original on a handset is an explicit request.
+      // Prefetching them was the single largest source of the waste this app's
+      // acquisition order exists to bound — a twenty-year library transferred
+      // in full to retain the newest 2 GB of it, rewriting the phone's flash in
+      // budget-sized increments on the way. `prefetch: false` still holds the
+      // bytes once someone taps, and caches them within this share; `share: 0`
+      // would refuse an original even then, which is a different and wrong
+      // policy.
+      //
+      // A **Photos** statement rather than a platform one. Drive has no ladder,
+      // every record there is an original, and a node declining to prefetch
+      // originals would hold nothing at all. This file is the phone's own
+      // policy, so nothing generalises from it.
+      "original:image": onDemand(40),
+      "original:video": onDemand(60),
     },
     // A category this app has no ladder for — an audio file, a PDF someone put
     // in Drive — pooled with every other unrecognised rung of the platform

@@ -10,9 +10,18 @@
  * even though every unit test passed.
  *
  * The matcher below mirrors the installer's route semantics (admin-installer/
- * src/pulumi-program.ts): a declared `"<METHOD> <path>"` covers a request when
- * the method is an exact match or `ANY`, and the path matches literally or via
- * a trailing `{proxy+}` wildcard.
+ * src/pulumi-program.ts): a declared route covers a request when the method is
+ * an exact match or `ANY`, and the path matches literally or via a trailing
+ * `{proxy+}` wildcard. A route may be a bare `"<METHOD> <path>"` string or the
+ * object form `{ route, auth }` that carries a per-route auth override.
+ *
+ * This file asserts *reachability only* — that the gateway will hand the
+ * request to the app at all. It deliberately says nothing about who is allowed
+ * to make it, and for three months that omission let it pin an exposed shape in
+ * place without anyone noticing (postmortem 2026-08-23, timeline 2026-07-04).
+ * The auth counterpart lives one tier up, in starkeep-core/e2e-aws's
+ * "refuses an unauthenticated caller on every app data path", because only a
+ * live deployment can answer it.
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -21,16 +30,19 @@ import { describe, expect, it } from "vitest";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+type Route = string | { route: string; auth?: "public" | "jwt" };
 interface Handler {
   name: string;
-  routes?: string[];
+  routes?: Route[];
 }
 const manifest = JSON.parse(
   readFileSync(resolve(PKG_DIR, "starkeep.manifest.json"), "utf-8"),
 ) as { infraRequirements?: { compute?: { handlers?: Handler[] } } };
 
 const handlers = manifest.infraRequirements?.compute?.handlers ?? [];
-const declaredRoutes: string[] = handlers.flatMap((h) => h.routes ?? []);
+const declaredRoutes: string[] = handlers.flatMap((h) =>
+  (h.routes ?? []).map((r) => (typeof r === "string" ? r : r.route)),
+);
 
 /** Does a single declared route string cover (method, path)? */
 function routeCovers(route: string, method: string, path: string): boolean {

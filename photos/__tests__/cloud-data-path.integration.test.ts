@@ -7,7 +7,7 @@
  *
  *   listPhotos()                                  (src/lib/data-server-client)
  *     → resolveDataSource() → "/api/local-data"   (src/lib/data-client)
- *     → createNextProxyHandler({ appId: "photos" })  (@starkeep/app-client)
+ *     → createNextProxyHandler({ appId: "photos", ... })  (@starkeep/app-client)
  *         loads on-disk creds, HMAC-signs, forwards to the data server URL
  *     → a fake data server that REJECTS any request lacking a valid
  *       X-Starkeep-App-{Id,Sig,Ts} signature — exactly like the cloud data
@@ -35,7 +35,12 @@ let received: Array<{ path: string; headers: Record<string, string | null> }>;
 /** Records the fake data server will return from GET /data/records. */
 const seededRecords: unknown[] = [{ id: "rec-1", type: "image/png", original_filename: "a.png" }];
 
-const proxyHandler = createNextProxyHandler({ appId: "photos" });
+// Mirrors the app's own mount: local mode, no end-user gate. See the route at
+// app/api/local-data/[...path]/route.ts for why that answer is what it is.
+const proxyHandler = createNextProxyHandler({
+  appId: "photos",
+  endUserAuth: { auth: "anonymous", justification: "matches the app's current mount" },
+});
 
 /** Minimal fake cloud-data-server: HMAC-gates, then serves GET /data/records. */
 async function fakeDataServer(url: URL, init: RequestInit): Promise<Response> {

@@ -81,6 +81,7 @@
           "timeoutSeconds": 10,
           "routes": ["GET /", "ANY /{proxy+}"],
           "auth": "public",
+          "publicPaths": ["/", "/_next/static/*", "/starkeep-runtime-config"],
           "env": {
             "STARKEEP_API_GATEWAY_URL": "",
             "STARKEEP_USER_POOL_ID": "",

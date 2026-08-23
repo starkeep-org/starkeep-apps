@@ -1,6 +1,4 @@
 import { fetchRuntimeConfig } from "./runtime-config";
-import { readCloudConfig } from "./cloud-config";
-import { refreshTokens } from "./cognito-auth";
 import { withBasePath } from "./base-path";
 
 /**
@@ -36,27 +34,31 @@ export function getDataTarget(): Promise<DataTarget> {
 
 let tokenCache: { accessToken: string; expiresAt: number } | null = null;
 
+/**
+ * A bearer token for the one call a cookie cannot serve — see
+ * {@link resolveAppApiSource}.
+ *
+ * This used to read a refresh token out of localStorage and call Cognito from
+ * the page. It now asks Photos' own server, which holds the refresh token in
+ * an HttpOnly cookie and mints against it. What an XSS can steal here drops
+ * from a credential good for months to one good for an hour.
+ */
 async function getAccessToken(): Promise<string | null> {
-  const config = await readCloudConfig();
-  if (!config?.cognitoConfig || !config.cognitoRefreshToken) {
-    console.warn("[data-client] No Cognito config or refresh token in cloud config");
+  const now = Date.now();
+  if (tokenCache && tokenCache.expiresAt > now + 60_000) return tokenCache.accessToken;
+
+  const res = await fetch(withBasePath("/api/session/token"), { credentials: "same-origin" });
+  if (!res.ok) {
+    tokenCache = null;
     return null;
   }
-  const now = Date.now();
-  if (tokenCache && tokenCache.expiresAt > now + 60_000) {
-    console.debug("[data-client] Using cached access token (expires in", Math.round((tokenCache.expiresAt - now) / 1000), "s)");
-    return tokenCache.accessToken;
-  }
-  console.debug("[data-client] Refreshing access token via Cognito...");
-  try {
-    const tokens = await refreshTokens(config.cognitoConfig, config.cognitoRefreshToken);
-    tokenCache = { accessToken: tokens.accessToken, expiresAt: now + tokens.expiresIn * 1000 };
-    console.debug("[data-client] Access token refreshed, expires in", tokens.expiresIn, "s");
-    return tokenCache.accessToken;
-  } catch (err) {
-    console.error("[data-client] Token refresh failed:", err);
-    throw err;
-  }
+  const body = (await res.json()) as { accessToken?: string; expiresIn?: number };
+  if (!body.accessToken) return null;
+  tokenCache = {
+    accessToken: body.accessToken,
+    expiresAt: now + (body.expiresIn ?? 3600) * 1000,
+  };
+  return tokenCache.accessToken;
 }
 
 /**
@@ -78,9 +80,10 @@ async function getAccessToken(): Promise<string | null> {
  *
  * Signing must happen in the proxy and not here because (a) the HMAC secret
  * must never reach the browser, and (b) the cloud data server's data plane is
- * HMAC-only — it identifies the *app*, not the end user, and does not accept
- * end-user Cognito tokens (see cloud-data-server-program.ts). End-user
- * sign-in is a separate app-level concern handled by the AuthGate.
+ * HMAC-only in the sense that the HMAC is what identifies the *app*. It also
+ * requires an end-user credential on top, which the proxy attaches server-side
+ * from the session cookie — see cloud-data-server-program.ts. What the browser
+ * sends is the cookie, and nothing else.
  */
 export async function resolveDataSource(): Promise<{
   baseUrl: string;
@@ -110,8 +113,7 @@ export async function resolveAppApiSource(): Promise<{
 }> {
   const target = await getDataTarget();
   if (target.kind === "remote") {
-    const config = await readCloudConfig();
-    const token = config ? await getAccessToken().catch(() => null) : null;
+    const token = await getAccessToken().catch(() => null);
     if (!token) console.warn("[data-client] Remote target, no auth token — /api/* request will be unauthenticated");
     return {
       baseUrl: `${target.apiGatewayUrl.replace(/\/$/, "")}/apps/photos`,
@@ -119,4 +121,33 @@ export async function resolveAppApiSource(): Promise<{
     };
   }
   return { baseUrl: "", headers: {} };
+}
+
+/**
+ * Data-plane fetch with one refresh-and-retry on a 401.
+ *
+ * The gateway's session authorizer cannot set cookies, so an `sk_token` that
+ * expired mid-session yields a bare 401 with no way to recover in-band. The
+ * recovery is a POST to the public /api/session/refresh, which authenticates
+ * on `sk_session` in app code and issues a fresh token. Doing it here rather
+ * than at each call site is the difference between one place that handles an
+ * expired session and every place forgetting to.
+ *
+ * One retry, never a loop: if the refresh itself fails the session is really
+ * over, and a second 401 is the answer rather than a reason to try again.
+ */
+export async function fetchWithSession(input: string, init?: RequestInit): Promise<Response> {
+  const withCreds: RequestInit = { credentials: "same-origin", ...init };
+  const first = await fetch(input, withCreds);
+  if (first.status !== 401) return first;
+
+  const refreshed = await fetch(withBasePath("/api/session/refresh"), {
+    method: "POST",
+    credentials: "same-origin",
+  }).catch(() => null);
+  if (!refreshed?.ok) return first;
+
+  // The minted token changed, so anything cached against the old one is stale.
+  tokenCache = null;
+  return fetch(input, withCreds);
 }

@@ -1,19 +1,38 @@
-import { useState, useEffect } from "react";
-import { initiateAuth, respondNewPasswordChallenge } from "./cognito-auth";
-import { storeRefreshToken } from "./cloud-config";
+import { useState } from "react";
 import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
-import type { CognitoConfig } from "./cognito-auth";
 
 interface SignInFormProps {
   onBack?: () => void;
   onSignedIn?: () => void;
 }
 
-export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
-  const [cognitoConfig, setCognitoConfig] = useState<CognitoConfig | null>(null);
-  const [runtimeConfigError, setRuntimeConfigError] = useState<string | null>(null);
+/**
+ * The sign-in form. It posts to Photos' own server and does nothing else — no
+ * Cognito client, no pool config to fetch, no token to store. What comes back
+ * is a pair of HttpOnly cookies this code cannot read, which is the property
+ * that makes an XSS here worth much less than it used to be.
+ */
+interface SessionResponse {
+  signedIn?: boolean;
+  challenge?: string;
+  session?: string;
+  error?: string;
+}
 
+async function post(action: string, body: unknown): Promise<SessionResponse> {
+  const res = await fetch(withBasePath(`/api/session/${action}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+  });
+  const parsed = (await res.json().catch(() => ({}))) as SessionResponse;
+  if (!res.ok) throw new Error(parsed.error ?? `Sign-in failed (${res.status})`);
+  return parsed;
+}
+
+export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -21,29 +40,18 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchRuntimeConfig().then((rc) => {
-      if (!rc?.userPoolId || !rc.userPoolClientId) {
-        setRuntimeConfigError("Cloud config not found in starkeep-runtime-config.json");
-        return;
-      }
-      setCognitoConfig({
-        region: rc.region ?? "us-east-1",
-        userPoolId: rc.userPoolId,
-        userPoolClientId: rc.userPoolClientId,
-        identityPoolId: rc.identityPoolId ?? "",
-      });
-    });
-  }, []);
-
-  const finishSignIn = async (idToken: string, refreshToken: string) => {
-    await storeRefreshToken(refreshToken);
+  const finishSignIn = async () => {
+    // Local surface only: hand the daemon the tokens it needs to sync. This is
+    // a different thing from the cloud session that happens to share this
+    // form — the daemon is a separate process that has to sign its own
+    // outbound calls, and `startOrKickSupervisor` refuses to run without a
+    // live ID token. On the cloud surface the server holds the session and
+    // there is no daemon to hand anything to.
     const rc = await fetchRuntimeConfig();
     if (!rc?.apiGatewayUrl) {
-      fetch(withBasePath("/api/local-data/auth/tokens"), {
+      await fetch(withBasePath("/api/local-sync-handoff"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken, refreshToken }),
+        credentials: "same-origin",
       }).catch(() => {});
     }
     localStorage.setItem("starkeep:dataSource", "remote");
@@ -55,17 +63,15 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   };
 
   const handleSignIn = async () => {
-    if (!cognitoConfig || !email || !password) return;
+    if (!email || !password) return;
     setSigningIn(true);
     setSignInError(null);
     try {
-      const result = await initiateAuth(cognitoConfig, email, password);
-      if (result.tokens) {
-        await finishSignIn(result.tokens.idToken, result.tokens.refreshToken);
-      } else if (result.challengeName === "NEW_PASSWORD_REQUIRED") {
+      const result = await post("sign-in", { email, password });
+      if (result.challenge === "NEW_PASSWORD_REQUIRED") {
         setSession(result.session ?? null);
       } else {
-        setSignInError(`Unexpected challenge: ${result.challengeName}`);
+        await finishSignIn();
       }
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : String(err));
@@ -75,12 +81,12 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   };
 
   const handleNewPassword = async () => {
-    if (!cognitoConfig || !session) return;
+    if (!session) return;
     setSigningIn(true);
     setSignInError(null);
     try {
-      const tokens = await respondNewPasswordChallenge(cognitoConfig, session, email, newPassword);
-      await finishSignIn(tokens.idToken, tokens.refreshToken);
+      await post("new-password", { session, email, newPassword });
+      await finishSignIn();
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -90,12 +96,6 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
 
   return (
     <>
-      {!cognitoConfig && (
-        <div style={{ fontSize: 13, color: "#f88", marginBottom: 12 }}>
-          {runtimeConfigError ?? "Loading cloud config…"}
-        </div>
-      )}
-
       {session ? (
         <>
           <div style={{ fontSize: 13, color: "#ccc", marginBottom: 16 }}>
@@ -142,12 +142,12 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
           />
           {signInError && <div style={{ fontSize: 12, color: "#f88", marginBottom: 8 }}>{signInError}</div>}
           <div style={{ display: "flex", gap: 8 }}>
-            {onBack && cognitoConfig && (
+            {onBack && (
               <button onClick={onBack} style={btnStyle}>Back</button>
             )}
             <button
               onClick={() => void handleSignIn()}
-              disabled={signingIn || !email || !password || !cognitoConfig}
+              disabled={signingIn || !email || !password}
               style={{ ...btnStyle, background: "rgba(80,140,255,0.15)", borderColor: "rgba(80,140,255,0.4)" }}
             >
               {signingIn ? "Signing in…" : "Sign in"}

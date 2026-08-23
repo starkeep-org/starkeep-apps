@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { readCloudConfig } from "./cloud-config";
 import { fetchRuntimeConfig } from "./runtime-config";
+import { withBasePath } from "./base-path";
 import { SignInForm } from "./SignInForm";
 
 export function CloudSetupModal({ onClose }: { onClose: () => void }) {
@@ -19,18 +19,30 @@ export function CloudSetupModal({ onClose }: { onClose: () => void }) {
       setHasCognitoConfig(true);
       setApiUrl(rc.apiGatewayUrl ?? null);
     });
-    readCloudConfig().then((c) => {
-      setIsSignedIn(!!c?.cognitoRefreshToken);
-      if (!c) setShowSignIn(true);
-    });
+    // Whether there is a session is now a question only the server can
+    // answer — the browser holds no token to inspect.
+    fetch(withBasePath("/api/session"), { credentials: "same-origin" })
+      .then((r) => r.json() as Promise<{ signedIn?: boolean }>)
+      .catch(() => ({ signedIn: false }))
+      .then((body) => {
+        setIsSignedIn(!!body.signedIn);
+        if (!body.signedIn) setShowSignIn(true);
+      });
   }, []);
 
   const handleDisconnect = () => {
-    localStorage.removeItem("starkeep:cloud-tokens");
-    localStorage.removeItem("starkeep:cloud-config"); // legacy key
-    localStorage.removeItem("starkeep:cloud-credentials");
-    localStorage.setItem("starkeep:dataSource", "local");
-    window.location.reload();
+    // Clearing localStorage is no longer enough — and the keys it used to
+    // clear no longer exist. The session lives in HttpOnly cookies, so only
+    // the server can end it.
+    void fetch(withBasePath("/api/session/sign-out"), {
+      method: "POST",
+      credentials: "same-origin",
+    })
+      .catch(() => {})
+      .finally(() => {
+        localStorage.setItem("starkeep:dataSource", "local");
+        window.location.reload();
+      });
   };
 
   return (

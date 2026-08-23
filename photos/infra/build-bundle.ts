@@ -229,6 +229,13 @@ function contentTypeFor(path) {
 function isStaticAssetPath(rest) {
   // Only _next/static/* and BUILD_ID live on disk in .open-next/assets.
   // _next/data/* and _next/image* are handled by the OpenNext server.
+  //
+  // This runs BEFORE the OpenNext handler, so it runs before the origin
+  // middleware — anything answered here is answered without a gate. That makes
+  // this list an enforcement bypass by construction, and it may only ever name
+  // paths the manifest declares public. Both entries below are in photos'
+  // publicPaths, and adding one that is not is how the anonymous surface grows
+  // back without anyone declaring it.
   return rest === "BUILD_ID" || rest.startsWith("_next/static/");
 }
 

@@ -14,7 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
+import { loadAppCredentials, signedFetch, USER_TOKEN_HEADER } from "@starkeep/app-client";
 import {
   deriveStillLadder,
   ladderIsComplete,
@@ -69,8 +69,26 @@ export async function handler(event: APIGatewayEvent) {
       return clientErr("photos credentials not available in cloud", 503);
     }
 
+    // Every broker call below carries the end user this resize is being done
+    // for, alongside the app signature. The data plane requires a credential
+    // bound to a named person on every call and grants no exemption to app
+    // compute — a resize is Photos acting on someone's photo, not on its own
+    // behalf. The token is the Bearer the gateway's JWT authorizer already
+    // verified to let this request in, so there is nothing new to obtain and
+    // nothing new to fail.
+    const bearer = event.headers?.authorization ?? event.headers?.Authorization ?? "";
+    const userToken = bearer.replace(/^Bearer\s+/i, "");
+    if (!userToken) {
+      return clientErr("Missing Authorization bearer token", 401);
+    }
+    const call = (path: string, init?: Parameters<typeof signedFetch>[2]) =>
+      signedFetch(creds, path, {
+        ...init,
+        headers: { ...(init?.headers ?? {}), [USER_TOKEN_HEADER]: userToken },
+      });
+
     // Fetch the source record.
-    const recordRes = await signedFetch(creds, `/data/records/${targetId}`);
+    const recordRes = await call(`/data/records/${targetId}`);
     if (!recordRes.ok) {
       const errBody = await recordRes.text().catch(() => "");
       console.error(`[resize] GET record ${targetId} → ${recordRes.status}: ${errBody}`);
@@ -96,14 +114,14 @@ export async function handler(event: APIGatewayEvent) {
     // ladder, one existing rung says nothing about the others, and the old
     // early return would have frozen every record at whatever it happened to
     // have. Which rungs to skip is decided per rung, below.
-    const precheck = await precheckThumbnail(targetId, (p) => signedFetch(creds, p));
+    const precheck = await precheckThumbnail(targetId, (p) => call(p));
     if (precheck.alreadyThumbnail) {
       return clientErr("Record is already a rendition", 400);
     }
 
     // Presigned URL for the source file — direct S3 fetch, no broker hop for
     // the byte transfer.
-    const fileUrlRes = await signedFetch(creds, `/data/records/${targetId}/file-url`);
+    const fileUrlRes = await call(`/data/records/${targetId}/file-url`);
     if (!fileUrlRes.ok) {
       const errBody = await fileUrlRes.text().catch(() => "");
       console.error(`[resize] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
@@ -139,7 +157,7 @@ export async function handler(event: APIGatewayEvent) {
     // Skip rungs that already exist: this handler is re-runnable, and a retry
     // after a partial failure should finish the job rather than duplicate it.
     const already = new Set(
-      await existingRenditionClasses((p, i) => signedFetch(creds, p, i), targetId),
+      await existingRenditionClasses((p, i) => call(p, i), targetId),
     );
     const published: Array<{ sizeClass: string; recordId: string }> = [];
     for (const rendition of derived) {
@@ -148,7 +166,7 @@ export async function handler(event: APIGatewayEvent) {
       const objectStorageKey = dataRecordObjectKey("image", contentHash);
       try {
         const result = await publishRendition(
-          (p, i) => signedFetch(creds, p, i),
+          (p, i) => call(p, i),
           { id: targetId, originalFilename: record.original_filename },
           rendition,
           contentHash,
@@ -172,13 +190,13 @@ export async function handler(event: APIGatewayEvent) {
     // so making it loosely is the one way an app could freeze an original with
     // nothing readable in its place.
     const finalClasses = await existingRenditionClasses(
-      (p, i) => signedFetch(creds, p, i),
+      (p, i) => call(p, i),
       targetId,
     );
     const sourceDims = await readSourceDimensions(inputBuffer);
     let archiveGate: { tagged: boolean; refusals: string[] } | null = null;
     if (ladderIsComplete(sourceDims.longEdge, finalClasses)) {
-      archiveGate = await assertLadderComplete((p, i) => signedFetch(creds, p, i), targetId);
+      archiveGate = await assertLadderComplete((p, i) => call(p, i), targetId);
     }
 
     return ok({ ok: true, published, archiveGate });

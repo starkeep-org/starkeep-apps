@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
 
@@ -39,6 +39,28 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   const [session, setSession] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
+
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  // Adopt whatever the fields already hold when React attaches.
+  //
+  // These inputs are server-rendered, so there is a window between the HTML
+  // arriving and this component hydrating in which a person can type into
+  // them. Text typed in that window lands in the DOM and nowhere else: React
+  // then attaches with empty state, the submit button — which enables on that
+  // state — stays disabled, and retyping does not recover it, because every
+  // later keystroke lands on a React that has already decided the field is
+  // empty. The result is a form that shows the person their own password and
+  // refuses to submit it, with nothing on screen to say why. Reading the DOM
+  // once at mount closes that window. It also picks up a browser autofill,
+  // which desynchronises in exactly the same way.
+  useEffect(() => {
+    const filledEmail = emailRef.current?.value;
+    if (filledEmail) setEmail(filledEmail);
+    const filledPassword = passwordRef.current?.value;
+    if (filledPassword) setPassword(filledPassword);
+  }, []);
 
   const finishSignIn = async () => {
     // Local surface only: hand the daemon the tokens it needs to sync. This is
@@ -125,6 +147,7 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
         <>
           <label style={labelStyle}>Email</label>
           <input
+            ref={emailRef}
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -134,6 +157,7 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
           />
           <label style={labelStyle}>Password</label>
           <input
+            ref={passwordRef}
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

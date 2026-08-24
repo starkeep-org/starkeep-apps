@@ -130,7 +130,7 @@
             "GET /",
             "ANY /{proxy+}"
           ],
-          "auth": "public",
+          "auth": "session",
           "publicPaths": [
             "/",
             "/_next/static/*",

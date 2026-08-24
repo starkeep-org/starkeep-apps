@@ -102,8 +102,11 @@ async function startPhone(retention?: NodeRetentionPolicy): Promise<MobileNode> 
 /** Everything the phone knows about, and whether it holds the bytes. */
 async function residencyOf(node: MobileNode) {
   const { records } = await node.databaseAdapter.query({});
-  const held: string[] = [];
-  const elided: string[] = [];
+  // `DataRecord["id"]` rather than `string`: record ids are branded, and a
+  // helper that widens them hands back something the adapter will not accept
+  // on the way in again.
+  const held: DataRecord["id"][] = [];
+  const elided: DataRecord["id"][] = [];
   for (const r of records) {
     if (!r.objectStorageKey) continue;
     ((await node.objectStorage.has(r.objectStorageKey)) ? held : elided).push(r.id);

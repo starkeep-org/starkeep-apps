@@ -1,11 +1,36 @@
 import { useCallback, useState, useEffect } from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { isVideoRecord } from "@/photos-lib/client";
+import { isVideoRecord, stillDisplay, viewportTargetLongEdge } from "@/photos-lib/client";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { VideoPlayer } from "./video-player";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { FaceOverlay } from "../vision/face-overlay";
 import type { ImageFaces } from "../../../lib/vision-client";
+
+/**
+ * The size the opened view asks for: the viewport's long edge, scaled by the
+ * device pixel ratio.
+ *
+ * Measured rather than fixed, because unlike the grid this is laid out by the
+ * time it matters. Re-measured on resize so dragging a window to a second
+ * display asks for what that display can actually show.
+ */
+function useViewportTarget(): number {
+  const [target, setTarget] = useState(() =>
+    typeof window === "undefined"
+      ? 2048
+      : viewportTargetLongEdge(window.innerWidth, window.innerHeight, window.devicePixelRatio),
+  );
+  useEffect(() => {
+    const onResize = () =>
+      setTarget(
+        viewportTargetLongEdge(window.innerWidth, window.innerHeight, window.devicePixelRatio),
+      );
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return target;
+}
 
 // EXIF orientations 5–8 rotate the image by ±90°, so the *displayed* image
 // swaps width and height relative to the stored (un-oriented) pixel
@@ -24,8 +49,23 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // then we show a placeholder instead of a bare <img>, which would otherwise
   // render the browser's broken-image glyph while its signed URL is still being
   // fetched (a cache miss on open) and while the original downloads.
-  const fullSizeSrc = getFullSizeSrc(image.id) ?? undefined;
   const isVideo = isVideoRecord(image);
+
+  // The rendition, not the original.
+  //
+  // This used to resolve to the record's own bytes, and the viewport-sized
+  // rendition the list query asks for specifically for this moment was never
+  // read by anything. Measured on a real library that was 7.1 MB against
+  // 0.55 MB — thirteen times the bytes, held open thirteen times as long, on
+  // exactly the stream whose abort used to kill the data server.
+  //
+  // The original stays the answer when no rendition fits: a record whose ladder
+  // has not been derived is still a photo somebody wants to look at, and unlike
+  // a 180 px grid tile a fullscreen view is a reasonable place to spend the
+  // bytes.
+  const viewportTarget = useViewportTarget();
+  const rendition = isVideo ? null : stillDisplay(image, viewportTarget);
+  const fullSizeSrc = rendition?.source?.url ?? getFullSizeSrc(image.id) ?? undefined;
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     setLoaded(false);

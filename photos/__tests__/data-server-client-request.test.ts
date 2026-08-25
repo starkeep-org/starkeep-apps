@@ -198,8 +198,13 @@ describe("getPhotoFileUrls batching", () => {
   });
 });
 
-describe("listPhotos enrichment", () => {
-  it("requests ?include=metadata and passes embedded metadata through", async () => {
+// The library list goes to Photos' own route, not to the generic data-plane
+// proxy, because resolving renditions against the ladder is an app job and the
+// data server must never learn what a size class is. What the client sends is
+// therefore pixel sizes and nothing else; the enrichment the data server is
+// asked for is decided one hop later, by the route.
+describe("the library list", () => {
+  it("asks Photos' own route, in pixels, and passes metadata through", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       response(200, { records: [{ id: "r1", metadata: { recordId: "r1", width: 3, height: 4 } }] }),
     );
@@ -207,18 +212,20 @@ describe("listPhotos enrichment", () => {
 
     const records = await settle(listPhotos());
     const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).toContain("/data/records");
-    expect(url).toContain("include=metadata");
+    expect(url).toContain("/api/photos/library");
+    expect(url).toMatch(/targets=\d+(,\d+)*/);
+    // No size class is named in either direction.
+    expect(url).not.toMatch(/image-/);
     expect(records[0]!.metadata).toMatchObject({ width: 3, height: 4 });
   });
 
-  it("listPhotosSince also requests enrichment alongside the cursor", async () => {
+  it("carries the cursor on the incremental form", async () => {
     const fetchMock = vi.fn().mockResolvedValue(response(200, { records: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
     await settle(listPhotosSince("2026-01-01T00:00:00.000Z"));
     const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).toContain("include=metadata");
+    expect(url).toContain("/api/photos/library");
     expect(url).toContain("updated_after=");
   });
 });

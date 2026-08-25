@@ -13,6 +13,22 @@ interface UsePhotoFreshnessOptions {
   onMerge: (images: AppImage[]) => void;
   onLoadingChange: (loading: boolean) => void;
   onError: (message: string) => void;
+  /**
+   * Whether any record on screen is showing a stand-in for a rung that is still
+   * being derived.
+   *
+   * When it is, an update has to be a **full** re-list rather than an
+   * incremental one. A new rendition is a new child record, and the library
+   * page excludes children by label and keys its cursor on the *parent's*
+   * `updated_at` — which a new child does not change. So the one event this is
+   * waiting for is precisely the one an incremental fetch cannot see.
+   *
+   * This terminates, and that is why it is keyed on availability rather than on
+   * "smaller than I asked for": a record whose ladder genuinely stops below the
+   * requested size reports its top rung as available, so it never counts as
+   * waiting and never keeps this on.
+   */
+  awaitingRenditions?: boolean;
 }
 
 export interface PhotoFreshnessControls {
@@ -51,12 +67,22 @@ function getFreshnessStrategy(): Promise<FreshnessStrategy> {
   return strategyPromise;
 }
 
-export function usePhotoFreshness({ onInitialLoad, onMerge, onLoadingChange, onError }: UsePhotoFreshnessOptions): PhotoFreshnessControls {
+export function usePhotoFreshness({
+  onInitialLoad,
+  onMerge,
+  onLoadingChange,
+  onError,
+  awaitingRenditions = false,
+}: UsePhotoFreshnessOptions): PhotoFreshnessControls {
   const cursorRef = useRef<string | null>(null);
   const hiddenAtRef = useRef<number | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const strategyRef = useRef<FreshnessStrategy | null>(null);
+  // Read inside callbacks that are deliberately not re-created per render, so
+  // the flag has to travel by ref rather than by closure.
+  const awaitingRef = useRef(awaitingRenditions);
+  awaitingRef.current = awaitingRenditions;
 
   const computeCursor = (images: AppImage[]): string | null => {
     if (images.length === 0) return null;
@@ -64,7 +90,10 @@ export function usePhotoFreshness({ onInitialLoad, onMerge, onLoadingChange, onE
   };
 
   const fetchAll = useCallback(async () => {
-    onLoadingChange(true);
+    // The spinner belongs to the first load. A background re-list to pick up a
+    // rendition that just landed must not blank the grid the user is looking at.
+    const showSpinner = cursorRef.current === null;
+    if (showSpinner) onLoadingChange(true);
     try {
       const records = await listPhotos();
       const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
@@ -74,14 +103,18 @@ export function usePhotoFreshness({ onInitialLoad, onMerge, onLoadingChange, onE
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to load photos");
     } finally {
-      onLoadingChange(false);
+      if (showSpinner) onLoadingChange(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchSince = useCallback(async () => {
     const cursor = cursorRef.current;
-    if (!cursor) {
+    // A tile waiting on a better rung cannot be served by the cursor: the rung
+    // arrives as a child record the page excludes, and it does not move the
+    // parent's `updated_at`. So while anything is waiting, refresh the whole
+    // page — one request per tick, and it stops as soon as nothing is waiting.
+    if (!cursor || awaitingRef.current) {
       await fetchAll();
       return;
     }

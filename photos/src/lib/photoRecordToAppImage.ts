@@ -28,8 +28,16 @@ export function photoRecordToAppImage(
     variants: Object.fromEntries(
       Object.entries(record.variants ?? {})
         .filter(([, v]) => typeof v.url === "string")
-        .map(([target, v]) => [target, { url: v.url!, width: v.width, height: v.height }]),
+        .map(([target, v]) => [
+          target,
+          { url: v.url!, width: v.width, height: v.height, type: v.type },
+        ]),
     ),
+    // Passed through as the app server resolved it. An entry marked
+    // unavailable deliberately keeps no URL — that is what makes "missing" and
+    // "here" different shapes rather than a flag a consumer has to remember to
+    // read.
+    ...(record.renditions ? { renditions: record.renditions } : {}),
     thumbHash: metadata?.thumb_hash ?? null,
     width: metadata?.width ?? 0,
     height: metadata?.height ?? 0,

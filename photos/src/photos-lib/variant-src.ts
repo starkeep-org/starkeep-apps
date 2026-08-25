@@ -13,6 +13,7 @@
  * did not request.
  */
 
+import type { RenditionChoice, RenditionState } from "./rendition-resolution";
 import type { AppImage } from "./types/app-image";
 
 export interface DisplaySource {
@@ -63,6 +64,109 @@ export function variantSrc(image: AppImage, targetLongEdge: number): DisplaySour
     width: chosen.width,
     height: chosen.height,
     isBelowTarget: Math.max(chosen.width, chosen.height) < targetLongEdge,
+  };
+}
+
+/**
+ * What a still tile or viewer should paint right now, and what it is waiting
+ * for.
+ *
+ * This is the reader for the ideal-and-fallback shape, and the reason it exists
+ * separately from {@link variantSrc} is that the two answer different
+ * questions. `variantSrc` says "here is the best fit"; this says "here is what
+ * to show, here is whether something better is coming, and here is whether
+ * anything ever will".
+ *
+ * `source` is null only when nothing at all has been derived — the signal to
+ * paint the inline placeholder.
+ */
+export interface StillDisplay {
+  readonly source: DisplaySource | null;
+  /**
+   * True while what is on screen is a stand-in for a rung that is still being
+   * derived. False both when the ideal is in hand and when it is unreachable,
+   * because those are both final.
+   */
+  readonly awaitingBetter: boolean;
+  /**
+   * Why the ideal is not here, when it is not. `undecodable-here` is the one
+   * the user should be told about: it is temporary and self-healing, which is
+   * the opposite of what an indefinitely grey tile communicates.
+   */
+  readonly state: RenditionState | null;
+  /** Pixel size of the rung being waited on, for a derivation request. */
+  readonly idealLongEdge: number | null;
+}
+
+export function stillDisplay(image: AppImage, targetLongEdge: number): StillDisplay {
+  const choice = choiceFor(image, targetLongEdge);
+  if (!choice) {
+    // No resolution for this target — an older server, a video, or a size the
+    // list did not ask for. Fall back to best-fit over whatever is here, which
+    // is what every consumer did before this shape existed.
+    return {
+      source: variantSrc(image, targetLongEdge),
+      awaitingBetter: false,
+      state: null,
+      idealLongEdge: null,
+    };
+  }
+
+  if (choice.ideal.available) {
+    return {
+      source: entryToSource(choice.ideal, targetLongEdge),
+      awaitingBetter: false,
+      state: null,
+      idealLongEdge: choice.ideal.longEdge,
+    };
+  }
+
+  const state = choice.ideal.state ?? "pending";
+  return {
+    source: choice.fallback ? entryToSource(choice.fallback, targetLongEdge) : null,
+    // Keyed on availability, never on "smaller than I asked for". A 300 px
+    // original asked for 2048 resolves to a rung that is genuinely below target
+    // and genuinely final, so a watcher on the size comparison would wait
+    // forever for a rung nobody is going to derive.
+    awaitingBetter: state === "pending",
+    state,
+    idealLongEdge: choice.ideal.longEdge,
+  };
+}
+
+/**
+ * The resolution that answers this request.
+ *
+ * Exact when the list asked for this size; otherwise the smallest resolved
+ * target at or above it, and the largest resolved target when nothing reaches
+ * it. Round-up for the same reason the ladder rounds up — the alternative hands
+ * a large display a small file — and it means a caller measuring its own
+ * viewport gets a defined answer from a list that asked for two fixed sizes.
+ */
+function choiceFor(image: AppImage, targetLongEdge: number): RenditionChoice | undefined {
+  const resolved = image.renditions;
+  if (!resolved) return undefined;
+  const exact = resolved[String(targetLongEdge)];
+  if (exact) return exact;
+  const keys = Object.keys(resolved)
+    .map(Number)
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  if (keys.length === 0) return undefined;
+  const atLeast = keys.find((k) => k >= targetLongEdge);
+  return resolved[String(atLeast ?? keys[keys.length - 1])];
+}
+
+function entryToSource(
+  entry: RenditionChoice["ideal"],
+  targetLongEdge: number,
+): DisplaySource | null {
+  if (!entry.url || !entry.width || !entry.height) return null;
+  return {
+    url: entry.url,
+    width: entry.width,
+    height: entry.height,
+    isBelowTarget: entry.longEdge < targetLongEdge,
   };
 }
 

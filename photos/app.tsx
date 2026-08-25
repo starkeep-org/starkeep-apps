@@ -138,26 +138,25 @@ function PhotosAppInner() {
     localStorage.setItem("thumbnail-strategy", s);
   };
 
-  // Build the display list. Deduplicate thumbnails per original (keep newest),
-  // then show orphan originals (no thumbnail yet) as empty placeholder boxes.
-  const allThumbnails = state.images.filter((img) => img.parentId !== null);
+  // Build the display list. Renditions never appear here in their own right:
+  // the library query excludes them server-side by label, so every record in
+  // `state.images` is an original and each carries its resolved renditions in
+  // `variants`. An original with no variants has nothing derived yet and is
+  // shown as a placeholder box.
+  //
+  // The `parentId` split this used to do could not work for exactly that
+  // reason — the set of records with a parent is always empty here, so every
+  // original counted as an orphan and every page load re-derived the whole
+  // library.
   const originals = state.images.filter((img) => img.parentId === null);
-  const newestThumbnailByParent = new Map<string, typeof allThumbnails[0]>();
-  for (const t of allThumbnails) {
-    const parentId = t.parentId!;
-    const existing = newestThumbnailByParent.get(parentId);
-    if (!existing || t.createdAt > existing.createdAt) newestThumbnailByParent.set(parentId, t);
-  }
-  const thumbnails = Array.from(newestThumbnailByParent.values());
-  const thumbnailedIds = new Set(thumbnails.map((t) => t.parentId!));
-  const fallbackOriginals = originals.filter((img) => !thumbnailedIds.has(img.id));
+  const fallbackOriginals = originals.filter((img) => Object.keys(img.variants).length === 0);
   // Sort client-side so display order is deterministic and identical across the
   // local and cloud backends, independent of each server's query order and of
   // the incremental-merge append drift in UPSERT_IMAGES. Newest first by
   // effectiveDateTaken (the same field the grid groups days by), with id as a
   // stable tiebreak. effectiveDateTaken is an ISO-8601 string, so lexical
   // comparison is chronological.
-  const displayImages = [...thumbnails, ...fallbackOriginals].sort((a, b) => {
+  const displayImages = [...originals].sort((a, b) => {
     if (a.effectiveDateTaken !== b.effectiveDateTaken) {
       return a.effectiveDateTaken < b.effectiveDateTaken ? 1 : -1;
     }
@@ -186,15 +185,10 @@ function PhotosAppInner() {
     })();
   }, [orphanIds]);
 
-  // For the viewer: if a thumbnail was clicked, show its original.
-  // If a fallback-original was clicked (no thumbnail exists), show it directly.
-  const selectedDisplayImage = state.selectedId
+  // The grid displays originals, so the clicked tile already *is* the record
+  // the viewer wants. There is no thumbnail-to-parent hop to make.
+  const selectedImage = state.selectedId
     ? displayImages.find((img) => img.id === state.selectedId) ?? null
-    : null;
-  const selectedImage = selectedDisplayImage
-    ? (selectedDisplayImage.parentId !== null
-        ? (state.images.find((img) => img.id === selectedDisplayImage.parentId) ?? selectedDisplayImage)
-        : selectedDisplayImage)
     : null;
 
   const freshness = usePhotoFreshness({

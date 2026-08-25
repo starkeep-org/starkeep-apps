@@ -4,16 +4,17 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "pnpm vision:build-worker && next dev",
+    "dev": "pnpm vision:build-worker && pnpm derive:build-worker && next dev",
     "build": "open-next build",
     "bundle": "tsx infra/build-bundle.ts",
-    "start": "pnpm vision:build-worker && next start",
+    "start": "pnpm vision:build-worker && pnpm derive:build-worker && next start",
     "vision:fetch-models": "tsx scripts/fetch-vision-models.ts",
     "vision:fetch-fixtures": "tsx scripts/fetch-vision-fixtures.ts",
     "vision:build-worker": "tsx scripts/build-vision-worker.ts",
     "test": "vitest run",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
+    "derive:build-worker": "tsx scripts/build-derive-worker.ts"
   },
   "dependencies": {
     "@starkeep/app-client": "^0.5.2",

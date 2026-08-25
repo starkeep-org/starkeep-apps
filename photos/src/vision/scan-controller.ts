@@ -88,6 +88,25 @@ export async function startScan(): Promise<StartResult> {
   const self = controller();
   if (self.worker) return { ok: false, status: 409, error: "a scan is already running" };
 
+  // Derivation has priority, and the reason is dependency rather than
+  // preference: this scan reads `image-medium`, so a library whose renditions
+  // are still being produced is a library this scan would walk past. Both are
+  // CPU-bound sweeps over everything and they now share a process, so running
+  // them at once makes the machine unusable and both of them slower.
+  //
+  // Imported lazily to keep the derivation module out of this one's static
+  // graph, which is the same isolation rule this file exists to hold.
+  const { isSweeping } = await import("../derivation/sweep-controller");
+  if (isSweeping()) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        "derivation is running — it produces the size this scan reads, so it goes first. " +
+        "Stop it first if you want to scan against what is already derived.",
+    };
+  }
+
   const config = readVisionConfig();
   if (!config.faces.enabled) {
     return { ok: false, status: 409, error: "face detection is off — enable it in Settings first" };

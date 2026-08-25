@@ -13,6 +13,7 @@
   "dependencies": {
     "@noble/curves": "^2.2.0",
     "@op-engineering/op-sqlite": "^17.1.3",
+    "@starkeep/photos-ladder": "workspace:*",
     "@starkeep/protocol-primitives": "^0.4.0",
     "@starkeep/storage-adapter": "^0.4.0",
     "@starkeep/storage-sqlite": "^0.4.0",

@@ -22,7 +22,7 @@ import {
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
   type VideoSource,
-} from "../src/photos-lib/ladder";
+} from "../src/ladder";
 
 const classesFor = (longEdge: number) =>
   applicableStillClasses(longEdge).map((s) => s.sizeClass);

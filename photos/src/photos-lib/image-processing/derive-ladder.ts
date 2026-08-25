@@ -1,5 +1,5 @@
 /**
- * Deriving the whole still ladder from one decoded source.
+ * Deriving the still ladder from one decoded source.
  *
  * ## The rule this exists to obey
  *
@@ -12,20 +12,47 @@
  * only be called by something that already holds them, and there is no code
  * path here that could fetch anything.
  *
- * ## One decode, every rung
+ * ## One decode, every rung — enforced, not merely intended
  *
- * The classes are generated from a single decode of the source. Decoding a
- * 48 MP ProRAW is the expensive part — several hundred milliseconds and tens of
- * megabytes — and doing it once per rung would multiply that by four for output
- * that is, in total, smaller than the source.
+ * This file has always claimed "one decode, every rung", and until
+ * {@link decodeForDerivation} existed it was not true. Every `sharp(source)`
+ * call decodes the source again, and there was one per rung, one for the
+ * ThumbHash, one for the perceptual hash and two more for dimensions: nine full
+ * decodes of the same 48 MP buffer, to produce output collectively smaller than
+ * the input.
  *
- * ## Ordering is not incidental
+ * The fix is to decode to raw pixels once and hand *those* to everything else.
+ * A raw buffer fed back to sharp costs a memcpy rather than a decode, so the
+ * count is now genuinely one however many rungs are asked for.
  *
- * `image-medium` is emitted first, because on-device AI reads it and ingest
- * wants to hand the model something as early as possible. Every routine model
- * input is ≤640 px, so `image-medium` at 1280 has 2× headroom, and using the
- * original instead would decode 48 MP to produce a 640 px letterbox — the same
- * argument that rules out the larger rungs, only more so.
+ * ### The working image is capped at the top of the ladder
+ *
+ * Nothing derived here is ever larger than the ladder's top rung, so the decode
+ * shrinks to `min(source long edge, top rung maximum)` and every rung comes off
+ * that. The top rung emits exactly that size, so it is unaffected; the smaller
+ * ones resize from an already-downscaled intermediate, which is what mipmapping
+ * does and is visually equivalent.
+ *
+ * The cap is deliberately a property of the *ladder*, not of what the caller
+ * asked for. A node deriving only the cheap rungs and a node deriving all of
+ * them decode to the same working image, so the ThumbHash and the perceptual
+ * hash they compute agree — and a perceptual hash that varied with which rungs
+ * a node happened to want would make cross-node duplicate detection quietly
+ * unreliable.
+ *
+ * ## Ordering is ascending, and rungs are yielded as they finish
+ *
+ * {@link deriveStillLadderStream} yields smallest first, so a caller can
+ * publish each rung the moment it exists. That matters more than it sounds: the
+ * bottom two rungs for an entire library cost about half a second against
+ * nearly thirty for the full ladder, so a grid waiting on `image-large` waits
+ * sixty times longer than the tile it is painting requires.
+ *
+ * This reverses an earlier `image-medium`-first order, whose reason was that
+ * on-device AI reads that rung and ingest wanted to hand a model something
+ * early. Ascending keeps that: `image-xsmall` and `image-thumb` together are a
+ * few tens of milliseconds, so `image-medium` still arrives almost at once, and
+ * now the tile does too.
  */
 
 import {
@@ -113,98 +140,193 @@ export async function readSourceDimensions(
 }
 
 /**
- * Produce every applicable rung for this source.
+ * The decoded working image every derivation step reads.
  *
- * Returns them in the order they should be *used*, not in ladder order — see
- * the note above about `image-medium`. Callers that want ladder order should
- * sort by the class's position in {@link STILL_LADDER}.
+ * Raw pixels rather than an encoded buffer, because that is the only shape
+ * sharp will accept without decoding again. `source` carries the *original's*
+ * dimensions, which is what the ladder is computed against — the working image
+ * may be smaller, and resolving rungs against its size instead would quietly
+ * drop the top rung for every photo above the cap.
  */
-export async function deriveStillLadder(
+export interface DecodedImage {
+  readonly pixels: Buffer;
+  readonly width: number;
+  readonly height: number;
+  readonly channels: number;
+  readonly source: SourceDimensions;
+}
+
+/**
+ * The long edge the working image is decoded to.
+ *
+ * The ladder's top rung: no output is ever larger, so decoding above it would
+ * be pixels nothing reads. Read off {@link STILL_LADDER} rather than written
+ * down, so respecifying the ladder cannot leave this behind.
+ */
+const WORKING_LONG_EDGE = STILL_LADDER[STILL_LADDER.length - 1]!.maxLongEdge;
+
+function isDecoded(input: Uint8Array | DecodedImage): input is DecodedImage {
+  return typeof (input as DecodedImage).channels === "number";
+}
+
+/**
+ * Decode a source once, into the buffer every rung and every hash reads.
+ *
+ * Raw and HEIC are normalised first — raw to its embedded preview, HEIC via the
+ * platform decoder. Both throw UndecodableError when this node cannot read the
+ * format, which is what makes the outcome terminal rather than something a
+ * sweeper retries daily forever.
+ */
+export async function decodeForDerivation(
   imageBytes: Uint8Array,
   options: DeriveLadderOptions = {},
-): Promise<DerivedRendition[]> {
+): Promise<DecodedImage> {
   const { default: sharp } = (await import("sharp")) as {
     default: typeof import("sharp").default;
   };
-  const codec = options.codec ?? "avif";
-  const { type, contentType } = CODEC_TYPES[codec];
 
-  // Raw and HEIC are normalised first: raw to its embedded preview, HEIC via
-  // the platform decoder. Both throw UndecodableError when this node cannot
-  // read the format, which is what makes the outcome terminal rather than
-  // something the sweeper retries daily forever.
-  const decoded = options.sourceType
+  const normalised = options.sourceType
     ? await decodeSource(imageBytes, options.sourceType, {
         ...(options.platformDecoder ? { platformDecoder: options.platformDecoder } : {}),
       })
     : { bytes: imageBytes, via: "direct" as const };
 
-  const source = Buffer.from(decoded.bytes);
-  const dims = await readSourceDimensions(decoded.bytes);
-  if (dims.longEdge === 0) {
+  const source = await readSourceDimensions(normalised.bytes);
+  if (source.longEdge === 0) {
     throw new Error("Cannot derive a ladder from an image with no readable dimensions");
   }
 
-  let classes = applicableStillClasses(dims.longEdge);
-  if (options.only) {
-    const wanted = new Set(options.only);
-    classes = classes.filter((c) => wanted.has(c.sizeClass));
-  }
+  // `.rotate()` applies the EXIF orientation, so everything downstream works in
+  // display orientation and no later step has to think about it again. The raw
+  // buffer carries no EXIF, which is the point: orientation is resolved once,
+  // here, and cannot be applied twice by accident.
+  const working = Math.min(source.longEdge, WORKING_LONG_EDGE);
+  const { data, info } = await sharp(Buffer.from(normalised.bytes))
+    .rotate()
+    .resize(working, working, {
+      fit: "inside",
+      kernel: "lanczos3",
+      withoutEnlargement: true,
+    })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
 
-  const out: DerivedRendition[] = [];
-  for (const spec of orderForUse(classes)) {
-    out.push(await encodeOne(sharp, source, spec, dims, codec, type, contentType));
-  }
-  return out;
+  return {
+    pixels: data,
+    width: info.width,
+    height: info.height,
+    channels: info.channels,
+    source,
+  };
+}
+
+/** Feed the working image back to sharp. Costs a copy, not a decode. */
+function fromDecoded(
+  sharp: typeof import("sharp").default,
+  decoded: DecodedImage,
+): import("sharp").Sharp {
+  return sharp(decoded.pixels, {
+    raw: { width: decoded.width, height: decoded.height, channels: decoded.channels as 1 | 2 | 3 | 4 },
+  });
+}
+
+async function asDecoded(
+  input: Uint8Array | DecodedImage,
+  options: DeriveLadderOptions,
+): Promise<DecodedImage> {
+  return isDecoded(input) ? input : decodeForDerivation(input, options);
+}
+
+/** Which rungs this source produces, ascending, after any `only` filter. */
+function rungsFor(
+  decoded: DecodedImage,
+  options: DeriveLadderOptions,
+): StillClassSpec[] {
+  const classes = applicableStillClasses(decoded.source.longEdge);
+  if (!options.only) return classes;
+  const wanted = new Set(options.only);
+  return classes.filter((c) => wanted.has(c.sizeClass));
 }
 
 /**
- * `image-medium` first, then ascending.
+ * Produce every applicable rung, yielding each as it finishes.
  *
- * Ingest runs AI off `image-medium`, so emitting it first lets the model start
- * while the larger rungs are still encoding. The rest ascend because a caller
- * streaming results upward wants the cheap ones available soonest.
+ * Ascending, so the caller can publish the tile-sized rungs while the expensive
+ * ones are still encoding. A caller that publishes inside the loop turns a
+ * thirty-second wait for a visible grid into a sub-second one.
+ *
+ * Accepts either bytes or an already-{@link decodeForDerivation}d source, so a
+ * caller that also wants the ThumbHash and the perceptual hash can decode once
+ * and pass the result to all three.
  */
-function orderForUse(classes: readonly StillClassSpec[]): StillClassSpec[] {
-  const medium = classes.find((c) => c.sizeClass === "image-medium");
-  if (!medium) return [...classes];
-  return [medium, ...classes.filter((c) => c !== medium)];
+export async function* deriveStillLadderStream(
+  input: Uint8Array | DecodedImage,
+  options: DeriveLadderOptions = {},
+): AsyncGenerator<DerivedRendition> {
+  const { default: sharp } = (await import("sharp")) as {
+    default: typeof import("sharp").default;
+  };
+  const codec = options.codec ?? "avif";
+  const { type, contentType } = CODEC_TYPES[codec];
+  const decoded = await asDecoded(input, options);
+
+  for (const spec of rungsFor(decoded, options)) {
+    yield await encodeOne(sharp, decoded, spec, codec, type, contentType);
+  }
+}
+
+/**
+ * Every applicable rung, collected.
+ *
+ * The convenience form of {@link deriveStillLadderStream} for callers that have
+ * nothing useful to do with a rung before the rest arrive — tests, mostly.
+ * Anything publishing renditions should stream instead, or it reintroduces the
+ * wait the streaming form exists to remove.
+ */
+export async function deriveStillLadder(
+  input: Uint8Array | DecodedImage,
+  options: DeriveLadderOptions = {},
+): Promise<DerivedRendition[]> {
+  const out: DerivedRendition[] = [];
+  for await (const rendition of deriveStillLadderStream(input, options)) out.push(rendition);
+  return out;
 }
 
 async function encodeOne(
   sharp: typeof import("sharp").default,
-  source: Buffer,
+  decoded: DecodedImage,
   spec: StillClassSpec,
-  dims: SourceDimensions,
   codec: NonNullable<DeriveLadderOptions["codec"]>,
   type: string,
   contentType: string,
 ): Promise<DerivedRendition> {
-  const target = renditionLongEdge(spec, dims.longEdge);
-  const pipeline = sharp(source)
-    .rotate()
-    .resize(target, target, {
-      fit: "inside",
-      kernel: "lanczos3",
-      // Rule 1, enforced by the encoder as well as by the arithmetic above. A
-      // class must never emit a file larger than its source, and belt-and-braces
-      // here costs nothing.
-      withoutEnlargement: true,
-    });
+  // Against the *original's* long edge, not the working image's: Rule 1 is
+  // about what the source could support, and a working image already clamped to
+  // the top rung would make every rung above the clamp resolve to the clamp.
+  const target = renditionLongEdge(spec, decoded.source.longEdge);
+  const pipeline = fromDecoded(sharp, decoded).resize(target, target, {
+    fit: "inside",
+    kernel: "lanczos3",
+    // Rule 1, enforced by the encoder as well as by the arithmetic above. A
+    // class must never emit a file larger than its source, and belt-and-braces
+    // here costs nothing.
+    withoutEnlargement: true,
+  });
 
-  const encoded =
+  const { data, info } =
     codec === "avif"
-      ? await pipeline.avif({ quality: spec.quality }).toBuffer()
+      ? await pipeline.avif({ quality: spec.quality }).toBuffer({ resolveWithObject: true })
       : codec === "webp"
-        ? await pipeline.webp({ quality: spec.quality }).toBuffer()
-        : await pipeline.jpeg({ quality: spec.quality }).toBuffer();
+        ? await pipeline.webp({ quality: spec.quality }).toBuffer({ resolveWithObject: true })
+        : await pipeline.jpeg({ quality: spec.quality }).toBuffer({ resolveWithObject: true });
 
-  const meta = await sharp(encoded).metadata();
+  // Taken from the encode's own output info rather than by re-reading the
+  // encoded buffer, which was a tenth decode hiding behind a metadata() call.
   return {
     sizeClass: spec.sizeClass,
-    data: new Uint8Array(encoded),
-    width: meta.width ?? 0,
-    height: meta.height ?? 0,
+    data: new Uint8Array(data),
+    width: info.width,
+    height: info.height,
     type,
     contentType,
   };
@@ -292,16 +414,19 @@ export function cloudCanDecode(type: string): boolean {
  * colour reads as a loading state and a tiny JPEG is an order of magnitude
  * larger and still needs decoding.
  */
-export async function computeThumbHash(imageBytes: Uint8Array): Promise<string> {
+export async function computeThumbHash(
+  input: Uint8Array | DecodedImage,
+  options: DeriveLadderOptions = {},
+): Promise<string> {
   const { default: sharp } = (await import("sharp")) as {
     default: typeof import("sharp").default;
   };
   const { rgbaToThumbHash } = await import("thumbhash");
+  const decoded = await asDecoded(input, options);
 
   // ThumbHash requires a source of at most 100×100. `fit: "inside"` preserves
   // aspect ratio, which the format encodes and the decoder reproduces.
-  const { data, info } = await sharp(Buffer.from(imageBytes))
-    .rotate()
+  const { data, info } = await fromDecoded(sharp, decoded)
     .resize(100, 100, { fit: "inside", withoutEnlargement: true })
     .ensureAlpha()
     .raw()
@@ -332,15 +457,18 @@ export async function computeThumbHash(imageBytes: Uint8Array): Promise<string> 
  *
  * Computed during derivation because the decoded bitmap is already in hand.
  */
-export async function computePerceptualHash(imageBytes: Uint8Array): Promise<string> {
+export async function computePerceptualHash(
+  input: Uint8Array | DecodedImage,
+  options: DeriveLadderOptions = {},
+): Promise<string> {
   const { default: sharp } = (await import("sharp")) as {
     default: typeof import("sharp").default;
   };
+  const decoded = await asDecoded(input, options);
 
   // 9×8 greyscale: each row yields 8 comparisons between horizontally adjacent
   // pixels, for 64 bits total.
-  const { data } = await sharp(Buffer.from(imageBytes))
-    .rotate()
+  const { data } = await fromDecoded(sharp, decoded)
     .greyscale()
     .resize(9, 8, { fit: "fill" })
     .raw()

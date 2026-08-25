@@ -28,6 +28,9 @@ export {
   renditionLongEdge,
   topApplicableStillClass,
   isOwnTopOfLadder,
+  classForTargetLongEdge,
+  CHEAP_STILL_CLASSES,
+  CHEAP_TARGET_LONG_EDGE,
   transcodeWouldChangeAnything,
   skimDurationSeconds,
   type SizeClass,
@@ -37,6 +40,8 @@ export {
 } from "./ladder";
 export {
   deriveStillLadder,
+  deriveStillLadderStream,
+  decodeForDerivation,
   readSourceDimensions,
   computeThumbHash,
   computePerceptualHash,
@@ -47,7 +52,14 @@ export {
   CLOUD_DECODABLE_TYPES,
   type DerivedRendition,
   type DeriveLadderOptions,
+  type DecodedImage,
 } from "./image-processing/derive-ladder";
+export {
+  deriveAndPublish,
+  type DeriveAndPublishParams,
+  type DeriveAndPublishResult,
+  type DerivationAttemptStore,
+} from "./image-processing/derive-and-publish";
 export {
   publishRendition,
   existingRenditionClasses,

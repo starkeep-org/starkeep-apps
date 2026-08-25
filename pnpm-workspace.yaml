@@ -1,0 +1,5 @@
+packages:
+  - "photos"
+  - "photos/infra"
+  - "photos-mobile"
+  - "packages/*"

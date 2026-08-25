@@ -57,8 +57,19 @@ export type JobId =
   | "fetch-blobs"
   /** Push local blobs the cloud does not have. */
   | "push-blobs"
-  /** Derive the ladder for locally captured media. */
-  | "derive-ladder"
+  /**
+   * Derive the rungs a phone should produce whatever its power state.
+   *
+   * Split from the expensive rungs rather than given a battery *field*, because
+   * {@link JobConstraints} is a fixed set of booleans and the two halves differ
+   * in more than one of them anyway — including their unit budget. Splitting
+   * also mirrors how the desktop sweep stages, which is not a coincidence: the
+   * reason is the same on both, that the cheap rungs are what make a library
+   * legible and the expensive ones are what make it sharp.
+   */
+  | "derive-ladder-cheap"
+  /** The rungs above `image-medium`, which are a real CPU cost. */
+  | "derive-ladder-full"
   /** Drop blobs the budget no longer allows. */
   | "evict"
   /** Observe MediaStore for new captures. */
@@ -135,12 +146,26 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     delegatedTransfer: false,
   },
   {
-    id: "derive-ladder",
-    description: "Derive renditions for locally captured media",
+    id: "derive-ladder-cheap",
+    description: "Make the sizes the library needs to be viewable at all",
     constraints: {
       requiresUnmetered: false,
       requiresNetwork: false,
-      requiresCharging: true,
+      // **Exempt from charging, deliberately.** Gating these on a charger would
+      // mean a phone that is rarely plugged in shows a grid of placeholders for
+      // its own camera roll — and it would gate more than the grid, because
+      // `image-medium` is the rung on-device AI reads, so every model on the
+      // phone would wait for a cable too.
+      //
+      // The exemption reaches up through `image-medium`, not just the two
+      // bottom rungs, so this tier costs meaningfully more than a thumbnail —
+      // but still comfortably inside the unit budget below.
+      //
+      // It also makes the output codec load-bearing rather than optional for
+      // whoever binds this. AVIF costs three to ten times JPEG to encode, and a
+      // rung that now runs on battery is exactly the rung that should be
+      // allowed to produce a bigger, cheaper file rather than produce nothing.
+      requiresCharging: false,
       requiresStorageNotLow: true,
     },
     targetSecondsPerUnit: 10,
@@ -149,6 +174,36 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     // barrier: a scan that has not run yet simply means there is nothing to
     // derive, which is not a reason to block.
     after: ["scan-media-store"],
+    delegatedTransfer: false,
+  },
+  {
+    id: "derive-ladder-full",
+    description: "Make the larger sizes, when power allows",
+    constraints: {
+      requiresUnmetered: false,
+      requiresNetwork: false,
+      // Not `requiresCharging`. The rule is "charging **or** comfortably above
+      // half battery", and WorkManager cannot express that: it offers
+      // `setRequiresCharging` and `setRequiresBatteryNotLow`, and the latter
+      // fires somewhere near 15–20% rather than at a level the caller picks.
+      //
+      // So the OS constraint is the loose one and the real threshold is
+      // re-checked in-process at the start of each unit — see
+      // {@link FULL_DERIVE_BATTERY_FLOOR} and {@link fullDeriveMayRun}. A job
+      // that declared `requiresCharging` here would simply never run on a phone
+      // that lives off a charger, which is most of them.
+      requiresCharging: false,
+      requiresStorageNotLow: true,
+    },
+    // Shorter than the cheap tier's, and that is not a typo. These rungs are
+    // individually more expensive, so the unit has to be *smaller* to fit the
+    // same window — one rung of one photo rather than a record's whole cheap
+    // tier.
+    targetSecondsPerUnit: 5,
+    resumable: true,
+    // After the cheap tier, for the same reason the desktop sweep stages: the
+    // library becoming legible everywhere beats one photo becoming sharp.
+    after: ["derive-ladder-cheap"],
     delegatedTransfer: false,
   },
   {
@@ -165,7 +220,7 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     // Renditions before originals is the rule, and derivation is what produces
     // them — pushing first would send a 40 MB original where a 130 KB
     // rendition would have done.
-    after: ["derive-ladder", "sync-metadata"],
+    after: ["derive-ladder-cheap", "sync-metadata"],
     delegatedTransfer: true,
   },
   {
@@ -274,12 +329,48 @@ export function backoffMs(attempt: number): number {
   return Math.min(MIN_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS);
 }
 
+/**
+ * The battery level above which the expensive rungs may run unplugged.
+ *
+ * One constant, checked in one place, because it is a *runtime* threshold and
+ * not a WorkManager constraint — the OS offers "charging" and "not low", and
+ * "not low" fires somewhere near 15–20% rather than where anyone chose.
+ *
+ * Half is a judgement, not a measurement: high enough that a user who unplugs
+ * at 60% and goes out does not watch derivation eat the afternoon, low enough
+ * that a phone which idles in the 50s still makes progress. The cheap rungs are
+ * exempt entirely, so nothing a person actually looks at waits on this.
+ */
+export const FULL_DERIVE_BATTERY_FLOOR = 0.5;
+
 /** Device conditions, as the scheduler sees them. */
 export interface DeviceState {
   readonly hasNetwork: boolean;
   readonly isUnmetered: boolean;
   readonly isCharging: boolean;
   readonly isStorageLow: boolean;
+  /**
+   * Battery charge, 0–1.
+   *
+   * Optional because only one job consults it, and a caller that cannot read
+   * the level should not be forced to invent one. Absent is treated as "not
+   * above the floor", which defers expensive work rather than performing it on
+   * an unknown battery — the safe direction, since the work resumes for free
+   * next time the phone is charged.
+   */
+  readonly batteryLevel?: number;
+}
+
+/**
+ * Whether the expensive rungs may run right now.
+ *
+ * Checked per unit rather than once per job, because a phone unplugged halfway
+ * through a pass should stop at the next unit rather than finish the queue. The
+ * job is resumable, so stopping costs nothing but the unit in flight.
+ */
+export function fullDeriveMayRun(device: DeviceState): boolean {
+  if (device.isCharging) return true;
+  return (device.batteryLevel ?? 0) > FULL_DERIVE_BATTERY_FLOOR;
 }
 
 /** Whether the OS conditions currently permit this job. */
@@ -288,6 +379,9 @@ export function canRun(spec: JobSpec, device: DeviceState): boolean {
   if (spec.constraints.requiresUnmetered && !device.isUnmetered) return false;
   if (spec.constraints.requiresCharging && !device.isCharging) return false;
   if (spec.constraints.requiresStorageNotLow && device.isStorageLow) return false;
+  // The one condition WorkManager cannot express, applied here so the scheduler
+  // and the unit loop agree on it rather than each having their own idea.
+  if (spec.id === "derive-ladder-full" && !fullDeriveMayRun(device)) return false;
   return true;
 }
 

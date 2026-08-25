@@ -16,6 +16,8 @@ import {
   runnableJobs,
   canRun,
   backoffMs,
+  fullDeriveMayRun,
+  FULL_DERIVE_BATTERY_FLOOR,
   MAX_BACKOFF_MS,
   MIN_BACKOFF_MS,
   type DeviceState,
@@ -26,6 +28,7 @@ const device = (over: Partial<DeviceState> = {}): DeviceState => ({
   isUnmetered: true,
   isCharging: true,
   isStorageLow: false,
+  batteryLevel: 1,
   ...over,
 });
 
@@ -85,18 +88,50 @@ describe("network policy", () => {
 });
 
 describe("battery policy", () => {
-  // Derivation is the only genuinely CPU-hungry work here.
-  it("derives only while charging", () => {
-    expect(jobSpec("derive-ladder").constraints.requiresCharging).toBe(true);
+  // The sizes a library needs to be viewable at all are exempt. Gating them on
+  // a charger means a phone that is rarely plugged in shows a grid of
+  // placeholders for its own camera roll — and it gates more than the grid,
+  // because `image-medium` is the rung on-device AI reads, so every model on
+  // the phone would be waiting for a cable too.
+  it("makes the viewable sizes whatever the power state", () => {
+    expect(canRun(jobSpec("derive-ladder-cheap"), device({ isCharging: false, batteryLevel: 0.1 })))
+      .toBe(true);
   });
 
   // A phone that is never plugged in would otherwise never sync, which is
   // worse than a slightly emptier battery.
-  it("does not require charging for anything else", () => {
+  it("requires charging for nothing at all, as an OS constraint", () => {
+    // The one job with a power rule expresses it as a runtime check instead —
+    // see below — because WorkManager cannot say "charging or above half".
     for (const job of JOB_GRAPH) {
-      if (job.id === "derive-ladder") continue;
       expect(job.constraints.requiresCharging, job.id).toBe(false);
     }
+  });
+
+  describe("the expensive sizes", () => {
+    it("run while charging, at any level", () => {
+      expect(fullDeriveMayRun(device({ isCharging: true, batteryLevel: 0.05 }))).toBe(true);
+    });
+
+    it("run unplugged when there is comfortable charge", () => {
+      const above = Math.min(1, FULL_DERIVE_BATTERY_FLOOR + 0.1);
+      expect(fullDeriveMayRun(device({ isCharging: false, batteryLevel: above }))).toBe(true);
+    });
+
+    it("wait when unplugged and low", () => {
+      const below = Math.max(0, FULL_DERIVE_BATTERY_FLOOR - 0.1);
+      expect(fullDeriveMayRun(device({ isCharging: false, batteryLevel: below }))).toBe(false);
+      expect(canRun(jobSpec("derive-ladder-full"), device({ isCharging: false, batteryLevel: below })))
+        .toBe(false);
+    });
+
+    // Deferring on an unknown battery is the safe direction: the work resumes
+    // for free next time the phone is charged, and the alternative is a job
+    // that runs flat out on a device whose power state nothing could read.
+    it("wait when the battery level cannot be read", () => {
+      expect(fullDeriveMayRun({ ...device({ isCharging: false }), batteryLevel: undefined }))
+        .toBe(false);
+    });
   });
 });
 
@@ -129,7 +164,14 @@ describe("ordering", () => {
   // pushing before deriving would send a 40 MB original where a 130 KB
   // rendition would have done.
   it("derives before it pushes", () => {
-    expect(before("derive-ladder", "push-blobs")).toBe(true);
+    expect(before("derive-ladder-cheap", "push-blobs")).toBe(true);
+  });
+
+  // The library becoming legible everywhere beats one photo becoming sharp —
+  // the same reason the desktop sweep stages across the library rather than
+  // within a record.
+  it("makes the viewable sizes before the expensive ones", () => {
+    expect(before("derive-ladder-cheap", "derive-ladder-full")).toBe(true);
   });
 
   // Fetching before the metadata round is fetching against a stale idea of
@@ -165,12 +207,16 @@ describe("what runs under real conditions", () => {
   // The common case, and the one worth being sure about: a phone in a pocket on
   // cellular keeps the library browsable and moves no bytes.
   it("on cellular, off charge: metadata and local work only", () => {
-    const runnable = runnableJobs(device({ isUnmetered: false, isCharging: false }));
+    const runnable = runnableJobs(
+      device({ isUnmetered: false, isCharging: false, batteryLevel: 0.2 }),
+    );
     expect(runnable).toContain("sync-metadata");
     expect(runnable).toContain("scan-media-store");
     expect(runnable).not.toContain("fetch-blobs");
     expect(runnable).not.toContain("push-blobs");
-    expect(runnable).not.toContain("derive-ladder");
+    // The expensive rungs wait for power; the viewable ones do not.
+    expect(runnable).toContain("derive-ladder-cheap");
+    expect(runnable).not.toContain("derive-ladder-full");
   });
 
   // Offline is not idle. A phone in airplane mode can still notice what the
@@ -180,7 +226,8 @@ describe("what runs under real conditions", () => {
   it("offline: everything that touches nothing remote still runs", () => {
     const runnable = runnableJobs(device({ hasNetwork: false, isUnmetered: false }));
     expect(runnable).toContain("scan-media-store");
-    expect(runnable).toContain("derive-ladder");
+    expect(runnable).toContain("derive-ladder-cheap");
+    expect(runnable).toContain("derive-ladder-full");
     expect(runnable).toContain("evict");
     // And nothing that does touch the network.
     expect(runnable).not.toContain("sync-metadata");
@@ -188,12 +235,15 @@ describe("what runs under real conditions", () => {
     expect(runnable).not.toContain("push-blobs");
   });
 
-  it("offline and off charge does not derive", () => {
-    // Derivation is gated on charging rather than on connectivity, so this is
-    // the battery rule showing through rather than the network one.
-    expect(
-      runnableJobs(device({ hasNetwork: false, isUnmetered: false, isCharging: false })),
-    ).not.toContain("derive-ladder");
+  it("offline and low on charge defers only the expensive sizes", () => {
+    // The power rule showing through rather than the network one — and showing
+    // through only where it should, since a placeholder grid is not what a user
+    // deserves for being unplugged.
+    const runnable = runnableJobs(
+      device({ hasNetwork: false, isUnmetered: false, isCharging: false, batteryLevel: 0.2 }),
+    );
+    expect(runnable).toContain("derive-ladder-cheap");
+    expect(runnable).not.toContain("derive-ladder-full");
   });
 });
 

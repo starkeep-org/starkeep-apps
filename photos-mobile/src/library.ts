@@ -15,17 +15,24 @@
  * straight back to the `content://` asset via the alias. The picture on screen
  * is the same picture; what changed is which question produced it.
  *
- * ## Renditions are not involved yet
+ * ## What a tile paints
  *
- * A tile renders the original. That is fine at this size and deliberately not a
- * long-term answer: it is what `import-loop-design.md` §3.2 defers until there
- * is a session, and what item 15a revisits when the grid becomes a real
- * virtualised list over 60k items rather than a wrapping row over a few dozen.
+ * A rendition when one exists, and the record's own bytes when none does.
+ *
+ * Falling back to the original is right on a phone in a way it is not in a
+ * browser: the bytes are already on the device, because this node imported them
+ * from its own camera roll, so there is no download to avoid — only a decode.
+ * What the rendition buys here is the decode, and 40 megapixels decoded into a
+ * 180 px tile is a real cost even with the file sitting locally.
+ *
+ * Which rendition is Photos' question, answered above the platform in
+ * `photos/renditions.ts`. Nothing in this file names a size class.
  */
 
-import type { DataRecord } from "@starkeep/protocol-primitives";
+import type { DataRecord, StarkeepId } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
+import { renditionToPaint, resolveLibraryRenditions } from "./photos/renditions";
 
 /**
  * What the library needs to answer a question about this node.
@@ -64,6 +71,16 @@ export interface LibraryPage {
 export interface LibraryQuery {
   readonly limit: number;
   readonly cursor?: string;
+  /**
+   * The pixel long edge a tile wants, so the page can resolve which rendition
+   * answers it.
+   *
+   * In pixels, never a class name — the same contract every other Photos
+   * surface uses, and what lets the ladder be respecified without touching a
+   * caller. Omitted means "the original", which is what a caller wanting the
+   * full-size picture asks for.
+   */
+  readonly tileLongEdge?: number;
 }
 
 /**
@@ -87,11 +104,45 @@ export async function listLibrary(
     excludeLabel: { appId: "photos", key: "rendition" },
   });
 
+  // One resolution for the whole page, which is what makes it affordable: the
+  // children of every record on the page come back in one query rather than one
+  // per tile.
+  const target = query.tileLongEdge;
+  const renditions = target
+    ? await resolveLibraryRenditions(deps.database, result.records, [target])
+    : null;
+
+  // The renditions a tile may paint are child records, and the page query
+  // excluded them — so their rows are fetched here, once, by id.
+  const chosen = new Map<StarkeepId, StarkeepId>();
+  if (renditions && target) {
+    for (const record of result.records) {
+      const paint = renditionToPaint(renditions.get(record.id)?.[String(target)]);
+      if (paint) chosen.set(record.id, paint.id as StarkeepId);
+    }
+  }
+  const renditionRows = new Map<StarkeepId, DataRecord>();
+  if (chosen.size > 0) {
+    const found = await deps.database.query({
+      filters: [{ field: "id", operator: "in", value: [...chosen.values()] }],
+      limit: chosen.size,
+    });
+    for (const row of found.records) renditionRows.set(row.id, row);
+  }
+
   return {
-    items: result.records.map((record) => ({
-      record,
-      uri: uriFor(deps.objectStorage, record),
-    })),
+    items: result.records.map((record) => {
+      const renditionId = chosen.get(record.id);
+      const rendition = renditionId ? renditionRows.get(renditionId) : undefined;
+      // The rendition when its bytes are actually here. A record whose
+      // rendition is known but not yet fetched still has its original on this
+      // device, and showing that beats showing a placeholder.
+      const renditionUri = rendition ? uriFor(deps.objectStorage, rendition) : null;
+      return {
+        record,
+        uri: renditionUri ?? uriFor(deps.objectStorage, record),
+      };
+    }),
     nextCursor: result.nextCursor,
     hasMore: result.hasMore,
   };

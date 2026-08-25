@@ -17,8 +17,8 @@ import {
   resolveRenditions,
   resolveWithoutDimensions,
   type DerivedChild,
-} from "../src/photos-lib/rendition-resolution";
-import { STILL_LADDER, applicableStillClasses, renditionLongEdge } from "../src/photos-lib/ladder";
+} from "../src/rendition-resolution";
+import { STILL_LADDER, applicableStillClasses, renditionLongEdge } from "../src/ladder";
 
 const BOTTOM = STILL_LADDER[0]!;
 const TOP = STILL_LADDER[STILL_LADDER.length - 1]!;

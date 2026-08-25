@@ -1,7 +1,9 @@
 import { resolveDataSource } from "./data-client";
+import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 import { RENDITION_LABEL_REF } from "../photos-lib/image-processing/publish-renditions";
+import type { RenditionChoice } from "../photos-lib/rendition-resolution";
 
 export interface PhotoRecord {
   id: string;
@@ -45,6 +47,13 @@ export interface PhotoRecord {
    * that can read the type sees them all.
    */
   labels?: PhotoLabel[];
+  /**
+   * Per requested size: the rung this record should have and what to paint
+   * meanwhile, resolved by Photos' own list route against the ladder.
+   *
+   * Stills only. See `AppImage.renditions` for why video keeps `variants`.
+   */
+  renditions?: Record<string, RenditionChoice>;
 }
 
 /**
@@ -306,34 +315,25 @@ async function extractImageMetadata(
 }
 
 /**
- * The query the library view is built from.
+ * The library view is fetched from Photos' own list route, not from the generic
+ * data-plane proxy.
  *
- * Three things happen here that used to happen on the client, badly.
+ * Both go to the same place — every data-plane call is signed server-side by
+ * this app and forwarded to whichever data server the deployment configured —
+ * so this is not an extra hop. The difference is that Photos' route resolves
+ * renditions against the ladder before answering, which the data server must
+ * not do because it must never learn what a size class is.
  *
- * `notLabel` excludes renditions **server-side**. With a ladder, a 60k-item
- * library is 300k+ records; a page that mixes originals and renditions is a
- * page the client cannot use, because it cannot tell how far to keep reading.
- * Filtering after the fact would page through five times as much data to find
- * the same photos.
+ * What that buys the client is the thing a resolved variant cannot say: for
+ * each size asked for, the rung this record *should* have, whether it exists
+ * yet, and the largest smaller rung to paint meanwhile. The page still excludes
+ * renditions themselves — with a ladder, a 60k-item library is 300k+ records
+ * and a page mixing them is a page the client cannot read to the end of.
  *
- * `variant`/`variantLongEdge` ask the server to resolve which rendition answers
- * each pixel size, per record, and return it with a signed URL. Two sizes are
- * requested because progressive presentation needs both: the tile now, and the
- * viewport size ready for the moment someone opens one. They ride the request
- * that was being made anyway, so resolution costs no extra round trip.
- *
- * No size class is named. The client asks in pixels; which rung answers is the
- * server's business, and changing the ladder changes nothing here.
+ * No size class is named in either direction. The client asks in pixels.
  */
 function libraryQuery(extra = ""): string {
-  const params = [
-    "limit=500",
-    "include=metadata,labels",
-    `notLabel=${encodeURIComponent(RENDITION_LABEL_REF)}`,
-    `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
-    `variantLongEdge=${LIBRARY_VARIANT_TARGETS.join(",")}`,
-  ];
-  return `/data/records?${params.join("&")}${extra}`;
+  return `/api/photos/library?targets=${LIBRARY_VARIANT_TARGETS.join(",")}${extra}`;
 }
 
 /**
@@ -345,25 +345,37 @@ function libraryQuery(extra = ""): string {
  * would mean a different cache key per window size for no visible benefit.
  * The viewer refines with a measured request when it needs to.
  */
-const LIBRARY_VARIANT_TARGETS = [540, 2048];
+export const LIBRARY_VARIANT_TARGETS = [540, 2048];
 
 // No `type` filter: a type-less query is server-scoped to the app's granted
 // types, which for Photos are exactly the image types — so this returns every
 // image the app can see in one request, across all of image/jpeg/png/heic/…
 // rather than a single hardcoded type.
 export async function listPhotos(): Promise<PhotoRecord[]> {
-  const source = await resolveDataSource();
-  const result = await request<{ records: PhotoRecord[] }>(libraryQuery(), source);
+  const result = await requestOwnApi<{ records: PhotoRecord[] }>(libraryQuery());
   return result.records;
 }
 
 export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
-  const source = await resolveDataSource();
-  const result = await request<{ records: PhotoRecord[] }>(
+  const result = await requestOwnApi<{ records: PhotoRecord[] }>(
     libraryQuery(`&updated_after=${encodeURIComponent(updatedAfter)}`),
-    source,
   );
   return result.records;
+}
+
+/**
+ * Fetch one of Photos' own Next routes, same-origin.
+ *
+ * `withBasePath` is not optional: in the cloud the SPA is mounted under
+ * `/apps/photos`, and a bare absolute path misses the app entirely and 404s at
+ * the gateway. Locally the prefix is empty and this is a no-op.
+ */
+async function requestOwnApi<T>(path: string): Promise<T> {
+  const res = await fetch(withBasePath(path), { credentials: "same-origin" });
+  if (!res.ok) {
+    throw new Error(`${path} failed: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+  return (await res.json()) as T;
 }
 
 export async function getPhotoFileUrl(id: string): Promise<string> {

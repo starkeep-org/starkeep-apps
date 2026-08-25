@@ -1,3 +1,5 @@
+import type { RenditionChoice } from "../rendition-resolution";
+
 export interface AppImageExif {
   capturedAt: string | null;
   cameraMake: string | null;
@@ -81,6 +83,22 @@ export interface AppImage {
       type?: string;
     }
   >;
+
+  /**
+   * Per requested size: the rung this record *should* have, and what to paint
+   * until it does.
+   *
+   * This is what `variants` cannot express. A resolved variant is the rung that
+   * best fits, and holding one, a client cannot distinguish "you have what you
+   * asked for" from "it is still deriving" from "this photo's ladder never goes
+   * that high" — three situations that need three different things on screen.
+   *
+   * Present for stills only. Ideal-and-fallback is a statement about the still
+   * ladder, and a video's children include a poster and a transcode at the same
+   * long edge, so "the rung at 1280" is not a well-formed question for one.
+   * Video reads `variants`.
+   */
+  renditions?: Record<string, RenditionChoice>;
 
   /**
    * Base64 ThumbHash — a ~25-byte inline placeholder, rendered client-side with

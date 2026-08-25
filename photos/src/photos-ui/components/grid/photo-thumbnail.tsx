@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { variantSrc, tileTargetLongEdge } from "@/photos-lib/client";
+import { isVideoRecord, posterSrc, stillDisplay, tileTargetLongEdge } from "@/photos-lib/client";
+import { requestDerivation } from "@/lib/on-demand-derivation";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { useInView } from "../../hooks/use-in-view";
 
@@ -71,7 +72,26 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // placeholders until derivation caught up, and originals were unclickable.
   // The grid now lists originals and displays a rendition of each.
   const target = tileTargetLongEdge(TILE_WIDTH, devicePixelRatioOf());
-  const resolved = inView ? variantSrc(image, target) : null;
+  // Two answers, because a still and a video are asking different questions. A
+  // still gets the ideal-and-fallback shape the app server resolved against the
+  // ladder; a video's children include a poster and a transcode at the same long
+  // edge, so it keeps the type-filtered resolution that can tell them apart.
+  const display = inView && !isVideoRecord(image) ? stillDisplay(image, target) : null;
+  const resolved = display
+    ? display.source
+    : inView
+      ? posterSrc(image, target)
+      : null;
+
+  // The tile has been told the rung it wants is missing, that it is derivable,
+  // and how big it is — so this is a specific request rather than a guess from
+  // an absence. Only for what is on screen, and only once per record per
+  // session; the scheduler owns the rest, including the bound.
+  const pendingLongEdge = display?.awaitingBetter ? display.idealLongEdge : null;
+  useEffect(() => {
+    if (pendingLongEdge === null) return;
+    requestDerivation(image.id, pendingLongEdge);
+  }, [image.id, pendingLongEdge]);
 
   // Fall back to the record's own bytes only when it has no renditions at all
   // *and* is small enough that serving it directly is not absurd. A record
@@ -85,6 +105,12 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
 
   const src = resolved?.url ?? fallbackSrc;
   const placeholder = usePlaceholderDataUrl(image.thumbHash);
+
+  // The one state a user should be told about. Everything else that is missing
+  // is missing *for now* and says nothing, because there is nothing to do about
+  // it; this one is a photo in a format the node answering cannot read, which
+  // is temporary and self-healing and looks exactly like a bug if left silent.
+  const undecodable = display?.state === "undecodable-here" && src === null;
 
   return (
     <div
@@ -120,6 +146,8 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
             imageOrientation: "from-image",
           }}
         />
+      ) : undecodable ? (
+        <UndisplayableTile />
       ) : placeholder ? (
         // Stage zero: the inline ThumbHash, painted with zero requests. This is
         // what a record looks like before any image bytes are fetched — and
@@ -139,6 +167,107 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * What a record shows when the node that would derive its renditions cannot
+ * read its format.
+ *
+ * Since the inline placeholder is itself derived, such a record has nothing to
+ * paint at all — so without this it is an indefinitely grey tile, which is
+ * indistinguishable from a broken app. The label and the explainer exist to say
+ * the opposite of what the grey box says: the photo is intact, and this fixes
+ * itself as soon as a node that can read the format sees it.
+ */
+function UndisplayableTile() {
+  const [showExplainer, setShowExplainer] = useState(false);
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        padding: 8,
+        textAlign: "center",
+        color: "#999",
+        fontSize: 11,
+        background: "#1a1a1a",
+      }}
+    >
+      <span>Cannot be displayed</span>
+      <button
+        type="button"
+        aria-label="Why can this photo not be displayed?"
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowExplainer(true);
+        }}
+        style={{
+          background: "none",
+          border: "1px solid #444",
+          borderRadius: "50%",
+          color: "#999",
+          cursor: "pointer",
+          width: 18,
+          height: 18,
+          lineHeight: "16px",
+          padding: 0,
+          fontSize: 11,
+        }}
+      >
+        i
+      </button>
+      {showExplainer ? (
+        <div
+          role="dialog"
+          aria-label="Why this photo cannot be displayed"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowExplainer(false);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 50,
+            background: "rgba(0,0,0,0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div
+            style={{
+              maxWidth: 380,
+              background: "#181818",
+              border: "1px solid #333",
+              borderRadius: 8,
+              padding: 20,
+              color: "#ddd",
+              fontSize: 13,
+              lineHeight: 1.5,
+              textAlign: "left",
+            }}
+          >
+            <p style={{ marginTop: 0 }}>
+              This photo is stored in a format this server cannot read, so the
+              smaller sizes the grid needs have not been made yet.
+            </p>
+            <p>
+              The photo itself is safe and unmodified. Opening Photos on the
+              machine that holds it, or on the mobile app, will produce the
+              missing sizes and fix this automatically.
+            </p>
+            <p style={{ marginBottom: 0, color: "#888" }}>Tap anywhere to close.</p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -109,6 +109,7 @@ export {
 } from "./import/import-run";
 export {
   variantSrc,
+  stillDisplay,
   posterSrc,
   playbackSrc,
   isVideoRecord,

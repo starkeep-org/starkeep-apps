@@ -58,6 +58,7 @@ export {
 
 export {
   variantSrc,
+  stillDisplay,
   posterSrc,
   playbackSrc,
   isVideoRecord,

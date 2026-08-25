@@ -1,28 +1,32 @@
 /**
- * End-to-end data-path integration: real client → real signing proxy → data
+ * End-to-end data-path integration: real client → real signing route → data
  * server, in one process.
  *
  * This is the test that would have caught the reinstall failure at the code
  * level. It wires the ACTUAL pieces together:
  *
- *   listPhotos()                                  (src/lib/data-server-client)
- *     → resolveDataSource() → "/api/local-data"   (src/lib/data-client)
- *     → createNextProxyHandler({ appId: "photos", ... })  (@starkeep/app-client)
- *         loads on-disk creds, HMAC-signs, forwards to the data server URL
+ *   listPhotos()                                (src/lib/data-server-client)
+ *     → GET /api/photos/library                 (app/api/photos/library/route)
+ *         loads on-disk creds, HMAC-signs, forwards to the data server, and
+ *         resolves renditions against the ladder before answering
  *     → a fake data server that REJECTS any request lacking a valid
  *       X-Starkeep-App-{Id,Sig,Ts} signature — exactly like the cloud data
  *       server, whose 401 "Missing X-Starkeep-App headers" started all this.
  *
- * `fetch` is stubbed to dispatch both hops (browser→proxy and proxy→data
+ * `fetch` is stubbed to dispatch both hops (browser→route and route→data
  * server) in-process, so no servers or AWS are involved. If anyone reintroduces
- * a direct-to-gateway data path (dropping the proxy), the request arrives at
- * the fake server unsigned and the test fails with the same 401 the user saw.
+ * a direct-to-gateway data path (dropping the signing hop), the request arrives
+ * at the fake server unsigned and the test fails with the same 401 the user saw.
+ *
+ * The generic proxy is still mounted for everything else and is exercised here
+ * too, because `getPhotoFileUrls` and friends go through it unchanged.
  */
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAppCredentialsCache, createNextProxyHandler } from "@starkeep/app-client";
+import { GET as libraryRoute } from "../app/api/photos/library/route";
 import { listPhotos } from "../src/lib/data-server-client";
 
 const HMAC_SECRET = "integration-test-secret";
@@ -77,8 +81,14 @@ async function dispatchFetch(input: RequestInfo | URL, init?: RequestInit): Prom
     return fakeDataServer(new URL(rawUrl), init ?? {});
   }
 
-  // Same-origin browser call → run it through the real proxy route handler.
+  // Same-origin browser call → run it through the real route handler.
   const url = new URL(rawUrl, "http://app.local");
+  if (url.pathname === "/api/photos/library") {
+    return libraryRoute({
+      url: `http://app.local${url.pathname}${url.search}`,
+      headers: new Headers(init?.headers as HeadersInit),
+    } as never);
+  }
   if (url.pathname.startsWith("/api/local-data/")) {
     const segments = url.pathname.slice("/api/local-data/".length).split("/");
     const method = (init?.method ?? "GET").toUpperCase();
@@ -122,7 +132,9 @@ describe("cloud data path (client → proxy → data server)", () => {
   it("listPhotos reaches the data server with a valid HMAC signature and returns records", async () => {
     const records = await listPhotos();
 
-    expect(records).toEqual(seededRecords);
+    // The record comes back with its resolution attached, so identity is
+    // asserted rather than deep equality.
+    expect(records.map((r) => r.id)).toEqual(seededRecords.map((r) => (r as { id: string }).id));
 
     // The data server saw exactly the request the user's session 401'd on...
     const dataReq = received.find((r) => r.path.startsWith("/data/records"));
@@ -138,9 +150,11 @@ describe("cloud data path (client → proxy → data server)", () => {
     // Renditions are excluded server-side — a page mixing them with originals
     // is a page the client cannot page through.
     expect(params.get("notLabel")).toBe("photos/rendition");
-    // And the client asks in pixels, never naming a size class.
+    // The unnarrowed candidate list, because the app server does the
+    // resolution. A `variantLongEdge` here would mean the ladder had been
+    // pushed down into the platform.
     expect(params.get("variant")).toBe("photos/rendition");
-    expect(params.get("variantLongEdge")).toMatch(/^\d+(,\d+)*$/);
+    expect(params.get("variantLongEdge")).toBeNull();
     // ...but now signed, because it went through the proxy rather than direct.
     expect(dataReq!.headers.appId).toBe("photos");
     expect(dataReq!.headers.sig).toBeTruthy();

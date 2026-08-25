@@ -11,6 +11,12 @@ export interface RuntimeConfig {
   auroraEndpoint?: string;
   photosWebUrl?: string;
   photosApiGatewayUrl?: string;
+  /**
+   * The account's Lambda invocation ceiling. See
+   * `app/starkeep-runtime-config/route.ts` for why Photos carries it and most
+   * apps do not.
+   */
+  lambdaConcurrency?: number;
 }
 
 let cached: RuntimeConfig | null | undefined = undefined;

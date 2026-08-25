@@ -149,7 +149,17 @@ function PhotosAppInner() {
   // original counted as an orphan and every page load re-derived the whole
   // library.
   const originals = state.images.filter((img) => img.parentId === null);
-  const fallbackOriginals = originals.filter((img) => Object.keys(img.variants).length === 0);
+
+  // Whether anything on screen is showing a stand-in for a rung that is still
+  // being derived. Read off the server's own answer rather than inferred from
+  // an absence, and keyed on availability rather than on size — a record whose
+  // ladder genuinely stops below what was asked for reports its top rung as
+  // available, so it never counts as waiting and this terminates.
+  const awaitingRenditions = originals.some((img) =>
+    Object.values(img.renditions ?? {}).some(
+      (choice) => !choice.ideal.available && choice.ideal.state === "pending",
+    ),
+  );
   // Sort client-side so display order is deterministic and identical across the
   // local and cloud backends, independent of each server's query order and of
   // the incremental-merge append drift in UPSERT_IMAGES. Newest first by
@@ -163,28 +173,6 @@ function PhotosAppInner() {
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 
-  // Backfill thumbnails for orphan originals. A ref prevents the same ID from
-  // being submitted more than once per session, even if the effect re-fires.
-  const backfilledRef = useRef(new Set<string>());
-  const orphanIds = fallbackOriginals.map((img) => img.id).sort().join(",");
-  useEffect(() => {
-    if (!orphanIds) return;
-    const newIds = orphanIds.split(",").filter((id) => !backfilledRef.current.has(id));
-    if (newIds.length === 0) return;
-    newIds.forEach((id) => backfilledRef.current.add(id));
-    void (async () => {
-      const { url, headers: authHeaders } = await resolveResizeEndpoint();
-      const headers = { "Content-Type": "application/json", ...authHeaders };
-      newIds.forEach((id) => {
-        fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ targetId: id }),
-        }).then((res) => { if (res.ok) freshness.kick(); }).catch(() => {});
-      });
-    })();
-  }, [orphanIds]);
-
   // The grid displays originals, so the clicked tile already *is* the record
   // the viewer wants. There is no thumbnail-to-parent hop to make.
   const selectedImage = state.selectedId
@@ -196,6 +184,7 @@ function PhotosAppInner() {
     onMerge: (images) => dispatch({ type: "UPSERT_IMAGES", images }),
     onLoadingChange: (loading) => dispatch({ type: "SET_LOADING", loading }),
     onError: setError,
+    awaitingRenditions,
   });
 
   const handleFileSelected = async (file: File) => {
@@ -218,9 +207,6 @@ function PhotosAppInner() {
         setNotice(`"${fileName}" is already in your photos — nothing was added.`);
       }
 
-      // Mark as submitted before generateThumbnail fires so the backfill effect
-      // never picks up this original and creates a second thumbnail.
-      backfilledRef.current.add(record.id);
       generateThumbnail(record, file, thumbnailStrategy, freshness.kick).catch(() => {});
     } catch (err) {
       console.error("[photos] Upload failed:", err);

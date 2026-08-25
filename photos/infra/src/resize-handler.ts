@@ -1,9 +1,10 @@
 /**
- * Photos cloud resize Lambda — generates thumbnail DataRecords for originals.
+ * Photos cloud resize Lambda — derives renditions for an original the cloud
+ * holds, on demand, for a viewer looking at it.
  *
- * Mirrors the local Next.js /api/resize route: takes a targetId, fetches the
- * source record and its bytes via the cloud-data-server broker, runs sharp to
- * resize, then POSTs a new DataRecord with parentId set.
+ * The derivation itself is `photos-lib`'s `deriveAndPublish`, the same code the
+ * Next `/api/resize` route and the local worker run. This file is the HTTP
+ * shape plus the one thing that is genuinely cloud-specific: a hard budget.
  *
  * Identity to the broker is per-app HMAC via @starkeep/app-client (cloud mode):
  * the Lambda loads its HMAC secret from SSM via its exec role, then signs each
@@ -13,24 +14,11 @@
  * plane identifies the app, not the user.
  */
 
-import { createHash } from "node:crypto";
 import { loadAppCredentials, signedFetch, USER_TOKEN_HEADER } from "@starkeep/app-client";
-import {
-  deriveStillLadder,
-  ladderIsComplete,
-  readSourceDimensions,
-} from "../../src/photos-lib/image-processing/derive-ladder.js";
-import {
-  publishRendition,
-  existingRenditionClasses,
-  assertLadderComplete,
-} from "../../src/photos-lib/image-processing/publish-renditions.js";
+import { deriveAndPublish } from "../../src/photos-lib/image-processing/derive-and-publish.js";
+import { CHEAP_TARGET_LONG_EDGE } from "../../src/photos-lib/ladder.js";
 import { precheckThumbnail } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
-
-function dataRecordObjectKey(typeId: string, contentHash: string): string {
-  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
-}
 
 interface BrokerPhotoRecord {
   id: string;
@@ -59,9 +47,14 @@ export async function handler(event: APIGatewayEvent) {
     const rawBody = event.isBase64Encoded && event.body
       ? Buffer.from(event.body, "base64").toString("utf8")
       : (event.body ?? "{}");
-    const body = JSON.parse(rawBody) as { targetId?: string };
+    const body = JSON.parse(rawBody) as { targetId?: string; targetLongEdge?: number };
     if (!body.targetId) return clientErr("targetId is required", 400);
     const targetId = body.targetId;
+    // The pixel size the viewer needs. A caller that names none gets the cheap
+    // tier rather than the whole ladder, which this handler cannot afford — see
+    // the note by the call below.
+    const requestedLongEdge =
+      typeof body.targetLongEdge === "number" ? body.targetLongEdge : CHEAP_TARGET_LONG_EDGE;
     console.log(`[resize] start targetId=${targetId}`);
 
     const creds = await loadAppCredentials("photos");
@@ -100,106 +93,74 @@ export async function handler(event: APIGatewayEvent) {
     const { record } = (await recordRes.json()) as { record: BrokerPhotoRecord };
 
     if (!record.object_storage_key) return clientErr("Record has no attached file", 422);
-    // Two targeted queries, not a scan of the library. Both questions used to
-    // be answered by listing every readable record and filtering client-side,
-    // which was O(library) — and wrong above the page limit, since a record
-    // outside the first 1000 read as "no thumbnail yet" and got one derived
-    // again. The rules live in photos-lib, shared with the Next /api/resize
-    // route this handler mirrors line for line: a rule kept in both would
-    // eventually be fixed in only one.
+
     // May this record be derived *from*? A rendition may not — that would
-    // recurse. A crop may: it is a user artifact that needs its own tile.
-    //
-    // There is deliberately no "already has one, stop" check any more. With a
-    // ladder, one existing rung says nothing about the others, and the old
-    // early return would have frozen every record at whatever it happened to
-    // have. Which rungs to skip is decided per rung, below.
+    // recurse. A crop may: it is a user artifact that needs its own tile. This
+    // is one targeted query rather than a scan of the library, which is what it
+    // used to be — and which was also wrong above the page limit, since a
+    // record outside the first thousand read as "no thumbnail yet" and got one
+    // derived again.
     const precheck = await precheckThumbnail(targetId, (p) => call(p));
     if (precheck.alreadyThumbnail) {
       return clientErr("Record is already a rendition", 400);
     }
 
-    // Presigned URL for the source file — direct S3 fetch, no broker hop for
-    // the byte transfer.
-    const fileUrlRes = await call(`/data/records/${targetId}/file-url`);
-    if (!fileUrlRes.ok) {
-      const errBody = await fileUrlRes.text().catch(() => "");
-      console.error(`[resize] file-url ${targetId} → ${fileUrlRes.status}: ${errBody}`);
-      return clientErr(`file-url failed: ${fileUrlRes.status}`, 502);
-    }
-    const { url: sourceUrl } = (await fileUrlRes.json()) as { url: string };
+    // Everything from here is `photos-lib`, shared with the Next
+    // `/api/resize` route and the local derivation worker. The two used to be
+    // line-for-line copies of a four-step publish flow, which is the shape of
+    // duplication that gets fixed in one place and not the other.
+    //
+    // What the cloud supplies that the others do not: a narrowed class set. The
+    // resize function has 512 MB — roughly a third of a vCPU, since Lambda
+    // scales CPU with memory — and thirty seconds. The full ladder is about
+    // 8.5 s of encode on eight cores, so it does not fit, and a handler that
+    // attempts it times out having done and discarded all of it. So the cloud
+    // derives what the viewer asked for plus the rungs the decode makes free,
+    // and the expensive ones stay the owning node's work.
+    //
+    // No platform decoder and no attempt store: this node has neither a HEIC
+    // decoder nor durable local disk. A HEIC record fails here every time, and
+    // that is the accepted asymmetry — such a record stays ladder-incomplete,
+    // is therefore never archived, and is derived by the laptop when it next
+    // reaches it.
+    const result = await deriveAndPublish({
+      signedFetch: (p, i) => call(p, i),
+      parent: {
+        id: record.id,
+        originalFilename: record.original_filename,
+        mimeType: record.mime_type,
+      },
+      loadSource: async () => {
+        const fileUrlRes = await call(`/data/records/${targetId}/file-url`);
+        if (!fileUrlRes.ok) throw new Error(`file-url failed: ${fileUrlRes.status}`);
+        const { url } = (await fileUrlRes.json()) as { url: string };
+        const sourceRes = await fetch(url);
+        if (!sourceRes.ok) throw new Error(`source fetch failed: ${sourceRes.status}`);
+        return new Uint8Array(await sourceRes.arrayBuffer());
+      },
+      targetLongEdge: requestedLongEdge,
+    });
 
-    const sourceRes = await fetch(sourceUrl);
-    if (!sourceRes.ok) {
-      const errBody = await sourceRes.text().catch(() => "");
-      console.error(`[resize] source fetch → ${sourceRes.status}: ${errBody.slice(0, 300)}`);
-      return clientErr(`source fetch failed: ${sourceRes.status}`, 502);
+    if (result.outcome === "undecodable-here") {
+      // Expected for a phone-captured library rather than an anomaly: the cloud
+      // fallback covers JPEG, PNG, WebP and AVIF only. Reported distinctly from
+      // a transient failure so the caller records it once instead of retrying
+      // the same file every day forever.
+      console.error(`[resize] undecodable in cloud: ${targetId}: ${result.detail}`);
+      return clientErr(`undecodable-here: ${result.detail}`, 422);
     }
-    const inputBuffer = Buffer.from(await sourceRes.arrayBuffer());
-
-    // Derive every applicable rung from one decode, not just a thumbnail.
-    // Which rungs apply is a function of the source's long edge, so a small
-    // original produces fewer and a large one produces the whole ladder.
-    let derived;
-    try {
-      derived = await deriveStillLadder(inputBuffer);
-    } catch (err) {
-      // A format this node cannot decode. The cloud fallback covers JPEG, PNG,
-      // WebP and AVIF only — the custom libvips build that would add HEIC and
-      // raw is rejected for now — so this is an expected outcome for a
-      // phone-captured library, not an anomaly. Reported distinctly from a
-      // transient failure so a sweeper records "undecodable here" once instead
-      // of retrying the same file every day forever.
-      console.error(`[resize] decode failed for ${targetId}: ${(err as Error).message}`);
-      return clientErr(`undecodable-here: ${(err as Error).message}`, 422);
-    }
-
-    // Skip rungs that already exist: this handler is re-runnable, and a retry
-    // after a partial failure should finish the job rather than duplicate it.
-    const already = new Set(
-      await existingRenditionClasses((p, i) => call(p, i), targetId),
-    );
-    const published: Array<{ sizeClass: string; recordId: string }> = [];
-    for (const rendition of derived) {
-      if (already.has(rendition.sizeClass)) continue;
-      const contentHash = createHash("sha256").update(rendition.data).digest("hex");
-      const objectStorageKey = dataRecordObjectKey("image", contentHash);
-      try {
-        const result = await publishRendition(
-          (p, i) => call(p, i),
-          { id: targetId, originalFilename: record.original_filename },
-          rendition,
-          contentHash,
-          objectStorageKey,
-        );
-        published.push({ sizeClass: result.sizeClass, recordId: result.recordId });
-      } catch (err) {
-        // Partial success is the honest outcome: the rungs already published
-        // are real and useful, and re-running finishes the rest.
-        console.error(`[resize] ${(err as Error).message}`);
-        return clientErr((err as Error).message, 502);
-      }
+    if (result.outcome === "publish-failed" || result.outcome === "transient-failure") {
+      // Partial success is the honest outcome: the rungs already published are
+      // real and useful, and re-running finishes the rest.
+      console.error(`[resize] ${result.detail}`);
+      return clientErr(result.detail ?? "derivation failed", 502);
     }
 
-    // Dimensions are written per rendition inside publishRendition, not here:
-    // variant resolution orders by long edge, so a rendition without them is
-    // excluded from resolution entirely and becomes storage nobody reads.
-
-    // The archive gate, asserted only when every applicable rung actually
-    // exists. The platform trusts this claim — that is the point of the split —
-    // so making it loosely is the one way an app could freeze an original with
-    // nothing readable in its place.
-    const finalClasses = await existingRenditionClasses(
-      (p, i) => call(p, i),
-      targetId,
-    );
-    const sourceDims = await readSourceDimensions(inputBuffer);
-    let archiveGate: { tagged: boolean; refusals: string[] } | null = null;
-    if (ladderIsComplete(sourceDims.longEdge, finalClasses)) {
-      archiveGate = await assertLadderComplete((p, i) => call(p, i), targetId);
-    }
-
-    return ok({ ok: true, published, archiveGate });
+    return ok({
+      ok: true,
+      published: result.published,
+      archiveGate: result.archiveGate,
+    });
   } catch (e) {
     console.error("[resize] handler error:", e);
     return {

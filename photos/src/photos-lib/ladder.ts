@@ -142,6 +142,51 @@ export function applicableStillClasses(originalLongEdge: number): StillClassSpec
   return out;
 }
 
+/**
+ * Which rung answers a request for this many pixels.
+ *
+ * **Round up**: the smallest class whose maximum reaches the target, and the
+ * top class when nothing does. Rounding down would hand a 2× display a 128 px
+ * file for a 360 px need — a threefold undersample, and a worse outcome than
+ * the extra bytes it saves.
+ *
+ * Resolved against class *maxima* rather than against a particular original,
+ * because this answers "which rung is being asked for" for a caller that knows
+ * only a pixel count. Whether that rung applies to a given record is a separate
+ * question, and {@link applicableStillClasses} is the one that answers it.
+ */
+export function classForTargetLongEdge(target: number): SizeClass {
+  for (const spec of STILL_LADDER) {
+    if (spec.maxLongEdge >= target) return spec.sizeClass;
+  }
+  return STILL_LADDER[STILL_LADDER.length - 1]!.sizeClass;
+}
+
+/**
+ * The rungs cheap enough to produce inside a request, once the source has been
+ * decoded.
+ *
+ * The decode is the expensive part and it is already paid, so adding these to
+ * whatever was actually asked for costs a few tens of milliseconds — against
+ * re-downloading and re-decoding a 7 MB original later to get them. This is
+ * what a Lambda with a third of a core and thirty seconds can commit to; the
+ * rungs above are the owning node's work.
+ */
+export const CHEAP_STILL_CLASSES: readonly SizeClass[] = ["image-xsmall", "image-thumb"];
+
+/**
+ * The largest long edge the cheap tier covers.
+ *
+ * A caller that can only afford {@link CHEAP_STILL_CLASSES} asks for this, and
+ * round-up resolution lands it on the top cheap rung. Derived from the ladder
+ * rather than written down, so a respecification cannot leave it behind.
+ */
+export const CHEAP_TARGET_LONG_EDGE: number = Math.max(
+  ...CHEAP_STILL_CLASSES.map(
+    (c) => STILL_LADDER.find((s) => s.sizeClass === c)!.maxLongEdge,
+  ),
+);
+
 /** The long edge a class actually emits for this original. Rule 1. */
 export function renditionLongEdge(spec: StillClassSpec, originalLongEdge: number): number {
   return Math.min(originalLongEdge, spec.maxLongEdge);

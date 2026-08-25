@@ -100,6 +100,15 @@ export interface AppImage {
    */
   renditions?: Record<string, RenditionChoice>;
 
+  /** Separately typed poster and playback choices for video records. */
+  videoRenditions?: Record<
+    string,
+    {
+      poster?: { url: string; width: number; height: number; type: string };
+      playback?: { url: string; width: number; height: number; type: string };
+    }
+  >;
+
   /**
    * Base64 ThumbHash — a ~25-byte inline placeholder, rendered client-side with
    * **zero requests**. Stage zero of progressive presentation: the grid paints

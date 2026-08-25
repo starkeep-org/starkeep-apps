@@ -155,8 +155,11 @@ export async function publishVideoRendition(
   }
   const { record } = (await createRes.json()) as { record: { id: string } };
 
-  // Same reasoning as the still path: variant resolution orders by long edge, so
-  // a rendition without dimensions cannot be ordered and is excluded entirely.
+  // Same reasoning as the still path: variant resolution orders by long edge,
+  // so a rendition without dimensions cannot be ordered and is excluded
+  // entirely. This is part of publication, not best-effort. Returning success
+  // here would let the archive gate count an unreadable child as a completed
+  // rung.
   const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -172,9 +175,11 @@ export async function publishVideoRendition(
     }),
   });
   if (!metaRes.ok) {
-    console.warn(
-      `[video] dimensions write failed for ${rendition.sizeClass} of ${parent.id} ` +
-        `(${metaRes.status}) — this rendition is invisible to variant resolution until repaired`,
+    throw new RenditionPublishError(
+      "metadata",
+      rendition.sizeClass,
+      metaRes.status,
+      await metaRes.text().catch(() => ""),
     );
   }
 

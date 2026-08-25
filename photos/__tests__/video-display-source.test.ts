@@ -15,6 +15,9 @@ import type { AppImage } from "../src/photos-lib/types/app-image";
 const image = (variants: AppImage["variants"], mimeType = "video/mp4"): AppImage =>
   ({ id: "rec-1", mimeType, variants } as unknown as AppImage);
 
+const resolvedVideo = (choices: NonNullable<AppImage["videoRenditions"]>): AppImage =>
+  ({ ...image({}), videoRenditions: choices });
+
 /** Both 1280 — the collision the type field exists to break. */
 const AMBIGUOUS: AppImage["variants"] = {
   "400": { url: "/poster-thumb.jpg", width: 225, height: 400, type: "image/jpeg" },
@@ -49,6 +52,17 @@ describe("what the grid paints", () => {
 });
 
 describe("what the player plays", () => {
+  it("uses poster and playback choices that the server resolved independently", () => {
+    const source = resolvedVideo({
+      "1000": {
+        poster: { url: "/poster-local.jpg", width: 1280, height: 720, type: "image/jpeg" },
+        playback: { url: "/playback-local.mp4", width: 640, height: 360, type: "video/mp4" },
+      },
+    });
+    expect(posterSrc(source, 1000)?.url).toBe("/poster-local.jpg");
+    expect(playbackSrc(source, 1000)?.url).toBe("/playback-local.mp4");
+  });
+
   it("never returns a still, even at a matching size", () => {
     const playback = playbackSrc(image(AMBIGUOUS), 1280);
     expect(playback!.url).toBe("/video-720.mp4");

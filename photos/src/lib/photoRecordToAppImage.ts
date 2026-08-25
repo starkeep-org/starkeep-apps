@@ -38,6 +38,23 @@ export function photoRecordToAppImage(
     // "here" different shapes rather than a flag a consumer has to remember to
     // read.
     ...(record.renditions ? { renditions: record.renditions } : {}),
+    ...(record.video_renditions
+      ? {
+          videoRenditions: Object.fromEntries(
+            Object.entries(record.video_renditions).map(([target, choices]) => [
+              target,
+              {
+                ...(choices.poster?.url
+                  ? { poster: { url: choices.poster.url, width: choices.poster.width, height: choices.poster.height, type: choices.poster.type } }
+                  : {}),
+                ...(choices.playback?.url
+                  ? { playback: { url: choices.playback.url, width: choices.playback.width, height: choices.playback.height, type: choices.playback.type } }
+                  : {}),
+              },
+            ]),
+          ),
+        }
+      : {}),
     thumbHash: metadata?.thumb_hash ?? null,
     width: metadata?.width ?? 0,
     height: metadata?.height ?? 0,

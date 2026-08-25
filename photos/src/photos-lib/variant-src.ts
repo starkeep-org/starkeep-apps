@@ -189,6 +189,8 @@ export function isVideoRecord(image: Pick<AppImage, "mimeType">): boolean {
  * grid for everyone.
  */
 export function posterSrc(image: AppImage, targetLongEdge: number): DisplaySource | null {
+  const resolved = videoChoice(image, targetLongEdge)?.poster;
+  if (resolved) return videoEntryToSource(resolved, targetLongEdge);
   return variantSrc(filterVariants(image, (t) => !t.startsWith("video/")), targetLongEdge);
 }
 
@@ -202,7 +204,30 @@ export function posterSrc(image: AppImage, targetLongEdge: number): DisplaySourc
  * one thing guaranteed not to play.
  */
 export function playbackSrc(image: AppImage, targetLongEdge: number): DisplaySource | null {
+  const resolved = videoChoice(image, targetLongEdge)?.playback;
+  if (resolved) return videoEntryToSource(resolved, targetLongEdge);
   return variantSrc(filterVariants(image, (t) => t.startsWith("video/")), targetLongEdge);
+}
+
+function videoChoice(image: AppImage, target: number) {
+  const choices = image.videoRenditions;
+  if (!choices) return undefined;
+  if (choices[String(target)]) return choices[String(target)];
+  const keys = Object.keys(choices).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const key = keys.find((value) => value >= target) ?? keys[keys.length - 1];
+  return key === undefined ? undefined : choices[String(key)];
+}
+
+function videoEntryToSource(
+  entry: { url: string; width: number; height: number },
+  target: number,
+): DisplaySource {
+  return {
+    url: entry.url,
+    width: entry.width,
+    height: entry.height,
+    isBelowTarget: Math.max(entry.width, entry.height) < target,
+  };
 }
 
 function filterVariants(image: AppImage, keep: (type: string) => boolean): AppImage {

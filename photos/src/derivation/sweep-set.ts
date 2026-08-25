@@ -19,6 +19,7 @@
 
 import {
   applicableStillClasses,
+  applicableVideoClasses,
   renditionLongEdge,
   type SizeClass,
 } from "../photos-lib/ladder";
@@ -35,8 +36,9 @@ export interface SweepRecord {
     width?: number | null;
     height?: number | null;
     thumb_hash?: string | null;
+    bitrate?: number | null;
   } | null;
-  variant_candidates?: Array<{ long_edge: number }>;
+  variant_candidates?: Array<{ long_edge: number; label_value?: string }>;
 }
 
 /**
@@ -78,9 +80,23 @@ export function needsRecordFacts(record: SweepRecord): boolean {
  */
 export function stageHasWork(
   record: SweepRecord,
-  stage: "cheap" | "full",
+  stage: "cheap" | "full" | "video",
   cheapClasses: readonly SizeClass[],
 ): boolean {
+  const video = (record.mime_type ?? "").startsWith("video/");
+  if (stage === "video") {
+    if (!video) return false;
+    const longEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
+    // The first pass supplies these facts. Until they exist, no duplicated
+    // approximation of the ladder can safely decide which rungs apply.
+    if (longEdge <= 0) return true;
+    const have = new Set((record.variant_candidates ?? []).map((c) => c.label_value));
+    const bitrate = record.metadata?.bitrate ?? Number.POSITIVE_INFINITY;
+    return applicableVideoClasses({ longEdge, bitrate, durationSeconds: 0 }).some(
+      (spec) => !have.has(spec.sizeClass),
+    );
+  }
+  if (video || !(record.mime_type ?? "").startsWith("image/")) return false;
   const missing = missingClasses(record);
   if (missing === "unknown") return true;
   const cheap = new Set(cheapClasses);

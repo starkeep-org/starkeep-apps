@@ -130,6 +130,39 @@ describe("which stage has work", () => {
     const unknown = record({ metadata: null });
     expect(stageHasWork(unknown, "cheap", CHEAP_STILL_CLASSES)).toBe(true);
   });
+
+  it("never sends a video through the still derivation stages", () => {
+    const video = record({ mime_type: "video/mp4", metadata: null });
+    expect(stageHasWork(video, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(video, "full", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(true);
+  });
+
+  it("gives a complete video no more work", () => {
+    const video = record({
+      mime_type: "video/mp4",
+      metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
+      variant_candidates: [
+        { long_edge: 400, label_value: "video-poster-thumb" },
+        { long_edge: 1280, label_value: "video-poster-720p" },
+        { long_edge: 640, label_value: "video-skim" },
+        { long_edge: 1280, label_value: "video-720p" },
+      ],
+    });
+    expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
+  });
+
+  it("does not invent a 720p poster requirement for a completed small video", () => {
+    const video = record({
+      mime_type: "video/mp4",
+      metadata: { width: 400, height: 300, bitrate: 800_000 },
+      variant_candidates: [
+        { long_edge: 400, label_value: "video-poster-thumb" },
+        { long_edge: 320, label_value: "video-skim" },
+      ],
+    });
+    expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
+  });
 });
 
 describe("paging the library", () => {

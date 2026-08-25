@@ -8,11 +8,13 @@
  */
 
 import { assertLadderComplete, type SignedFetch } from "../image-processing/publish-renditions";
+import { existingRenditionClasses } from "../image-processing/publish-renditions";
 import type { RenditionParent, PublishedRendition } from "../image-processing/publish-renditions";
 import { deriveVideoLadder, videoLadderIsComplete } from "./derive-video-ladder";
 import { publishVideoFacts, publishVideoRendition } from "./publish-video";
 import { UnsupportedVideoError, type VideoTools } from "./video-tools";
 import type { SizeClass } from "../ladder";
+import { VIDEO_LADDER } from "../ladder";
 
 export interface VideoIngestResult {
   readonly published: readonly PublishedRendition[];
@@ -32,6 +34,7 @@ export interface VideoIngestDeps {
    */
   readonly keyFor: (
     bytes: Uint8Array,
+    rendition: { readonly type: "image" | "video" },
   ) => Promise<{ contentHash: string; objectStorageKey: string }>;
   readonly enabledOptional?: readonly SizeClass[];
 }
@@ -50,7 +53,19 @@ export async function deriveAndPublishVideo(
   parent: RenditionParent,
   deps: VideoIngestDeps,
 ): Promise<VideoIngestResult> {
-  const result = await deriveVideoLadder(path, deps.tools, deps.enabledOptional ?? []);
+  // A label alone is not a usable rendition. Candidate resolution drops a
+  // child without dimensions, so counting one here could archive the original
+  // while every reader remains unable to select its replacement. Re-deriving
+  // such a child is safe: record registration deduplicates by parent and hash,
+  // then the metadata write repairs the existing record.
+  const existing = await existingRenditionClasses(deps.signedFetch, parent.id, {
+    requireDimensions: true,
+  });
+  const missing = new Set<SizeClass>(
+    VIDEO_LADDER.map((spec) => spec.sizeClass)
+      .filter((sizeClass) => !existing.includes(sizeClass)),
+  );
+  const result = await deriveVideoLadder(path, deps.tools, deps.enabledOptional ?? [], missing);
 
   // Facts first. They are what the grid lays a tile out with, and if publishing
   // is interrupted after this the record is at least coherent — dimensions and
@@ -64,7 +79,7 @@ export async function deriveAndPublishVideo(
 
   for (const rendition of result.renditions) {
     try {
-      const { contentHash, objectStorageKey } = await deps.keyFor(rendition.bytes);
+      const { contentHash, objectStorageKey } = await deps.keyFor(rendition.bytes, rendition);
       published.push(
         await publishVideoRendition(
           deps.signedFetch,
@@ -83,7 +98,7 @@ export async function deriveAndPublishVideo(
 
   const ladderComplete = videoLadderIsComplete(
     result.facts,
-    published.map((p) => p.sizeClass as SizeClass),
+    [...existing, ...published.map((p) => p.sizeClass)] as SizeClass[],
     deps.enabledOptional ?? [],
   );
 

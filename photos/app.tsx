@@ -5,6 +5,7 @@ import {
   PhotoGrid,
   PhotoViewer,
   usePhotoContext,
+  DerivationStatus,
   VisionPanel,
   PeopleView,
 } from "@/photos-ui";
@@ -294,6 +295,8 @@ function PhotosAppInner() {
               </label>
             ))}
           </div>
+
+          <DerivationStatus />
 
           {FORCE_REMOTE && (
             <button

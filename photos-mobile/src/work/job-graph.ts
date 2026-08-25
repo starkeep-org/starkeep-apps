@@ -359,6 +359,8 @@ export interface DeviceState {
    * next time the phone is charged.
    */
   readonly batteryLevel?: number;
+  /** The user explicitly asked the OS to conserve power. */
+  readonly isLowPowerMode?: boolean;
 }
 
 /**
@@ -369,6 +371,7 @@ export interface DeviceState {
  * job is resumable, so stopping costs nothing but the unit in flight.
  */
 export function fullDeriveMayRun(device: DeviceState): boolean {
+  if (device.isLowPowerMode) return false;
   if (device.isCharging) return true;
   return (device.batteryLevel ?? 0) > FULL_DERIVE_BATTERY_FLOOR;
 }

@@ -49,7 +49,7 @@ export interface PublishedRendition {
 
 export class RenditionPublishError extends Error {
   constructor(
-    readonly stage: "presign" | "upload" | "register",
+    readonly stage: "presign" | "upload" | "register" | "metadata",
     readonly sizeClass: string,
     readonly status: number,
     detail: string,
@@ -286,17 +286,28 @@ export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.renditi
 export async function existingRenditionClasses(
   signedFetch: SignedFetch,
   parentId: string,
+  options: { requireDimensions?: boolean } = {},
 ): Promise<string[]> {
   const res = await signedFetch(
     `/data/records?parentId=${encodeURIComponent(parentId)}` +
-      `&label=${RENDITION_LABEL_REF}&include=labels&limit=50`,
+      `&label=${RENDITION_LABEL_REF}` +
+      `&include=${options.requireDimensions ? "labels,metadata" : "labels"}&limit=50`,
   );
   if (!res.ok) return [];
   const { records } = (await res.json()) as {
-    records: Array<{ labels?: Array<{ app_id: string; key: string; value?: string }> }>;
+    records: Array<{
+      metadata?: { width?: number | null; height?: number | null } | null;
+      labels?: Array<{ app_id: string; key: string; value?: string }>;
+    }>;
   };
   const classes: string[] = [];
   for (const record of records) {
+    if (
+      options.requireDimensions &&
+      !((record.metadata?.width ?? 0) > 0 && (record.metadata?.height ?? 0) > 0)
+    ) {
+      continue;
+    }
     for (const label of record.labels ?? []) {
       if (label.app_id === PHOTOS_APP_ID && label.key === PHOTOS_LABEL_KEYS.rendition) {
         if (label.value) classes.push(label.value);

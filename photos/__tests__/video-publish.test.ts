@@ -41,6 +41,9 @@ function makeSignedFetch(overrides: Record<string, () => Response> = {}) {
     if (path === "/data/records") {
       return new Response(JSON.stringify({ record: { id: "child-1" } }), { status: 200 });
     }
+    if (path.startsWith("/data/records?")) {
+      return new Response(JSON.stringify({ records: [] }), { status: 200 });
+    }
     return new Response(JSON.stringify({ tagged: true, refusals: [] }), { status: 200 });
   });
 }
@@ -167,6 +170,15 @@ describe("publishing a rendition", () => {
     await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
     expect(calls.find((c) => c.path === "/files/presign")!.body.intent).toBe("instant");
   });
+
+  it("does not report publication success when dimensions cannot be stored", async () => {
+    const failing = makeSignedFetch({
+      "/data/records/child-1/metadata": () => new Response("nope", { status: 500 }),
+    });
+    await expect(
+      publishVideoRendition(failing, parent, rendition(), "hash", "key"),
+    ).rejects.toMatchObject({ stage: "metadata", sizeClass: "video-poster-thumb" });
+  });
 });
 
 describe("the ingest path", () => {
@@ -201,6 +213,65 @@ describe("the ingest path", () => {
     expect(result.published.map((p) => p.sizeClass).sort()).toEqual(
       ["video-720p", "video-poster-720p", "video-poster-thumb", "video-skim"].sort(),
     );
+  });
+
+  it("does not re-encode or republish rungs that already exist", async () => {
+    signedFetch = makeSignedFetch({
+      "/data/records?": () => new Response(JSON.stringify({
+        records: ["video-poster-thumb", "video-poster-720p", "video-skim", "video-720p"]
+          .map((value) => ({
+            metadata: { width: 1280, height: 720 },
+            labels: [{ app_id: "photos", key: "rendition", value }],
+          })),
+      }), { status: 200 }),
+    });
+    const extractPoster = vi.fn();
+    const skim = vi.fn();
+    const transcode = vi.fn();
+    const result = await deriveAndPublishVideo(
+      "/clip.mov",
+      parent,
+      deps({ tools: tools({ extractPoster, skim, transcode }) }),
+    );
+    expect(result.published).toEqual([]);
+    expect(extractPoster).not.toHaveBeenCalled();
+    expect(skim).not.toHaveBeenCalled();
+    expect(transcode).not.toHaveBeenCalled();
+    expect(result.ladderComplete).toBe(true);
+  });
+
+  it("retries a labelled child whose missing dimensions make it unreadable", async () => {
+    signedFetch = makeSignedFetch({
+      "/data/records?": () => new Response(JSON.stringify({
+        records: [{
+          metadata: null,
+          labels: [{ app_id: "photos", key: "rendition", value: "video-poster-thumb" }],
+        }],
+      }), { status: 200 }),
+    });
+    const extractPoster = vi.fn(async () => ({
+      bytes: new Uint8Array([1]),
+      width: 225,
+      height: 400,
+    }));
+    await deriveAndPublishVideo(
+      "/clip.mov",
+      parent,
+      deps({ tools: tools({ extractPoster }) }),
+    );
+    expect(extractPoster).toHaveBeenCalled();
+    expect(calls.some((call) => call.path === "/data/records/child-1/metadata")).toBe(true);
+  });
+
+  it("keeps the archive gate closed when a child dimensions write fails", async () => {
+    signedFetch = makeSignedFetch({
+      "/data/records/child-1/metadata": () => new Response("nope", { status: 500 }),
+    });
+    const result = await deriveAndPublishVideo("/clip.mov", parent, deps());
+    expect(result.failed.length).toBeGreaterThan(0);
+    expect(result.ladderComplete).toBe(false);
+    expect(result.archiveTagged).toBe(false);
+    expect(calls.some((call) => call.path.endsWith("/archive-gate"))).toBe(false);
   });
 
   it("asserts the archive gate once the ladder is complete", async () => {

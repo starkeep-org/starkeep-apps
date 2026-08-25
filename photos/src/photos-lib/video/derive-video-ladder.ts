@@ -81,6 +81,7 @@ export async function deriveVideoLadder(
   path: string,
   tools: VideoTools,
   enabledOptional: readonly SizeClass[] = [],
+  only?: ReadonlySet<SizeClass>,
 ): Promise<VideoLadderResult> {
   // A missing ffmpeg is terminal, not transient: retrying it every sweep burns
   // the whole run rediscovering that it is still not installed.
@@ -90,7 +91,9 @@ export async function deriveVideoLadder(
 
   const facts = await tools.probe(path);
   const source = videoSourceOf(facts);
-  const classes = applicableVideoClasses(source, enabledOptional);
+  const classes = applicableVideoClasses(source, enabledOptional).filter(
+    (spec) => only === undefined || only.has(spec.sizeClass),
+  );
 
   const renditions: DerivedVideoRendition[] = [];
   const failures: VideoDerivationFailure[] = [];

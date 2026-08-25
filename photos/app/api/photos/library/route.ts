@@ -9,6 +9,7 @@ import {
   type RenditionState,
 } from "@/photos-lib/rendition-resolution";
 import { MAX_VARIANT_TARGETS } from "@/photos-lib/rendition-targets";
+import { VIDEO_LADDER } from "@/photos-lib/ladder";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -121,7 +122,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     return {
       ...rest,
       ...(isVideo(record)
-        ? { variants: resolveFlat(record, targets.values) }
+        ? { video_renditions: resolveVideo(record, targets.values, cloud) }
         : { renditions: resolveFor(record, targets.values, cloud, localVerdicts) }),
     };
   });
@@ -135,7 +136,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   return res;
 }
 
-interface UpstreamRecord {
+export interface UpstreamRecord {
   id: string;
   mime_type: string | null;
   metadata?: { width?: number | null; height?: number | null } | null;
@@ -145,6 +146,8 @@ interface UpstreamRecord {
     width: number;
     height: number;
     long_edge: number;
+    label_value: string;
+    available_here: boolean;
     url?: string;
   }>;
 }
@@ -170,15 +173,34 @@ function isVideo(record: UpstreamRecord): boolean {
  * shape the data server used to return, so every video consumer keeps working
  * unchanged.
  */
-function resolveFlat(record: UpstreamRecord, targets: readonly number[]) {
-  const byEdge = [...(record.variant_candidates ?? [])].sort((a, b) => a.long_edge - b.long_edge);
-  const out: Record<string, (typeof byEdge)[number]> = {};
-  if (byEdge.length === 0) return out;
+export function resolveVideo(record: UpstreamRecord, targets: readonly number[], cloud: boolean) {
+  const candidates = record.variant_candidates ?? [];
+  const posterClasses = new Set(VIDEO_LADDER.filter((spec) => spec.kind === "poster").map((spec) => spec.sizeClass));
+  const playbackClasses = new Set(VIDEO_LADDER.filter((spec) => spec.kind === "transcode").map((spec) => spec.sizeClass));
+  const posters = candidates.filter((c) => posterClasses.has(c.label_value as never));
+  const playback = candidates.filter((c) => playbackClasses.has(c.label_value as never));
+  const out: Record<string, { poster?: (typeof candidates)[number]; playback?: (typeof candidates)[number] }> = {};
   for (const target of targets) {
-    const chosen = byEdge.find((c) => c.long_edge >= target) ?? byEdge[byEdge.length - 1]!;
-    out[String(target)] = chosen;
+    const poster = chooseVideoCandidate(posters, target, cloud);
+    const playable = chooseVideoCandidate(playback, target, cloud);
+    out[String(target)] = {
+      ...(poster ? { poster } : {}),
+      ...(playable ? { playback: playable } : {}),
+    };
   }
   return out;
+}
+
+/** Exact/next-larger, then largest-smaller, restricted to bytes this node can serve. */
+function chooseVideoCandidate(
+  candidates: NonNullable<UpstreamRecord["variant_candidates"]>,
+  target: number,
+  cloud: boolean,
+) {
+  const readable = candidates
+    .filter((c) => Boolean(c.url) && (cloud || c.available_here))
+    .sort((a, b) => a.long_edge - b.long_edge || a.id.localeCompare(b.id));
+  return readable.find((c) => c.long_edge >= target) ?? readable[readable.length - 1];
 }
 
 function resolveFor(

@@ -27,9 +27,10 @@ export type SweepStage =
   /** Placeholder, dimensions, EXIF, and the two smallest rungs. */
   | "cheap"
   /** Everything else the record's ladder calls for. */
-  | "full";
+  | "full"
+  | "video";
 
-export const SWEEP_STAGES: readonly SweepStage[] = ["cheap", "full"];
+export const SWEEP_STAGES: readonly SweepStage[] = ["cheap", "full", "video"];
 
 export interface SweepState {
   /** Whether a pass is running right now, as of the last write. */

@@ -46,6 +46,8 @@ const ALLOWED = [
   join("src", "photos-lib", "image-processing", "derive-ladder.ts"),
   // Labels them on publication.
   join("src", "photos-lib", "image-processing", "publish-renditions.ts"),
+  // Discovers missing rungs for both still and video sweep stages.
+  join("src", "derivation", "sweep-set.ts"),
   // Names the single rung the pre-ladder resize path still produces.
   join("src", "photos-lib", "labels.ts"),
 ];

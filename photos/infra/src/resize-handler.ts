@@ -93,6 +93,9 @@ export async function handler(event: APIGatewayEvent) {
     const { record } = (await recordRes.json()) as { record: BrokerPhotoRecord };
 
     if (!record.object_storage_key) return clientErr("Record has no attached file", 422);
+    if ((record.mime_type ?? "").startsWith("video/")) {
+      return clientErr("Video renditions are generated only by a local Photos node", 422);
+    }
 
     // May this record be derived *from*? A rendition may not — that would
     // recurse. A crop may: it is a user artifact that needs its own tile. This

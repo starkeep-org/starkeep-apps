@@ -29,9 +29,18 @@
  */
 
 import { parentPort } from "node:worker_threads";
+import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { loadAppCredentials, signedFetch, type AppCredentials } from "@starkeep/app-client";
 import { deriveAndPublish } from "../../photos-lib/image-processing/derive-and-publish";
 import { createSipsDecoder } from "../../photos-lib/image-processing/platform-decoder";
+import { deriveAndPublishVideo, isTerminalVideoError } from "../../photos-lib/video/derive-and-publish";
+import { createFfmpegTools } from "../../photos-lib/video/video-tools";
 import { RENDITION_LABEL_REF } from "../../photos-lib/image-processing/publish-renditions";
 import { CHEAP_STILL_CLASSES, CHEAP_TARGET_LONG_EDGE } from "../../photos-lib/ladder";
 import { fileAttemptStore } from "../attempt-store";
@@ -123,7 +132,7 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
       state.examined += page.records.length;
       state.skipped += page.records.length - work.length;
 
-      await inBatches(work, command.concurrency, async (record) => {
+      await inBatches(work, stage === "video" ? 1 : command.concurrency, async (record) => {
         if (stopRequested) return;
         await deriveOne(creds, record, stage, state);
         tick();
@@ -151,6 +160,10 @@ async function deriveOne(
   state: SweepState,
 ): Promise<void> {
   try {
+    if (stage === "video") {
+      await deriveOneVideo(creds, record, state);
+      return;
+    }
     const result = await deriveAndPublish({
       signedFetch: (path, init) => signedFetch(creds, path, init),
       parent: {
@@ -180,6 +193,54 @@ async function deriveOne(
     state.failed++;
     console.warn(`[derive] ${record.id} failed:`, err);
   }
+}
+
+async function deriveOneVideo(
+  creds: AppCredentials,
+  record: SweepRecord,
+  state: SweepState,
+): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "photos-video-source-"));
+  const path = join(dir, basename(record.original_filename ?? `${record.id}.video`));
+  try {
+    await downloadSourceFile(creds, record.id, path);
+    const result = await deriveAndPublishVideo(
+      path,
+      { id: record.id, originalFilename: record.original_filename },
+      {
+        signedFetch: (requestPath, init) => signedFetch(creds, requestPath, init),
+        tools: createFfmpegTools(),
+        keyFor: async (bytes, rendition) => {
+          const contentHash = createHash("sha256").update(bytes).digest("hex");
+          return {
+            contentHash,
+            objectStorageKey: `shared/${rendition.type}/${contentHash.slice(0, 2)}/${contentHash}`,
+          };
+        },
+      },
+    );
+    if (result.published.length > 0) state.derived++;
+    if (result.failed.length > 0) state.failed++;
+  } catch (error) {
+    if (isTerminalVideoError(error)) state.undecodable++;
+    else state.failed++;
+    console.warn(`[derive-video] ${record.id} failed:`, error);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function downloadSourceFile(
+  creds: AppCredentials,
+  recordId: string,
+  destination: string,
+): Promise<void> {
+  const urlRes = await signedFetch(creds, `/data/records/${recordId}/file-url`);
+  if (!urlRes.ok) throw new Error(`file-url failed: ${urlRes.status}`);
+  const { url } = (await urlRes.json()) as { url: string };
+  const fileRes = await fetch(url);
+  if (!fileRes.ok || !fileRes.body) throw new Error(`file fetch failed: ${fileRes.status}`);
+  await pipeline(Readable.fromWeb(fileRes.body as never), createWriteStream(destination));
 }
 
 async function fetchSourceBytes(creds: AppCredentials, recordId: string): Promise<Uint8Array> {

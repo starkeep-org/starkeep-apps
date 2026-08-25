@@ -37,6 +37,13 @@ export interface PhotoRecord {
     string,
     { id: string; type: string; object_storage_key: string; width: number; height: number; long_edge: number; url?: string }
   >;
+  video_renditions?: Record<
+    string,
+    {
+      poster?: VideoRenditionEntry;
+      playback?: VideoRenditionEntry;
+    }
+  >;
   /**
    * Cross-app labels, embedded when the list is fetched with
    * `?include=labels`. `undefined` when not requested; `[]` when requested and
@@ -54,6 +61,18 @@ export interface PhotoRecord {
    * Stills only. See `AppImage.renditions` for why video keeps `variants`.
    */
   renditions?: Record<string, RenditionChoice>;
+}
+
+export interface VideoRenditionEntry {
+  id: string;
+  type: string;
+  label_value: string;
+  object_storage_key: string;
+  width: number;
+  height: number;
+  long_edge: number;
+  available_here: boolean;
+  url?: string;
 }
 
 /**

@@ -46,6 +46,7 @@ export const dynamic = "force-dynamic";
  * would break local-first.
  */
 export async function GET(req: NextRequest): Promise<Response> {
+  const startedAt = Date.now();
   const cloud = process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
 
   let userToken: string | undefined;
@@ -96,6 +97,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const cursor = url.searchParams.get("cursor");
   if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
 
+  const upstreamStartedAt = Date.now();
   const upstream = await signedFetch(creds, `/data/records?${params.join("&")}`, {
     ...(userToken ? { headers: { [USER_TOKEN_HEADER]: userToken } } : {}),
   });
@@ -117,15 +119,33 @@ export async function GET(req: NextRequest): Promise<Response> {
   // known. Both are "here", which is what the flag means.
   const localVerdicts = cloud ? null : await loadLocalVerdicts();
 
+  let availableIdeals = 0;
+  let pendingIdeals = 0;
+  let undecodableIdeals = 0;
   const records = body.records.map((record) => {
     const { variant_candidates: _dropped, ...rest } = record;
-    return {
-      ...rest,
-      ...(isVideo(record)
-        ? { video_renditions: resolveVideo(record, targets.values, cloud) }
-        : { renditions: resolveFor(record, targets.values, cloud, localVerdicts) }),
-    };
+    if (isVideo(record)) {
+      return { ...rest, video_renditions: resolveVideo(record, targets.values, cloud) };
+    }
+    const renditions = resolveFor(record, targets.values, cloud, localVerdicts);
+    for (const choice of Object.values(renditions)) {
+      if (choice.ideal.available) availableIdeals++;
+      else if (choice.ideal.state === "undecodable-here") undecodableIdeals++;
+      else pendingIdeals++;
+    }
+    return { ...rest, renditions };
   });
+
+  const candidateCount = body.records.reduce(
+    (count, record) => count + (record.variant_candidates?.length ?? 0),
+    0,
+  );
+  console.log(
+    `[photos-library] records=${records.length} targets=${targets.values.join(",")} ` +
+      `candidates=${candidateCount} availableIdeals=${availableIdeals} ` +
+      `pendingIdeals=${pendingIdeals} undecodableIdeals=${undecodableIdeals} ` +
+      `upstreamMs=${Date.now() - upstreamStartedAt} totalMs=${Date.now() - startedAt}`,
+  );
 
   const res = NextResponse.json({
     records,
@@ -138,6 +158,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
 export interface UpstreamRecord {
   id: string;
+  type?: string;
   mime_type: string | null;
   metadata?: { width?: number | null; height?: number | null } | null;
   variant_candidates?: Array<{
@@ -163,7 +184,7 @@ export interface UpstreamRecord {
  * treatment.
  */
 function isVideo(record: UpstreamRecord): boolean {
-  return (record.mime_type ?? "").startsWith("video/");
+  return (record.mime_type ?? record.type ?? "").startsWith("video/");
 }
 
 /**
@@ -209,20 +230,41 @@ function resolveFor(
   cloud: boolean,
   localVerdicts: ReadonlyMap<string, RenditionState> | null,
 ) {
-  const candidates: DerivedChild[] = (record.variant_candidates ?? []).map((c) => ({
-    id: c.id,
-    longEdge: c.long_edge,
-    width: c.width,
-    height: c.height,
-    type: c.type,
-    ...(c.url ? { url: c.url } : {}),
-  }));
+  // A child record can outlive its bytes on this node. The data server keeps
+  // returning it as a candidate so another node can still reason about and
+  // synchronize it, but deliberately omits its URL and reports
+  // `available_here: false`. Such a record is not an available rendition for
+  // this response. Passing it to the ladder resolver would mark the ideal
+  // available by record existence alone; the browser would then receive no
+  // URL, paint the ThumbHash forever, and never request the missing rung.
+  //
+  // In cloud mode, a URL can point at remotely available bytes even though
+  // `available_here` is false. This is the same readability rule used for
+  // video candidates above.
+  const candidates: DerivedChild[] = (record.variant_candidates ?? [])
+    .filter((c) => Boolean(c.url) && (cloud || c.available_here))
+    .map((c) => ({
+      id: c.id,
+      longEdge: c.long_edge,
+      width: c.width,
+      height: c.height,
+      type: c.type,
+      url: c.url!,
+    }));
 
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
-  // No stored dimensions means no applicable set, so there is no ideal to name.
-  // A shrinking case — derivation writes dimensions now — but not yet an empty
-  // one, so it still needs a defined answer.
-  if (sourceLongEdge <= 0) return resolveWithoutDimensions(targets, candidates);
+  // No stored dimensions means no applicable set, so the exact clamped rung
+  // cannot be named yet. The compatibility resolver returns existing children
+  // as available, or provisional pending targets when there are none. That
+  // pending shape is what tells a parent-cursor client to full-relist for the
+  // first child publication instead of discovering every cheap child at once.
+  if (sourceLongEdge <= 0) {
+    return resolveWithoutDimensions(
+      targets,
+      candidates,
+      unavailableState(record, cloud, localVerdicts),
+    );
+  }
 
   return resolveRenditions(targets, {
     sourceLongEdge,
@@ -240,7 +282,7 @@ function unavailableState(
     // The cloud's decoder set is fixed: JPEG, PNG, WebP and AVIF. A HEIC record
     // is not "still deriving" there and never will be, and saying `pending`
     // would leave a grey tile that looks exactly like a bug.
-    return cloudCanDecode(record.mime_type ?? "") ? "pending" : "undecodable-here";
+    return cloudCanDecode(record.mime_type ?? record.type ?? "") ? "pending" : "undecodable-here";
   }
   return localVerdicts?.get(record.id) ?? "pending";
 }

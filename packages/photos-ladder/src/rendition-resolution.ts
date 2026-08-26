@@ -178,11 +178,17 @@ export function resolveRenditions(
 /**
  * The answer for a record whose dimensions are not stored.
  *
- * An applicable set cannot be computed without them, so there is no ideal to
- * name. Resolving among what exists and calling it available is today's
- * behaviour, and it is the honest one: nothing here knows that a better rung is
- * coming, so claiming one is pending would make the client wait for something
- * that may never arrive.
+ * An applicable set cannot be computed without them, so there is no ladder
+ * rung to name yet. When children exist, resolving among them and calling the
+ * selected one available remains the honest compatibility answer.
+ *
+ * When no children exist, returning no decision makes child-only writes
+ * invisible to a parent-based incremental cursor: the client does not know it
+ * is waiting, so it never performs the full re-list that can see the first
+ * child. Return a provisional pending entry for each requested target. Its long
+ * edge is the requested coverage, not a claimed ladder rung; once the metadata
+ * write supplies source dimensions, normal resolution replaces it with the
+ * exact clamped ideal.
  *
  * This case shrinks rather than grows — derivation now writes dimensions from
  * the decode it was doing anyway — so it is a compatibility path, not a
@@ -191,10 +197,18 @@ export function resolveRenditions(
 export function resolveWithoutDimensions(
   targets: readonly number[],
   candidates: readonly DerivedChild[],
+  unavailableState: RenditionState = "pending",
 ): Record<string, RenditionChoice> {
   const byEdge = [...candidates].sort((a, b) => a.longEdge - b.longEdge);
   const out: Record<string, RenditionChoice> = {};
-  if (byEdge.length === 0) return out;
+  if (byEdge.length === 0) {
+    for (const target of targets) {
+      out[String(target)] = {
+        ideal: { longEdge: target, available: false, state: unavailableState },
+      };
+    }
+    return out;
+  }
   for (const target of targets) {
     const chosen = byEdge.find((c) => c.longEdge >= target) ?? byEdge[byEdge.length - 1]!;
     out[String(target)] = { ideal: availableEntry(chosen) };

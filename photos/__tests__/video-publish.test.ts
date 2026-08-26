@@ -240,6 +240,35 @@ describe("the ingest path", () => {
     expect(result.ladderComplete).toBe(true);
   });
 
+  it("re-publishes labelled rungs whose bytes are unavailable on this node", async () => {
+    signedFetch = makeSignedFetch({
+      "/data/records?": () => new Response(JSON.stringify({
+        records: ["video-poster-thumb", "video-poster-720p", "video-skim", "video-720p"]
+          .map((value) => ({
+            metadata: { width: 1280, height: 720 },
+            labels: [{ app_id: "photos", key: "rendition", value }],
+          })),
+      }), { status: 200 }),
+    });
+    const extractPoster = vi.fn(async () => ({
+      bytes: new Uint8Array([1]),
+      width: 225,
+      height: 400,
+    }));
+
+    const result = await deriveAndPublishVideo(
+      "/clip.mov",
+      parent,
+      deps({
+        availableRenditionClasses: [],
+        tools: tools({ extractPoster }),
+      }),
+    );
+
+    expect(extractPoster).toHaveBeenCalled();
+    expect(result.published.length).toBeGreaterThan(0);
+  });
+
   it("retries a labelled child whose missing dimensions make it unreadable", async () => {
     signedFetch = makeSignedFetch({
       "/data/records?": () => new Response(JSON.stringify({

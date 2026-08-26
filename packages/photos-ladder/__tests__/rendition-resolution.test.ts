@@ -162,10 +162,9 @@ describe("resolving several sizes at once", () => {
 });
 
 describe("a record with no stored dimensions", () => {
-  // No applicable set can be computed, so there is no ideal to name. Reporting
-  // what exists as available is the honest answer: nothing here knows a better
-  // rung is coming, and claiming one is pending would make the client wait for
-  // something that may never arrive.
+  // No applicable set can be computed, so an existing child is the only honest
+  // available answer. With no children, a provisional pending decision keeps
+  // child-only writes visible to clients using a parent-based cursor.
   it("falls back to resolving among what exists, and calls it final", () => {
     const resolved = resolveWithoutDimensions([500], [child(400), child(1280)]);
     expect(resolved["500"]!.ideal.available).toBe(true);
@@ -173,7 +172,18 @@ describe("a record with no stored dimensions", () => {
     expect(resolved["500"]!.fallback).toBeUndefined();
   });
 
-  it("returns nothing at all when the record has no renditions", () => {
-    expect(resolveWithoutDimensions([500], [])).toEqual({});
+  it("reports requested targets as provisionally pending when it has no renditions", () => {
+    expect(resolveWithoutDimensions([500, 2048], [])).toEqual({
+      "500": { ideal: { longEdge: 500, available: false, state: "pending" } },
+      "2048": { ideal: { longEdge: 2048, available: false, state: "pending" } },
+    });
+  });
+
+  it("preserves the node's terminal decode verdict in a provisional decision", () => {
+    expect(resolveWithoutDimensions([500], [], "undecodable-here")).toEqual({
+      "500": {
+        ideal: { longEdge: 500, available: false, state: "undecodable-here" },
+      },
+    });
   });
 });

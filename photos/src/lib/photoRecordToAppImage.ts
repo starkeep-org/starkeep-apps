@@ -11,7 +11,10 @@ export function photoRecordToAppImage(
   const overrideDate = enriched?.date_taken_override ?? null;
   return {
     id: record.id,
-    mimeType: record.mime_type ?? "image/jpeg",
+    // Folder-watched records intentionally have no advisory MIME type. Their
+    // canonical Starkeep type still identifies the media and must drive image
+    // versus video behavior instead of pretending every such record is JPEG.
+    mimeType: record.mime_type ?? record.type,
     objectStorageKey: record.object_storage_key,
     sizeBytes: record.size_bytes,
     createdAt: record.created_at,

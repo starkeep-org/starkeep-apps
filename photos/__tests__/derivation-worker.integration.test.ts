@@ -172,6 +172,7 @@ function handler(
             .filter((c) => typeof c.metadata.width === "number")
             .map((c) => ({
               long_edge: Math.max(c.metadata.width as number, c.metadata.height as number),
+              available_here: true,
             })),
         })),
         nextCursor: null,

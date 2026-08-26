@@ -5,7 +5,9 @@ import { join } from "node:path";
 import {
   currentSweepState,
   isSweeping,
+  resumePoint,
   startSweep,
+  waitForSweepIdle,
   workerBundlePath,
 } from "@/derivation/sweep-controller";
 import { readSweepState, writeSweepState } from "@/derivation/sweep-state";
@@ -103,5 +105,46 @@ describe("a library nobody has swept", () => {
     expect(state.stage).toBe("cheap");
     expect(state.cursor).toBeNull();
     expect(state.running).toBe(false);
+  });
+
+  it("reports idle immediately when there is no worker to wait for", async () => {
+    await expect(waitForSweepIdle()).resolves.toMatchObject({ running: false });
+  });
+});
+
+describe("starting another pass", () => {
+  it("starts completed passes over at cheap so newly ingested stills are discovered", () => {
+    expect(
+      resumePoint({
+        ...emptySweepState(),
+        stage: "video",
+        cursor: null,
+        completed: true,
+        finishedAt: "2026-08-25T00:00:00.000Z",
+      }),
+    ).toEqual({ stage: "cheap", cursor: null });
+  });
+
+  it("migrates a successful final-stage state written before completed was recorded", () => {
+    expect(
+      resumePoint({
+        ...emptySweepState(),
+        stage: "video",
+        cursor: null,
+        finishedAt: "2026-08-25T00:00:00.000Z",
+        error: null,
+      }),
+    ).toEqual({ stage: "cheap", cursor: null });
+  });
+
+  it("keeps an interrupted pass's exact stage and cursor", () => {
+    expect(
+      resumePoint({
+        ...emptySweepState(),
+        stage: "full",
+        cursor: "page-20",
+        completed: false,
+      }),
+    ).toEqual({ stage: "full", cursor: "page-20" });
   });
 });

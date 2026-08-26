@@ -6,6 +6,7 @@ import { VideoPlayer } from "./video-player";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { FaceOverlay } from "../vision/face-overlay";
 import type { ImageFaces } from "../../../lib/vision-client";
+import { requestDerivation } from "../../../lib/on-demand-derivation";
 
 /**
  * The size the opened view asks for: the viewport's long edge, scaled by the
@@ -65,7 +66,27 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // bytes.
   const viewportTarget = useViewportTarget();
   const rendition = isVideo ? null : stillDisplay(image, viewportTarget);
-  const fullSizeSrc = rendition?.source?.url ?? getFullSizeSrc(image.id) ?? undefined;
+  const pendingLongEdge = rendition?.awaitingBetter ? rendition.idealLongEdge : null;
+  useEffect(() => {
+    if (pendingLongEdge === null) return;
+    requestDerivation(image.id, pendingLongEdge);
+  }, [image.id, pendingLongEdge]);
+
+  // A modern library response made an explicit rendition decision. If its
+  // ideal and fallback are both absent, wait for the requested rendition
+  // instead of silently downloading the original. The original fallback is
+  // retained only for old responses that carry no rendition decisions.
+  const hasRenditionDecision = Object.keys(image.renditions ?? {}).length > 0;
+  const fullSizeSrc =
+    rendition?.source?.url ??
+    (!hasRenditionDecision ? getFullSizeSrc(image.id) ?? undefined : undefined);
+  useEffect(() => {
+    console.log(
+      `[photo-viewer] record=${image.id} target=${viewportTarget} ` +
+        `source=${rendition?.source ? "rendition" : hasRenditionDecision ? "pending" : "original"} ` +
+        `ideal=${rendition?.idealLongEdge ?? "unknown"} state=${rendition?.state ?? "ready"}`,
+    );
+  }, [hasRenditionDecision, image.id, rendition?.idealLongEdge, rendition?.source, rendition?.state, viewportTarget]);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     setLoaded(false);

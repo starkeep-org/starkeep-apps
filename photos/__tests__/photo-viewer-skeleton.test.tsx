@@ -14,6 +14,7 @@ import { render, screen, act, cleanup, fireEvent } from "@testing-library/react"
 import { PhotoViewer } from "../src/photos-ui/components/viewer/photo-viewer";
 import { PhotoUrlProvider } from "../src/photos-ui/context/photo-url-context";
 import type { AppImage } from "../src/photos-lib";
+import { resetDerivationRequests } from "../src/lib/on-demand-derivation";
 
 function appImage(over: Partial<AppImage> = {}): AppImage {
   return {
@@ -56,6 +57,7 @@ function renderViewer(image: AppImage, getFullSizeSrc: (id: string) => string | 
 }
 
 beforeEach(() => {
+  resetDerivationRequests();
   // The info panel (hidden by default) never fetches on mount, but stub fetch
   // defensively so nothing hits the network if that ever changes.
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, json: () => Promise.resolve({ image: null }) })));
@@ -168,5 +170,23 @@ describe("PhotoViewer without dimensions (metadata pending)", () => {
     act(() => fireEvent.load(el));
     expect(el.style.opacity).toBe("1");
     expect(screen.queryByTestId("photo-skeleton")).toBeNull();
+  });
+});
+
+describe("PhotoViewer with a pending rendition", () => {
+  it("waits for the requested size instead of silently downloading the original", () => {
+    const getSrc = vi.fn().mockReturnValue("https://signed/original");
+    renderViewer(
+      appImage({
+        renditions: {
+          "2048": { ideal: { longEdge: 2560, available: false, state: "pending" } },
+        },
+      }),
+      getSrc,
+    );
+
+    expect(getSrc).not.toHaveBeenCalled();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByTestId("photo-skeleton")).toBeTruthy();
   });
 });

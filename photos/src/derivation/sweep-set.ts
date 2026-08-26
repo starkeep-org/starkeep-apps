@@ -30,6 +30,8 @@ export const RECORDS_PER_PAGE = 200;
 /** A row as Photos' sweep asks the data server to render it. */
 export interface SweepRecord {
   id: string;
+  /** Canonical Starkeep type. Folder-watched records intentionally have no advisory MIME. */
+  type?: string;
   mime_type: string | null;
   original_filename: string | null;
   metadata?: {
@@ -38,7 +40,12 @@ export interface SweepRecord {
     thumb_hash?: string | null;
     bitrate?: number | null;
   } | null;
-  variant_candidates?: Array<{ long_edge: number; label_value?: string }>;
+  variant_candidates?: Array<{
+    long_edge: number;
+    label_value?: string;
+    /** False when the child record exists but its bytes are absent on this node. */
+    available_here: boolean;
+  }>;
 }
 
 /**
@@ -58,7 +65,15 @@ export interface SweepRecord {
 export function missingClasses(record: SweepRecord): SizeClass[] | "unknown" {
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
   if (sourceLongEdge <= 0) return "unknown";
-  const have = new Set((record.variant_candidates ?? []).map((c) => c.long_edge));
+  // Record existence is not local byte availability. Reinstalls and sync can
+  // leave a child record present while its object is absent on this node; that
+  // rung still needs local derivation. Only an explicit availability claim is
+  // enough to suppress work.
+  const have = new Set(
+    (record.variant_candidates ?? [])
+      .filter((c) => c.available_here)
+      .map((c) => c.long_edge),
+  );
   return applicableStillClasses(sourceLongEdge)
     .filter((spec) => !have.has(renditionLongEdge(spec, sourceLongEdge)))
     .map((spec) => spec.sizeClass);
@@ -83,20 +98,25 @@ export function stageHasWork(
   stage: "cheap" | "full" | "video",
   cheapClasses: readonly SizeClass[],
 ): boolean {
-  const video = (record.mime_type ?? "").startsWith("video/");
+  const mediaType = record.mime_type ?? record.type ?? "";
+  const video = mediaType.startsWith("video/");
   if (stage === "video") {
     if (!video) return false;
     const longEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
     // The first pass supplies these facts. Until they exist, no duplicated
     // approximation of the ladder can safely decide which rungs apply.
     if (longEdge <= 0) return true;
-    const have = new Set((record.variant_candidates ?? []).map((c) => c.label_value));
+    const have = new Set(
+      (record.variant_candidates ?? [])
+        .filter((c) => c.available_here)
+        .map((c) => c.label_value),
+    );
     const bitrate = record.metadata?.bitrate ?? Number.POSITIVE_INFINITY;
     return applicableVideoClasses({ longEdge, bitrate, durationSeconds: 0 }).some(
       (spec) => !have.has(spec.sizeClass),
     );
   }
-  if (video || !(record.mime_type ?? "").startsWith("image/")) return false;
+  if (video || !mediaType.startsWith("image/")) return false;
   const missing = missingClasses(record);
   if (missing === "unknown") return true;
   const cheap = new Set(cheapClasses);

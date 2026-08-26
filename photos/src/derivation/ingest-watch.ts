@@ -18,24 +18,24 @@
  * answer to "something changed" is "run the sweep", and the sweep's own query
  * decides what needs doing.
  *
- * ## Debounced, because a bulk copy is thousands of kicks
+ * ## Leading edge, with one trailing pass
  *
  * Dropping a folder of ten thousand photos into a watched directory produces a
- * kick per file. Starting a sweep per kick would be ten thousand sweeps; waiting
- * for quiet and then running one is the same work, done once.
+ * kick per file. The first kick starts a sweep immediately. Further kicks while
+ * it runs collapse into one dirty bit, and worker exit consumes that bit with
+ * at most one trailing discovery pass. This gives one new photo prompt service
+ * without turning a bulk copy into ten thousand concurrent sweeps.
  */
 
-import { isSweeping, startSweep } from "./sweep-controller";
+import { isSweeping, startSweep, waitForSweepIdle } from "./sweep-controller";
 
-/** How long the ingest stream must go quiet before a sweep starts. */
-const DEBOUNCE_MS = 5_000;
-
-/** How long after boot the first sweep starts. */
-const BOOT_DELAY_MS = 10_000;
+type SweepTrigger = "server start" | "ingest kick" | "trailing ingest";
 
 interface Watch {
-  timer: ReturnType<typeof setTimeout> | null;
-  source: EventSource | null;
+  streamAbort: AbortController | null;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  sweepTask: Promise<void> | null;
+  dirtyWhileSweeping: boolean;
 }
 
 /**
@@ -48,22 +48,128 @@ const WATCH_KEY = Symbol.for("starkeep.photos.derivation.ingestWatch");
 function watch(): Watch {
   const globals = globalThis as unknown as Record<symbol, Watch | undefined>;
   const existing = globals[WATCH_KEY];
-  if (existing) return existing;
-  const created: Watch = { timer: null, source: null };
+  if (existing) {
+    // Cancel and remove a debounce timer retained by a pre-change dev hot
+    // reload. Fresh processes never have this property.
+    const legacy = existing as Watch & { timer?: ReturnType<typeof setTimeout> | null };
+    if (legacy.timer) clearTimeout(legacy.timer);
+    delete legacy.timer;
+    existing.sweepTask ??= null;
+    existing.dirtyWhileSweeping ??= false;
+    return existing;
+  }
+  const created: Watch = {
+    streamAbort: null,
+    reconnectTimer: null,
+    sweepTask: null,
+    dirtyWhileSweeping: false,
+  };
   globals[WATCH_KEY] = created;
   return created;
 }
 
-function scheduleSweep(delayMs: number): void {
-  const self = watch();
-  if (self.timer) clearTimeout(self.timer);
-  self.timer = setTimeout(() => {
-    self.timer = null;
-    if (isSweeping()) return;
-    void startSweep().then((result) => {
-      if (!result.ok) console.warn(`[derive] sweep did not start: ${result.error}`);
+function trackSweepTask(self: Watch, task: Promise<void>): Promise<void> {
+  const tracked = task
+    .catch((error: unknown) => {
+      console.warn("[derive] sweep scheduling failed", error);
+    })
+    .finally(() => {
+      if (self.sweepTask !== tracked) return;
+      self.sweepTask = null;
+      if (!self.dirtyWhileSweeping) return;
+      self.dirtyWhileSweeping = false;
+      void requestSweep("trailing ingest");
     });
-  }, delayMs);
+  self.sweepTask = tracked;
+  return tracked;
+}
+
+async function startAndObserveSweep(trigger: SweepTrigger): Promise<void> {
+  const result = await startSweep();
+  if (!result.ok) {
+    console.warn(`[derive] ${trigger} sweep did not start: ${result.error}`);
+    return;
+  }
+  await waitForSweepIdle();
+}
+
+function requestSweep(trigger: SweepTrigger): Promise<void> {
+  const self = watch();
+  if (self.sweepTask) {
+    self.dirtyWhileSweeping = true;
+    console.log(`[derive] ${trigger} coalesced into one trailing sweep`);
+    return self.sweepTask;
+  }
+  if (isSweeping()) {
+    self.dirtyWhileSweeping = true;
+    console.log(`[derive] ${trigger} joined the running sweep; one trailing sweep retained`);
+    return trackSweepTask(self, waitForSweepIdle().then(() => undefined));
+  }
+  return trackSweepTask(self, startAndObserveSweep(trigger));
+}
+
+/** Start the boot sweep now. Exported as the scheduling-policy test seam. */
+export function startInitialSweep(): Promise<void> {
+  return requestSweep("server start");
+}
+
+/** Handle one payload-free data-server event immediately. */
+export function requestIngestSweep(): Promise<void> {
+  return requestSweep("ingest kick");
+}
+
+/** Read the data server's payload-free SSE kicks with APIs available in Node. */
+export async function consumeSseKicks(
+  url: string,
+  signal: AbortSignal,
+  onKick: () => void,
+): Promise<void> {
+  const response = await fetch(url, {
+    headers: { Accept: "text/event-stream" },
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`event stream failed: ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) return;
+    buffer += decoder.decode(next.value, { stream: true }).replaceAll("\r\n", "\n");
+    let boundary: number;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      if (frame.split("\n").some((line) => line.startsWith("data:"))) onKick();
+    }
+  }
+}
+
+function connectEventStream(dataServerUrl: string): void {
+  const self = watch();
+  const controller = new AbortController();
+  self.streamAbort = controller;
+  console.log(`[derive] connecting ingest watch to ${dataServerUrl}/events`);
+  void consumeSseKicks(`${dataServerUrl}/events`, controller.signal, () => {
+    console.log("[derive] ingest kick received; requesting sweep now");
+    void requestIngestSweep();
+  })
+    .catch((error: unknown) => {
+      if (!controller.signal.aborted) {
+        console.warn("[derive] ingest event stream error; will reconnect", error);
+      }
+    })
+    .finally(() => {
+      if (self.streamAbort !== controller || controller.signal.aborted) return;
+      self.streamAbort = null;
+      self.reconnectTimer = setTimeout(() => {
+        self.reconnectTimer = null;
+        connectEventStream(dataServerUrl);
+      }, 1_000);
+    });
 }
 
 /**
@@ -77,21 +183,14 @@ function scheduleSweep(delayMs: number): void {
  */
 export function startIngestWatch(dataServerUrl: string): void {
   const self = watch();
-  if (self.source) return;
+  if (self.streamAbort || self.reconnectTimer) return;
 
-  // Deferred rather than immediate: the server has just started, the operator
-  // is probably about to open the app, and the first thing they should get is a
-  // page rather than a saturated CPU.
-  scheduleSweep(BOOT_DELAY_MS);
+  // Start independently of the UI. This work lives in a worker thread with its
+  // record concurrency capped, and measured library requests remain fast even
+  // during the expensive full stage. Waiting a fixed ten seconds only made a
+  // fresh install deterministically blank; waiting for a page response would
+  // leave a headless library underived indefinitely.
+  void startInitialSweep();
 
-  const source = new EventSource(`${dataServerUrl}/events`);
-  self.source = source;
-  source.onmessage = () => scheduleSweep(DEBOUNCE_MS);
-  source.onerror = () => {
-    // EventSource reconnects on its own. Logged once per failure rather than
-    // torn down, because the alternative — dropping the subscription — turns a
-    // transient data-server restart into "ingest never wakes derivation again"
-    // for the life of this process.
-    console.warn("[derive] ingest event stream error; will reconnect");
-  };
+  connectEventStream(dataServerUrl);
 }

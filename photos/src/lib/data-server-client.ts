@@ -8,7 +8,8 @@ import type { RenditionChoice } from "../photos-lib/rendition-resolution";
 export interface PhotoRecord {
   id: string;
   type: string;
-  mime_type: string;
+  /** Advisory MIME. Folder-watched local files intentionally store null. */
+  mime_type: string | null;
   size_bytes: number;
   created_at: string;
   updated_at: string;

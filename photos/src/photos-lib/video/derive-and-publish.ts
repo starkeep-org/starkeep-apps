@@ -37,6 +37,8 @@ export interface VideoIngestDeps {
     rendition: { readonly type: "image" | "video" },
   ) => Promise<{ contentHash: string; objectStorageKey: string }>;
   readonly enabledOptional?: readonly SizeClass[];
+  /** Rungs whose bytes this node can serve; supplied by the local sweep. */
+  readonly availableRenditionClasses?: readonly SizeClass[];
 }
 
 /**
@@ -58,9 +60,11 @@ export async function deriveAndPublishVideo(
   // while every reader remains unable to select its replacement. Re-deriving
   // such a child is safe: record registration deduplicates by parent and hash,
   // then the metadata write repairs the existing record.
-  const existing = await existingRenditionClasses(deps.signedFetch, parent.id, {
-    requireDimensions: true,
-  });
+  const existing = deps.availableRenditionClasses
+    ? [...deps.availableRenditionClasses]
+    : await existingRenditionClasses(deps.signedFetch, parent.id, {
+        requireDimensions: true,
+      });
   const missing = new Set<SizeClass>(
     VIDEO_LADDER.map((spec) => spec.sizeClass)
       .filter((sizeClass) => !existing.includes(sizeClass)),

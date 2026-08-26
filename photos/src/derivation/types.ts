@@ -35,6 +35,8 @@ export const SWEEP_STAGES: readonly SweepStage[] = ["cheap", "full", "video"];
 export interface SweepState {
   /** Whether a pass is running right now, as of the last write. */
   running: boolean;
+  /** Whether every stage reached the end of its catalogue scan. */
+  completed: boolean;
   /** Which stage the current or last pass was in. */
   stage: SweepStage;
   /**
@@ -65,6 +67,7 @@ export interface SweepState {
 export function emptySweepState(): SweepState {
   return {
     running: false,
+    completed: false,
     stage: "cheap",
     cursor: null,
     examined: 0,

@@ -54,9 +54,33 @@ describe("which rungs are missing", () => {
 
   it("names none when every applicable rung exists", () => {
     const missing = missingClasses(
-      record({ variant_candidates: edgesFor(BIG).map((long_edge) => ({ long_edge })) }),
+      record({
+        variant_candidates: edgesFor(BIG).map((long_edge) => ({
+          long_edge,
+          available_here: true,
+        })),
+      }),
     );
     expect(missing).toEqual([]);
+  });
+
+  it("names a rung whose record exists but whose bytes are absent here", () => {
+    const edges = edgesFor(BIG);
+    const unavailableEdge = edges[1]!;
+    const missing = missingClasses(
+      record({
+        variant_candidates: edges.map((long_edge) => ({
+          long_edge,
+          available_here: long_edge !== unavailableEdge,
+        })),
+      }),
+    );
+
+    expect(missing).toEqual([
+      applicableStillClasses(BIG).find(
+        (spec) => renditionLongEdge(spec, BIG) === unavailableEdge,
+      )!.sizeClass,
+    ]);
   });
 
   // Matching is by effective long edge, because that is what the platform can
@@ -70,7 +94,7 @@ describe("which rungs are missing", () => {
     const missing = missingClasses(
       record({
         metadata: { width: small, height: small, thumb_hash: "abc" },
-        variant_candidates: edges.map((long_edge) => ({ long_edge })),
+        variant_candidates: edges.map((long_edge) => ({ long_edge, available_here: true })),
       }),
     );
     expect(missing).toEqual([]);
@@ -112,7 +136,10 @@ describe("which stage has work", () => {
   // expensive rungs fill in behind it without anything waiting.
   it("leaves only the expensive stage once the cheap rungs exist", () => {
     const partial = record({
-      variant_candidates: cheapEdges().map((long_edge) => ({ long_edge })),
+      variant_candidates: cheapEdges().map((long_edge) => ({
+        long_edge,
+        available_here: true,
+      })),
     });
     expect(stageHasWork(partial, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(partial, "full", CHEAP_STILL_CLASSES)).toBe(true);
@@ -120,7 +147,10 @@ describe("which stage has work", () => {
 
   it("gives a fully derived record no work at all", () => {
     const done = record({
-      variant_candidates: edgesFor(BIG).map((long_edge) => ({ long_edge })),
+      variant_candidates: edgesFor(BIG).map((long_edge) => ({
+        long_edge,
+        available_here: true,
+      })),
     });
     expect(stageHasWork(done, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(done, "full", CHEAP_STILL_CLASSES)).toBe(false);
@@ -131,10 +161,22 @@ describe("which stage has work", () => {
     expect(stageHasWork(unknown, "cheap", CHEAP_STILL_CLASSES)).toBe(true);
   });
 
+  it("uses the canonical type when watched-folder ingest intentionally leaves MIME null", () => {
+    const watched = record({ type: "image/jpeg", mime_type: null, metadata: null });
+    expect(stageHasWork(watched, "cheap", CHEAP_STILL_CLASSES)).toBe(true);
+    expect(stageHasWork(watched, "video", CHEAP_STILL_CLASSES)).toBe(false);
+  });
+
   it("never sends a video through the still derivation stages", () => {
     const video = record({ mime_type: "video/mp4", metadata: null });
     expect(stageHasWork(video, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(video, "full", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(true);
+  });
+
+  it("recognizes a watched-folder video from its canonical type", () => {
+    const video = record({ type: "video/mp4", mime_type: null, metadata: null });
+    expect(stageHasWork(video, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(true);
   });
 
@@ -143,13 +185,32 @@ describe("which stage has work", () => {
       mime_type: "video/mp4",
       metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
       variant_candidates: [
-        { long_edge: 400, label_value: "video-poster-thumb" },
-        { long_edge: 1280, label_value: "video-poster-720p" },
-        { long_edge: 640, label_value: "video-skim" },
-        { long_edge: 1280, label_value: "video-720p" },
+        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
+        { long_edge: 1280, label_value: "video-poster-720p", available_here: true },
+        { long_edge: 640, label_value: "video-skim", available_here: true },
+        { long_edge: 1280, label_value: "video-720p", available_here: true },
       ],
     });
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
+  });
+
+  it("rebuilds a video rendition whose record exists without local bytes", () => {
+    const video = record({
+      mime_type: "video/mp4",
+      metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
+      variant_candidates: [
+        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
+        {
+          long_edge: 1280,
+          label_value: "video-poster-720p",
+          available_here: false,
+        },
+        { long_edge: 640, label_value: "video-skim", available_here: true },
+        { long_edge: 1280, label_value: "video-720p", available_here: true },
+      ],
+    });
+
+    expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(true);
   });
 
   it("does not invent a 720p poster requirement for a completed small video", () => {
@@ -157,8 +218,8 @@ describe("which stage has work", () => {
       mime_type: "video/mp4",
       metadata: { width: 400, height: 300, bitrate: 800_000 },
       variant_candidates: [
-        { long_edge: 400, label_value: "video-poster-thumb" },
-        { long_edge: 320, label_value: "video-skim" },
+        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
+        { long_edge: 320, label_value: "video-skim", available_here: true },
       ],
     });
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);

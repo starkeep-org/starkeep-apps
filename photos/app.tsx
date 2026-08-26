@@ -9,19 +9,14 @@ import {
   VisionPanel,
   PeopleView,
 } from "@/photos-ui";
-import {
-  addPhotoFromPath,
-  getPhotoFileUrls,
-  type PhotoRecord,
-} from "./src/lib/data-server-client";
+import { addPhotoFromPath, getPhotoFileUrls } from "./src/lib/data-server-client";
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { CoverImageBanner } from "./src/lib/CoverImage";
-import { downsizeImage } from "./src/lib/image-utils";
-import { resolveAppApiSource } from "./src/lib/data-client";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
+import { hasAwaitingRenditions } from "./src/lib/rendition-freshness";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
 
 
@@ -63,55 +58,6 @@ function useFullSizeUrlCache() {
 }
 
 
-type ThumbnailStrategy = "browser" | "local-sharp" | "remote-sharp";
-
-// Resolve where /api/resize lives based on the configured data target. For a
-// cloud-served build the SPA is mounted under /apps/photos on the API Gateway
-// domain and the route is JWT-gated; for a locally-served build the Next.js
-// server serves it at the origin.
-async function resolveResizeEndpoint(): Promise<{ url: string; headers: Record<string, string> }> {
-  const source = await resolveAppApiSource();
-  return { url: `${source.baseUrl}/api/resize`, headers: source.headers };
-}
-
-async function generateThumbnail(
-  record: PhotoRecord,
-  file: File,
-  thumbnailStrategy: ThumbnailStrategy,
-  onCreated: () => void,
-): Promise<void> {
-  try {
-    const { url, headers: authHeaders } = await resolveResizeEndpoint();
-    const headers = { "Content-Type": "application/json", ...authHeaders };
-    if (thumbnailStrategy === "browser") {
-      // Generate thumbnail in-browser using Canvas, then POST it as a new record
-      // with content.parentId pointing to the original.
-      const result = await downsizeImage(file, 400);
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ targetId: record.id }),
-      });
-      // Thumbnail is a shared-record write; core's sync supervisor
-      // auto-schedules the push. onCreated() just refreshes the local view.
-      if (res.ok) onCreated();
-      void result; // generation handled server-side via /api/resize
-
-    } else {
-      // For local-sharp and remote-sharp, call /api/resize which runs sharp
-      // server-side and creates the thumbnail DataRecord.
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ targetId: record.id }),
-      });
-      if (res.ok) onCreated();
-    }
-  } catch {
-    // Thumbnail generation is best-effort
-  }
-}
-
 const IMAGE_EXTENSIONS: Record<string, string> = {
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
   gif: "image/gif", webp: "image/webp", heic: "image/heic",
@@ -130,14 +76,6 @@ function PhotosAppInner() {
   const [showVision, setShowVision] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [thumbnailStrategy, setThumbnailStrategy] = useState<ThumbnailStrategy>(
-    () => (localStorage.getItem("thumbnail-strategy") as ThumbnailStrategy) ?? "browser",
-  );
-
-  const handleStrategyChange = (s: ThumbnailStrategy) => {
-    setThumbnailStrategy(s);
-    localStorage.setItem("thumbnail-strategy", s);
-  };
 
   // Build the display list. Renditions never appear here in their own right:
   // the library query excludes them server-side by label, so every record in
@@ -156,11 +94,7 @@ function PhotosAppInner() {
   // an absence, and keyed on availability rather than on size — a record whose
   // ladder genuinely stops below what was asked for reports its top rung as
   // available, so it never counts as waiting and this terminates.
-  const awaitingRenditions = originals.some((img) =>
-    Object.values(img.renditions ?? {}).some(
-      (choice) => !choice.ideal.available && choice.ideal.state === "pending",
-    ),
-  );
+  const awaitingRenditions = hasAwaitingRenditions(originals);
   // Sort client-side so display order is deterministic and identical across the
   // local and cloud backends, independent of each server's query order and of
   // the incremental-merge append drift in UPSERT_IMAGES. Newest first by
@@ -207,8 +141,11 @@ function PhotosAppInner() {
       if (deduped) {
         setNotice(`"${fileName}" is already in your photos — nothing was added.`);
       }
-
-      generateThumbnail(record, file, thumbnailStrategy, freshness.kick).catch(() => {});
+      // Re-read the record through Photos' library route so it carries an
+      // explicit rendition decision. Locally, the supervised sweep owns the
+      // work. In the cloud, the pending decision makes the visible tile ask
+      // the bounded on-demand scheduler for the rung it needs.
+      freshness.kick();
     } catch (err) {
       console.error("[photos] Upload failed:", err);
       setError(err instanceof Error ? err.message : "Failed to add photo");
@@ -267,34 +204,6 @@ function PhotosAppInner() {
           }}
         >
           <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Photos</span>
-
-          {/* Thumbnail generation strategy */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "#aaa" }}>
-            <span style={{ whiteSpace: "nowrap" }}>Thumbnail generation:</span>
-            {(
-              [
-                { value: "browser", label: "Browser" },
-                ...(FORCE_REMOTE
-                  ? [{ value: "remote-sharp" as const, label: "Remote Sharp" }]
-                  : [{ value: "local-sharp" as const, label: "Local Sharp" }]),
-              ] as { value: ThumbnailStrategy; label: string }[]
-            ).map(({ value, label }) => (
-              <label
-                key={value}
-                style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", whiteSpace: "nowrap" }}
-              >
-                <input
-                  type="radio"
-                  name="thumbnail-strategy"
-                  value={value}
-                  checked={thumbnailStrategy === value}
-                  onChange={() => handleStrategyChange(value)}
-                  style={{ accentColor: "#888" }}
-                />
-                {label}
-              </label>
-            ))}
-          </div>
 
           <DerivationStatus />
 

@@ -94,6 +94,15 @@ export interface DeriveAndPublishParams {
   readonly platformDecoder?: PlatformDecoder;
   /** Node-local; omitted by callers that have nowhere to keep verdicts. */
   readonly attempts?: DerivationAttemptStore;
+  /**
+   * Rungs whose bytes the calling node can actually serve.
+   *
+   * The local sweep already receives this answer with its candidate list. It
+   * must override the record-only query here because a synchronized child can
+   * exist while its object is absent locally. Other callers omit this and use
+   * the ordinary record query.
+   */
+  readonly availableRenditionClasses?: readonly SizeClass[];
 }
 
 export interface DeriveAndPublishResult {
@@ -132,10 +141,13 @@ export async function deriveAndPublish(
     };
   }
 
-  const [already, metadata] = await Promise.all([
-    existingRenditionClasses(signedFetch, parent.id),
+  const [recorded, metadata] = await Promise.all([
+    params.availableRenditionClasses
+      ? Promise.resolve([...params.availableRenditionClasses])
+      : existingRenditionClasses(signedFetch, parent.id),
     readParentMetadata(signedFetch, parent.id),
   ]);
+  const already = recorded;
   const wanted = requestedClasses(params.targetLongEdge);
 
   // Dimensions on the parent are what let this answer "is there anything to
@@ -222,7 +234,9 @@ export async function deriveAndPublish(
     };
   }
 
-  const finalClasses = await existingRenditionClasses(signedFetch, parent.id);
+  const finalClasses = params.availableRenditionClasses
+    ? [...new Set([...already, ...published.map((item) => item.sizeClass)])]
+    : await existingRenditionClasses(signedFetch, parent.id);
   await noteAttempt(params, priorAttempt, "complete");
   return {
     outcome: "complete",

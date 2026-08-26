@@ -83,6 +83,11 @@ describe("photoRecordToAppImage", () => {
     expect(img.originalFilename).toBe("REC");
   });
 
+  it("uses the canonical type when watched-folder ingest has no advisory MIME", () => {
+    const img = photoRecordToAppImage(record({ type: "video/mp4", mime_type: null }), null);
+    expect(img.mimeType).toBe("video/mp4");
+  });
+
   describe("derivedKind, read off Photos' own labels", () => {
     // `parent_id` says WHICH record an image came from; the label says HOW.
     // Reading `parentId !== null` as "is a thumbnail" — which the grid used to

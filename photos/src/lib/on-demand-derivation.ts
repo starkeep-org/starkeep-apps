@@ -17,8 +17,10 @@
  *   missing, told it is derivable, and told its pixel size.
  * - **Never a record the server said it cannot decode.** That request would
  *   fail every time it was made.
- * - **Once per record per session.** A record that is requested, derived and
- *   then re-enters the viewport does not get asked for again.
+ * - **Once per record and target per session.** A tile and a fullscreen viewer
+ *   need different rungs. Re-entering either surface does not repeat its
+ *   request, while opening the viewer after the grid may still request the
+ *   larger rung.
  *
  * ## The bound is the account's, not this machine's
  *
@@ -40,7 +42,7 @@
  */
 
 import { resolveAppApiSource } from "./data-client";
-import { fetchRuntimeConfig } from "./runtime-config";
+import { fetchRuntimeConfig, type RuntimeConfig } from "./runtime-config";
 
 const MIN_IN_FLIGHT = 1;
 const MAX_IN_FLIGHT = 12;
@@ -51,6 +53,15 @@ export function inFlightBudget(lambdaConcurrency: number): number {
     MAX_IN_FLIGHT,
     Math.max(MIN_IN_FLIGHT, Math.floor(lambdaConcurrency / SHARE_OF_POOL)),
   );
+}
+
+/**
+ * Browser-driven derivation is the cloud fallback. Locally, the supervised
+ * library sweep already owns this work; starting the request queue as well
+ * makes two independent sharp pipelines derive the same record at once.
+ */
+export function shouldDeriveOnDemand(config: RuntimeConfig | null): boolean {
+  return Boolean(config?.apiGatewayUrl);
 }
 
 interface Request {
@@ -73,8 +84,9 @@ let budget: number | null = null;
  * waiting for.
  */
 export function requestDerivation(recordId: string, targetLongEdge: number): void {
-  if (requested.has(recordId)) return;
-  requested.add(recordId);
+  const key = `${recordId}:${targetLongEdge}`;
+  if (requested.has(key)) return;
+  requested.add(key);
   queue.push({ recordId, targetLongEdge });
   void pump();
 }
@@ -88,8 +100,20 @@ export function resetDerivationRequests(): void {
 }
 
 async function pump(): Promise<void> {
+  if (budget === 0) {
+    queue.length = 0;
+    return;
+  }
   if (budget === null) {
     const config = await fetchRuntimeConfig();
+    if (!shouldDeriveOnDemand(config)) {
+      // The local worker is subscribed to the same data-plane events and will
+      // fill these rungs breadth-first. Drop the browser queue so it cannot
+      // compete with that worker for CPU or publish redundant siblings.
+      queue.length = 0;
+      budget = 0;
+      return;
+    }
     budget = inFlightBudget(config?.lambdaConcurrency ?? 10);
   }
   while (inFlight < budget && queue.length > 0) {
@@ -103,9 +127,10 @@ async function pump(): Promise<void> {
 }
 
 async function run(request: Request): Promise<void> {
+  const startedAt = performance.now();
   try {
     const source = await resolveAppApiSource();
-    await fetch(`${source.baseUrl}/api/resize`, {
+    const response = await fetch(`${source.baseUrl}/api/resize`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...source.headers },
       body: JSON.stringify({
@@ -116,7 +141,23 @@ async function run(request: Request): Promise<void> {
         targetLongEdge: request.targetLongEdge,
       }),
     });
-  } catch {
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    if (!response.ok) {
+      console.warn(
+        `[derive-demand] record=${request.recordId} target=${request.targetLongEdge} ` +
+          `status=${response.status} elapsedMs=${elapsedMs}`,
+      );
+    } else {
+      console.log(
+        `[derive-demand] record=${request.recordId} target=${request.targetLongEdge} ` +
+          `status=${response.status} elapsedMs=${elapsedMs}`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[derive-demand] record=${request.recordId} target=${request.targetLongEdge} failed`,
+      error,
+    );
     // A failed request is a tile that keeps its placeholder. It is not retried
     // this session: whatever made it fail — a throttle, a decode the server
     // cannot do — will still be true in a few seconds, and a retry loop against

@@ -42,7 +42,11 @@ import { createSipsDecoder } from "../../photos-lib/image-processing/platform-de
 import { deriveAndPublishVideo, isTerminalVideoError } from "../../photos-lib/video/derive-and-publish";
 import { createFfmpegTools } from "../../photos-lib/video/video-tools";
 import { RENDITION_LABEL_REF } from "../../photos-lib/image-processing/publish-renditions";
-import { CHEAP_STILL_CLASSES, CHEAP_TARGET_LONG_EDGE } from "../../photos-lib/ladder";
+import {
+  CHEAP_STILL_CLASSES,
+  CHEAP_TARGET_LONG_EDGE,
+  type SizeClass,
+} from "../../photos-lib/ladder";
 import { fileAttemptStore } from "../attempt-store";
 import { readSweepState, writeSweepState } from "../sweep-state";
 import { fetchSweepPage, stageHasWork, type SweepRecord } from "../sweep-set";
@@ -89,6 +93,7 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
   const state: SweepState = {
     ...emptySweepState(),
     running: true,
+    completed: false,
     startedAt: new Date().toISOString(),
     stage: command.resume.stage,
     cursor: command.resume.cursor,
@@ -120,7 +125,7 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
     do {
       if (stopRequested) {
         state.cursor = cursor;
-        finish(state, null);
+        finish(state, null, false);
         return;
       }
       const page = await fetchSweepPage(
@@ -129,6 +134,10 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
         cursor,
       );
       const work = page.records.filter((r) => stageHasWork(r, stage, CHEAP_STILL_CLASSES));
+      console.log(
+        `[derive] stage=${stage} records=${page.records.length} work=${work.length} ` +
+          `cursor=${cursor ?? "start"}`,
+      );
       state.examined += page.records.length;
       state.skipped += page.records.length - work.length;
 
@@ -150,7 +159,7 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
     state.cursor = null;
   }
 
-  finish(state, null);
+  finish(state, null, true);
 }
 
 async function deriveOne(
@@ -159,6 +168,7 @@ async function deriveOne(
   stage: SweepStage,
   state: SweepState,
 ): Promise<void> {
+  const startedAt = Date.now();
   try {
     if (stage === "video") {
       await deriveOneVideo(creds, record, state);
@@ -169,7 +179,7 @@ async function deriveOne(
       parent: {
         id: record.id,
         originalFilename: record.original_filename,
-        mimeType: record.mime_type,
+        mimeType: record.mime_type ?? record.type ?? null,
       },
       loadSource: () => fetchSourceBytes(creds, record.id),
       // The cheap stage names a pixel size so it stops after the bottom rungs;
@@ -181,8 +191,14 @@ async function deriveOne(
       // and the prebuilt sharp does not.
       platformDecoder: createSipsDecoder(),
       attempts: fileAttemptStore(),
+      availableRenditionClasses: locallyAvailableClasses(record),
     });
 
+    console.log(
+      `[derive] record=${record.id} stage=${stage} outcome=${result.outcome} ` +
+        `published=${result.published.map((item) => item.sizeClass).join(",") || "none"} ` +
+        `elapsedMs=${Date.now() - startedAt}`,
+    );
     if (result.outcome === "undecodable-here") state.undecodable++;
     else if (result.outcome === "complete") {
       if (result.published.length > 0) state.derived++;
@@ -191,7 +207,7 @@ async function deriveOne(
     // One unreadable photo must not end a 60,000-image pass. It is counted and
     // retried on the next one, since nothing was written for it.
     state.failed++;
-    console.warn(`[derive] ${record.id} failed:`, err);
+    console.warn(`[derive] record=${record.id} stage=${stage} elapsedMs=${Date.now() - startedAt} failed:`, err);
   }
 }
 
@@ -217,6 +233,7 @@ async function deriveOneVideo(
             objectStorageKey: `shared/${rendition.type}/${contentHash.slice(0, 2)}/${contentHash}`,
           };
         },
+        availableRenditionClasses: locallyAvailableClasses(record),
       },
     );
     if (result.published.length > 0) state.derived++;
@@ -228,6 +245,15 @@ async function deriveOneVideo(
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+function locallyAvailableClasses(record: SweepRecord): SizeClass[] {
+  return (record.variant_candidates ?? [])
+    .filter(
+      (candidate): candidate is typeof candidate & { label_value: SizeClass } =>
+        candidate.available_here && Boolean(candidate.label_value),
+    )
+    .map((candidate) => candidate.label_value);
 }
 
 async function downloadSourceFile(
@@ -264,8 +290,9 @@ async function inBatches<T>(
   }
 }
 
-function finish(state: SweepState, error: string | null): void {
+function finish(state: SweepState, error: string | null, completed: boolean): void {
   state.running = false;
+  state.completed = completed;
   state.finishedAt = new Date().toISOString();
   state.error = error;
   writeSweepState(state);
@@ -301,6 +328,7 @@ parentPort?.on("message", (command: SweepCommand) => {
       const message = err instanceof Error ? err.message : String(err);
       const state = readSweepState();
       state.running = false;
+      state.completed = false;
       state.finishedAt = new Date().toISOString();
       state.error = message;
       writeSweepState(state);

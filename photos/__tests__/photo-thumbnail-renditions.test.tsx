@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, cleanup, fireEvent } from "@testing-library/react";
 import { PhotoThumbnail } from "../src/photos-ui/components/grid/photo-thumbnail";
 import { PhotoUrlProvider } from "../src/photos-ui/context/photo-url-context";
-import { resetDerivationRequests } from "../src/lib/on-demand-derivation";
+import { requestDerivation, resetDerivationRequests } from "../src/lib/on-demand-derivation";
 import type { AppImage } from "../src/photos-lib";
 import { tileTargetLongEdge } from "../src/photos-lib/variant-src";
 
@@ -180,7 +180,7 @@ describe("the ideal rung is still deriving", () => {
     expect(body.targetLongEdge).toBe(1280);
   });
 
-  it("does not ask twice for the same record", async () => {
+  it("does not ask twice for the same record and target", async () => {
     const image = appImage({
       renditions: {
         [String(TARGET)]: { ideal: { longEdge: 1280, available: false, state: "pending" } },
@@ -197,6 +197,18 @@ describe("the ideal rung is still deriving", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/resize"))).toHaveLength(1);
+  });
+
+  it("allows the viewer to request a larger target after the grid target", async () => {
+    requestDerivation("rec-1", 400);
+    requestDerivation("rec-1", 2048);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const bodies = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/api/resize"))
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string).targetLongEdge);
+    expect(bodies).toEqual([400, 2048]);
   });
 });
 

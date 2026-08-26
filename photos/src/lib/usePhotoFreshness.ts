@@ -4,6 +4,7 @@ import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
 import { listPhotos, listPhotosSince } from "./data-server-client";
 import { photoRecordToAppImage } from "./photoRecordToAppImage";
+import { createRefreshCoalescer } from "./refresh-coalescer";
 
 const POLL_INTERVAL_MS = 30_000;
 const RESUME_FETCH_THRESHOLD_MS = 30_000;
@@ -79,6 +80,8 @@ export function usePhotoFreshness({
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const strategyRef = useRef<FreshnessStrategy | null>(null);
+  const refreshRef = useRef<() => Promise<void>>(async () => {});
+  const coalescedRefreshRef = useRef<(() => Promise<void>) | null>(null);
   // Read inside callbacks that are deliberately not re-created per render, so
   // the flag has to travel by ref rather than by closure.
   const awaitingRef = useRef(awaitingRenditions);
@@ -132,6 +135,13 @@ export function usePhotoFreshness({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  refreshRef.current = fetchSince;
+  coalescedRefreshRef.current ??= createRefreshCoalescer(() => refreshRef.current());
+  const requestRefresh = useCallback(
+    () => coalescedRefreshRef.current!(),
+    [],
+  );
+
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
@@ -142,10 +152,10 @@ export function usePhotoFreshness({
   const scheduleNextPoll = useCallback(() => {
     stopPolling();
     pollTimerRef.current = setTimeout(async () => {
-      await fetchSince();
+      await requestRefresh();
       scheduleNextPoll();
     }, POLL_INTERVAL_MS);
-  }, [fetchSince, stopPolling]);
+  }, [requestRefresh, stopPolling]);
 
   const disconnectSSE = useCallback(() => {
     esRef.current?.close();
@@ -156,9 +166,9 @@ export function usePhotoFreshness({
     disconnectSSE();
     const es = new EventSource(withBasePath("/api/local-data/events"));
     esRef.current = es;
-    es.onmessage = () => { void fetchSince(); };
+    es.onmessage = () => { void requestRefresh(); };
     es.onerror = () => { console.warn("[usePhotoFreshness] SSE error, reconnecting..."); };
-  }, [disconnectSSE, fetchSince]);
+  }, [disconnectSSE, requestRefresh]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -175,18 +185,18 @@ export function usePhotoFreshness({
         const hiddenDuration = hiddenAtRef.current != null ? Date.now() - hiddenAtRef.current : Infinity;
         hiddenAtRef.current = null;
         if (strategy.kind === "poll") {
-          if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void fetchSince();
+          if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void requestRefresh();
           scheduleNextPoll();
         } else {
           connectSSE();
-          if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void fetchSince();
+          if (hiddenDuration > RESUME_FETCH_THRESHOLD_MS) void requestRefresh();
         }
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [stopPolling, disconnectSSE, scheduleNextPoll, connectSSE, fetchSince]);
+  }, [stopPolling, disconnectSSE, scheduleNextPoll, connectSSE, requestRefresh]);
 
   useEffect(() => {
     cursorRef.current = null;
@@ -213,5 +223,5 @@ export function usePhotoFreshness({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { kick: () => { void fetchSince(); } };
+  return { kick: () => { void requestRefresh(); } };
 }

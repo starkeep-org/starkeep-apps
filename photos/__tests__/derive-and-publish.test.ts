@@ -199,6 +199,27 @@ describe("a record that is already fully derived", () => {
     expect(loads).toBe(before);
     expect(plane.calls).not.toContain("POST /data/records");
   }, 60_000);
+
+  it("re-publishes child records whose bytes are unavailable on this node", async () => {
+    const sourceLongEdge = STILL_LADDER[STILL_LADDER.length - 1]!.maxLongEdge + 100;
+    plane.metadata = {
+      width: sourceLongEdge,
+      height: Math.round(sourceLongEdge * 0.75),
+      thumb_hash: "already-known",
+    };
+    plane.renditions = ["image-thumb", "image-xsmall"];
+
+    const result = await run({
+      targetLongEdge: STILL_LADDER[1]!.maxLongEdge,
+      availableRenditionClasses: [],
+    });
+
+    expect(result.published.map((item) => item.sizeClass).sort()).toEqual([
+      "image-thumb",
+      "image-xsmall",
+    ]);
+    expect(loads).toBe(1);
+  }, 60_000);
 });
 
 describe("asking for one size rather than the whole ladder", () => {

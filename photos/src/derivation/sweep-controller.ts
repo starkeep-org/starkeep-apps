@@ -54,6 +54,7 @@ interface Controller {
   worker: Worker | null;
   state: SweepState;
   reconciled: boolean;
+  idleWaiters: Set<(state: SweepState) => void>;
 }
 
 /**
@@ -67,9 +68,16 @@ function controller(): Controller {
   const globals = globalThis as unknown as Record<symbol, Controller | undefined>;
   let existing = globals[CONTROLLER_KEY];
   if (!existing) {
-    existing = { worker: null, state: readSweepState(), reconciled: false };
+    existing = {
+      worker: null,
+      state: readSweepState(),
+      reconciled: false,
+      idleWaiters: new Set(),
+    };
     globals[CONTROLLER_KEY] = existing;
   }
+  // A dev hot reload may retain the pre-completion-signal controller shape.
+  existing.idleWaiters ??= new Set();
   if (!existing.reconciled) {
     existing.reconciled = true;
     // No worker but the file says running → the sweep died with its process.
@@ -90,6 +98,22 @@ function controller(): Controller {
 export type StartResult =
   | { ok: true; state: SweepState }
   | { ok: false; status: number; error: string };
+
+export function resumePoint(state: SweepState): Pick<SweepState, "stage" | "cursor"> {
+  // `legacyCompleted` migrates state written before the explicit flag existed.
+  // A clean stop at the end of the final stage is the only old shape that can
+  // mean a completed pass; restarting cheaply is safe even in the narrow case
+  // where the operator stopped at that exact boundary.
+  const legacyCompleted =
+    !state.running &&
+    state.stage === "video" &&
+    state.cursor === null &&
+    state.finishedAt !== null &&
+    state.error === null;
+  return state.completed || legacyCompleted
+    ? { stage: "cheap", cursor: null }
+    : { stage: state.stage, cursor: state.cursor };
+}
 
 /**
  * Start a sweep, resuming wherever the last one stopped.
@@ -157,9 +181,19 @@ export async function startSweep(): Promise<StartResult> {
     // The worker's last write is authoritative — re-read rather than trusting
     // whichever message happened to arrive last.
     self.state = readSweepState();
+    const waiters = [...self.idleWaiters];
+    self.idleWaiters.clear();
+    for (const resolve of waiters) resolve(self.state);
   });
 
-  const resumeFrom = readSweepState();
+  const previous = readSweepState();
+  // The last stage of a successful pass is not a resume point. New records may
+  // have arrived since it finished, so the next pass starts with cheap stills.
+  const resumeFrom = resumePoint(previous);
+  console.log(
+    `[derive] starting sweep stage=${resumeFrom.stage} cursor=${resumeFrom.cursor ?? "start"} ` +
+      `previousCompleted=${previous.completed}`,
+  );
   const command: SweepCommand = {
     type: "start",
     resume: { stage: resumeFrom.stage, cursor: resumeFrom.cursor },
@@ -188,6 +222,19 @@ export function stopSweep(): SweepState {
 
 export function isSweeping(): boolean {
   return controller().worker !== null;
+}
+
+/**
+ * Resolve when the current sweep's worker exits.
+ *
+ * Worker exit is the lifecycle boundary rather than a state-file flag: it is
+ * the point at which another pass can safely start, including after a failure
+ * or cooperative stop. Callers that arrive while idle resolve immediately.
+ */
+export function waitForSweepIdle(): Promise<SweepState> {
+  const self = controller();
+  if (!self.worker) return Promise.resolve(currentSweepState());
+  return new Promise((resolve) => self.idleWaiters.add(resolve));
 }
 
 export function currentSweepState(): SweepState {

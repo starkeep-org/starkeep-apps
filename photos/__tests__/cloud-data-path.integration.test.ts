@@ -46,6 +46,8 @@ const proxyHandler = createNextProxyHandler({
   endUserAuth: { auth: "anonymous", justification: "matches the app's current mount" },
 });
 
+const defaultSeededRecord = { id: "rec-1", type: "image/png", original_filename: "a.png" };
+
 /** Minimal fake cloud-data-server: HMAC-gates, then serves GET /data/records. */
 async function fakeDataServer(url: URL, init: RequestInit): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
@@ -116,6 +118,7 @@ beforeEach(() => {
     JSON.stringify({ appId: "photos", hmacSecret: HMAC_SECRET, dataServerUrl: DATA_SERVER_URL }),
   );
   clearAppCredentialsCache();
+  seededRecords.splice(0, seededRecords.length, defaultSeededRecord);
   received = [];
   realFetch = globalThis.fetch;
   vi.stubGlobal("fetch", dispatchFetch as unknown as typeof fetch);
@@ -135,6 +138,14 @@ describe("cloud data path (client → proxy → data server)", () => {
     // The record comes back with its resolution attached, so identity is
     // asserted rather than deep equality.
     expect(records.map((r) => r.id)).toEqual(seededRecords.map((r) => (r as { id: string }).id));
+    // A dimensionless parent with no children must still say that its requested
+    // renditions are pending. Without this provisional decision the freshness
+    // hook stays incremental, and child-only writes remain invisible until an
+    // unrelated full-library refresh makes every thumbnail appear at once.
+    expect(records[0]?.renditions).toEqual({
+      "540": { ideal: { longEdge: 540, available: false, state: "pending" } },
+      "2048": { ideal: { longEdge: 2048, available: false, state: "pending" } },
+    });
 
     // The data server saw exactly the request the user's session 401'd on...
     const dataReq = received.find((r) => r.path.startsWith("/data/records"));
@@ -170,5 +181,32 @@ describe("cloud data path (client → proxy → data server)", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/Missing X-Starkeep-App/);
+  });
+
+  it("does not call a local child available when this node cannot serve its bytes", async () => {
+    seededRecords.splice(0, seededRecords.length, {
+      id: "rec-with-stale-child",
+      type: "image/jpeg",
+      mime_type: "image/jpeg",
+      original_filename: "photo.jpg",
+      metadata: { width: 4000, height: 3000 },
+      variant_candidates: [
+        {
+          id: "missing-local-rendition",
+          type: "image/webp",
+          label_value: "image-medium",
+          width: 1280,
+          height: 960,
+          long_edge: 1280,
+          available_here: false,
+        },
+      ],
+    });
+
+    const [record] = await listPhotos();
+
+    expect(record?.renditions?.["540"]).toEqual({
+      ideal: { longEdge: 1280, available: false, state: "pending" },
+    });
   });
 });

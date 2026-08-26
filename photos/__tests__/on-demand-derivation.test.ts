@@ -8,7 +8,7 @@
  * minority share of a *declared* ceiling rather than a literal.
  */
 import { describe, it, expect } from "vitest";
-import { inFlightBudget } from "../src/lib/on-demand-derivation";
+import { inFlightBudget, shouldDeriveOnDemand } from "../src/lib/on-demand-derivation";
 
 describe("how many requests may be in flight", () => {
   it("takes a minority of the pool, leaving room for the page load itself", () => {
@@ -28,5 +28,13 @@ describe("how many requests may be in flight", () => {
     // the data server and object storage on the read side rather than
     // invocation slots, so this clamps rather than growing without bound.
     expect(inFlightBudget(1000)).toBe(12);
+  });
+});
+
+describe("where browser-driven derivation runs", () => {
+  it("runs only against the cloud, because the local sweep already owns the work", () => {
+    expect(shouldDeriveOnDemand(null)).toBe(false);
+    expect(shouldDeriveOnDemand({})).toBe(false);
+    expect(shouldDeriveOnDemand({ apiGatewayUrl: "https://photos.invalid" })).toBe(true);
   });
 });

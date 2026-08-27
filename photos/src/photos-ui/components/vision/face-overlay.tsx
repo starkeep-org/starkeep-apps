@@ -34,11 +34,14 @@ export function FaceOverlay({ recordId, visible, onLoaded }: FaceOverlayProps) {
   const [faces, setFaces] = useState<DetectedFaceView[]>([]);
   const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(null);
 
+  // Keyed on the record alone, not on `visible`. The viewer decides whether to
+  // offer a Faces toggle at all from what this reports, so the answer has to
+  // arrive before anyone can toggle anything. The response is a small JSON
+  // sidecar, and the boxes still draw only when asked for.
   useEffect(() => {
     let cancelled = false;
     setFaces([]);
     setDimensions(null);
-    if (!visible) return;
 
     void (async () => {
       try {
@@ -57,7 +60,7 @@ export function FaceOverlay({ recordId, visible, onLoaded }: FaceOverlayProps) {
     return () => {
       cancelled = true;
     };
-  }, [recordId, visible, onLoaded]);
+  }, [recordId, onLoaded]);
 
   if (!visible || !dimensions || faces.length === 0) return null;
 

@@ -63,11 +63,20 @@ async function renderOverlay(props: { recordId?: string; visible?: boolean } = {
 const boxes = () => screen.queryAllByTestId("face-box");
 
 describe("visibility", () => {
-  it("renders nothing and asks for nothing while hidden", async () => {
+  // The lookup is no longer gated on `visible`: the viewer decides whether to
+  // offer a Faces toggle from what the overlay reports, so it has to ask before
+  // anyone can toggle it. Drawing stays gated.
+  it("draws nothing while hidden, but still reports what it found", async () => {
     respondWith({ processed: true, width: 100, height: 100, faces: [face()] });
-    await renderOverlay({ visible: false });
+    const onLoaded = vi.fn();
+    await act(async () => {
+      render(<FaceOverlay recordId="rec-1" visible={false} onLoaded={onLoaded} />);
+    });
     expect(screen.queryByTestId("face-overlay")).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith("/api/vision/faces/rec-1");
+    expect(onLoaded).toHaveBeenCalledWith(
+      expect.objectContaining({ processed: true, faces: [expect.anything()] }),
+    );
   });
 
   it("renders nothing for an unscanned image", async () => {

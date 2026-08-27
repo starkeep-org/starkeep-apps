@@ -9,6 +9,7 @@ import { VideoPlayer } from "./video-player";
 import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { useDebouncedValue, useDevicePixelRatio, useElementSize } from "../../hooks/use-element-size";
+import { useNarrowViewport } from "../../../lib/use-narrow-viewport";
 import { FaceOverlay } from "../vision/face-overlay";
 import type { ImageFaces } from "../../../lib/vision-client";
 import { requestDerivation } from "../../../lib/on-demand-derivation";
@@ -34,6 +35,11 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   const kind = isVideo ? "video" : "still";
   const policy = useRenditionPolicy(kind);
   const devicePixelRatio = useDevicePixelRatio();
+  const narrow = useNarrowViewport();
+  // Side gutters are desktop framing. A phone has no width to spare, so the
+  // photo gets the whole viewport and the measured target falls out of the
+  // larger box rather than out of a 90% one.
+  const stageWidth = narrow ? "100vw" : "90vw";
   const [wrapperRef, wrapperSize] = useElementSize<HTMLDivElement>();
   const debouncedSize = useDebouncedValue(wrapperSize, 120);
   const requiredLongEdge = debouncedSize
@@ -124,8 +130,14 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   const [facesKnown, setFacesKnown] = useState<ImageFaces | null>(null);
   useEffect(() => {
     setFacesKnown(null);
+    setFacesVisible(false);
   }, [image.id]);
   const onFacesLoaded = useCallback((result: ImageFaces) => setFacesKnown(result), []);
+  // A toggle for an overlay that would have nothing to draw is a control that
+  // does nothing, and on a phone it is the control that costs the close button
+  // its place on the line. The overlay reports what it found for every record
+  // it opens, so the button appears only once there is something to show.
+  const hasFaces = Boolean(facesKnown?.processed && facesKnown.faces.length > 0);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -134,6 +146,33 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
+
+  const toggleStyle = (active: boolean): React.CSSProperties => ({
+    background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
+    border: "1px solid rgba(255,255,255,0.2)",
+    color: "#fff",
+    borderRadius: 4,
+    padding: "6px 14px",
+    cursor: "pointer",
+    fontSize: 13,
+    flexShrink: 0,
+  });
+  const toggles = (
+    <>
+      <button onClick={() => setInfoVisible(!infoVisible)} style={toggleStyle(infoVisible)}>
+        Info
+      </button>
+      {hasFaces && (
+        <button
+          onClick={() => setFacesVisible((v) => !v)}
+          title="Show detected faces"
+          style={toggleStyle(facesVisible)}
+        >
+          Faces{facesVisible ? ` (${facesKnown!.faces.length})` : ""}
+        </button>
+      )}
+    </>
+  );
 
   return (
     <div
@@ -149,50 +188,36 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ color: "#aaa", fontSize: 14 }}>{image.originalFilename}</span>
+      {/* The close button never leaves the first line. A phone-width header has
+          no room for the filename and both toggles beside it, and the control
+          that got pushed off the edge was the only way out of the viewer, so
+          the toggles wrap to a line of their own instead. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: narrow ? 8 : 0, padding: "12px 16px", flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+            <span
+              style={{
+                color: "#aaa",
+                fontSize: 14,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {image.originalFilename}
+            </span>
+            {!narrow && toggles}
+          </div>
           <button
-            onClick={() => setInfoVisible(!infoVisible)}
-            style={{
-              background: infoVisible ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              color: "#fff",
-              borderRadius: 4,
-              padding: "6px 14px",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
+            onClick={onClose}
+            aria-label="Close"
+            style={{ background: "none", border: "none", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1, padding: "0 4px", flexShrink: 0 }}
           >
-            Info
-          </button>
-          <button
-            onClick={() => setFacesVisible((v) => !v)}
-            title={
-              facesKnown && !facesKnown.processed
-                ? "This photo has not been scanned for faces yet"
-                : "Show detected faces"
-            }
-            style={{
-              background: facesVisible ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
-              border: "1px solid rgba(255,255,255,0.2)",
-              color: "#fff",
-              borderRadius: 4,
-              padding: "6px 14px",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
-            Faces
-            {facesVisible && facesKnown?.processed ? ` (${facesKnown.faces.length})` : ""}
+            ×
           </button>
         </div>
-        <button
-          onClick={onClose}
-          style={{ background: "none", border: "none", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}
-        >
-          ×
-        </button>
+        {narrow && <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{toggles}</div>}
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
@@ -207,13 +232,13 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
             position: "relative",
             ...(ratio
               ? {
-                  width: `min(90vw, calc((100vh - 120px) * ${ratio}))`,
+                  width: `min(${stageWidth}, calc((100vh - 120px) * ${ratio}))`,
                   aspectRatio: ratio,
-                  maxWidth: "90vw",
+                  maxWidth: stageWidth,
                   maxHeight: "calc(100vh - 120px)",
                 }
               : {
-                  width: "min(90vw, 900px)",
+                  width: `min(${stageWidth}, 900px)`,
                   height: "calc(100vh - 120px)",
                 }),
             overflow: "hidden",
@@ -292,7 +317,7 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
         <style>{`@keyframes starkeep-skeleton-pulse { 0%, 100% { background-color: rgba(255, 255, 255, 0.07); } 50% { background-color: rgba(255, 255, 255, 0.16); } }`}</style>
 
         {caption && (
-          <div style={{ color: "#ddd", fontSize: 14, marginTop: 16, maxWidth: "90vw", textAlign: "center", padding: "0 16px" }}>
+          <div style={{ color: "#ddd", fontSize: 14, marginTop: 16, maxWidth: stageWidth, textAlign: "center", padding: "0 16px" }}>
             {caption}
           </div>
         )}

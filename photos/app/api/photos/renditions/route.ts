@@ -149,6 +149,16 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
+  // The measurement the browser arrived at, alongside the rung it resolved to.
+  // Sizing faults in the viewer and the grid are invisible from the response
+  // alone — a correct 2560 answer to an overstated requirement reads exactly
+  // like an incorrect one — so the requirement that produced it is logged too.
+  console.log(
+    `[photos-renditions] ${parsed.requests
+      .map((request) => `${request.recordId}:${request.requiredLongEdge}->${request.targetLongEdge}`)
+      .join(" ")}`,
+  );
+
   return withRefreshedSession(
     NextResponse.json({ policies, results }),
     authorized.refreshedCookie,

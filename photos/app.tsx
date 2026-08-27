@@ -5,7 +5,6 @@ import {
   PhotoGrid,
   PhotoViewer,
   usePhotoContext,
-  DerivationStatus,
   VisionPanel,
   PeopleView,
   RenditionResolutionProvider,
@@ -16,9 +15,13 @@ import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-l
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
-import { CoverImageBanner } from "./src/lib/CoverImage";
+import { CoverImageBanner, CoverImageProvider } from "./src/lib/CoverImage";
+import { SettingsMenu } from "./src/lib/SettingsMenu";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
+import { useListLayoutPreferences } from "./src/lib/list-layout-preferences";
+import { useNarrowViewport, usePrefersReducedMotion } from "./src/lib/use-narrow-viewport";
+import { useHideOnScrollDown } from "./src/lib/use-hide-on-scroll-down";
 
 
 function useFullSizeUrlCache() {
@@ -77,6 +80,13 @@ function PhotosAppInner() {
   // being re-derived from the build flag here.
   const [showVision, setShowVision] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
+  const [layout, setLayout] = useListLayoutPreferences();
+  const narrow = useNarrowViewport();
+  // Only on a phone, where the header is a real fraction of the screen. On a
+  // desktop there is room for it and a header that moves on its own is a
+  // distraction rather than a saving.
+  const headerHidden = useHideOnScrollDown(narrow);
+  const reducedMotion = usePrefersReducedMotion();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Build the display list. Renditions never appear here in their own right:
@@ -202,41 +212,36 @@ function PhotosAppInner() {
             top: 0,
             background: "#111",
             zIndex: 100,
+            // Slides out of view rather than disappearing, so the direction it
+            // went is visible and the way to get it back is obvious.
+            transform: headerHidden ? "translateY(-100%)" : "translateY(0)",
+            transition: reducedMotion ? undefined : "transform 220ms ease",
           }}
         >
           <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Photos</span>
 
-          <DerivationStatus />
-
-          {FORCE_REMOTE && (
+          {/* Three things, at every width. Everything else lives behind the
+              gear, because a phone-width header cannot hold more than this and
+              a desktop header that only just fits is one addition from not
+              fitting either. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button
-              onClick={() => setShowCloudSetup(true)}
-              title="Cloud setup"
-              style={toolbarButtonStyle}
+              onClick={handleAddClick}
+              disabled={adding}
+              style={{ ...toolbarButtonStyle, background: "rgba(255,255,255,0.15)" }}
             >
-              ⚙
+              {adding
+                ? (FORCE_REMOTE ? "Uploading…" : "Adding…")
+                : (FORCE_REMOTE ? "Upload Photo" : "Add Photo")}
             </button>
-          )}
 
-          {!FORCE_REMOTE && (
-            <button
-              onClick={() => setShowVision(true)}
-              title="On-device face recognition"
-              style={toolbarButtonStyle}
-            >
-              Faces
-            </button>
-          )}
-
-          <button
-            onClick={handleAddClick}
-            disabled={adding}
-            style={{ ...toolbarButtonStyle, background: "rgba(255,255,255,0.15)" }}
-          >
-            {adding
-              ? (FORCE_REMOTE ? "Uploading…" : "Adding…")
-              : (FORCE_REMOTE ? "Upload Photo" : "Add Photo")}
-          </button>
+            <SettingsMenu
+              layout={layout}
+              onLayoutChange={setLayout}
+              onOpenCloudSetup={FORCE_REMOTE ? () => setShowCloudSetup(true) : null}
+              onOpenFaces={FORCE_REMOTE ? null : () => setShowVision(true)}
+            />
+          </div>
         </div>
 
         {error && (
@@ -294,6 +299,9 @@ function PhotosAppInner() {
           hasMore={false}
           onLoadMore={() => {}}
           onSelect={(id) => dispatch({ type: "SET_SELECTED_ID", id })}
+          rowHeight={layout.rowHeight}
+          groupByDate={layout.groupByDate}
+          edgeToEdge={narrow}
         />
 
         {selectedImage && (
@@ -337,7 +345,11 @@ function ResolutionBoundary() {
   const { state } = usePhotoContext();
   return (
     <RenditionResolutionProvider policies={state.policies}>
-      <PhotosAppInner />
+      {/* Above PhotosAppInner so the banner over the list and the controls in
+          the settings menu read and write one piece of cover state. */}
+      <CoverImageProvider>
+        <PhotosAppInner />
+      </CoverImageProvider>
     </RenditionResolutionProvider>
   );
 }

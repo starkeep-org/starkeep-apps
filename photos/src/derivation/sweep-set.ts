@@ -21,8 +21,11 @@ import {
   applicableStillClasses,
   applicableVideoClasses,
   renditionLongEdge,
+  STILL_LADDER,
   type SizeClass,
 } from "../photos-lib/ladder";
+
+const MEDIUM_CLASS = STILL_LADDER.find((spec) => spec.sizeClass === "image-medium")!;
 
 /** Records per listing page. A short page never means the end — see below. */
 export const RECORDS_PER_PAGE = 200;
@@ -95,7 +98,7 @@ export function needsRecordFacts(record: SweepRecord): boolean {
  */
 export function stageHasWork(
   record: SweepRecord,
-  stage: "cheap" | "full" | "video",
+  stage: "cheap" | "medium" | "full" | "video",
   cheapClasses: readonly SizeClass[],
 ): boolean {
   const mediaType = record.mime_type ?? record.type ?? "";
@@ -120,9 +123,14 @@ export function stageHasWork(
   const missing = missingClasses(record);
   if (missing === "unknown") return true;
   const cheap = new Set(cheapClasses);
-  return stage === "cheap"
-    ? needsRecordFacts(record) || missing.some((c) => cheap.has(c))
-    : missing.some((c) => !cheap.has(c));
+  if (stage === "cheap") return needsRecordFacts(record) || missing.some((c) => cheap.has(c));
+  if (stage === "medium") return missing.includes(MEDIUM_CLASS.sizeClass);
+  const aboveMedium = new Set(
+    STILL_LADDER
+      .filter((spec) => spec.maxLongEdge > MEDIUM_CLASS.maxLongEdge)
+      .map((spec) => spec.sizeClass),
+  );
+  return missing.some((sizeClass) => aboveMedium.has(sizeClass));
 }
 
 /** `fetch`-alike over the data server, injected so this module owns no creds. */

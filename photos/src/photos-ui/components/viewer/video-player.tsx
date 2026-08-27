@@ -1,6 +1,5 @@
-import { useMemo } from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { playbackSrc, posterSrc, viewportTargetLongEdge } from "@/photos-lib/client";
+import type { VideoDecision } from "@/lib/rendition-resolution-client";
 
 /**
  * Playback for a video record (item 28).
@@ -20,21 +19,17 @@ import { playbackSrc, posterSrc, viewportTargetLongEdge } from "@/photos-lib/cli
  */
 export function VideoPlayer({
   image,
+  targetLongEdge,
+  decision,
   onToggleInfo,
 }: {
   image: AppImage;
+  targetLongEdge: number;
+  decision?: VideoDecision;
   onToggleInfo: () => void;
 }) {
-  const target = useMemo(
-    () =>
-      typeof window === "undefined"
-        ? 1280
-        : viewportTargetLongEdge(window.innerWidth, window.innerHeight, window.devicePixelRatio),
-    [],
-  );
-
-  const playback = playbackSrc(image, target);
-  const poster = posterSrc(image, target);
+  const playback = decision?.playback?.url ? decision.playback : undefined;
+  const poster = decision?.poster?.url ? decision.poster : undefined;
 
   // A clip whose transcode has not been derived yet is not broken — it is not
   // ready. Showing the poster with a clear reason beats offering a play button
@@ -80,6 +75,7 @@ export function VideoPlayer({
   return (
     <video
       data-testid="video-player"
+      data-target-long-edge={targetLongEdge}
       src={playback.url}
       poster={poster?.url}
       controls

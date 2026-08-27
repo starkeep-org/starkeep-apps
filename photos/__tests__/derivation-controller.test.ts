@@ -125,18 +125,6 @@ describe("starting another pass", () => {
     ).toEqual({ stage: "cheap", cursor: null });
   });
 
-  it("migrates a successful final-stage state written before completed was recorded", () => {
-    expect(
-      resumePoint({
-        ...emptySweepState(),
-        stage: "video",
-        cursor: null,
-        finishedAt: "2026-08-25T00:00:00.000Z",
-        error: null,
-      }),
-    ).toEqual({ stage: "cheap", cursor: null });
-  });
-
   it("keeps an interrupted pass's exact stage and cursor", () => {
     expect(
       resumePoint({

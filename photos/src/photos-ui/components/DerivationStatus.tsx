@@ -6,7 +6,7 @@ import { withBasePath } from "@/lib/base-path";
 interface SweepStatus {
   sweep: {
     running: boolean;
-    stage: "cheap" | "full";
+    stage: "cheap" | "medium" | "full" | "video";
     examined: number;
     derived: number;
     failed: number;
@@ -68,7 +68,11 @@ export function DerivationStatus() {
       {sweep.running
         ? sweep.stage === "cheap"
           ? `Preparing photos… ${sweep.derived} done`
-          : `Making larger sizes… ${sweep.derived} done`
+          : sweep.stage === "medium"
+            ? `Preparing photos for viewing… ${sweep.derived} done`
+            : sweep.stage === "full"
+              ? `Making larger sizes… ${sweep.derived} done`
+              : `Preparing videos… ${sweep.derived} done`
         : null}
       {!sweep.running && undecodableHere.count > 0
         ? `${undecodableHere.count} photo${undecodableHere.count === 1 ? "" : "s"} this machine cannot read`

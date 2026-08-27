@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer } from "react";
 import type { AppImage } from "@/photos-lib/client";
+import type { RenditionPolicies } from "@/photos-lib/rendition-policy";
 
 type PhotoAction =
   | { type: "SET_IMAGES"; images: AppImage[] }
@@ -9,13 +10,15 @@ type PhotoAction =
   | { type: "OPTIMISTIC_DELETE"; id: string }
   | { type: "SET_SELECTED_ID"; id: string | null }
   | { type: "SET_NEXT_CURSOR"; cursor: string | null }
-  | { type: "SET_LOADING"; loading: boolean };
+  | { type: "SET_LOADING"; loading: boolean }
+  | { type: "SET_POLICIES"; policies: RenditionPolicies };
 
 interface PhotoState {
   images: AppImage[];
   selectedId: string | null;
   nextCursor: string | null;
   loading: boolean;
+  policies: RenditionPolicies | null;
 }
 
 function photoReducer(state: PhotoState, action: PhotoAction): PhotoState {
@@ -46,6 +49,8 @@ function photoReducer(state: PhotoState, action: PhotoAction): PhotoState {
       return { ...state, nextCursor: action.cursor };
     case "SET_LOADING":
       return { ...state, loading: action.loading };
+    case "SET_POLICIES":
+      return { ...state, policies: action.policies };
     default:
       return state;
   }
@@ -64,6 +69,7 @@ export function PhotoProvider({ children }: { children: React.ReactNode }) {
     selectedId: null,
     nextCursor: null,
     loading: false,
+    policies: null,
   });
 
   return (

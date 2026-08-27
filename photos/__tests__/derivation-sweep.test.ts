@@ -126,8 +126,9 @@ describe("which stage has work", () => {
       .map((spec) => renditionLongEdge(spec, BIG));
   };
 
-  it("gives a wholly underived record work in both stages", () => {
+  it("gives a wholly underived record work in all applicable still stages", () => {
     expect(stageHasWork(record(), "cheap", CHEAP_STILL_CLASSES)).toBe(true);
+    expect(stageHasWork(record(), "medium", CHEAP_STILL_CLASSES)).toBe(true);
     expect(stageHasWork(record(), "full", CHEAP_STILL_CLASSES)).toBe(true);
   });
 
@@ -142,6 +143,17 @@ describe("which stage has work", () => {
       })),
     });
     expect(stageHasWork(partial, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(partial, "medium", CHEAP_STILL_CLASSES)).toBe(true);
+    expect(stageHasWork(partial, "full", CHEAP_STILL_CLASSES)).toBe(true);
+  });
+
+  it("leaves only full work after cheap and medium are present", () => {
+    const throughMedium = applicableStillClasses(BIG)
+      .filter((spec) => spec.maxLongEdge <= 1280)
+      .map((spec) => ({ long_edge: renditionLongEdge(spec, BIG), available_here: true }));
+    const partial = record({ variant_candidates: throughMedium });
+    expect(stageHasWork(partial, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(partial, "medium", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(partial, "full", CHEAP_STILL_CLASSES)).toBe(true);
   });
 
@@ -153,6 +165,7 @@ describe("which stage has work", () => {
       })),
     });
     expect(stageHasWork(done, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(done, "medium", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(done, "full", CHEAP_STILL_CLASSES)).toBe(false);
   });
 
@@ -170,6 +183,7 @@ describe("which stage has work", () => {
   it("never sends a video through the still derivation stages", () => {
     const video = record({ mime_type: "video/mp4", metadata: null });
     expect(stageHasWork(video, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
+    expect(stageHasWork(video, "medium", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(video, "full", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(true);
   });

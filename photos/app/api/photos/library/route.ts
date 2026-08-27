@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { loadAppCredentials, signedFetch, USER_TOKEN_HEADER } from "@starkeep/app-client";
+import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
 import { RENDITION_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
 import { cloudCanDecode } from "@/photos-lib/image-processing/derive-ladder";
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/photos-lib/rendition-resolution";
 import { MAX_VARIANT_TARGETS } from "@/photos-lib/rendition-targets";
 import { VIDEO_LADDER } from "@/photos-lib/ladder";
+import { currentRenditionPolicies } from "@/photos-lib/rendition-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,38 +48,10 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest): Promise<Response> {
   const startedAt = Date.now();
-  const cloud = process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
-
-  let userToken: string | undefined;
-  let refreshedCookie: string | undefined;
-  if (cloud) {
-    const { requireSession, mintIdToken } = await import("@starkeep/app-client/auth");
-    if ((await requireSession(req)) === null) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-    // Minted rather than read straight from the cookie: the token is good for
-    // about an hour and the session outlives it, so a near-expired one is
-    // replaced here and the browser is told to keep the new one. Forwarding a
-    // token the broker is about to start refusing produces a failure an hour
-    // into a session with nothing in the request to explain it.
-    const minted = await mintIdToken(req, "photos");
-    if (minted) {
-      userToken = minted.token;
-      refreshedCookie = minted.setCookie;
-    }
-  }
-
-  const creds = await loadAppCredentials("photos");
-  if (!creds) {
-    return NextResponse.json(
-      { error: "photos has not been installed locally — run install from admin-web first" },
-      { status: 503 },
-    );
-  }
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
 
   const url = new URL(req.url);
-  const targets = parseTargets(url.searchParams.get("targets"));
-  if (!targets.ok) return NextResponse.json({ error: targets.message }, { status: 400 });
 
   const params = [
     `limit=${clampLimit(url.searchParams.get("limit"))}`,
@@ -88,9 +61,6 @@ export async function GET(req: NextRequest): Promise<Response> {
     // them is a page the client cannot use — it cannot tell how far to keep
     // reading.
     `notLabel=${encodeURIComponent(RENDITION_LABEL_REF)}`,
-    // No `variantLongEdge`: the unnarrowed list is the point. Resolution
-    // happens here, against the ladder, which the data server must not learn.
-    `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
   ];
   const updatedAfter = url.searchParams.get("updated_after");
   if (updatedAfter) params.push(`updated_after=${encodeURIComponent(updatedAfter)}`);
@@ -98,9 +68,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
 
   const upstreamStartedAt = Date.now();
-  const upstream = await signedFetch(creds, `/data/records?${params.join("&")}`, {
-    ...(userToken ? { headers: { [USER_TOKEN_HEADER]: userToken } } : {}),
-  });
+  const upstream = await authorized.fetch(`/data/records?${params.join("&")}`);
   if (!upstream.ok) {
     return new NextResponse(await upstream.text(), {
       status: upstream.status,
@@ -113,47 +81,17 @@ export async function GET(req: NextRequest): Promise<Response> {
     nextCursor?: string | null;
   };
 
-  // What this node would say about a source it cannot read. Locally that is a
-  // durable per-record verdict written by whatever last tried; in the cloud it
-  // is a property of the format, because the cloud's decoder set is fixed and
-  // known. Both are "here", which is what the flag means.
-  const localVerdicts = cloud ? null : await loadLocalVerdicts();
-
-  let availableIdeals = 0;
-  let pendingIdeals = 0;
-  let undecodableIdeals = 0;
-  const records = body.records.map((record) => {
-    const { variant_candidates: _dropped, ...rest } = record;
-    if (isVideo(record)) {
-      return { ...rest, video_renditions: resolveVideo(record, targets.values, cloud) };
-    }
-    const renditions = resolveFor(record, targets.values, cloud, localVerdicts);
-    for (const choice of Object.values(renditions)) {
-      if (choice.ideal.available) availableIdeals++;
-      else if (choice.ideal.state === "undecodable-here") undecodableIdeals++;
-      else pendingIdeals++;
-    }
-    return { ...rest, renditions };
-  });
-
-  const candidateCount = body.records.reduce(
-    (count, record) => count + (record.variant_candidates?.length ?? 0),
-    0,
-  );
   console.log(
-    `[photos-library] records=${records.length} targets=${targets.values.join(",")} ` +
-      `candidates=${candidateCount} availableIdeals=${availableIdeals} ` +
-      `pendingIdeals=${pendingIdeals} undecodableIdeals=${undecodableIdeals} ` +
+    `[photos-library] records=${body.records.length} baseOnly=true ` +
       `upstreamMs=${Date.now() - upstreamStartedAt} totalMs=${Date.now() - startedAt}`,
   );
 
-  const res = NextResponse.json({
-    records,
+  return withRefreshedSession(NextResponse.json({
+    records: body.records,
     hasMore: body.hasMore ?? false,
     nextCursor: body.nextCursor ?? null,
-  });
-  if (refreshedCookie) res.headers.append("Set-Cookie", refreshedCookie);
-  return res;
+    policies: currentRenditionPolicies(),
+  }), authorized.refreshedCookie);
 }
 
 export interface UpstreamRecord {
@@ -170,6 +108,9 @@ export interface UpstreamRecord {
     label_value: string;
     available_here: boolean;
     url?: string;
+    url_lifetime?:
+      | { kind: "expires"; expires_at: string }
+      | { kind: "non-expiring" };
   }>;
 }
 
@@ -224,7 +165,7 @@ function chooseVideoCandidate(
   return readable.find((c) => c.long_edge >= target) ?? readable[readable.length - 1];
 }
 
-function resolveFor(
+export function resolveFor(
   record: UpstreamRecord,
   targets: readonly number[],
   cloud: boolean,
@@ -294,7 +235,7 @@ function unavailableState(
  * machine, and a verdict that travelled would let a phone's failure tell a
  * laptop not to bother with a file the laptop reads fine.
  */
-async function loadLocalVerdicts(): Promise<ReadonlyMap<string, RenditionState>> {
+export async function loadLocalVerdicts(): Promise<ReadonlyMap<string, RenditionState>> {
   const { allAttempts } = await import("@/derivation/attempt-store");
   const out = new Map<string, RenditionState>();
   for (const [recordId, attempt] of allAttempts()) {

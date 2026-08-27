@@ -100,12 +100,20 @@ export interface StillDisplay {
 
 export function stillDisplay(image: AppImage, targetLongEdge: number): StillDisplay {
   const choice = choiceFor(image, targetLongEdge);
+  return displayForRenditionChoice(choice, targetLongEdge, image);
+}
+
+export function displayForRenditionChoice(
+  choice: RenditionChoice | undefined,
+  targetLongEdge: number,
+  legacyImage?: AppImage,
+): StillDisplay {
   if (!choice) {
     // No resolution for this target — an older server, a video, or a size the
     // list did not ask for. Fall back to best-fit over whatever is here, which
     // is what every consumer did before this shape existed.
     return {
-      source: variantSrc(image, targetLongEdge),
+      source: legacyImage ? variantSrc(legacyImage, targetLongEdge) : null,
       awaitingBetter: false,
       state: null,
       idealLongEdge: null,

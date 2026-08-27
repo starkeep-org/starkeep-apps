@@ -4,6 +4,7 @@ import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 import { RENDITION_LABEL_REF } from "../photos-lib/image-processing/publish-renditions";
 import type { RenditionChoice } from "../photos-lib/rendition-resolution";
+import type { RenditionPolicies } from "../photos-lib/rendition-policy";
 
 export interface PhotoRecord {
   id: string;
@@ -340,46 +341,35 @@ async function extractImageMetadata(
  *
  * Both go to the same place — every data-plane call is signed server-side by
  * this app and forwarded to whichever data server the deployment configured —
- * so this is not an extra hop. The difference is that Photos' route resolves
- * renditions against the ladder before answering, which the data server must
- * not do because it must never learn what a size class is.
- *
- * What that buys the client is the thing a resolved variant cannot say: for
- * each size asked for, the rung this record *should* have, whether it exists
- * yet, and the largest smaller rung to paint meanwhile. The page still excludes
- * renditions themselves — with a ladder, a 60k-item library is 300k+ records
- * and a page mixing them is a page the client cannot read to the end of.
- *
- * No size class is named in either direction. The client asks in pixels.
+ * so this is not an extra hop. The route returns base records and the current
+ * server-owned threshold policies. Renditions are resolved separately for
+ * measured, near-visible targets.
  */
 function libraryQuery(extra = ""): string {
-  return `/api/photos/library?targets=${LIBRARY_VARIANT_TARGETS.join(",")}${extra}`;
+  return `/api/photos/library${extra ? `?${extra.replace(/^&/, "")}` : ""}`;
 }
 
-/**
- * The pixel sizes the library view asks for.
- *
- * A tile at 3× device pixel ratio, and a large-viewport size for the opened
- * view. Deliberately fixed rather than measured per client: they ride a list
- * request made before anything is laid out, and asking for the exact viewport
- * would mean a different cache key per window size for no visible benefit.
- * The viewer refines with a measured request when it needs to.
- */
-export const LIBRARY_VARIANT_TARGETS = [540, 2048];
+let latestLibraryPolicies: RenditionPolicies | null = null;
+
+export function getLatestLibraryPolicies(): RenditionPolicies | null {
+  return latestLibraryPolicies;
+}
 
 // No `type` filter: a type-less query is server-scoped to the app's granted
 // types, which for Photos are exactly the image types — so this returns every
 // image the app can see in one request, across all of image/jpeg/png/heic/…
 // rather than a single hardcoded type.
 export async function listPhotos(): Promise<PhotoRecord[]> {
-  const result = await requestOwnApi<{ records: PhotoRecord[] }>(libraryQuery());
+  const result = await requestOwnApi<{ records: PhotoRecord[]; policies: RenditionPolicies }>(libraryQuery());
+  latestLibraryPolicies = result.policies;
   return result.records;
 }
 
 export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
-  const result = await requestOwnApi<{ records: PhotoRecord[] }>(
-    libraryQuery(`&updated_after=${encodeURIComponent(updatedAfter)}`),
+  const result = await requestOwnApi<{ records: PhotoRecord[]; policies: RenditionPolicies }>(
+    libraryQuery(`updated_after=${encodeURIComponent(updatedAfter)}`),
   );
+  latestLibraryPolicies = result.policies;
   return result.records;
 }
 
@@ -390,8 +380,8 @@ export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord
  * `/apps/photos`, and a bare absolute path misses the app entirely and 404s at
  * the gateway. Locally the prefix is empty and this is a no-op.
  */
-async function requestOwnApi<T>(path: string): Promise<T> {
-  const res = await fetch(withBasePath(path), { credentials: "same-origin" });
+export async function requestOwnApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(withBasePath(path), { ...init, credentials: "same-origin" });
   if (!res.ok) {
     throw new Error(`${path} failed: ${res.status} ${await res.text().catch(() => "")}`);
   }

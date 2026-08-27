@@ -204,23 +204,28 @@ describe("getPhotoFileUrls batching", () => {
 // therefore pixel sizes and nothing else; the enrichment the data server is
 // asked for is decided one hop later, by the route.
 describe("the library list", () => {
-  it("asks Photos' own route, in pixels, and passes metadata through", async () => {
+  const policies = {
+    still: { kind: "still", version: "still-test", targetLongEdges: [128, 400, 1280] },
+    video: { kind: "video", version: "video-test", targetLongEdges: [400, 1280] },
+  };
+
+  it("asks Photos' base-only route without fixed targets and passes metadata through", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      response(200, { records: [{ id: "r1", metadata: { recordId: "r1", width: 3, height: 4 } }] }),
+      response(200, { policies, records: [{ id: "r1", metadata: { recordId: "r1", width: 3, height: 4 } }] }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const records = await settle(listPhotos());
     const url = fetchMock.mock.calls[0]![0] as string;
     expect(url).toContain("/api/photos/library");
-    expect(url).toMatch(/targets=\d+(,\d+)*/);
+    expect(url).not.toContain("targets=");
     // No size class is named in either direction.
     expect(url).not.toMatch(/image-/);
     expect(records[0]!.metadata).toMatchObject({ width: 3, height: 4 });
   });
 
   it("carries the cursor on the incremental form", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(response(200, { records: [] }));
+    const fetchMock = vi.fn().mockResolvedValue(response(200, { policies, records: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
     await settle(listPhotosSince("2026-01-01T00:00:00.000Z"));

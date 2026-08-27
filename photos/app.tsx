@@ -8,6 +8,8 @@ import {
   DerivationStatus,
   VisionPanel,
   PeopleView,
+  RenditionResolutionProvider,
+  useRenditionResolutionCache,
 } from "@/photos-ui";
 import { addPhotoFromPath, getPhotoFileUrls } from "./src/lib/data-server-client";
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
@@ -16,7 +18,6 @@ import { AuthGate } from "./src/lib/AuthGate";
 import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { CoverImageBanner } from "./src/lib/CoverImage";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
-import { hasAwaitingRenditions } from "./src/lib/rendition-freshness";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
 
 
@@ -66,6 +67,7 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 
 function PhotosAppInner() {
   const { state, dispatch } = usePhotoContext();
+  const resolutionCache = useRenditionResolutionCache();
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -89,12 +91,6 @@ function PhotosAppInner() {
   // library.
   const originals = state.images.filter((img) => img.parentId === null);
 
-  // Whether anything on screen is showing a stand-in for a rung that is still
-  // being derived. Read off the server's own answer rather than inferred from
-  // an absence, and keyed on availability rather than on size — a record whose
-  // ladder genuinely stops below what was asked for reports its top rung as
-  // available, so it never counts as waiting and this terminates.
-  const awaitingRenditions = hasAwaitingRenditions(originals);
   // Sort client-side so display order is deterministic and identical across the
   // local and cloud backends, independent of each server's query order and of
   // the incremental-merge append drift in UPSERT_IMAGES. Newest first by
@@ -119,8 +115,13 @@ function PhotosAppInner() {
     onMerge: (images) => dispatch({ type: "UPSERT_IMAGES", images }),
     onLoadingChange: (loading) => dispatch({ type: "SET_LOADING", loading }),
     onError: setError,
-    awaitingRenditions,
+    onPolicies: (policies) => dispatch({ type: "SET_POLICIES", policies }),
+    refreshActiveResolutions: () => resolutionCache.refreshPending(),
   });
+
+  useEffect(() => {
+    resolutionCache.retainRecords(new Set(originals.map((image) => image.id)));
+  }, [originals, resolutionCache]);
 
   const handleFileSelected = async (file: File) => {
     setAdding(true);
@@ -326,9 +327,18 @@ export function App() {
   return (
     <AuthGate>
       <PhotoProvider>
-        <PhotosAppInner />
+        <ResolutionBoundary />
       </PhotoProvider>
     </AuthGate>
+  );
+}
+
+function ResolutionBoundary() {
+  const { state } = usePhotoContext();
+  return (
+    <RenditionResolutionProvider policies={state.policies}>
+      <PhotosAppInner />
+    </RenditionResolutionProvider>
   );
 }
 

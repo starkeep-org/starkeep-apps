@@ -1,6 +1,12 @@
 // Context
 export { PhotoProvider, usePhotoContext } from "./context/photo-context";
 export { PhotoUrlProvider, usePhotoUrls } from "./context/photo-url-context";
+export {
+  RenditionResolutionProvider,
+  useRenditionResolutionCache,
+  useRenditionPolicy,
+  useMeasuredResolution,
+} from "./context/rendition-resolution-context";
 
 // Grid
 export { PhotoGrid } from "./components/grid/photo-grid";

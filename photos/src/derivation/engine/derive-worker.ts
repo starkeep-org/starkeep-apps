@@ -45,6 +45,7 @@ import { RENDITION_LABEL_REF } from "../../photos-lib/image-processing/publish-r
 import {
   CHEAP_STILL_CLASSES,
   CHEAP_TARGET_LONG_EDGE,
+  STILL_LADDER,
   type SizeClass,
 } from "../../photos-lib/ladder";
 import { fileAttemptStore } from "../attempt-store";
@@ -52,6 +53,14 @@ import { readSweepState, writeSweepState } from "../sweep-state";
 import { fetchSweepPage, stageHasWork, type SweepRecord } from "../sweep-set";
 import { emptySweepState, SWEEP_STAGES, type SweepStage, type SweepState } from "../types";
 import { PROGRESS_INTERVAL_MS, type SweepCommand, type SweepEvent } from "../worker-protocol";
+
+const MEDIUM_TARGET_LONG_EDGE = STILL_LADDER.find(
+  (spec) => spec.sizeClass === "image-medium",
+)!.maxLongEdge;
+const MEDIUM_CLASS = STILL_LADDER.find((spec) => spec.maxLongEdge === MEDIUM_TARGET_LONG_EDGE)!.sizeClass;
+const FULL_STILL_CLASSES = STILL_LADDER
+  .filter((spec) => spec.maxLongEdge > MEDIUM_TARGET_LONG_EDGE)
+  .map((spec) => spec.sizeClass);
 
 /** Cancellation is cooperative: the loop checks between records. */
 let stopRequested = false;
@@ -182,10 +191,19 @@ async function deriveOne(
         mimeType: record.mime_type ?? record.type ?? null,
       },
       loadSource: () => fetchSourceBytes(creds, record.id),
-      // The cheap stage names a pixel size so it stops after the bottom rungs;
-      // the full stage names none, which means the whole applicable ladder —
-      // and skips what the cheap stage already produced.
-      ...(stage === "cheap" ? { targetLongEdge: CHEAP_TARGET_LONG_EDGE } : {}),
+      // Targeted derivation includes the cheap rungs in its wanted set, while
+      // existing-rendition detection keeps later passes disjoint in practice.
+      ...(stage === "cheap"
+        ? { targetLongEdge: CHEAP_TARGET_LONG_EDGE }
+        : stage === "medium"
+          ? { targetLongEdge: MEDIUM_TARGET_LONG_EDGE }
+          : {}),
+      onlyRenditionClasses:
+        stage === "cheap"
+          ? CHEAP_STILL_CLASSES
+          : stage === "medium"
+            ? [MEDIUM_CLASS]
+            : FULL_STILL_CLASSES,
       // The difference between the operator's primary capture format being
       // derivable on this machine or not: macOS ships a licensed HEVC decoder,
       // and the prebuilt sharp does not.

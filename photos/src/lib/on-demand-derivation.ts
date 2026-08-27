@@ -73,6 +73,13 @@ const requested = new Set<string>();
 const queue: Request[] = [];
 let inFlight = 0;
 let budget: number | null = null;
+let completedHandler: ((recordId: string, targetLongEdge: number) => void) | null = null;
+
+export function setDerivationCompletedHandler(
+  handler: ((recordId: string, targetLongEdge: number) => void) | null,
+): void {
+  completedHandler = handler;
+}
 
 /**
  * Ask for `targetLongEdge` pixels of `recordId`, if nobody has this session.
@@ -152,6 +159,7 @@ async function run(request: Request): Promise<void> {
         `[derive-demand] record=${request.recordId} target=${request.targetLongEdge} ` +
           `status=${response.status} elapsedMs=${elapsedMs}`,
       );
+      completedHandler?.(request.recordId, request.targetLongEdge);
     }
   } catch (error) {
     console.warn(

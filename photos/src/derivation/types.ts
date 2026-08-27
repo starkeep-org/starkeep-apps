@@ -8,7 +8,7 @@
  */
 
 /**
- * The two passes a sweep makes over the library.
+ * The ordered passes a sweep makes over the library.
  *
  * Ordering rungs *within* a record is not enough. That still puts the seventh
  * photo's 400 px tile behind the first photo's 4272 px rung, so a grid fills in
@@ -16,21 +16,19 @@
  * the *whole library*: everything cheap for every record, then the expensive
  * rungs.
  *
- * Two stages rather than the four the sizes suggest, because the decode is what
- * costs. The placeholder, the record's dimensions and EXIF, and the two bottom
- * rungs all come out of one decode, so they are one unit of work. Everything
- * above pays a second decode and is the other. That is a deliberate two-decode
- * structure — not the theoretical minimum, but a large saving against the nine
- * decodes per record this replaced.
+ * The 1280 px rung has its own whole-library pass so ordinary viewer readiness
+ * completes before the larger display and zoom renditions begin.
  */
 export type SweepStage =
   /** Placeholder, dimensions, EXIF, and the two smallest rungs. */
   | "cheap"
-  /** Everything else the record's ladder calls for. */
+  /** The 1280 px viewer-readiness rung. */
+  | "medium"
+  /** Applicable still rungs above 1280 px. */
   | "full"
   | "video";
 
-export const SWEEP_STAGES: readonly SweepStage[] = ["cheap", "full", "video"];
+export const SWEEP_STAGES: readonly SweepStage[] = ["cheap", "medium", "full", "video"];
 
 export interface SweepState {
   /** Whether a pass is running right now, as of the last write. */

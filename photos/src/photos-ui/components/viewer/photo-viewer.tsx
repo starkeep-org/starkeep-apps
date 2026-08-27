@@ -1,37 +1,17 @@
 import { useCallback, useState, useEffect } from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { isVideoRecord, stillDisplay, viewportTargetLongEdge } from "@/photos-lib/client";
+import { displayForRenditionChoice, isVideoRecord, stillDisplay, viewportTargetLongEdge } from "@/photos-lib/client";
+import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
+import { canonicalMeasuredTarget, measuredPhysicalLongEdge } from "@/photos-lib/render-geometry";
+import type { VideoDecision } from "@/lib/rendition-resolution-client";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { VideoPlayer } from "./video-player";
+import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
 import { usePhotoUrls } from "../../context/photo-url-context";
+import { useDebouncedValue, useDevicePixelRatio, useElementSize } from "../../hooks/use-element-size";
 import { FaceOverlay } from "../vision/face-overlay";
 import type { ImageFaces } from "../../../lib/vision-client";
 import { requestDerivation } from "../../../lib/on-demand-derivation";
-
-/**
- * The size the opened view asks for: the viewport's long edge, scaled by the
- * device pixel ratio.
- *
- * Measured rather than fixed, because unlike the grid this is laid out by the
- * time it matters. Re-measured on resize so dragging a window to a second
- * display asks for what that display can actually show.
- */
-function useViewportTarget(): number {
-  const [target, setTarget] = useState(() =>
-    typeof window === "undefined"
-      ? 2048
-      : viewportTargetLongEdge(window.innerWidth, window.innerHeight, window.devicePixelRatio),
-  );
-  useEffect(() => {
-    const onResize = () =>
-      setTarget(
-        viewportTargetLongEdge(window.innerWidth, window.innerHeight, window.devicePixelRatio),
-      );
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  return target;
-}
 
 // EXIF orientations 5–8 rotate the image by ±90°, so the *displayed* image
 // swaps width and height relative to the stored (un-oriented) pixel
@@ -51,6 +31,25 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // render the browser's broken-image glyph while its signed URL is still being
   // fetched (a cache miss on open) and while the original downloads.
   const isVideo = isVideoRecord(image);
+  const kind = isVideo ? "video" : "still";
+  const policy = useRenditionPolicy(kind);
+  const devicePixelRatio = useDevicePixelRatio();
+  const [wrapperRef, wrapperSize] = useElementSize<HTMLDivElement>();
+  const debouncedSize = useDebouncedValue(wrapperSize, 120);
+  const requiredLongEdge = debouncedSize
+    ? measuredPhysicalLongEdge({
+        source: image.width > 0 && image.height > 0 ? { width: image.width, height: image.height } : null,
+        container: debouncedSize,
+        orientation: image.exif.orientation,
+        fit: "contain",
+        devicePixelRatio,
+      })
+    : null;
+  const legacyTarget = typeof window === "undefined"
+    ? 2048
+    : viewportTargetLongEdge(window.innerWidth, window.innerHeight, devicePixelRatio);
+  const viewportTarget = policy ? canonicalMeasuredTarget(policy, requiredLongEdge) : legacyTarget;
+  const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, viewportTarget);
 
   // The rendition, not the original.
   //
@@ -64,8 +63,13 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // has not been derived is still a photo somebody wants to look at, and unlike
   // a 180 px grid tile a fullscreen view is a reasonable place to spend the
   // bytes.
-  const viewportTarget = useViewportTarget();
-  const rendition = isVideo ? null : stillDisplay(image, viewportTarget);
+  const rendition = !isVideo && viewportTarget
+    ? resolution?.decision
+      ? displayForRenditionChoice(resolution.decision as RenditionChoice, viewportTarget)
+      : !policy
+        ? stillDisplay(image, viewportTarget)
+        : null
+    : null;
   const pendingLongEdge = rendition?.awaitingBetter ? rendition.idealLongEdge : null;
   useEffect(() => {
     if (pendingLongEdge === null) return;
@@ -76,21 +80,21 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // ideal and fallback are both absent, wait for the requested rendition
   // instead of silently downloading the original. The original fallback is
   // retained only for old responses that carry no rendition decisions.
-  const hasRenditionDecision = Object.keys(image.renditions ?? {}).length > 0;
-  const fullSizeSrc =
-    rendition?.source?.url ??
-    (!hasRenditionDecision ? getFullSizeSrc(image.id) ?? undefined : undefined);
+  const hasLegacyDecision = Object.keys(image.renditions ?? {}).length > 0;
+  const fullSizeSrc = rendition?.source?.url ??
+    (!policy && !hasLegacyDecision ? getFullSizeSrc(image.id) ?? undefined : undefined);
   useEffect(() => {
     console.log(
       `[photo-viewer] record=${image.id} target=${viewportTarget} ` +
-        `source=${rendition?.source ? "rendition" : hasRenditionDecision ? "pending" : "original"} ` +
+        `source=${rendition?.source ? "rendition" : "pending"} ` +
         `ideal=${rendition?.idealLongEdge ?? "unknown"} state=${rendition?.state ?? "ready"}`,
     );
-  }, [hasRenditionDecision, image.id, rendition?.idealLongEdge, rendition?.source, rendition?.state, viewportTarget]);
-  const [loaded, setLoaded] = useState(false);
+  }, [image.id, rendition?.idealLongEdge, rendition?.source, rendition?.state, viewportTarget]);
+  const [displayedSrc, setDisplayedSrc] = useState<string | undefined>();
   useEffect(() => {
-    setLoaded(false);
-  }, [fullSizeSrc]);
+    setDisplayedSrc(undefined);
+  }, [image.id]);
+  const loaded = Boolean(displayedSrc);
 
   // Dimensions come with the record now (the list is fetched with
   // ?include=metadata), so the placeholder box is proportioned from real
@@ -198,6 +202,7 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
             ratio; when they're not (metadata pending) the box keeps a fixed
             height and the image letterboxes into it. */}
         <div
+          ref={wrapperRef}
           style={{
             position: "relative",
             ...(ratio
@@ -228,13 +233,19 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
               }}
             />
           )}
-          {isVideo && <VideoPlayer image={image} onToggleInfo={() => setInfoVisible((v) => !v)} />}
-          {!isVideo && fullSizeSrc && (
+          {isVideo && viewportTarget && (
+            <VideoPlayer
+              image={image}
+              targetLongEdge={viewportTarget}
+              decision={resolution?.decision as VideoDecision | undefined}
+              onToggleInfo={() => setInfoVisible((v) => !v)}
+            />
+          )}
+          {!isVideo && displayedSrc && displayedSrc !== fullSizeSrc && (
             <img
-              src={fullSizeSrc}
+              src={displayedSrc}
               alt={image.originalFilename}
               onClick={() => setInfoVisible((v) => !v)}
-              onLoad={() => setLoaded(true)}
               style={{
                 position: "absolute",
                 inset: 0,
@@ -246,10 +257,32 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
                 // leave rotated originals sideways). We deliberately do NOT
                 // also rotate via CSS transform, which would double-apply.
                 imageOrientation: "from-image",
-                opacity: loaded ? 1 : 0,
+                opacity: 1,
                 transition: "opacity 0.3s ease",
                 cursor: "pointer",
               }}
+            />
+          )}
+          {!isVideo && fullSizeSrc && (
+            <img
+              key="candidate"
+              src={fullSizeSrc}
+              alt={displayedSrc && displayedSrc !== fullSizeSrc ? "" : image.originalFilename}
+              aria-hidden={displayedSrc && displayedSrc !== fullSizeSrc ? true : undefined}
+              onLoad={() => setDisplayedSrc(fullSizeSrc)}
+              style={displayedSrc && displayedSrc !== fullSizeSrc
+                ? { position: "absolute", width: 1, height: 1, opacity: 0 }
+                : {
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain",
+                    imageOrientation: "from-image",
+                    opacity: displayedSrc === fullSizeSrc ? 1 : 0,
+                    transition: "opacity 0.3s ease",
+                    cursor: "pointer",
+                  }}
             />
           )}
           {/* Inside the same box the <img> fills, so bbox percentages land on

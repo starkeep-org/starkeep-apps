@@ -100,17 +100,7 @@ export type StartResult =
   | { ok: false; status: number; error: string };
 
 export function resumePoint(state: SweepState): Pick<SweepState, "stage" | "cursor"> {
-  // `legacyCompleted` migrates state written before the explicit flag existed.
-  // A clean stop at the end of the final stage is the only old shape that can
-  // mean a completed pass; restarting cheaply is safe even in the narrow case
-  // where the operator stopped at that exact boundary.
-  const legacyCompleted =
-    !state.running &&
-    state.stage === "video" &&
-    state.cursor === null &&
-    state.finishedAt !== null &&
-    state.error === null;
-  return state.completed || legacyCompleted
+  return state.completed
     ? { stage: "cheap", cursor: null }
     : { stage: state.stage, cursor: state.cursor };
 }

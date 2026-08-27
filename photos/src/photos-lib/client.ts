@@ -59,6 +59,7 @@ export {
 export {
   variantSrc,
   stillDisplay,
+  displayForRenditionChoice,
   posterSrc,
   playbackSrc,
   isVideoRecord,

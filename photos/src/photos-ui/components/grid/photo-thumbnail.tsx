@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { isVideoRecord, posterSrc, stillDisplay, tileTargetLongEdge } from "@/photos-lib/client";
+import { displayForRenditionChoice, isVideoRecord, posterSrc, stillDisplay, tileTargetLongEdge } from "@/photos-lib/client";
+import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
+import { canonicalMeasuredTarget, measuredPhysicalLongEdge } from "@/photos-lib/render-geometry";
+import type { VideoDecision } from "@/lib/rendition-resolution-client";
 import { requestDerivation } from "@/lib/on-demand-derivation";
 import { usePhotoUrls } from "../../context/photo-url-context";
+import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
 import { useInView } from "../../hooks/use-in-view";
+import { useDevicePixelRatio, useElementSize } from "../../hooks/use-element-size";
 
 const TILE_WIDTH = 180;
 
@@ -15,10 +20,6 @@ const TILE_WIDTH = 180;
  * up" is how a library becomes expensive on first load.
  */
 const DIRECT_SERVE_MAX_BYTES = 512 * 1024;
-
-function devicePixelRatioOf(): number {
-  return typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
-}
 
 /**
  * Decode a base64 ThumbHash into a data URL, once per hash.
@@ -62,6 +63,22 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // Only ask for bytes once the tile is near the viewport, so a large gallery
   // doesn't fan out into a request per photo on load.
   const [containerRef, inView] = useInView<HTMLDivElement>();
+  const [sizeRef, containerSize] = useElementSize<HTMLDivElement>();
+  const video = isVideoRecord(image);
+  const kind = video ? "video" : "still";
+  const policy = useRenditionPolicy(kind);
+  const devicePixelRatio = useDevicePixelRatio();
+  const requiredLongEdge = inView && containerSize
+    ? measuredPhysicalLongEdge({
+        source: image.width > 0 && image.height > 0 ? { width: image.width, height: image.height } : null,
+        container: containerSize,
+        orientation: image.exif.orientation,
+        fit: "cover",
+        devicePixelRatio,
+      })
+    : null;
+  const target = policy ? canonicalMeasuredTarget(policy, requiredLongEdge) : null;
+  const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, target);
 
   // Ask in pixels: tile size × device pixel ratio, because a 180 px tile on a
   // 3× phone is a 540 px image. The server already resolved which rendition
@@ -71,17 +88,30 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // show a placeholder for everything else — so a library was a grid of
   // placeholders until derivation caught up, and originals were unclickable.
   // The grid now lists originals and displays a rendition of each.
-  const target = tileTargetLongEdge(TILE_WIDTH, devicePixelRatioOf());
   // Two answers, because a still and a video are asking different questions. A
   // still gets the ideal-and-fallback shape the app server resolved against the
   // ladder; a video's children include a poster and a transcode at the same long
   // edge, so it keeps the type-filtered resolution that can tell them apart.
-  const display = inView && !isVideoRecord(image) ? stillDisplay(image, target) : null;
-  const resolved = display
-    ? display.source
-    : inView
-      ? posterSrc(image, target)
-      : null;
+  const legacyTarget = tileTargetLongEdge(
+    TILE_WIDTH,
+    devicePixelRatio,
+  );
+  const display = !video
+    ? target && resolution?.decision
+      ? displayForRenditionChoice(resolution.decision as RenditionChoice, target)
+      : !policy && inView
+        ? stillDisplay(image, legacyTarget)
+        : null
+    : null;
+  const poster = video ? (resolution?.decision as VideoDecision | undefined)?.poster : undefined;
+  const resolved = display?.source ?? (poster?.url
+    ? {
+        url: poster.url,
+        width: poster.width,
+        height: poster.height,
+        isBelowTarget: target ? Math.max(poster.width, poster.height) < target : false,
+      }
+    : !policy && inView && video ? posterSrc(image, legacyTarget) : null);
 
   // The tile has been told the rung it wants is missing, that it is derivable,
   // and how big it is — so this is a specific request rather than a guess from
@@ -114,7 +144,10 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
 
   return (
     <div
-      ref={containerRef}
+      ref={(element) => {
+        containerRef.current = element;
+        sizeRef(element);
+      }}
       onClick={() => onSelect(image.id)}
       style={{
         width: TILE_WIDTH,

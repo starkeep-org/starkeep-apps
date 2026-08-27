@@ -89,6 +89,11 @@ export interface DeriveAndPublishParams {
    * Omit for the whole applicable ladder.
    */
   readonly targetLongEdge?: number;
+  /**
+   * Producer-only restriction for breadth-first desktop sweep stages. Unlike
+   * `targetLongEdge`, this does not add the cheap rungs implicitly.
+   */
+  readonly onlyRenditionClasses?: readonly SizeClass[];
   readonly codec?: DeriveLadderOptions["codec"];
   /** Supplied on nodes that have one; HEIC is undecodable without it. */
   readonly platformDecoder?: PlatformDecoder;
@@ -148,7 +153,9 @@ export async function deriveAndPublish(
     readParentMetadata(signedFetch, parent.id),
   ]);
   const already = recorded;
-  const wanted = requestedClasses(params.targetLongEdge);
+  const wanted = params.onlyRenditionClasses
+    ? new Set(params.onlyRenditionClasses)
+    : requestedClasses(params.targetLongEdge);
 
   // Dimensions on the parent are what let this answer "is there anything to
   // do?" without a decode. A record that has never been derived has none, so

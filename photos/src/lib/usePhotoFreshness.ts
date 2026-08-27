@@ -3,6 +3,8 @@ import type { AppImage } from "@/photos-lib/client";
 import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
 import { listPhotos, listPhotosSince } from "./data-server-client";
+import { getLatestLibraryPolicies } from "./data-server-client";
+import type { RenditionPolicies } from "@/photos-lib/rendition-policy";
 import { photoRecordToAppImage } from "./photoRecordToAppImage";
 import { createRefreshCoalescer } from "./refresh-coalescer";
 
@@ -14,22 +16,10 @@ interface UsePhotoFreshnessOptions {
   onMerge: (images: AppImage[]) => void;
   onLoadingChange: (loading: boolean) => void;
   onError: (message: string) => void;
-  /**
-   * Whether any record on screen is showing a stand-in for a rung that is still
-   * being derived.
-   *
-   * When it is, an update has to be a **full** re-list rather than an
-   * incremental one. A new rendition is a new child record, and the library
-   * page excludes children by label and keys its cursor on the *parent's*
-   * `updated_at` — which a new child does not change. So the one event this is
-   * waiting for is precisely the one an incremental fetch cannot see.
-   *
-   * This terminates, and that is why it is keyed on availability rather than on
-   * "smaller than I asked for": a record whose ladder genuinely stops below the
-   * requested size reports its top rung as available, so it never counts as
-   * waiting and never keeps this on.
-   */
-  awaitingRenditions?: boolean;
+  /** Receives the server-owned policies included with each list response. */
+  onPolicies?: (policies: RenditionPolicies) => void;
+  /** Refreshes active pending or expiring measured decisions. */
+  refreshActiveResolutions?: () => void;
 }
 
 export interface PhotoFreshnessControls {
@@ -73,7 +63,8 @@ export function usePhotoFreshness({
   onMerge,
   onLoadingChange,
   onError,
-  awaitingRenditions = false,
+  onPolicies,
+  refreshActiveResolutions,
 }: UsePhotoFreshnessOptions): PhotoFreshnessControls {
   const cursorRef = useRef<string | null>(null);
   const hiddenAtRef = useRef<number | null>(null);
@@ -82,10 +73,6 @@ export function usePhotoFreshness({
   const strategyRef = useRef<FreshnessStrategy | null>(null);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
   const coalescedRefreshRef = useRef<(() => Promise<void>) | null>(null);
-  // Read inside callbacks that are deliberately not re-created per render, so
-  // the flag has to travel by ref rather than by closure.
-  const awaitingRef = useRef(awaitingRenditions);
-  awaitingRef.current = awaitingRenditions;
 
   const computeCursor = (images: AppImage[]): string | null => {
     if (images.length === 0) return null;
@@ -99,6 +86,8 @@ export function usePhotoFreshness({
     if (showSpinner) onLoadingChange(true);
     try {
       const records = await listPhotos();
+      const policies = getLatestLibraryPolicies();
+      if (policies) onPolicies?.(policies);
       const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
       const cursor = computeCursor(images);
       if (cursor) cursorRef.current = cursor;
@@ -117,12 +106,15 @@ export function usePhotoFreshness({
     // arrives as a child record the page excludes, and it does not move the
     // parent's `updated_at`. So while anything is waiting, refresh the whole
     // page — one request per tick, and it stops as soon as nothing is waiting.
-    if (!cursor || awaitingRef.current) {
+    refreshActiveResolutions?.();
+    if (!cursor) {
       await fetchAll();
       return;
     }
     try {
       const records = await listPhotosSince(cursor);
+      const policies = getLatestLibraryPolicies();
+      if (policies) onPolicies?.(policies);
       if (records.length > 0) {
         const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
         const newCursor = computeCursor(images);

@@ -8,7 +8,7 @@
  *   listPhotos()                                (src/lib/data-server-client)
  *     → GET /api/photos/library                 (app/api/photos/library/route)
  *         loads on-disk creds, HMAC-signs, forwards to the data server, and
- *         resolves renditions against the ladder before answering
+ *         returns base records and the server-owned threshold policies
  *     → a fake data server that REJECTS any request lacking a valid
  *       X-Starkeep-App-{Id,Sig,Ts} signature — exactly like the cloud data
  *       server, whose 401 "Missing X-Starkeep-App headers" started all this.
@@ -27,7 +27,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAppCredentialsCache, createNextProxyHandler } from "@starkeep/app-client";
 import { GET as libraryRoute } from "../app/api/photos/library/route";
-import { listPhotos } from "../src/lib/data-server-client";
+import { POST as renditionsRoute } from "../app/api/photos/renditions/route";
+import { listPhotos, requestOwnApi } from "../src/lib/data-server-client";
+import { currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 
 const HMAC_SECRET = "integration-test-secret";
 const DATA_SERVER_URL = "http://fake-data-server.test";
@@ -91,6 +93,13 @@ async function dispatchFetch(input: RequestInfo | URL, init?: RequestInit): Prom
       headers: new Headers(init?.headers as HeadersInit),
     } as never);
   }
+  if (url.pathname === "/api/photos/renditions") {
+    return renditionsRoute({
+      url: `http://app.local${url.pathname}${url.search}`,
+      headers: new Headers(init?.headers as HeadersInit),
+      json: async () => JSON.parse(String(init?.body)),
+    } as never);
+  }
   if (url.pathname.startsWith("/api/local-data/")) {
     const segments = url.pathname.slice("/api/local-data/".length).split("/");
     const method = (init?.method ?? "GET").toUpperCase();
@@ -135,37 +144,26 @@ describe("cloud data path (client → proxy → data server)", () => {
   it("listPhotos reaches the data server with a valid HMAC signature and returns records", async () => {
     const records = await listPhotos();
 
-    // The record comes back with its resolution attached, so identity is
-    // asserted rather than deep equality.
+    // The initial record is base/layout data only. Resolution is a separate
+    // measured POST once a component is near-visible.
     expect(records.map((r) => r.id)).toEqual(seededRecords.map((r) => (r as { id: string }).id));
-    // A dimensionless parent with no children must still say that its requested
-    // renditions are pending. Without this provisional decision the freshness
-    // hook stays incremental, and child-only writes remain invisible until an
-    // unrelated full-library refresh makes every thumbnail appear at once.
-    expect(records[0]?.renditions).toEqual({
-      "540": { ideal: { longEdge: 540, available: false, state: "pending" } },
-      "2048": { ideal: { longEdge: 2048, available: false, state: "pending" } },
-    });
+    expect(records[0]?.renditions).toBeUndefined();
 
     // The data server saw exactly the request the user's session 401'd on...
     const dataReq = received.find((r) => r.path.startsWith("/data/records"));
     expect(dataReq, "no /data/records request reached the data server").toBeTruthy();
     // include=metadata rides along (and is HMAC-signed) through the proxy so
     // the list arrives enriched with per-record dimensions/EXIF.
-    // Asserted by parts rather than as one string: the library query carries
-    // the rendition exclusion and the variant request, and pinning the whole
-    // URL would make every future tuning of the requested pixel sizes look
-    // like a broken integration.
+    // Asserted by parts rather than as one string so unrelated query tuning
+    // does not make the integration brittle.
     const params = new URLSearchParams(dataReq!.path.split("?")[1]);
     expect(params.get("include")).toBe("metadata,labels");
     // Renditions are excluded server-side — a page mixing them with originals
     // is a page the client cannot page through.
     expect(params.get("notLabel")).toBe("photos/rendition");
-    // The unnarrowed candidate list, because the app server does the
-    // resolution. A `variantLongEdge` here would mean the ladder had been
-    // pushed down into the platform.
-    expect(params.get("variant")).toBe("photos/rendition");
+    expect(params.get("variant")).toBeNull();
     expect(params.get("variantLongEdge")).toBeNull();
+    expect(params.get("targets")).toBeNull();
     // ...but now signed, because it went through the proxy rather than direct.
     expect(dataReq!.headers.appId).toBe("photos");
     expect(dataReq!.headers.sig).toBeTruthy();
@@ -183,7 +181,7 @@ describe("cloud data path (client → proxy → data server)", () => {
     expect(body.error).toMatch(/Missing X-Starkeep-App/);
   });
 
-  it("does not call a local child available when this node cannot serve its bytes", async () => {
+  it("does not load candidate children during the initial library request", async () => {
     seededRecords.splice(0, seededRecords.length, {
       id: "rec-with-stale-child",
       type: "image/jpeg",
@@ -205,8 +203,58 @@ describe("cloud data path (client → proxy → data server)", () => {
 
     const [record] = await listPhotos();
 
-    expect(record?.renditions?.["540"]).toEqual({
-      ideal: { longEdge: 1280, available: false, state: "pending" },
+    expect(record?.renditions).toBeUndefined();
+    const params = new URLSearchParams(received.find((r) => r.path.startsWith("/data/records"))!.path.split("?")[1]);
+    expect(params.get("variant")).toBeNull();
+  });
+
+  it("resolves a visible record through one signed canonical batch lookup", async () => {
+    seededRecords.splice(0, seededRecords.length, {
+      id: "rec-visible",
+      type: "image/jpeg",
+      mime_type: "image/jpeg",
+      original_filename: "visible.jpg",
+      metadata: { width: 4000, height: 3000 },
+      variant_candidates: [{
+        id: "rendition-medium",
+        type: "image/webp",
+        label_value: "image-medium",
+        width: 1280,
+        height: 960,
+        long_edge: 1280,
+        available_here: true,
+        url: "https://files.test/rendition-medium",
+        url_lifetime: { kind: "expires", expires_at: "2026-08-28T00:00:00.000Z" },
+      }],
     });
+
+    const body = await requestOwnApi<{
+      results: Array<Record<string, unknown>>;
+    }>("/api/photos/renditions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requests: [{
+        recordId: "rec-visible",
+        policyVersion: "stale-policy",
+        requiredLongEdge: 500,
+        targetLongEdge: 400,
+      }] }),
+    });
+
+    expect(received).toHaveLength(1);
+    const upstream = received[0]!;
+    const params = new URLSearchParams(upstream.path.split("?")[1]);
+    expect(params.get("ids")).toBe("rec-visible");
+    expect(params.get("include")).toBe("metadata");
+    expect(params.get("variant")).toBe("photos/rendition");
+    expect(upstream.headers.appId).toBe("photos");
+    expect(upstream.headers.sig).toBeTruthy();
+    expect(body.results[0]).toMatchObject({
+      recordId: "rec-visible",
+      status: "resolved",
+      policyVersion: currentRenditionPolicies().still.version,
+      canonicalTargetLongEdge: 1280,
+    });
+    expect(JSON.stringify(body)).not.toContain("image-medium");
   });
 });

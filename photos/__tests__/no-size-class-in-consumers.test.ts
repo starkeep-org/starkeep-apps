@@ -48,6 +48,8 @@ const ALLOWED = [
   join("src", "photos-lib", "image-processing", "publish-renditions.ts"),
   // Discovers missing rungs for both still and video sweep stages.
   join("src", "derivation", "sweep-set.ts"),
+  // Names the medium stage's producer target; browser consumers still use pixels.
+  join("src", "derivation", "engine", "derive-worker.ts"),
   // Names the single rung the pre-ladder resize path still produces.
   join("src", "photos-lib", "labels.ts"),
 ];

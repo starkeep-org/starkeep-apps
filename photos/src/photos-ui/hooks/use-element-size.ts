@@ -28,6 +28,41 @@ export function useElementSize<T extends Element>(): [
   return [ref, size];
 }
 
+/**
+ * Track an element's content width alone.
+ *
+ * Separate from useElementSize because the row layout measures a container that
+ * has no height until the rows it is measuring for exist: requiring a positive
+ * height there deadlocks, since the element stays empty while it waits to be
+ * measured and stays unmeasured while it is empty. Width is what the layout
+ * needs and width is available immediately, so this asks for only that.
+ */
+export function useElementWidth<T extends Element>(): [
+  (element: T | null) => void,
+  number | null,
+] {
+  const [element, setElement] = useState<T | null>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  const ref = useCallback((next: T | null) => setElement(next), []);
+
+  useEffect(() => {
+    if (!element) return;
+    const update = (next: number) => {
+      if (next > 0) setWidth(next);
+    };
+    update(element.getBoundingClientRect().width);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) update(entry.contentRect.width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element]);
+
+  return [ref, width];
+}
+
 export function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {

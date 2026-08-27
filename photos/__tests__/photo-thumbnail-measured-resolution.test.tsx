@@ -20,20 +20,6 @@ class FakeIntersectionObserver {
   }
 }
 
-class FakeResizeObserver {
-  static instances: FakeResizeObserver[] = [];
-  element: Element | null = null;
-  constructor(private callback: ResizeObserverCallback) {
-    FakeResizeObserver.instances.push(this);
-  }
-  observe(element: Element) { this.element = element; }
-  disconnect() {}
-  unobserve() {}
-  resize(width: number, height: number) {
-    this.callback([{ target: this.element!, contentRect: { width, height } } as ResizeObserverEntry], this as never);
-  }
-}
-
 const policies = {
   still: { kind: "still" as const, version: "still-test", targetLongEdges: [128, 400, 1280] },
   video: { kind: "video" as const, version: "video-test", targetLongEdges: [400, 1280] },
@@ -70,12 +56,16 @@ function image(id: string, width = 4000, height = 3000): AppImage {
   };
 }
 
-function Gallery() {
+/**
+ * The row layout assigns each tile its box, so the sizes here are props rather
+ * than something a ResizeObserver reports back.
+ */
+function Gallery({ width = 180, height = 120 }: { width?: number; height?: number }) {
   return (
     <RenditionResolutionProvider policies={policies}>
       <PhotoUrlProvider getThumbnailSrc={() => null} getFullSizeSrc={() => null}>
-        <PhotoThumbnail image={image("a")} onSelect={() => {}} />
-        <PhotoThumbnail image={image("b", 300, 200)} onSelect={() => {}} />
+        <PhotoThumbnail image={image("a")} width={width} height={height} onSelect={() => {}} />
+        <PhotoThumbnail image={image("b", 300, 200)} width={width} height={height} onSelect={() => {}} />
       </PhotoUrlProvider>
     </RenditionResolutionProvider>
   );
@@ -84,9 +74,7 @@ function Gallery() {
 beforeEach(() => {
   vi.useFakeTimers();
   FakeIntersectionObserver.instances = [];
-  FakeResizeObserver.instances = [];
   vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
-  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
 });
 
@@ -97,7 +85,7 @@ afterEach(() => {
 });
 
 describe("measured thumbnail resolution", () => {
-  it("waits for intersection and a positive size, then coalesces canonical requests", async () => {
+  it("waits for intersection, then coalesces canonical requests sized from the assigned box", async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const requests = JSON.parse(String(init?.body)).requests as Array<{ recordId: string; targetLongEdge: number }>;
       const responseBody = {
@@ -116,7 +104,8 @@ describe("measured thumbnail resolution", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<Gallery />);
 
-    act(() => FakeResizeObserver.instances.forEach((observer) => observer.resize(180, 120)));
+    // The box is known from the first render, so the only thing still being
+    // waited on is the tile coming near the viewport.
     await act(async () => vi.advanceTimersByTimeAsync(20));
     expect(fetchMock).not.toHaveBeenCalled();
 
@@ -131,5 +120,22 @@ describe("measured thumbnail resolution", () => {
       // The small source is capped before canonicalization.
       expect.objectContaining({ recordId: "b", requiredLongEdge: 300, targetLongEdge: 400 }),
     ]);
+  });
+
+  it("asks for a higher rung when the layout gives the tile a taller row", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ policies, results: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // A 700 px row on a 2x screen needs a 1400 px long edge for the 4:3 source,
+    // which is above the 400 rung the 120 px row settled for.
+    render(<Gallery width={933} height={700} />);
+
+    act(() => FakeIntersectionObserver.instances.forEach((observer) => observer.intersect()));
+    await act(async () => vi.advanceTimersByTimeAsync(20));
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body));
+    expect(body.requests).toContainEqual(
+      expect.objectContaining({ recordId: "a", targetLongEdge: 1280 }),
+    );
   });
 });

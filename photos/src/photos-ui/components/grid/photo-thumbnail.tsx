@@ -8,14 +8,12 @@ import { requestDerivation } from "@/lib/on-demand-derivation";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
 import { useInView } from "../../hooks/use-in-view";
-import { useDevicePixelRatio, useElementSize } from "../../hooks/use-element-size";
-
-const TILE_WIDTH = 180;
+import { useDevicePixelRatio } from "../../hooks/use-element-size";
 
 /**
  * Below this, serving a record's own bytes into a tile is not worth a round
  * trip through derivation. Above it, a record with no renditions shows its
- * placeholder instead — downloading 40 MB to fill a 180 px tile is the exact
+ * placeholder instead — downloading 40 MB to fill a list tile is the exact
  * cost the ladder exists to avoid, and doing it "just while derivation catches
  * up" is how a library becomes expensive on first load.
  */
@@ -53,25 +51,48 @@ function usePlaceholderDataUrl(thumbHash: string | null): string | null {
   return url;
 }
 
+/**
+ * Fallback box for a tile rendered outside the justified layout — tests and any
+ * caller that has not measured a row. The layout always passes real numbers.
+ */
+const FALLBACK_TILE_WIDTH = 180;
+const FALLBACK_TILE_HEIGHT = 120;
+
 interface PhotoThumbnailProps {
   image: AppImage;
+  /**
+   * Displayed box, in CSS pixels, as the row layout justified it. The box is
+   * the photo's own shape at the row height, narrowed by the row's crop, so
+   * `objectFit: cover` trims exactly that much off the sides and nothing off
+   * the top or bottom.
+   */
+  width?: number;
+  height?: number;
   onSelect: (id: string) => void;
 }
 
-export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
+export function PhotoThumbnail({
+  image,
+  width = FALLBACK_TILE_WIDTH,
+  height = FALLBACK_TILE_HEIGHT,
+  onSelect,
+}: PhotoThumbnailProps) {
   const { getFullSizeSrc } = usePhotoUrls();
   // Only ask for bytes once the tile is near the viewport, so a large gallery
   // doesn't fan out into a request per photo on load.
   const [containerRef, inView] = useInView<HTMLDivElement>();
-  const [sizeRef, containerSize] = useElementSize<HTMLDivElement>();
   const video = isVideoRecord(image);
   const kind = video ? "video" : "still";
   const policy = useRenditionPolicy(kind);
   const devicePixelRatio = useDevicePixelRatio();
-  const requiredLongEdge = inView && containerSize
+  // The box is not measured, it is assigned: the row layout already decided
+  // exactly how many CSS pixels this photo occupies, so reading the same
+  // numbers back off the DOM would only add an observer per tile and a render
+  // pass before any rendition could be asked for.
+  const requiredLongEdge = inView
     ? measuredPhysicalLongEdge({
         source: image.width > 0 && image.height > 0 ? { width: image.width, height: image.height } : null,
-        container: containerSize,
+        container: { width, height },
         orientation: image.exif.orientation,
         fit: "cover",
         devicePixelRatio,
@@ -81,7 +102,8 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, target);
 
   // Ask in pixels: tile size × device pixel ratio, because a 180 px tile on a
-  // 3× phone is a 540 px image. The server already resolved which rendition
+  // 3× phone is a 540 px image. The tile size is the one the row layout
+  // justified this photo to, so a taller row asks for larger renditions. The server already resolved which rendition
   // answers that; this is only the lookup.
   //
   // The old behaviour was to render *only records labelled as thumbnails* and
@@ -93,7 +115,7 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // ladder; a video's children include a poster and a transcode at the same long
   // edge, so it keeps the type-filtered resolution that can tell them apart.
   const legacyTarget = tileTargetLongEdge(
-    TILE_WIDTH,
+    Math.max(width, height),
     devicePixelRatio,
   );
   const display = !video
@@ -126,7 +148,7 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
   // Fall back to the record's own bytes only when it has no renditions at all
   // *and* is small enough that serving it directly is not absurd. A record
   // mid-derivation shows its placeholder rather than a full-size original —
-  // downloading 40 MB to fill a 180 px tile is the exact cost the ladder
+  // downloading 40 MB to fill a list tile is the exact cost the ladder
   // exists to avoid.
   const fallbackSrc =
     resolved === null && inView && image.sizeBytes <= DIRECT_SERVE_MAX_BYTES
@@ -144,17 +166,13 @@ export function PhotoThumbnail({ image, onSelect }: PhotoThumbnailProps) {
 
   return (
     <div
-      ref={(element) => {
-        containerRef.current = element;
-        sizeRef(element);
-      }}
+      ref={containerRef}
       onClick={() => onSelect(image.id)}
       style={{
-        width: TILE_WIDTH,
-        height: 120,
+        width,
+        height,
         overflow: "hidden",
         cursor: "pointer",
-        borderRadius: 4,
         background: "#222",
         flexShrink: 0,
         display: "flex",

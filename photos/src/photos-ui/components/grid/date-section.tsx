@@ -1,10 +1,14 @@
 import React from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { PhotoThumbnail } from "./photo-thumbnail";
+import { PhotoRows } from "./photo-rows";
 
 interface DateSectionProps {
   dateKey: string; // "YYYY-MM-DD"
   images: AppImage[];
+  containerWidth: number | null;
+  rowHeight: number;
+  /** The photos run to the edge of the screen; the heading still should not. */
+  edgeToEdge: boolean;
   onSelect: (id: string) => void;
 }
 
@@ -13,7 +17,14 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
-export function DateSection({ dateKey, images, onSelect }: DateSectionProps) {
+export function DateSection({
+  dateKey,
+  images,
+  containerWidth,
+  rowHeight,
+  edgeToEdge,
+  onSelect,
+}: DateSectionProps) {
   return (
     <div style={{ marginBottom: 32 }}>
       <div
@@ -22,23 +33,17 @@ export function DateSection({ dateKey, images, onSelect }: DateSectionProps) {
           fontSize: 14,
           fontWeight: 600,
           marginBottom: 8,
-          padding: "0 16px",
+          padding: edgeToEdge ? "0 12px" : 0,
         }}
       >
         {formatDate(dateKey)}
       </div>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 4,
-          padding: "0 16px",
-        }}
-      >
-        {images.map((img) => (
-          <PhotoThumbnail key={img.id} image={img} onSelect={onSelect} />
-        ))}
-      </div>
+      <PhotoRows
+        images={images}
+        containerWidth={containerWidth}
+        rowHeight={rowHeight}
+        onSelect={onSelect}
+      />
     </div>
   );
 }

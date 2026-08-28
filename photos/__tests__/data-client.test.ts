@@ -149,10 +149,16 @@ describe("resolveAppApiSource — the app's own JWT-gated routes (e.g. /api/resi
   });
 });
 
-describe("fetchWithSession — one refresh-and-retry on a 401", () => {
+describe("fetchWithSession — one refresh-and-retry when the gateway refuses", () => {
   /**
    * The gateway authorizer cannot set cookies, so an expired sk_token yields a
-   * bare 401. Recovering in one place beats every call site remembering to.
+   * bare refusal. Recovering in one place beats every call site remembering to.
+   *
+   * 403 matters as much as 401. The authorizer names `Cookie` as its identity
+   * source, so a request carrying no cookie never reaches it and gets 401,
+   * while any cookie runs it and surfaces the denial as 403. A browser holds
+   * `sk_session` for weeks after `sk_token` expires, so it is always in the
+   * second case — and while this read only 401, the recovery never once ran.
    */
   async function withResponses(responses: Response[]) {
     const calls: string[] = [];
@@ -163,6 +169,20 @@ describe("fetchWithSession — one refresh-and-retry on a 401", () => {
     vi.stubGlobal("fetch", mock);
     const { fetchWithSession } = await freshDataClient();
     return { fetchWithSession, calls };
+  }
+
+  /**
+   * These tests run under the `node` environment, so there is no `window` to
+   * take a location from. Standing one up is also the assertion: the recovery
+   * has to be inert wherever `window` is absent, because the same module is
+   * imported by route handlers that run on the server.
+   */
+  function captureNavigation(): string[] {
+    const replaced: string[] = [];
+    vi.stubGlobal("window", {
+      location: { pathname: "/browse", replace: (url: string) => replaced.push(url) },
+    });
+    return replaced;
   }
 
   it("passes a successful response straight through", async () => {
@@ -198,5 +218,48 @@ describe("fetchWithSession — one refresh-and-retry on a 401", () => {
     ]);
     expect((await fetchWithSession("/api/local-data/x")).status).toBe(401);
     expect(calls).toHaveLength(3);
+  });
+
+  it("refreshes and retries on a 403, the status a browser actually gets", async () => {
+    // The whole bug. Any cookie makes the authorizer run, and its denial is a
+    // 403 — so an hour-old tab filled with red status codes while a recovery
+    // that only read 401 sat one branch away.
+    const { fetchWithSession, calls } = await withResponses([
+      new Response(null, { status: 403 }),
+      new Response(null, { status: 200 }),
+      new Response("ok", { status: 200 }),
+    ]);
+    expect((await fetchWithSession("/api/local-data/x")).status).toBe(200);
+    expect(calls).toEqual(["/api/local-data/x", "/api/session/refresh", "/api/local-data/x"]);
+  });
+
+  it("sends the browser to sign-in when the refresh says the session is spent", async () => {
+    // A 401 from /api/session/refresh means the refresh token itself is gone
+    // and both cookies were cleared. Nothing the page can do recovers that, so
+    // it goes where a reload would have gone.
+    const replaced = captureNavigation();
+    const { fetchWithSession } = await withResponses([
+      new Response(null, { status: 403 }),
+      new Response(null, { status: 401 }),
+    ]);
+    expect((await fetchWithSession("/api/local-data/x")).status).toBe(403);
+    expect(replaced).toEqual(["/sign-in"]);
+  });
+
+  it("navigates nowhere when the refresh could not complete", async () => {
+    // An unreachable network is not evidence that a session ended.
+    const replaced = captureNavigation();
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(String(url));
+        if (calls.length === 1) return new Response(null, { status: 403 });
+        throw new Error("offline");
+      }),
+    );
+    const { fetchWithSession } = await freshDataClient();
+    expect((await fetchWithSession("/api/local-data/x")).status).toBe(403);
+    expect(replaced).toEqual([]);
   });
 });

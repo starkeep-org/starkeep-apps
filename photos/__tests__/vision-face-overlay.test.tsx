@@ -73,7 +73,9 @@ describe("visibility", () => {
       render(<FaceOverlay recordId="rec-1" visible={false} onLoaded={onLoaded} />);
     });
     expect(screen.queryByTestId("face-overlay")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledWith("/api/vision/faces/rec-1");
+    // The URL is the assertion; the init is the session-recovery wrapper's
+    // doing and says nothing about this component.
+    expect(fetchMock.mock.calls.map(([u]) => String(u))).toContain("/api/vision/faces/rec-1");
     expect(onLoaded).toHaveBeenCalledWith(
       expect.objectContaining({ processed: true, faces: [expect.anything()] }),
     );

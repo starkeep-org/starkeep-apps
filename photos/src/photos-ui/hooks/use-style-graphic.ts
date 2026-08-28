@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { withBasePath } from "@/lib/base-path";
+import { fetchWithSession } from "@/lib/data-client";
 
 /**
  * Wraps the photos-owned style-graphic endpoint at /api/photos/style-graphic.
@@ -15,7 +16,7 @@ export function useStyleGraphic() {
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const resp = await fetch(withBasePath("/api/photos/style-graphic"));
+      const resp = await fetchWithSession(withBasePath("/api/photos/style-graphic"));
       if (!resp.ok) {
         setUrl(null);
         return;
@@ -33,7 +34,7 @@ export function useStyleGraphic() {
 
   const upload = useCallback(
     async (file: File): Promise<void> => {
-      await fetch(withBasePath("/api/photos/style-graphic"), {
+      await fetchWithSession(withBasePath("/api/photos/style-graphic"), {
         method: "PUT",
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
@@ -44,7 +45,7 @@ export function useStyleGraphic() {
   );
 
   const remove = useCallback(async (): Promise<void> => {
-    await fetch(withBasePath("/api/photos/style-graphic"), { method: "DELETE" });
+    await fetchWithSession(withBasePath("/api/photos/style-graphic"), { method: "DELETE" });
     await refresh();
   }, [refresh]);
 

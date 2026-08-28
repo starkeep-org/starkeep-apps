@@ -18,6 +18,10 @@ import { tiffWithExif } from "./tiff-fixture";
 
 vi.mock("../src/lib/data-client", () => ({
   resolveDataSource: vi.fn(),
+  // The real one adds a refresh-and-retry when the gateway refuses the
+  // session, which these tests are not about. Passing straight to the stubbed
+  // global keeps every assertion below about the transport itself.
+  fetchWithSession: (input: string, init?: RequestInit) => fetch(input, init),
 }));
 
 const SOURCE = { baseUrl: "http://ds", headers: {} as Record<string, string> };

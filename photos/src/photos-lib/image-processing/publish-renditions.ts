@@ -60,8 +60,8 @@ export class RenditionPublishError extends Error {
 }
 
 /**
- * Publish one derived rendition: upload the bytes, register the record, write
- * its dimensions.
+ * Publish one derived rendition: upload the bytes, then register the record
+ * with its dimensions.
  *
  * Bytes go up via presigned PUT rather than inline, because the API Gateway
  * body cap is 7 MB and an `image-large` AVIF can approach it — but more
@@ -71,8 +71,24 @@ export class RenditionPublishError extends Error {
  * Dimensions are written because variant resolution orders renditions by long
  * edge. A rendition with no dimensions is invisible to resolution — it cannot
  * be ordered, so it is excluded — which would make it storage nobody ever
- * reads. Hence the metadata write is **not** best-effort here, unlike the
+ * reads. Hence the dimensions are **not** best-effort here, unlike the
  * caption-style metadata elsewhere.
+ *
+ * ## The dimensions ride the create, they are not a second call
+ *
+ * They used to be: register, then `POST /data/records/:id/metadata`. That left
+ * a window in which the record was visible to a sync scan and its dimensions
+ * were not, and a round landing inside the window shipped the rendition to the
+ * cloud with no dimensions at all — where the cloud dropped it as an
+ * unorderable candidate and reported the original as having *no renditions*.
+ * Indistinguishable from "nothing derived yet", which is what sent this app
+ * into a derivation loop against a complete ladder.
+ *
+ * The window is closed at its source by writing both in one call. It is also
+ * closed on the sync side — a metadata write now moves the record's clock, so a
+ * late write reaches a peer on the next round — and both matter: this is the
+ * hot path of every derivation, and that is the repair for everything written
+ * some other way.
  */
 export async function publishRendition(
   signedFetch: SignedFetch,
@@ -151,6 +167,12 @@ export async function publishRendition(
       // indistinguishable from a rendition. The `photos/` namespace comes from
       // the authenticated identity, so no prefix is sent.
       labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: rendition.sizeClass }],
+      // Written with the record rather than after it. The server validates
+      // these column names against the image category's declaration and gates
+      // them on the same `metadataWrite` grant the metadata route uses — the
+      // platform declares which columns exist, this app decides what goes in
+      // them.
+      metadata: { width: rendition.width, height: rendition.height },
     }),
   });
   if (!createRes.ok) {
@@ -161,25 +183,33 @@ export async function publishRendition(
       await createRes.text().catch(() => ""),
     );
   }
-  const { record } = (await createRes.json()) as { record: { id: string } };
+  const { record, deduped } = (await createRes.json()) as {
+    record: { id: string };
+    deduped?: boolean;
+  };
 
-  // Not best-effort: variant resolution orders by long edge, so a rendition
-  // with no dimensions cannot be ordered and is excluded entirely — storage
-  // nobody ever reads. A failure here is worth surfacing, though the rendition
-  // itself already exists and a later metadata write repairs it.
-  const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      typeId: "image",
-      metadata: { width: rendition.width, height: rendition.height },
-    }),
-  });
-  if (!metaRes.ok) {
-    console.warn(
-      `[renditions] dimensions write failed for ${rendition.sizeClass} of ${parent.id} ` +
-        `(${metaRes.status}) — this rendition is invisible to variant resolution until repaired`,
-    );
+  // A dedup hit is somebody else's record, and both servers decline to rewrite
+  // its derived columns — which is right, since byte-identical renditions have
+  // identical dimensions and there is normally nothing to write. The one case
+  // that is not normal is a first registration whose metadata write failed
+  // after the row landed, leaving a rendition invisible to variant resolution
+  // forever. One extra call on the cold path repairs it; the hot path is
+  // untouched.
+  if (deduped) {
+    const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        typeId: "image",
+        metadata: { width: rendition.width, height: rendition.height },
+      }),
+    });
+    if (!metaRes.ok) {
+      console.warn(
+        `[renditions] dimensions write failed for ${rendition.sizeClass} of ${parent.id} ` +
+          `(${metaRes.status}) — this rendition is invisible to variant resolution until repaired`,
+      );
+    }
   }
 
   return {

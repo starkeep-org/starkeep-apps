@@ -119,8 +119,7 @@
           "timeoutSeconds": 30,
           "routes": [
             "POST /api/resize"
-          ],
-          "reservedConcurrency": 5
+          ]
         },
         {
           "name": "static",

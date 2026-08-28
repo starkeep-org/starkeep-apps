@@ -247,31 +247,3 @@ function filterVariants(image: AppImage, keep: (type: string) => boolean): AppIm
   };
 }
 
-/**
- * The sizes a grid tile asks for.
- *
- * Tile size multiplied by the device pixel ratio, because a 180 px tile on a
- * 3× phone is a 540 px image and asking for 180 would show a blurry one.
- * Capped, because a hypothetical 4× display should not silently pull the
- * largest rendition for a thumbnail — and under Intelligent-Tiering a read
- * promotes an object back to Frequent Access for 30 days, so speculatively
- * touching large objects quietly undoes the tiering that makes them cheap.
- */
-export function tileTargetLongEdge(tileCssPx: number, devicePixelRatio: number): number {
-  return Math.min(Math.round(tileCssPx * Math.max(1, devicePixelRatio)), 1024);
-}
-
-/**
- * The size a fullscreen viewer asks for.
- *
- * The actual viewport long edge, again scaled by pixel ratio. Deliberately not
- * rounded up to "the next class" — there are no classes here, and rounding up
- * is the server's job when it resolves.
- */
-export function viewportTargetLongEdge(
-  viewportWidth: number,
-  viewportHeight: number,
-  devicePixelRatio: number,
-): number {
-  return Math.round(Math.max(viewportWidth, viewportHeight) * Math.max(1, devicePixelRatio));
-}

@@ -50,7 +50,7 @@ const ALLOWED = [
   join("src", "derivation", "sweep-set.ts"),
   // Names the medium stage's producer target; browser consumers still use pixels.
   join("src", "derivation", "engine", "derive-worker.ts"),
-  // Names the single rung the pre-ladder resize path still produces.
+  // Names the rung the resize path checks a record against before deriving.
   join("src", "photos-lib", "labels.ts"),
 ];
 

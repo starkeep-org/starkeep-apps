@@ -9,11 +9,8 @@ export {
   LABEL_VALUES_PER_KEY_MAX,
   derivedKindOf,
   isThumbnail,
-  findThumbnailFor,
-  canThumbnail,
-  precheckThumbnail,
   renditionClassOf,
-  THUMBNAIL_SIZE_CLASS,
+  precheckThumbnail,
   type LabelledRecord,
   type ThumbnailPrecheck,
 } from "./labels";
@@ -112,8 +109,6 @@ export {
   posterSrc,
   playbackSrc,
   isVideoRecord,
-  tileTargetLongEdge,
-  viewportTargetLongEdge,
   type DisplaySource,
 } from "./variant-src";
 

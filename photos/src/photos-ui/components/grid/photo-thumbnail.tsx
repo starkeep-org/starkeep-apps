@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { displayForRenditionChoice, isVideoRecord, posterSrc, stillDisplay, tileTargetLongEdge } from "@/photos-lib/client";
+import { displayForRenditionChoice, isVideoRecord } from "@/photos-lib/client";
 import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
 import { canonicalMeasuredTarget, measuredPhysicalLongEdge } from "@/photos-lib/render-geometry";
 import type { VideoDecision } from "@/lib/rendition-resolution-client";
@@ -103,27 +103,27 @@ export function PhotoThumbnail({
 
   // Ask in pixels: tile size × device pixel ratio, because a 180 px tile on a
   // 3× phone is a 540 px image. The tile size is the one the row layout
-  // justified this photo to, so a taller row asks for larger renditions. The server already resolved which rendition
-  // answers that; this is only the lookup.
+  // justified this photo to, so a taller row asks for larger renditions. The
+  // server already resolved which rendition answers that; this is only the
+  // lookup.
   //
   // The old behaviour was to render *only records labelled as thumbnails* and
   // show a placeholder for everything else — so a library was a grid of
   // placeholders until derivation caught up, and originals were unclickable.
   // The grid now lists originals and displays a rendition of each.
+  //
   // Two answers, because a still and a video are asking different questions. A
   // still gets the ideal-and-fallback shape the app server resolved against the
   // ladder; a video's children include a poster and a transcode at the same long
   // edge, so it keeps the type-filtered resolution that can tell them apart.
-  const legacyTarget = tileTargetLongEdge(
-    Math.max(width, height),
-    devicePixelRatio,
-  );
-  const display = !video
-    ? target && resolution?.decision
-      ? displayForRenditionChoice(resolution.decision as RenditionChoice, target)
-      : !policy && inView
-        ? stillDisplay(image, legacyTarget)
-        : null
+  //
+  // A tile with no published policy shows its ThumbHash and waits. The grid used
+  // to fall back to a second, client-side sizing helper here, and the two paths
+  // disagreed about device pixel ratio by construction: the helper capped the
+  // multiplier at 1024 px and the measured path applies the real ratio, so the
+  // same tile asked for two different rungs depending on which path ran.
+  const display = !video && target && resolution?.decision
+    ? displayForRenditionChoice(resolution.decision as RenditionChoice, target)
     : null;
   const poster = video ? (resolution?.decision as VideoDecision | undefined)?.poster : undefined;
   const resolved = display?.source ?? (poster?.url
@@ -133,7 +133,7 @@ export function PhotoThumbnail({
         height: poster.height,
         isBelowTarget: target ? Math.max(poster.width, poster.height) < target : false,
       }
-    : !policy && inView && video ? posterSrc(image, legacyTarget) : null);
+    : null);
 
   // The tile has been told the rung it wants is missing, that it is derivable,
   // and how big it is — so this is a specific request rather than a guess from

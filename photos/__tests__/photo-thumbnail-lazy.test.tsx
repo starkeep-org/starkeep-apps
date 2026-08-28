@@ -144,24 +144,13 @@ describe("PhotoThumbnail lazy loading", () => {
   // The grid now lists originals and displays a *rendition of* each, resolved
   // server-side from a requested pixel size.
 
-  it("shows the rendition the server resolved for the tile size", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/original");
-    renderThumbnail(
-      appImage({
-        id: "orig-2",
-        parentId: null,
-        derivedKind: null,
-        variants: { "540": { url: "https://signed/tile", width: 540, height: 360 } },
-      }),
-      getSrc,
-    );
-
-    act(() => FakeIntersectionObserver.instances[0]!.intersect(true));
-    expect(screen.getByRole("img").getAttribute("src")).toBe("https://signed/tile");
-    // The original's own bytes are never fetched when a rendition exists —
-    // that is the entire economic argument for the ladder.
-    expect(getSrc).not.toHaveBeenCalled();
-  });
+  // "Shows the rendition the server resolved for the tile size" moved to
+  // `photo-thumbnail-renditions.test.tsx`, which owns every case that needs a
+  // resolved decision. The version here reached the tile through the old
+  // client-side `variants` lookup, and that path is gone: a tile now measures
+  // its box, canonicalizes against the published policy, and paints what the
+  // server resolved. The economic assertion travelled with it — the original's
+  // own bytes are still never fetched when a rendition exists.
 
   it("does not fetch a large original's bytes just to fill a 180px tile", () => {
     // A record mid-derivation has no renditions yet. Serving the original into

@@ -96,12 +96,13 @@ export const PHOTOS_LABEL_KEYS = {
  * a whole batch.
  */
 /**
- * The rung the current resize path produces.
+ * The rung the resize path checks for when asking whether a record has already
+ * been derived here.
  *
- * Named here rather than inlined because the resize path predates the ladder
- * and still generates exactly one size; when derivation generates the whole
- * ladder (item 7) this constant is what disappears, and everything referring to
- * it is the list of places that assumed one derived size.
+ * The resize path produces the whole cheap tier rather than one size, so this
+ * names the rung that tier tops out at rather than "the derived size". Kept
+ * here rather than inlined because it is the one place outside derivation that
+ * still reasons about a class name at all.
  */
 export const THUMBNAIL_SIZE_CLASS = "image-thumb";
 
@@ -143,20 +144,6 @@ export function derivedKindOf(record: LabelledRecord): DerivedKind | null {
 }
 
 /**
- * True when the record is any rung of the ladder.
- *
- * The name is now broader than it reads: with one derived size there was only
- * ever a thumbnail, and the questions callers ask ("may this be derived from?",
- * "should the grid show it?") are about derivedness rather than about a
- * particular size. Kept as-is so the two resize paths and the grid keep asking
- * the same question — {@link renditionClassOf} is what to use when the actual
- * rung matters.
- */
-export function isThumbnail(record: LabelledRecord): boolean {
-  return derivedKindOf(record) === "thumbnail";
-}
-
-/**
  * Which rung this record is, or null if it is not a rendition.
  *
  * Note this is deliberately not exposed to the UI: consumers request pixel
@@ -172,32 +159,15 @@ export function renditionClassOf(record: LabelledRecord): string | null {
 }
 
 /**
- * The thumbnail already generated for `targetId`, if there is one.
+ * True when the record is any rung of the ladder.
  *
- * Matching a thumbnail *specifically* rather than any child is the fix for a
- * real bug: with `parent_id` alone, cropping a photo made this return the crop,
- * and the photo silently never got a thumbnail.
+ * The name is broader than it reads: with one derived size there was only ever
+ * a thumbnail, and the question the resize paths ask ("may this be derived
+ * from?") is about derivedness rather than about a particular size.
+ * {@link renditionClassOf} is what to use when the actual rung matters.
  */
-export function findThumbnailFor<T extends LabelledRecord & { id: string; parent_id: string | null }>(
-  records: T[],
-  targetId: string,
-): T | undefined {
-  return records.find((r) => r.parent_id === targetId && isThumbnail(r));
-}
-
-/**
- * May `targetId` be thumbnailed at all?
- *
- * A thumbnail may not — that would recurse. A *crop* may: it is a user artifact
- * that needs its own grid tile, and rejecting every record with a parent left
- * crops with no thumbnail and therefore invisible.
- */
-export function canThumbnail<T extends LabelledRecord & { id: string }>(
-  records: T[],
-  targetId: string,
-): boolean {
-  const target = records.find((r) => r.id === targetId);
-  return !target || !isThumbnail(target);
+export function isThumbnail(record: LabelledRecord): boolean {
+  return derivedKindOf(record) === "thumbnail";
 }
 
 /**
@@ -209,10 +179,6 @@ export function canThumbnail<T extends LabelledRecord & { id: string }>(
  * it was *wrong* above the limit: on a library larger than the page, a record
  * outside the first 1000 read as "no thumbnail exists yet", so the same
  * thumbnail was derived over and over.
- *
- * `canThumbnail`/`findThumbnailFor` remain for callers that already hold a
- * hydrated page (the grid does) — they are the same rules over an in-memory
- * list. This is the same rules asked of the server.
  */
 export interface ThumbnailPrecheck {
   /** The target is itself a thumbnail, so thumbnailing it would recurse. */

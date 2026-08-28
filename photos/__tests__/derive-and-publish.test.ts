@@ -33,6 +33,8 @@ class FakePlane {
   calls: string[] = [];
   renditions: string[] = [];
   metadata: Record<string, unknown> = {};
+  /** Metadata supplied inline on `POST /data/records`, by size class. */
+  renditionMetadata: Record<string, Record<string, unknown>> = {};
   gateAsserted = false;
   uploads = 0;
 
@@ -65,6 +67,9 @@ class FakePlane {
       const labels = (body.labels ?? []) as Array<{ key: string; value: string }>;
       const sizeClass = labels[0]!.value;
       this.renditions.push(sizeClass);
+      if (body.metadata) {
+        this.renditionMetadata[sizeClass] = body.metadata as Record<string, unknown>;
+      }
       return json({ record: { id: `${this.parentId}-${sizeClass}` } });
     }
     if (path.endsWith("/archive-gate")) {
@@ -167,6 +172,26 @@ describe("a record with nothing derived yet", () => {
     expect(plane.metadata.width).toBeGreaterThan(0);
     expect(plane.metadata.height).toBeGreaterThan(0);
     expect(plane.metadata.camera_make).toBe("TestMake");
+  }, 60_000);
+
+  it("registers each rung with its dimensions, in one call", async () => {
+    await run();
+
+    // Dimensions used to be a second request. The gap between the two was
+    // enough for a sync round to ship the rendition without them, and a
+    // rendition with no dimensions cannot be ordered by long edge — so variant
+    // resolution excluded it and the original reported no renditions at all.
+    for (const sizeClass of plane.renditions) {
+      const meta = plane.renditionMetadata[sizeClass];
+      expect(meta, sizeClass).toBeDefined();
+      expect(meta!["width"]).toBeGreaterThan(0);
+      expect(meta!["height"]).toBeGreaterThan(0);
+    }
+    // And no per-rendition metadata request survives on the hot path.
+    const childWrites = plane.calls.filter(
+      (c) => c.startsWith("POST /data/records/REC1-") && c.endsWith("/metadata"),
+    );
+    expect(childWrites).toEqual([]);
   }, 60_000);
 
   it("publishes rungs smallest first", async () => {

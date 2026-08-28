@@ -173,6 +173,52 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
     // machine, which obviously don't resolve inside the Lambda sandbox.
     cpSync(serverFnDir, stagingDir, { recursive: true, verbatimSymlinks: true });
 
+    // 2a. Copy the instrumentation hook's dependency closure, which OpenNext
+    //     omits. OpenNext copies every *file* at the root of `.next/server`
+    //     (so `instrumentation.js` lands in the bundle) but populates
+    //     `.next/server/chunks` only from the `.nft.json` traces of the routes
+    //     it knows about, and 3.1.3 has no knowledge of instrumentation at all
+    //     — `instrumentation.js.nft.json` is never read. The hook therefore
+    //     ships as an entry file whose turbopack chunks are absent.
+    //
+    //     That is not a degraded background job, it is a dead server. Next
+    //     loads the instrumentation module during `prepare()`, before it
+    //     serves anything, so the missing chunk throws
+    //     "An error occurred while loading the instrumentation hook" and every
+    //     request — including the sign-in page — comes back as OpenNext's
+    //     `{"message":"Server failed to respond."}` with the real cause only
+    //     in CloudWatch.
+    //
+    //     Paths in the trace are relative to `.next/server` and are resolved
+    //     against the real build output rather than `.next/standalone`,
+    //     because entries outside `.next` (the derive and scan workers) exist
+    //     only in the source tree.
+    const PACKAGE_PATH = "photos";
+    const stagedServerDir = join(stagingDir, PACKAGE_PATH, ".next", "server");
+    const buildServerDir = join(PHOTOS_DIR, ".next", "server");
+    const instrumentationTrace = join(buildServerDir, "instrumentation.js.nft.json");
+    if (existsSync(join(stagedServerDir, "instrumentation.js"))) {
+      if (!existsSync(instrumentationTrace)) {
+        console.error(
+          `OpenNext staged instrumentation.js but ${instrumentationTrace} does not exist, ` +
+            `so its chunks cannot be resolved. The Lambda would fail every request at ` +
+            `server startup; refusing to build a bundle that cannot serve.`,
+        );
+        process.exit(1);
+      }
+      const traced: string[] = JSON.parse(readFileSync(instrumentationTrace, "utf8")).files ?? [];
+      let copied = 0;
+      for (const rel of traced) {
+        const from = resolve(buildServerDir, rel);
+        const to = resolve(stagedServerDir, rel);
+        if (!existsSync(from) || existsSync(to)) continue;
+        mkdirSync(dirname(to), { recursive: true });
+        cpSync(from, to, { recursive: true, verbatimSymlinks: true });
+        copied++;
+      }
+      console.log(`Copied ${copied} instrumentation dependencies OpenNext omitted.`);
+    }
+
     // 2b. Bundle Next.js static assets into the Lambda zip and overwrite
     //     the OpenNext entry with a wrapper that serves /_next/* and
     //     BUILD_ID from local disk before delegating to OpenNext. OpenNext

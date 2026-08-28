@@ -9,9 +9,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-  canThumbnail,
   derivedKindOf,
-  findThumbnailFor,
   isThumbnail,
   PHOTOS_LABEL_KEYS,
 } from "../src/photos-lib/labels";
@@ -57,50 +55,11 @@ describe("derivedKindOf", () => {
   });
 });
 
-describe("canThumbnail", () => {
-  it("refuses to thumbnail a thumbnail", () => {
-    const records = [original("P"), thumbnailOf("T", "P")];
-    expect(canThumbnail(records, "T")).toBe(false);
-  });
-
-  it("ALLOWS thumbnailing a crop", () => {
-    // The bug: rejecting anything with a parent left every crop without a
-    // thumbnail, and therefore invisible in a grid that renders thumbnails.
-    const records = [original("P"), cropOf("C", "P")];
-    expect(canThumbnail(records, "C")).toBe(true);
-  });
-
-  it("allows an original, and a target the list doesn't contain", () => {
-    expect(canThumbnail([original("P")], "P")).toBe(true);
-    // A page that didn't include the target is not evidence it is a thumbnail.
-    expect(canThumbnail([original("P")], "UNSEEN")).toBe(true);
-  });
-});
-
-describe("findThumbnailFor", () => {
-  it("finds the existing thumbnail so a second resize is skipped", () => {
-    const records = [original("P"), thumbnailOf("T", "P")];
-    expect(findThumbnailFor(records, "P")?.id).toBe("T");
-  });
-
-  it("does NOT mistake a crop of the same photo for its thumbnail", () => {
-    // Matching any child meant that cropping a photo silently suppressed its
-    // thumbnail: the resize call returned "already done" and pointed at the
-    // crop.
-    const records = [original("P"), cropOf("C", "P")];
-    expect(findThumbnailFor(records, "P")).toBeUndefined();
-  });
-
-  it("picks the thumbnail out of a mixed set of children", () => {
-    const records = [original("P"), cropOf("C", "P"), thumbnailOf("T", "P")];
-    expect(findThumbnailFor(records, "P")?.id).toBe("T");
-  });
-
-  it("ignores a thumbnail of a different photo", () => {
-    const records = [original("P"), original("Q"), thumbnailOf("T", "Q")];
-    expect(findThumbnailFor(records, "P")).toBeUndefined();
-  });
-});
+// `canThumbnail` and `findThumbnailFor` were the in-memory versions of these
+// rules, for a caller holding an already-hydrated page. Both lost their last
+// caller when the grid stopped listing renditions as records, and the rules
+// they encoded survive in `precheckThumbnail`, which asks the server the same
+// two questions with two indexed lookups instead of a page scan.
 
 describe("isThumbnail", () => {
   it("is true only for Photos' thumbnail label", () => {

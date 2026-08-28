@@ -50,9 +50,7 @@ export {
   PHOTOS_LABEL_KEYS,
   derivedKindOf,
   isThumbnail,
-  findThumbnailFor,
   renditionClassOf,
-  THUMBNAIL_SIZE_CLASS,
   type LabelledRecord,
 } from "./labels";
 
@@ -63,7 +61,5 @@ export {
   posterSrc,
   playbackSrc,
   isVideoRecord,
-  tileTargetLongEdge,
-  viewportTargetLongEdge,
   type DisplaySource,
 } from "./variant-src";

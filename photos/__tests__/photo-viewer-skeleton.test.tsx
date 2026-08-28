@@ -13,8 +13,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, cleanup, fireEvent } from "@testing-library/react";
 import { PhotoViewer } from "../src/photos-ui/components/viewer/photo-viewer";
 import { PhotoUrlProvider } from "../src/photos-ui/context/photo-url-context";
+import { RenditionResolutionProvider } from "../src/photos-ui/context/rendition-resolution-context";
 import type { AppImage } from "../src/photos-lib";
 import { resetDerivationRequests } from "../src/lib/on-demand-derivation";
+
+/**
+ * The viewer paints what the server resolved, so these tests hand it a resolved
+ * decision rather than a signed URL for the original. The URL under test is the
+ * rendition's; the cross-fade being asserted is presentation state and does not
+ * care which of the two it came from.
+ */
+const policies = {
+  still: { kind: "still" as const, version: "still-test", targetLongEdges: [320, 640, 1280, 2560, 4272] },
+  video: { kind: "video" as const, version: "video-test", targetLongEdges: [640, 1280] },
+};
+
+/** The rendition URL the mocked resolution endpoint hands back. */
+let resolvedUrl: string | null = null;
 
 function appImage(over: Partial<AppImage> = {}): AppImage {
   return {
@@ -48,19 +63,72 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
   };
 }
 
-function renderViewer(image: AppImage, getFullSizeSrc: (id: string) => string | null) {
-  return render(
-    <PhotoUrlProvider getThumbnailSrc={getFullSizeSrc} getFullSizeSrc={getFullSizeSrc}>
-      <PhotoViewer image={image} onClose={() => {}} />
-    </PhotoUrlProvider>,
+function viewer(image: AppImage) {
+  return (
+    <RenditionResolutionProvider policies={policies}>
+      <PhotoUrlProvider getThumbnailSrc={() => null} getFullSizeSrc={() => null}>
+        <PhotoViewer image={image} onClose={() => {}} />
+      </PhotoUrlProvider>
+    </RenditionResolutionProvider>
   );
+}
+
+function renderViewer(image: AppImage) {
+  return render(viewer(image));
+}
+
+/**
+ * Let the viewer settle. The viewer computes its stage during its first render,
+ * so the only wait left is the resolution cache's batching delay before it
+ * sends and the response it then applies.
+ */
+async function settle() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 60));
+  });
+}
+
+async function open(image: AppImage, url: string | null) {
+  resolvedUrl = url;
+  const rendered = renderViewer(image);
+  await settle();
+  return rendered;
 }
 
 beforeEach(() => {
   resetDerivationRequests();
-  // The info panel (hidden by default) never fetches on mount, but stub fetch
-  // defensively so nothing hits the network if that ever changes.
-  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, json: () => Promise.resolve({ image: null }) })));
+  resolvedUrl = null;
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).includes("/api/photos/renditions")) {
+      // Echo each request's own record and canonical target, which is what the
+      // cache matches its pending entries against.
+      const { requests } = JSON.parse(String(init?.body ?? "{}")) as {
+        requests?: Array<{ recordId: string; targetLongEdge: number }>;
+      };
+      return new Response(JSON.stringify({
+        policies,
+        results: (resolvedUrl ? requests ?? [] : []).map((request) => ({
+          recordId: request.recordId,
+          status: "resolved",
+          mediaKind: "still",
+          policyVersion: policies.still.version,
+          canonicalTargetLongEdge: request.targetLongEdge,
+          decision: {
+            ideal: {
+              longEdge: request.targetLongEdge,
+              available: true,
+              url: resolvedUrl,
+              width: request.targetLongEdge,
+              height: Math.round(request.targetLongEdge * 0.75),
+            },
+          },
+        })),
+      }));
+    }
+    // The info panel (hidden by default) never fetches on mount, but answer
+    // defensively so nothing hits the network if that ever changes.
+    return new Response(JSON.stringify({ image: null }), { status: 404 });
+  }));
 });
 
 afterEach(() => {
@@ -69,19 +137,17 @@ afterEach(() => {
 });
 
 describe("PhotoViewer proportioning from record dimensions", () => {
-  it("shapes the loader box to the record's real aspect ratio — no thumbnail measurement", () => {
+  it("shapes the loader box to the record's real aspect ratio — no thumbnail measurement", async () => {
     // Portrait 600x800 → ratio 0.75, taken straight from width/height.
-    const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    renderViewer(appImage({ width: 600, height: 800 }), getSrc);
+    await open(appImage({ width: 600, height: 800 }), null);
 
     const wrapper = screen.getByTestId("photo-skeleton").parentElement as HTMLElement;
     // CSS normalizes the numeric ratio to "<n> / 1".
     expect(wrapper.style.aspectRatio).toMatch(/^0\.75\b/);
   });
 
-  it("is a plain gray pulse div (never a blurred thumbnail image)", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    renderViewer(appImage({ width: 800, height: 600 }), getSrc);
+  it("is a plain gray pulse div (never a blurred thumbnail image)", async () => {
+    await open(appImage({ width: 800, height: 600 }), null);
 
     const skeleton = screen.getByTestId("photo-skeleton");
     expect(skeleton.tagName).toBe("DIV");
@@ -101,9 +167,8 @@ describe("PhotoViewer skeleton → image cross-fade", () => {
   const skeleton = () => screen.getByTestId("photo-skeleton");
   const fullImg = () => screen.getByRole("img") as HTMLImageElement;
 
-  it("shows the gray skeleton with the full image faded out over it while downloading", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    renderViewer(appImage(), getSrc);
+  it("shows the gray skeleton with the full image faded out over it while downloading", async () => {
+    await open(appImage(), "https://signed/full");
 
     expect(skeleton()).toBeTruthy();
     // Full image is mounted (downloading) but transparent until it loads.
@@ -111,9 +176,8 @@ describe("PhotoViewer skeleton → image cross-fade", () => {
     expect(fullImg().style.opacity).toBe("0");
   });
 
-  it("cross-fades the full image in and removes the skeleton once it loads", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    renderViewer(appImage(), getSrc);
+  it("cross-fades the full image in and removes the skeleton once it loads", async () => {
+    await open(appImage(), "https://signed/full");
 
     act(() => fireEvent.load(fullImg()));
 
@@ -121,18 +185,14 @@ describe("PhotoViewer skeleton → image cross-fade", () => {
     expect(screen.queryByTestId("photo-skeleton")).toBeNull();
   });
 
-  it("resets to the faded-out state when the resolved src changes (opening a different photo)", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/a");
-    const { rerender } = renderViewer(appImage({ id: "orig-a" }), getSrc);
+  it("resets to the faded-out state when the resolved src changes (opening a different photo)", async () => {
+    const { rerender } = await open(appImage({ id: "orig-a" }), "https://signed/a");
     act(() => fireEvent.load(fullImg()));
     expect(fullImg().style.opacity).toBe("1");
 
-    getSrc.mockReturnValue("https://signed/b");
-    rerender(
-      <PhotoUrlProvider getThumbnailSrc={getSrc} getFullSizeSrc={getSrc}>
-        <PhotoViewer image={appImage({ id: "orig-b" })} onClose={() => {}} />
-      </PhotoUrlProvider>,
-    );
+    resolvedUrl = "https://signed/b";
+    rerender(viewer(appImage({ id: "orig-b" })));
+    await settle();
 
     // New photo: full image transparent again until it loads, skeleton shown.
     expect(fullImg().src).toBe("https://signed/b");
@@ -144,9 +204,8 @@ describe("PhotoViewer skeleton → image cross-fade", () => {
 describe("PhotoViewer without dimensions (metadata pending)", () => {
   const img = (c: HTMLElement) => c.querySelector("img") as HTMLImageElement | null;
 
-  it("shows a fixed-height box and no <img> while the signed URL is still resolving", () => {
-    const getSrc = vi.fn().mockReturnValue(null);
-    const { container } = renderViewer(appImage({ width: 0, height: 0 }), getSrc);
+  it("shows a fixed-height box and no <img> while the rendition is still resolving", async () => {
+    const { container } = await open(appImage({ width: 0, height: 0 }), null);
 
     const skeleton = screen.getByTestId("photo-skeleton");
     expect(skeleton).toBeTruthy();
@@ -158,9 +217,8 @@ describe("PhotoViewer without dimensions (metadata pending)", () => {
     expect(img(container)).toBeNull();
   });
 
-  it("keeps the <img> hidden behind the box until it finishes loading, then reveals it", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/full");
-    const { container } = renderViewer(appImage({ width: 0, height: 0 }), getSrc);
+  it("keeps the <img> hidden behind the box until it finishes loading, then reveals it", async () => {
+    const { container } = await open(appImage({ width: 0, height: 0 }), "https://signed/full");
 
     const el = img(container)!;
     expect(el.src).toBe("https://signed/full");
@@ -174,18 +232,11 @@ describe("PhotoViewer without dimensions (metadata pending)", () => {
 });
 
 describe("PhotoViewer with a pending rendition", () => {
-  it("waits for the requested size instead of silently downloading the original", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/original");
-    renderViewer(
-      appImage({
-        renditions: {
-          "2048": { ideal: { longEdge: 2560, available: false, state: "pending" } },
-        },
-      }),
-      getSrc,
-    );
+  it("waits for the requested size instead of silently downloading the original", async () => {
+    // `resolvedUrl` null makes the endpoint answer with no result for the
+    // record, which is what a rung mid-derivation looks like to the viewer.
+    await open(appImage(), null);
 
-    expect(getSrc).not.toHaveBeenCalled();
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByTestId("photo-skeleton")).toBeTruthy();
   });

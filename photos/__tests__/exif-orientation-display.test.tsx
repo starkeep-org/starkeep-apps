@@ -21,6 +21,7 @@ import { render, screen, act, cleanup } from "@testing-library/react";
 import { PhotoViewer } from "../src/photos-ui/components/viewer/photo-viewer";
 import { PhotoThumbnail } from "../src/photos-ui/components/grid/photo-thumbnail";
 import { PhotoUrlProvider } from "../src/photos-ui/context/photo-url-context";
+import { RenditionResolutionProvider } from "../src/photos-ui/context/rendition-resolution-context";
 import type { AppImage } from "../src/photos-lib";
 
 // `orientation` is a convenience for the nested exif.orientation field, which
@@ -67,6 +68,59 @@ function renderViewer(image: AppImage, getSrc: (id: string) => string | null) {
   );
 }
 
+/**
+ * The viewer paints only what the server resolved, so the one test that needs a
+ * real `<img>` has to supply a decision. The others read the skeleton's box,
+ * which the viewer proportions from the record's own dimensions before any
+ * rendition arrives.
+ */
+
+const policies = {
+  still: { kind: "still" as const, version: "still-test", targetLongEdges: [320, 640, 1280, 2560, 4272] },
+  video: { kind: "video" as const, version: "video-test", targetLongEdges: [640, 1280] },
+};
+
+async function renderViewerWithRendition(image: AppImage, url: string) {
+  vi.stubGlobal("fetch", vi.fn(async (requestUrl: string, init?: RequestInit) => {
+    if (String(requestUrl).includes("/api/photos/renditions")) {
+      const { requests } = JSON.parse(String(init?.body ?? "{}")) as {
+        requests?: Array<{ recordId: string; targetLongEdge: number }>;
+      };
+      return new Response(JSON.stringify({
+        policies,
+        results: (requests ?? []).map((request) => ({
+          recordId: request.recordId,
+          status: "resolved",
+          mediaKind: "still",
+          policyVersion: policies.still.version,
+          canonicalTargetLongEdge: request.targetLongEdge,
+          decision: {
+            ideal: {
+              longEdge: request.targetLongEdge,
+              available: true,
+              url,
+              width: request.targetLongEdge,
+              height: Math.round(request.targetLongEdge * 0.75),
+            },
+          },
+        })),
+      }));
+    }
+    return new Response(JSON.stringify({ image: null }), { status: 404 });
+  }));
+  const rendered = render(
+    <RenditionResolutionProvider policies={policies}>
+      <PhotoUrlProvider getThumbnailSrc={() => null} getFullSizeSrc={() => null}>
+        <PhotoViewer image={image} onClose={() => {}} />
+      </PhotoUrlProvider>
+    </RenditionResolutionProvider>,
+  );
+  // The viewer computes its stage during its first render, so the only wait is
+  // the resolution cache's batching delay and the response it then applies.
+  await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
+  return rendered;
+}
+
 // Deterministic IntersectionObserver so the thumbnail renders its <img>.
 class FakeIntersectionObserver {
   static instances: FakeIntersectionObserver[] = [];
@@ -109,10 +163,9 @@ afterEach(() => {
 });
 
 describe("PhotoViewer EXIF orientation", () => {
-  it("never applies a CSS rotate transform — the browser auto-orients via image-orientation", () => {
-    const getSrc = vi.fn().mockReturnValue("https://signed/full");
+  it("never applies a CSS rotate transform — the browser auto-orients via image-orientation", async () => {
     // orientation 6 = 90° CW; stored landscape 4000x3000.
-    renderViewer(appImage({ orientation: 6 }), getSrc);
+    await renderViewerWithRendition(appImage({ orientation: 6 }), "https://signed/full");
 
     const img = screen.getByRole("img") as HTMLImageElement;
     // The old bug applied transform: rotate(90deg) on top of the browser's

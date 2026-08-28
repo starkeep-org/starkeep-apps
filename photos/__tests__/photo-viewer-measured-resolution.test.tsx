@@ -3,10 +3,15 @@
  * What the viewer asks the server for, given the box it can actually paint.
  *
  * The sizing contract is that the viewer resolves the rung covering the
- * *contained image*, not the wrapper and not the window. That is invisible from
+ * *contained image*, not the stage and not the window. That is invisible from
  * the response — a 2560 answer to an overstated requirement looks exactly like
  * a 2560 answer to an honest one — so these assert the requirement the viewer
  * computes, not the rendition it receives.
+ *
+ * The viewer computes its stage from the viewport rather than observing it, so
+ * these drive it by setting `window.innerWidth`/`innerHeight`. A portrait photo
+ * is height-bound on every viewport used here, which makes the stage's long
+ * edge `innerHeight` minus the 120 px chrome allowance.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
@@ -20,34 +25,21 @@ const policies = {
   video: { kind: "video" as const, version: "video-test", targetLongEdges: [400, 1280] },
 };
 
-let observedBox = { width: 351, height: 468 };
-
-class FakeResizeObserver {
-  static live: FakeResizeObserver[] = [];
-  private elements: Element[] = [];
-  constructor(private cb: ResizeObserverCallback) {
-    FakeResizeObserver.live.push(this);
-  }
-  observe(element: Element) {
-    this.elements.push(element);
-    this.report();
-  }
-  unobserve() {}
-  disconnect() {
-    FakeResizeObserver.live = FakeResizeObserver.live.filter((observer) => observer !== this);
-  }
-  report() {
-    this.cb(
-      this.elements.map((target) => ({ target, contentRect: observedBox }) as unknown as ResizeObserverEntry),
-      this as never,
-    );
-  }
-  /** A window resize, as the viewer's wrapper sees it. */
-  static resizeTo(box: { width: number; height: number }) {
-    observedBox = box;
-    for (const observer of FakeResizeObserver.live) observer.report();
-  }
+/**
+ * Set the viewport the viewer computes its stage from.
+ *
+ * Dispatches `resize` so an already-mounted viewer picks the change up, and is
+ * safe to call before `render` because the hook reads the window during its
+ * first render rather than after mount.
+ */
+function setViewport(width: number, height: number) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+  window.dispatchEvent(new Event("resize"));
 }
+
+/** Chrome allowance the viewer subtracts from the viewport height. */
+const CHROME = 120;
 
 function appImage(over: Partial<AppImage> = {}): AppImage {
   return {
@@ -129,9 +121,9 @@ function stubFetch() {
 }
 
 /**
- * Let the wrapper measurement debounce and the batch it queues flush. They are
- * two timers with a state update between them, so one `act` pass advances the
- * debounce and the next advances the flush it scheduled.
+ * Let the queued batch flush. The cache debounces before sending, and a resize
+ * that changes the target queues another, so two passes cover a render and a
+ * subsequent resize alike.
  */
 async function settle() {
   await act(async () => vi.advanceTimersByTimeAsync(200));
@@ -150,9 +142,9 @@ function renderViewer(image = appImage()) {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  observedBox = { width: 351, height: 468 };
-  FakeResizeObserver.live = [];
-  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  // 468 CSS px of stage height (588 − 120), and width to spare so the portrait
+  // photo stays height-bound.
+  setViewport(1000, 468 + CHROME);
   Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
 });
 
@@ -170,8 +162,8 @@ describe("viewer measured resolution", () => {
     await settle();
 
     // 468 CSS px of contained image at 2× is 936 physical px, which the policy
-    // rounds up to 1280 — not the 1688 the old whole-window calculation gave a
-    // 390×844 phone.
+    // rounds up to 1280. The window's own long edge is 1000, and asking on that
+    // basis would have cost 2000 physical px and the 2560 rung.
     expect(requestsFrom(fetchMock)).toEqual([
       expect.objectContaining({ requiredLongEdge: 936, targetLongEdge: 1280 }),
     ]);
@@ -198,14 +190,14 @@ describe("viewer measured resolution", () => {
     await settle();
     expect(targetsFrom(fetchMock)).toEqual([1280]);
 
-    // 300×400 contained is 800 physical px — a different measurement, the same
-    // rung, so nothing is asked for and the loaded URL stands.
-    act(() => FakeResizeObserver.resizeTo({ width: 300, height: 400 }));
+    // A 400 px stage is 800 physical px — a different box, the same rung, so
+    // nothing is asked for and the loaded URL stands.
+    act(() => setViewport(1000, 400 + CHROME));
     await settle();
     expect(targetsFrom(fetchMock)).toEqual([1280]);
 
-    // 900×1200 is 2400 px, which is over the 1280 boundary.
-    act(() => FakeResizeObserver.resizeTo({ width: 900, height: 1200 }));
+    // A 1200 px stage is 2400 px, which is over the 1280 boundary.
+    act(() => setViewport(1600, 1200 + CHROME));
     await settle();
     expect(targetsFrom(fetchMock)).toEqual([1280, 2560]);
   });

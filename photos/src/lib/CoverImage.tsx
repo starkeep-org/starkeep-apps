@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { withBasePath } from "./base-path";
+import { fetchWithSession } from "./data-client";
 
 /**
  * App-level cover image — the user-facing proving client for the app-specific
@@ -37,7 +38,7 @@ export function CoverImageProvider({ children }: { children: React.ReactNode }):
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch(withBasePath("/api/photos/cover"));
+      const res = await fetchWithSession(withBasePath("/api/photos/cover"));
       if (!res.ok) return;
       const { url: next } = (await res.json()) as { url: string | null };
       setUrl(next);
@@ -55,7 +56,7 @@ export function CoverImageProvider({ children }: { children: React.ReactNode }):
       setBusy(true);
       setError(null);
       try {
-        const res = await fetch(withBasePath("/api/photos/cover"), {
+        const res = await fetchWithSession(withBasePath("/api/photos/cover"), {
           method: "PUT",
           headers: { "Content-Type": file.type || "application/octet-stream" },
           body: file,
@@ -78,7 +79,7 @@ export function CoverImageProvider({ children }: { children: React.ReactNode }):
     setBusy(true);
     setError(null);
     try {
-      await fetch(withBasePath("/api/photos/cover"), { method: "DELETE" });
+      await fetchWithSession(withBasePath("/api/photos/cover"), { method: "DELETE" });
       setUrl(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

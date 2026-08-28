@@ -13,6 +13,7 @@
  */
 
 import { withBasePath } from "./base-path";
+import { fetchWithSession } from "./data-client";
 
 export interface VisionConfigShape {
   faces: { enabled: boolean; threshold: number; publishLabels: boolean };
@@ -100,14 +101,14 @@ export const VISION_UNAVAILABLE = Symbol("vision-unavailable");
 export type MaybeUnavailable<T> = T | typeof VISION_UNAVAILABLE;
 
 async function get<T>(path: string): Promise<MaybeUnavailable<T>> {
-  const res = await fetch(withBasePath(path));
+  const res = await fetchWithSession(withBasePath(path));
   if (res.status === 501) return VISION_UNAVAILABLE;
   if (!res.ok) throw new Error(await errorText(res));
   return (await res.json()) as T;
 }
 
 async function send<T>(path: string, method: string, body: unknown): Promise<MaybeUnavailable<T>> {
-  const res = await fetch(withBasePath(path), {
+  const res = await fetchWithSession(withBasePath(path), {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

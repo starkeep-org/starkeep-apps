@@ -124,30 +124,73 @@ export async function resolveAppApiSource(): Promise<{
 }
 
 /**
- * Data-plane fetch with one refresh-and-retry on a 401.
+ * The two statuses the gateway refuses an expired session with.
+ *
+ * 403 is the one a browser actually receives, and reading only 401 is why this
+ * recovery never ran. The session authorizer names `Cookie` as its identity
+ * source: a request carrying no cookie at all never reaches the authorizer and
+ * earns a bare 401, while any cookie makes the identity source present, runs
+ * the authorizer, and surfaces its denial as 403. A browser that has ever
+ * signed in still holds `sk_session` for weeks after `sk_token` expires, so it
+ * is always in the second case. The 401 branch covers a caller holding nothing
+ * at all, which for the data plane is a request no page makes.
+ */
+const SESSION_REFUSALS = new Set([401, 403]);
+
+/**
+ * Data-plane fetch with one refresh-and-retry when the gateway refuses the
+ * session.
  *
  * The gateway's session authorizer cannot set cookies, so an `sk_token` that
- * expired mid-session yields a bare 401 with no way to recover in-band. The
- * recovery is a POST to the public /api/session/refresh, which authenticates
- * on `sk_session` in app code and issues a fresh token. Doing it here rather
- * than at each call site is the difference between one place that handles an
- * expired session and every place forgetting to.
+ * expired mid-session yields a bare refusal with no way to recover in-band.
+ * The recovery is a POST to the public /api/session/refresh, which
+ * authenticates on `sk_session` in app code and issues a fresh token. Doing it
+ * here rather than at each call site is the difference between one place that
+ * handles an expired session and every place forgetting to — which, before
+ * this was wired to `request` and `requestOwnApi`, is what happened: an hour
+ * into a session the grid filled with `403 {"message":"Forbidden"}` in red,
+ * and only a reload recovered it.
  *
  * One retry, never a loop: if the refresh itself fails the session is really
- * over, and a second 401 is the answer rather than a reason to try again.
+ * over, and a second refusal is the answer rather than a reason to try again.
+ *
+ * When the refresh reports the session is genuinely spent — a 401 from
+ * /api/session/refresh, which also clears both cookies — the browser goes to
+ * sign-in. That is what a reload does anyway, and it is the difference between
+ * a page that says what happened and a page that prints a status code. A
+ * refresh that merely failed to complete navigates nowhere: an unreachable
+ * network is not evidence that a session ended.
  */
 export async function fetchWithSession(input: string, init?: RequestInit): Promise<Response> {
   const withCreds: RequestInit = { credentials: "same-origin", ...init };
   const first = await fetch(input, withCreds);
-  if (first.status !== 401) return first;
+  if (!SESSION_REFUSALS.has(first.status)) return first;
 
   const refreshed = await fetch(withBasePath("/api/session/refresh"), {
     method: "POST",
     credentials: "same-origin",
   }).catch(() => null);
-  if (!refreshed?.ok) return first;
+  if (!refreshed?.ok) {
+    if (refreshed?.status === 401) goToSignIn();
+    return first;
+  }
 
   // The minted token changed, so anything cached against the old one is stale.
   tokenCache = null;
   return fetch(input, withCreds);
+}
+
+/**
+ * Send the browser to the app's own sign-in page.
+ *
+ * `replace`, not `assign`: the entry being left is a page that can no longer
+ * load its data, so keeping it in history only offers a Back button to the
+ * same failure. The page itself refreshes on arrival and bounces straight
+ * back when the session turns out to be live, guarded against looping.
+ */
+function goToSignIn(): void {
+  if (typeof window === "undefined") return;
+  const signIn = withBasePath("/sign-in");
+  if (window.location.pathname === signIn) return;
+  window.location.replace(signIn);
 }

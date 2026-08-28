@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib/client";
 import { withBasePath } from "@/lib/base-path";
+import { fetchWithSession } from "@/lib/data-client";
 import { backfillImageMetadata } from "@/lib/data-server-client";
 import { formatBytes, formatMegapixels, formatOrientation } from "./info-format";
 
@@ -39,7 +40,7 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
   const [detailsLoaded, setDetailsLoaded] = useState<boolean>(false);
 
   function fetchDetails(id: string): Promise<AppImage | null> {
-    return fetch(withBasePath(`/api/photos/${encodeURIComponent(id)}`))
+    return fetchWithSession(withBasePath(`/api/photos/${encodeURIComponent(id)}`))
       .then((r) => (r.ok ? r.json() : { image: null }))
       .then((data: { image: AppImage | null }) => data.image);
   }
@@ -101,7 +102,7 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
 
   async function saveCaption(): Promise<void> {
     if (caption === savedCaption) return;
-    await fetch(withBasePath(`/api/photos/captions/${encodeURIComponent(image.id)}`), {
+    await fetchWithSession(withBasePath(`/api/photos/captions/${encodeURIComponent(image.id)}`), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ caption }),

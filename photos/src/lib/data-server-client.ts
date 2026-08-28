@@ -1,4 +1,4 @@
-import { resolveDataSource } from "./data-client";
+import { fetchWithSession, resolveDataSource } from "./data-client";
 import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
@@ -156,7 +156,12 @@ async function request<T>(
   let res: Response;
   for (let attempt = 0; ; attempt++) {
     try {
-      res = await fetch(url, {
+      // fetchWithSession, not fetch: every one of these goes same-origin
+      // through /api/local-data, so an `sk_token` that expired mid-session
+      // makes the gateway refuse the whole data plane at once. Recovering
+      // there turns an hour-old tab from a grid of red status codes back into
+      // a working page without a reload.
+      res = await fetchWithSession(url, {
         ...options,
         headers: { ...source.headers, ...options?.headers },
       });
@@ -381,7 +386,7 @@ export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord
  * the gateway. Locally the prefix is empty and this is a no-op.
  */
 export async function requestOwnApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(withBasePath(path), { ...init, credentials: "same-origin" });
+  const res = await fetchWithSession(withBasePath(path), init);
   if (!res.ok) {
     throw new Error(`${path} failed: ${res.status} ${await res.text().catch(() => "")}`);
   }

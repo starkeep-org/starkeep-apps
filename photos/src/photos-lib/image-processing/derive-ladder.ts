@@ -112,6 +112,20 @@ const CODEC_TYPES: Record<NonNullable<DeriveLadderOptions["codec"]>, {
 };
 
 /**
+ * What a rung is encoded as when the caller expresses no preference, which is
+ * every shipping caller: the resize route, the cloud Lambda and the derivation
+ * worker all omit `codec`.
+ */
+export const DEFAULT_RENDITION_CODEC: NonNullable<DeriveLadderOptions["codec"]> = "avif";
+
+/**
+ * The canonical Starkeep type a published rung carries. Named rather than
+ * spelled at each assertion site, so changing the default encoder changes one
+ * line instead of leaving a test pinned to the old format.
+ */
+export const DEFAULT_RENDITION_TYPE: string = CODEC_TYPES[DEFAULT_RENDITION_CODEC].type;
+
+/**
  * The source dimensions a ladder is computed against.
  *
  * Read after `rotate()` has been applied, so a portrait photo stored with an
@@ -266,7 +280,7 @@ export async function* deriveStillLadderStream(
   const { default: sharp } = (await import("sharp")) as {
     default: typeof import("sharp").default;
   };
-  const codec = options.codec ?? "avif";
+  const codec = options.codec ?? DEFAULT_RENDITION_CODEC;
   const { type, contentType } = CODEC_TYPES[codec];
   const decoded = await asDecoded(input, options);
 

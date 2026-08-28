@@ -46,6 +46,8 @@ export {
   ladderIsComplete,
   cloudCanDecode,
   CLOUD_DECODABLE_TYPES,
+  DEFAULT_RENDITION_CODEC,
+  DEFAULT_RENDITION_TYPE,
   type DerivedRendition,
   type DeriveLadderOptions,
   type DecodedImage,
@@ -63,6 +65,7 @@ export {
   assertLadderComplete,
   RenditionPublishError,
   RENDITION_LABEL_REF,
+  renditionFileName,
   type PublishedRendition,
   type SignedFetch,
 } from "./image-processing/publish-renditions";

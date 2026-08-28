@@ -220,7 +220,13 @@ export async function publishRendition(
   };
 }
 
-function renditionFileName(originalFilename: string | null, sizeClass: string): string {
+/**
+ * What a published rung is called.
+ *
+ * Exported because a test asserting the name has to read it from here; spelling
+ * it a second time is how a rename passes a suite that is checking the old one.
+ */
+export function renditionFileName(originalFilename: string | null, sizeClass: string): string {
   const base = originalFilename ?? "image";
   return `${sizeClass}_${base}`;
 }

@@ -70,22 +70,32 @@ export interface StillClassSpec {
 export const STILL_LADDER: readonly StillClassSpec[] = [
   {
     sizeClass: "image-xsmall",
-    maxLongEdge: 128,
+    maxLongEdge: 320,
     // Not pushed below `image-thumb`'s quality even though artifacts hide more
     // easily at this size. The absolute saving is a couple of kilobytes — both
     // rungs are far under the 128 KB Intelligent-Tiering floor and cost the
     // Standard rate either way — so a lower number buys nothing measurable and
     // risks mush on the one asset a dense canvas paints hundreds of at once.
     quality: 50,
-    // Below the point where a tile is read as an image at all: this is the rung
-    // for a canvas showing hundreds of records at once, where the alternative is
-    // shipping hundreds of 400 px tiles (~10× the pixels) to draw them at 128.
+    // The rung a dense surface degrades to, and the first image frame every
+    // other surface paints behind. Transfer stopped deciding anything well
+    // before this size (roughly 10 KB an object), so two other costs place the
+    // number. Decoded bitmap memory is quadratic and holds a 500-tile screen to
+    // about 150 MB here against 230 MB at 400. Legibility places the floor,
+    // because anything blurrier already has a free answer in the inline
+    // ThumbHash. 320 answers a 160 px tile at 2× and a 107 px tile at 3×, which
+    // is where contact sheets and filmstrips sit, and it sits exactly one
+    // octave below `image-thumb` so a density cap has one honest step to take.
     serves: "infinite canvas, dense contact-sheet grids, filmstrips",
   },
   {
     sizeClass: "image-thumb",
-    maxLongEdge: 400,
+    maxLongEdge: 640,
     quality: 50,
+    // Sized to the list's two defaults rather than to a round number: a 320 px
+    // desktop row at 2× asks for exactly 640, and a 180 px mobile row at 3×
+    // asks for 540. Both figures describe a portrait photo, which dominates a
+    // phone-sourced library. Landscape tiles still round up to `image-medium`.
     serves: "grid tiles, list rows",
   },
   {
@@ -146,9 +156,9 @@ export function applicableStillClasses(originalLongEdge: number): StillClassSpec
  * Which rung answers a request for this many pixels.
  *
  * **Round up**: the smallest class whose maximum reaches the target, and the
- * top class when nothing does. Rounding down would hand a 2× display a 128 px
- * file for a 360 px need — a threefold undersample, and a worse outcome than
- * the extra bytes it saves.
+ * top class when nothing does. Rounding down would hand a 2× display a 320 px
+ * file for a 360 px need — close to a twofold undersample, and a worse outcome
+ * than the extra bytes it saves.
  *
  * Resolved against class *maxima* rather than against a particular original,
  * because this answers "which rung is being asked for" for a caller that knows
@@ -203,18 +213,6 @@ export function topApplicableStillClass(originalLongEdge: number): StillClassSpe
   return applicable[applicable.length - 1]!;
 }
 
-/**
- * True when the original is functionally the top of its own ladder — its long
- * edge is at or below the bottom rung's maximum, so every class it generates is
- * a copy of it at the same size.
- *
- * One of the two floors on archiving: freezing such an original saves nothing,
- * because the thing that would be read instead is the same size.
- */
-export function isOwnTopOfLadder(originalLongEdge: number): boolean {
-  return originalLongEdge <= STILL_LADDER[0]!.maxLongEdge;
-}
-
 // ---------------------------------------------------------------------------
 // Video
 // ---------------------------------------------------------------------------
@@ -240,7 +238,11 @@ export interface VideoClassSpec {
 export const VIDEO_LADDER: readonly VideoClassSpec[] = [
   {
     sizeClass: "video-poster-thumb",
-    maxLongEdge: 400,
+    // Pinned to `image-thumb` rather than chosen independently: a video and a
+    // still sit in the same justified row at the same height, so a poster
+    // smaller than the still rung would make videos the visibly softer tiles in
+    // a mixed grid, and a larger one would make them the expensive ones.
+    maxLongEdge: 640,
     kind: "poster",
     serves: "grid tile",
   },

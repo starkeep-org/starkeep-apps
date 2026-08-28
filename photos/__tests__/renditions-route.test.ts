@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "../app/api/photos/renditions/route";
-import { currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
+import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 import { authorizePhotosRoute } from "../src/lib/photos-route-server";
 
 vi.mock("../src/lib/photos-route-server", () => ({
@@ -42,10 +42,13 @@ describe("POST /api/photos/renditions", () => {
       }],
     }), { status: 200 }));
 
+    // A requirement inside the medium rung's range, paired with a target from a
+    // policy that no longer exists. The server recanonicalizes the requirement
+    // and ignores the stale target.
     const response = await POST(request({ requests: [{
       recordId: "rec-1",
       policyVersion: "stale",
-      requiredLongEdge: 500,
+      requiredLongEdge: 700,
       targetLongEdge: 400,
     }] }));
     expect(response.status).toBe(200);
@@ -58,7 +61,7 @@ describe("POST /api/photos/renditions", () => {
     const body = await response.json();
     const result = body.results[0];
     expect(result.policyVersion).toBe(currentRenditionPolicies().still.version);
-    expect(result.canonicalTargetLongEdge).toBe(1280);
+    expect(result.canonicalTargetLongEdge).toBe(canonicalTarget(currentRenditionPolicies().still, 700));
     expect(result.decision.ideal).toMatchObject({
       id: "rend-1280",
       available: true,

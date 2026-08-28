@@ -22,8 +22,9 @@ export interface ListedRecord {
 /**
  * The scan set: originals only.
  *
- * Thumbnails are excluded because they are 400 px re-encodings of images already
- * in the set; crops because a crop's faces are its parent's faces at an offset.
+ * Thumbnails are excluded because they are downscaled re-encodings of images
+ * already in the set; crops because a crop's faces are its parent's faces at an
+ * offset.
  * Both would be work whose results duplicate an original's.
  *
  * Read off Photos' **own labels**, not `parent_id` — a crop has a parent too,

@@ -29,7 +29,7 @@ import { clearAppCredentialsCache, createNextProxyHandler } from "@starkeep/app-
 import { GET as libraryRoute } from "../app/api/photos/library/route";
 import { POST as renditionsRoute } from "../app/api/photos/renditions/route";
 import { listPhotos, requestOwnApi } from "../src/lib/data-server-client";
-import { currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
+import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 
 const HMAC_SECRET = "integration-test-secret";
 const DATA_SERVER_URL = "http://fake-data-server.test";
@@ -236,7 +236,10 @@ describe("cloud data path (client → proxy → data server)", () => {
       body: JSON.stringify({ requests: [{
         recordId: "rec-visible",
         policyVersion: "stale-policy",
-        requiredLongEdge: 500,
+        // A requirement inside the medium rung's range, paired with a target
+        // from a policy that no longer exists. The server recanonicalizes the
+        // requirement and ignores the stale target.
+        requiredLongEdge: 700,
         targetLongEdge: 400,
       }] }),
     });
@@ -253,7 +256,7 @@ describe("cloud data path (client → proxy → data server)", () => {
       recordId: "rec-visible",
       status: "resolved",
       policyVersion: currentRenditionPolicies().still.version,
-      canonicalTargetLongEdge: 1280,
+      canonicalTargetLongEdge: canonicalTarget(currentRenditionPolicies().still, 700),
     });
     expect(JSON.stringify(body)).not.toContain("image-medium");
   });

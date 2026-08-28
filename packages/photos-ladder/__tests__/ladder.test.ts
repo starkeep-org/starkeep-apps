@@ -16,7 +16,6 @@ import {
   applicableVideoClasses,
   renditionLongEdge,
   topApplicableStillClass,
-  isOwnTopOfLadder,
   transcodeWouldChangeAnything,
   skimDurationSeconds,
   SKIM_SEGMENT_SECONDS,
@@ -108,16 +107,10 @@ describe("Rule 2 — generate when the original exceeds the next lower maximum",
   });
 });
 
-describe("the own-top-of-ladder floor", () => {
-  // One of the two floors on archiving: freezing such an original saves
-  // nothing, because the thing that would be read instead is the same size.
-  it("holds for an original at or below the bottom rung's maximum", () => {
-    const bottom = STILL_LADDER[0]!.maxLongEdge;
-    expect(isOwnTopOfLadder(bottom)).toBe(true);
-    expect(isOwnTopOfLadder(bottom - 1)).toBe(true);
-    expect(isOwnTopOfLadder(bottom + 1)).toBe(false);
-  });
-
+describe("an original at or below the bottom rung", () => {
+  // The floor on archiving, stated as the property rather than as a predicate:
+  // freezing such an original saves nothing, because the thing that would be
+  // read instead is the same size.
   it("means every generated class is the same size as the original", () => {
     const small = STILL_LADDER[0]!.maxLongEdge - 50;
     for (const spec of applicableStillClasses(small)) {

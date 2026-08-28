@@ -92,7 +92,8 @@ export function needsRecordFacts(record: SweepRecord): boolean {
  * Whether this stage has anything to do for this record.
  *
  * The `cheap` stage covers the placeholder, the record's own facts and the
- * bottom rungs; `full` covers whatever else the ladder calls for. A record with
+ * bottom rungs; `medium` covers everything above the cheap tier up to and
+ * including the medium rung; `full` covers everything above that. A record with
  * unknown dimensions always has cheap work — that pass is what makes them
  * known.
  */
@@ -124,13 +125,25 @@ export function stageHasWork(
   if (missing === "unknown") return true;
   const cheap = new Set(cheapClasses);
   if (stage === "cheap") return needsRecordFacts(record) || missing.some((c) => cheap.has(c));
-  if (stage === "medium") return missing.includes(MEDIUM_CLASS.sizeClass);
-  const aboveMedium = new Set(
-    STILL_LADDER
-      .filter((spec) => spec.maxLongEdge > MEDIUM_CLASS.maxLongEdge)
-      .map((spec) => spec.sizeClass),
-  );
-  return missing.some((sizeClass) => aboveMedium.has(sizeClass));
+  return missing.some((sizeClass) => stillStage(sizeClass, cheap) === stage);
+}
+
+/**
+ * Which non-cheap stage owns a still rung.
+ *
+ * Stated as two open ranges over the ladder rather than as "the medium rung
+ * exactly, and everything above it". The rungs are what move in a respec, and
+ * an equality test against one of them silently orphans any rung added between
+ * the cheap tier and medium: such a rung would belong to no stage, so no sweep
+ * would ever derive it and only an on-demand request would produce one. Ranges
+ * make the three stages cover the ladder by construction, which is a property a
+ * respec cannot break.
+ */
+function stillStage(sizeClass: SizeClass, cheap: ReadonlySet<SizeClass>): "cheap" | "medium" | "full" {
+  if (cheap.has(sizeClass)) return "cheap";
+  const spec = STILL_LADDER.find((s) => s.sizeClass === sizeClass);
+  if (!spec) return "full";
+  return spec.maxLongEdge <= MEDIUM_CLASS.maxLongEdge ? "medium" : "full";
 }
 
 /** `fetch`-alike over the data server, injected so this module owns no creds. */
@@ -150,7 +163,7 @@ export interface SweepPage {
  * exists to stop repeating.
  *
  * `variant` with no pixel size asks for the unnarrowed candidate list, which is
- * the whole point: resolution would answer "which rung best fits 400 px" when
+ * the whole point: resolution would answer "which rung best fits 640 px" when
  * the question is "which rungs are missing".
  */
 export async function fetchSweepPage(

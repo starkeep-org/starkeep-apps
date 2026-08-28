@@ -22,7 +22,6 @@ export {
   classForTargetLongEdge,
   renditionLongEdge,
   topApplicableStillClass,
-  isOwnTopOfLadder,
   transcodeWouldChangeAnything,
   skimDurationSeconds,
   SKIM_SEGMENT_SECONDS,

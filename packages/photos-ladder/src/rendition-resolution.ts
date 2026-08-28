@@ -18,7 +18,7 @@
  * rung it wanted is still deriving, and the rung it wanted is never going to
  * exist because this record's ladder stops lower. Those need different pixels
  * on screen — a picture, a placeholder that will improve, and a picture that is
- * as good as this photo gets — and a bare "here is 400 px" is the same shape
+ * as good as this photo gets — and a bare "here is 640 px" is the same shape
  * for all three.
  *
  * So each requested target gets **the ideal**, always, flagged available or
@@ -29,7 +29,7 @@
  * A rung above the ideal is by definition more bytes than the ideal, so
  * reaching for one means fetching the expensive thing first and the correct
  * thing second — the opposite of what progressive presentation is for. Serving
- * 400 now and 1280 shortly is cheap-then-right; serving 2560 now and 1280
+ * 640 now and 1280 shortly is cheap-then-right; serving 2560 now and 1280
  * shortly is expensive-then-redundant.
  *
  * It is also actively harmful under Intelligent-Tiering, where reading a large
@@ -123,15 +123,15 @@ export interface ResolveOptions {
  * the ones worth having on record.
  *
  * - **4000 px source, target 540.** All five rungs apply. The ideal is 1280.
- *   If it has not been derived and 400 has, the answer is the ideal marked
- *   unavailable plus 400 as the fallback.
+ *   If it has not been derived and 640 has, the answer is the ideal marked
+ *   unavailable plus 640 as the fallback.
  * - **300 px source, target 2048.** Only the bottom two rungs apply and the
  *   second clamps to 300. Nothing reaches 2048, so the ideal is that 300 px
  *   rung and it is marked **available** once derived. The client is being told
  *   "this is as good as this photo gets", not "wait" — which is why an upgrade
  *   watcher must key on `available` and not on "smaller than I asked for".
  * - **4000 px source, target 540, 1280 missing but 2560 present.** The ideal is
- *   1280 and unavailable; the fallback is 400. The 2560 is ignored here and
+ *   1280 and unavailable; the fallback is 640. The 2560 is ignored here and
  *   returned as the ideal when the viewer asks for 2048.
  */
 export function resolveRendition(

@@ -27,7 +27,6 @@ export {
   applicableVideoClasses,
   renditionLongEdge,
   topApplicableStillClass,
-  isOwnTopOfLadder,
   classForTargetLongEdge,
   CHEAP_STILL_CLASSES,
   CHEAP_TARGET_LONG_EDGE,

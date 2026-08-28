@@ -11,7 +11,7 @@
  * The ordered passes a sweep makes over the library.
  *
  * Ordering rungs *within* a record is not enough. That still puts the seventh
- * photo's 400 px tile behind the first photo's 4272 px rung, so a grid fills in
+ * photo's 640 px tile behind the first photo's 4272 px rung, so a grid fills in
  * thirty seconds rather than half a second. The sweep therefore stages across
  * the *whole library*: everything cheap for every record, then the expensive
  * rungs.

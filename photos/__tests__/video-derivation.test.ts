@@ -32,7 +32,14 @@ import {
 import {
   skimDurationSeconds,
   SKIM_INTERVAL_SECONDS,
+  VIDEO_LADDER,
 } from "../src/photos-lib/ladder";
+
+/** The poster rung under test, read off the ladder rather than written down. */
+const POSTER_THUMB_MAX = VIDEO_LADDER.find((v) => v.sizeClass === "video-poster-thumb")!.maxLongEdge;
+
+/** The fixture clip's long edge, which the ladder's Rule 1 clamps against. */
+const FIXTURE_LONG_EDGE = 640;
 
 const run = promisify(execFile);
 
@@ -186,12 +193,16 @@ describe("deriving the ladder", () => {
 
     const probed = await probeBytes(poster.bytes, "poster.jpg");
     expect(probed.streams[0]!.codec_name).toBe("mjpeg");
-    // Scaled down to the rung's maximum, not left at source size.
-    expect(Math.max(probed.streams[0]!.width!, probed.streams[0]!.height!)).toBeLessThanOrEqual(400);
+    // Rule 1 exactly: `min(source long edge, rung maximum)`. Stated as the
+    // whole rule rather than as a ceiling, because a ceiling passes vacuously
+    // whenever a respec lifts the rung above the fixture's own size.
+    expect(Math.max(probed.streams[0]!.width!, probed.streams[0]!.height!)).toBe(
+      Math.min(FIXTURE_LONG_EDGE, POSTER_THUMB_MAX),
+    );
   }, 120_000);
 
   // The assertion that proves transposeFilter reaches the pixels. Without it
-  // the poster comes out 400x300 landscape from a portrait source — a
+  // the poster comes out landscape from a portrait source — a
   // plausible image of sideways footage.
   ffmpeg()("bakes rotation into a poster from a portrait source", async () => {
     const result = await deriveVideoLadder(rotated, tools);

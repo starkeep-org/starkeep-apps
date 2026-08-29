@@ -244,12 +244,24 @@ test("a corrupted HMAC secret turns into 401s and a visible error state", async 
     expect(res.status).toBe(401);
   });
 
-  // And the UI surfaces it rather than rendering an empty-but-healthy grid.
-  // Scope to the app's own error banner ("Data server GET … → 401"); under
-  // `next dev` a bare /→ 401/ also matches the Next.js error overlay that the
-  // data-server-client's throw produces, which is a dev-only artifact.
+  // And the UI surfaces it rather than rendering an empty-but-healthy grid,
+  // which is the failure this test exists to catch.
+  //
+  // Scoped to the app's own error banner rather than to text anywhere on the
+  // page. Under `next dev` the same thrown string also reaches the Next.js
+  // error overlay, so a bare text match can pass on a dev-only artifact while
+  // the app itself renders nothing.
+  //
+  // Filtered as well as scoped: a bare role=alert also matches Next's route
+  // announcer, which is always in the dev DOM (the same gotcha core's
+  // daemon-start-failure spec documents). The announcer is empty, so requiring
+  // the status code picks out the banner.
+  //
+  // Asserted on the status rather than the wording, which is what went stale
+  // here: this looked for "Data server GET … → 401" until the library moved
+  // behind Photos' own route and the client started reporting the route it
+  // actually called.
   await page.goto(photosUrl);
-  await expect(page.getByText(/Data server GET .*→ 401/)).toBeVisible({
-    timeout: 60_000,
-  });
+  const banner = page.getByRole("alert").filter({ hasText: "401" });
+  await expect(banner).toBeVisible({ timeout: 60_000 });
 });

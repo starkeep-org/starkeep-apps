@@ -80,13 +80,18 @@ test("install photos through the admin consent flow", async ({ page }) => {
   // The consent dialog must surface the manifest's requested grants before
   // anything is written. (The card lists the grants too, so scope to the
   // modal overlay.)
-  const consent = page
-    .locator("div.fixed")
-    .filter({ hasText: "Install Photos?" });
+  const consent = page.locator("div.fixed").filter({ hasText: "Install Photos?" });
   await expect(consent).toBeVisible();
-  await expect(consent.getByText(/image\/jpeg, image\/png/)).toBeVisible();
-  await expect(consent.getByText("records: read + write")).toBeVisible();
-  await expect(consent.getByText("metadata: read + write")).toBeVisible();
+
+  // Scoped to the grant row rather than to the dialog. Photos requests two
+  // grants — images and video — so each badge text appears twice, and asking
+  // the dialog for "records: read + write" is ambiguous. Asking the *image*
+  // row is also the sharper claim: it says which grant carries which
+  // permission, instead of that some grant somewhere does.
+  const imageGrant = consent.locator("li").filter({ hasText: /image\/jpeg, image\/png/ });
+  await expect(imageGrant).toBeVisible();
+  await expect(imageGrant.getByText("records: read + write")).toBeVisible();
+  await expect(imageGrant.getByText("metadata: read + write")).toBeVisible();
 
   await page.getByRole("button", { name: "Approve & Install" }).click();
   await expect(card.getByText("Installed")).toBeVisible({ timeout: 60_000 });

@@ -21,7 +21,7 @@
  * what a rung is called.
  */
 
-import { it, expect } from "vitest";
+import { it, expect, afterAll } from "vitest";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -174,6 +174,19 @@ let ladderOriginalKey: string;
 const syncedRungKeys = new Map<string, string>();
 
 function photosSteps(ctx: JourneyContext): void {
+  // The ladder-sync step stops the dev server on its way out, because
+  // everything after it reads a library that must stop changing. This is the
+  // net for every path that does not reach that line.
+  //
+  // Without it a step failing between the boot and that stop leaves `next dev`
+  // holding this app's directory, and the *next* run refuses to start —
+  // correctly, but for a reason that has nothing to do with what it was asked
+  // to test. That is not hypothetical: it happened, and cost a run.
+  afterAll(async () => {
+    await photosLocal?.stop();
+    photosLocal = undefined;
+  });
+
   it("derives a full rendition ladder locally, through the real Photos app", async () => {
     // The half of the rendition path nothing else reaches. Every other photo in
     // this journey is a flat record created by a test helper: no children, no

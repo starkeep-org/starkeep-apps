@@ -342,26 +342,62 @@ function photosSteps(ctx: JourneyContext): void {
       expected,
     );
 
-    const arrived = await eventually(
-      async () => {
-        const sync = await drive.fetch("/sync/now", { method: "POST" });
-        expect(sync.status).toBe(200);
-        const res = await cloudPhotos.fetch(
-          `/data/records?parentId=${encodeURIComponent(ladderRecordId)}` +
-            `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
-            `&include=labels,metadata&limit=50`,
-        );
-        expect(res.status).toBe(200);
-        const { records } = (await res.json()) as { records: RungRecord[] };
-        if (records.length < expected) {
-          throw new Error(
-            `${records.length} of ${expected} rungs have reached the cloud`,
+    // A minute, not ten. The rungs are already derived and already local by the
+    // time this runs, so what is left is one sync round shipping five small
+    // records — measured at about five seconds. Ten minutes of headroom on a
+    // five-second operation does not buy reliability; it buys a ten-minute
+    // stall before you learn anything, and the thing it is most likely to be
+    // waiting on is a failure that will never resolve.
+    let arrived: RungRecord[];
+    try {
+      arrived = await eventually(
+        async () => {
+          const sync = await drive.fetch("/sync/now", { method: "POST" });
+          expect(sync.status).toBe(200);
+          const res = await cloudPhotos.fetch(
+            `/data/records?parentId=${encodeURIComponent(ladderRecordId)}` +
+              `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
+              `&include=labels,metadata&limit=50`,
           );
-        }
-        return records;
-      },
-      { timeoutMs: 10 * 60 * 1000, intervalMs: 5_000 },
-    );
+          expect(res.status).toBe(200);
+          const { records } = (await res.json()) as { records: RungRecord[] };
+          if (records.length < expected) {
+            throw new Error(`${records.length} of ${expected} rungs have reached the cloud`);
+          }
+          return records;
+        },
+        { timeoutMs: 60_000, intervalMs: 2_000 },
+      );
+    } catch (err) {
+      // The supervisor swallows a per-engine exchange failure into a logged
+      // `lastError` and still answers /sync/now with 200 and shipped: 0, so the
+      // responses above cannot tell "nothing to ship" from "every round threw".
+      // Without these lines the step fails as a bare timeout saying only that
+      // rows did not arrive — which is what it did, once, with nothing to say
+      // why. The ship step earlier in the journey has carried this same
+      // diagnostic for exactly this reason.
+      const syncLines = ctx
+        .ldsLogs()
+        .split("\n")
+        .filter((l) => /\[sync|sync\]|exchange|drive|residency/i.test(l));
+      console.error(
+        `[photos-tier3] the ladder did not reach the cloud. LDS sync log:\n${
+          syncLines.length > 0 ? syncLines.join("\n") : "(no sync lines logged)"
+        }`,
+      );
+      // What the app was doing meanwhile: a background sweep still deriving is
+      // one legitimate reason a round ships nothing yet.
+      const appLog = (photosLocal?.logs() ?? "").split("\n").slice(-40).join("\n");
+      console.error(`[photos-tier3] last 40 lines of the Photos dev server:\n${appLog}`);
+      // And what the local side actually holds, which separates "sync did not
+      // carry them" from "they were never there to carry".
+      const stillLocal = await renditionChildren(photos, ladderRecordId);
+      console.error(
+        `[photos-tier3] locally the parent has ${stillLocal.length} rendition children ` +
+          `(${stillLocal.map(renditionClassOf).join(", ") || "none"}).`,
+      );
+      throw err;
+    }
     expect(arrived).toHaveLength(expected);
 
     for (const rung of arrived) {

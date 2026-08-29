@@ -20,14 +20,11 @@ const nextConfig: NextConfig = {
     // outside the package dir (IDE runners, direct `next dev <dir>`).
     root: resolve(import.meta.dirname, ".."),
   },
-  async rewrites() {
-    return [
-      {
-        source: "/starkeep-runtime-config.json",
-        destination: "/starkeep-runtime-config",
-      },
-    ];
-  },
+  // No `/starkeep-runtime-config.json` rewrite. A rewrite runs inside the app,
+  // after the gateway has already decided whether to admit the request, so the
+  // alias could never be public the way the route it aliased is — the manifest
+  // and the CloudFront viewer function both name `/starkeep-runtime-config`.
+  // The client asks for that path directly (src/lib/runtime-config.ts).
 };
 
 export default nextConfig;

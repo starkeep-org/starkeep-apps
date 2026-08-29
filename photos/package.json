@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
-    "derive:build-worker": "tsx scripts/build-derive-worker.ts"
+    "derive:build-worker": "tsx scripts/build-derive-worker.ts",
+    "test:aws": "vitest run -c e2e-aws/vitest.config.ts"
   },
   "dependencies": {
     "@starkeep/app-client": "^0.5.2",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@playwright/test": "^1.51.1",
     "@starkeep/e2e": "link:../../starkeep-core/e2e",
+    "@starkeep/e2e-aws": "link:../../starkeep-core/e2e-aws",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.4.0",
     "@types/react": "^19.0.0",

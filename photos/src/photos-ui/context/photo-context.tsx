@@ -68,7 +68,12 @@ export function PhotoProvider({ children }: { children: React.ReactNode }) {
     images: [],
     selectedId: null,
     nextCursor: null,
-    loading: false,
+    // An app that has not asked the server anything yet is loading, not empty.
+    // Starting false meant the grid's `images.length === 0 && !loading` branch
+    // was true from first paint until the first list call returned, so a cold
+    // cloud load showed "No photos yet. Upload some to get started." to people
+    // whose library was already there. The first fetchAll clears it.
+    loading: true,
     policies: null,
   });
 

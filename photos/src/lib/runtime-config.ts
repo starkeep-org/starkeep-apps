@@ -24,7 +24,16 @@ let cached: RuntimeConfig | null | undefined = undefined;
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig | null> {
   if (cached !== undefined) return cached;
   try {
-    const res = await fetch(withBasePath("/starkeep-runtime-config.json"));
+    // The route's own path, not the `.json` alias.
+    //
+    // The alias is a Next rewrite, which runs inside the Lambda — long after
+    // the gateway has decided whether to admit the request. The manifest's
+    // publicPaths and the CloudFront viewer function both name
+    // `/starkeep-runtime-config`, so `/starkeep-runtime-config.json` is gated:
+    // it answers 401 to a signed-out browser and costs a session-authorizer hop
+    // to a signed-in one, for a payload that is pool identifiers the sign-in
+    // page is meant to read before anyone has a session.
+    const res = await fetch(withBasePath("/starkeep-runtime-config"));
     if (!res.ok) { cached = null; return null; }
     const json = await res.json() as RuntimeConfig;
     cached = json.apiGatewayUrl ? json : null;

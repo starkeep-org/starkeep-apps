@@ -235,6 +235,51 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
     console.log("Copying OpenNext static assets…");
     cpSync(assetsSrc, join(stagingDir, "assets"), { recursive: true });
 
+    // 2c. Ship the pages the build already rendered.
+    //
+    //     OpenNext emits prerendered HTML to `.open-next/cache/<BUILD_ID>/` and
+    //     expects a deployer to upload it to the bucket its incremental cache
+    //     reads. This installer has no such bucket, so without this step the
+    //     Lambda has no copy of its own output and re-renders `/` and
+    //     `/sign-in` — two static documents — on every request.
+    //
+    //     The build-id directory is dropped: one bundle ships exactly one
+    //     build, so keeping a level named after it only adds a lookup that can
+    //     disagree with itself. infra/prerender-cache.ts reads `cache/<key>.cache`.
+    const cacheRoot = resolve(PHOTOS_DIR, ".open-next", "cache");
+    const buildIdFile = join(PHOTOS_DIR, ".next", "BUILD_ID");
+    if (!existsSync(buildIdFile)) {
+      console.error(`No ${buildIdFile}; cannot locate the prerender cache.`);
+      process.exit(1);
+    }
+    const buildId = readFileSync(buildIdFile, "utf8").trim();
+    const cacheSrc = join(cacheRoot, buildId);
+    if (!existsSync(cacheSrc)) {
+      console.error(
+        `OpenNext prerender cache not found at ${cacheSrc}. Every prerendered ` +
+          `page would be re-rendered per request; refusing to build that bundle.`,
+      );
+      process.exit(1);
+    }
+    console.log("Copying prerendered pages…");
+    cpSync(cacheSrc, join(stagingDir, "cache"), { recursive: true });
+
+    // 2d. Drop build inputs the copy in step 2 swept in. None of it is
+    //     reachable at runtime: the tsbuildinfo files are incremental-compile
+    //     state, web-assets.json feeds the ASCII banner at build time, and
+    //     `out/` is the static export — a second copy of what already went to
+    //     `assets/` in 2b. Together they are ~3.3 MB of a 19.5 MB package,
+    //     which is download and unpack time on every cold container for bytes
+    //     nothing reads.
+    for (const dead of [
+      join(PACKAGE_PATH, "tsconfig.tsbuildinfo"),
+      join(PACKAGE_PATH, "tsconfig.e2e.tsbuildinfo"),
+      join(PACKAGE_PATH, "infra", "src", "web-assets.json"),
+      join(PACKAGE_PATH, "out"),
+    ]) {
+      rmSync(join(stagingDir, dead), { recursive: true, force: true });
+    }
+
     const wrapper = `import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize } from "node:path";
@@ -285,14 +330,22 @@ function isStaticAssetPath(rest) {
   return rest === "BUILD_ID" || rest.startsWith("_next/static/");
 }
 
-let upstreamHandler;
-async function getUpstream() {
-  if (!upstreamHandler) {
-    const mod = await import("./photos/index.mjs");
-    upstreamHandler = mod.handler;
-  }
-  return upstreamHandler;
-}
+// Top-level await, so the OpenNext module graph loads during Lambda's INIT
+// phase rather than inside the first request.
+//
+// It is a lot of graph — ~350 CommonJS modules and ~820 require() calls before
+// a request is even routed, because OpenNext does not bundle the server, it
+// ships Next's trace output and lets Next require it at startup. That work is
+// unavoidable; where it happens is not. Loading it lazily on first use put
+// several seconds inside a handler with a ten-second timeout, so a cold
+// document render both billed for it and occasionally died of it, while
+// Init Duration read ~180 ms and made the function look healthy.
+//
+// Init has its own budget, is not billed, and is where Lambda provisions extra
+// CPU. Nothing regresses for static assets: they are answered below without
+// touching this module, and a request could never arrive before init finished
+// anyway.
+const upstreamHandler = (await import("./photos/index.mjs")).handler;
 
 export async function handler(event, context) {
   const rawPath = event?.rawPath ?? "";
@@ -339,8 +392,7 @@ export async function handler(event, context) {
       }
     }
   }
-  const up = await getUpstream();
-  return up(event, context);
+  return upstreamHandler(event, context);
 }
 `;
     writeFileSync(join(stagingDir, "index.mjs"), wrapper, "utf8");

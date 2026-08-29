@@ -195,11 +195,17 @@ export function usePhotoFreshness({
     let cancelled = false;
 
     void (async () => {
-      const strategy = await getFreshnessStrategy();
+      // Start the list immediately and resolve the strategy alongside it.
+      //
+      // The strategy only decides what to subscribe to *after* the first load
+      // — SSE or a poll timer — and the first load never needed it. Awaiting it
+      // first put a runtime-config round trip in front of every page load, and
+      // in the cloud that request is a dynamic route on the same Lambda as
+      // everything else, so a cold one held the grid on its empty state for
+      // seconds before the library call had even been issued.
+      const [strategy] = await Promise.all([getFreshnessStrategy(), fetchAll()]);
       if (cancelled) return;
       strategyRef.current = strategy;
-      await fetchAll();
-      if (cancelled) return;
       if (strategy.kind === "sse") {
         connectSSE();
       } else {

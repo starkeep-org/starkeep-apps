@@ -246,6 +246,10 @@ function PhotosAppInner() {
 
         {error && (
           <div
+            // An error is the more urgent of the two banners, and the notice
+            // beside it already announces itself. Without a role this one was
+            // silent to a screen reader.
+            role="alert"
             style={{
               padding: "8px 20px",
               background: "rgba(220,50,50,0.15)",

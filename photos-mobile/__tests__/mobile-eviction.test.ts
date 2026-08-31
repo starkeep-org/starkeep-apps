@@ -257,6 +257,52 @@ describe("the phone's built-in policy", () => {
     }
   });
 
+  /**
+   * The rule the file states, checked rather than asserted in prose.
+   *
+   * "The smaller the rendition, the more of the library it should cover.
+   * Thumbnails get enough to hold the whole grid, because a grid that cannot
+   * draw is a phone that looks broken offline."
+   *
+   * That rule silently stopped holding when `35d849d` lifted `image-xsmall`
+   * from 128 px to 320 and `image-thumb` from 400 to 640 without moving the
+   * shares. Both rungs fell to roughly 56% of the library, and nothing said so
+   * — the failure is only visible on an offline phone in front of a grid full
+   * of grey squares.
+   *
+   * The byte figures are measured averages over real AVIF renditions at
+   * quality 50, so this test fails when either the ladder or the shares move
+   * without the other. It is deliberately a *coverage* assertion and not an
+   * assertion about the share numbers themselves, which are the plan's to
+   * choose.
+   */
+  it("holds the whole library at the two rungs that make the grid drawable", () => {
+    const LIBRARY = 60_000;
+    /** Measured averages, AVIF q50. See `retention.ts`. */
+    const measured: Record<string, number> = {
+      "image-xsmall": 8_799,
+      "image-thumb": 30_951,
+    };
+
+    const app = PHONE_RETENTION.apps[PHOTOS_APP_ID]!;
+    const shares = [app.fallback, ...Object.values(app.rows)].reduce(
+      (sum, r) => sum + r.share,
+      0,
+    );
+
+    for (const [rung, bytesEach] of Object.entries(measured)) {
+      const row = app.rows[rung]!;
+      // Prefetched, or "covers the library" means nothing: the bytes would
+      // arrive only for records someone had already opened.
+      expect(row.prefetch, `${rung} is not prefetched`).toBe(true);
+      const allowed = Math.floor((app.budgetBytes * row.share) / shares);
+      expect(
+        allowed,
+        `${rung} holds ${(allowed / (bytesEach * LIBRARY)) * 100}% of a ${LIBRARY}-item library`,
+      ).toBeGreaterThanOrEqual(bytesEach * LIBRARY);
+    }
+  });
+
   it("adds up to a total an operator could plan a disk around", () => {
     // Not an assertion about the exact number — that is the plan's to choose —
     // but about the order of magnitude, so a slipped decimal in one row is

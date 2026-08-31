@@ -35,12 +35,44 @@
  * summing to a hundred — only ratios matter. They follow one rule: the smaller
  * the rendition, the more of the library it should cover. Thumbnails get enough
  * to hold the whole grid, because a grid that cannot draw is a phone that looks
- * broken offline. The largest rungs — `image-large`, `video-1080p`, and the
+ * broken offline. That rule is checked against measured bytes rather than
+ * asserted; see "Why these shares and not the old ones" below. The largest
+ * rungs — `image-large`, `video-1080p`, and the
  * originals themselves — are not prefetched, because they exist for zooming
  * into one photograph and pulling them speculatively would spend the budget on
  * bytes nobody looked at — the one judgement here that a cache's eviction order
  * genuinely cannot make for itself, since by the time it could, the download has
  * happened.
+ *
+ * ## Why these shares and not the old ones
+ *
+ * The first set of shares was written against a ladder whose bottom two rungs
+ * were 128 px and 400 px. `image-xsmall` moved to 320 and `image-thumb` to 640,
+ * which multiplies the pixel count by 6.25 and 2.56, and the shares did not
+ * move with them. A rung that is meant to cover the library and covers half of
+ * it is the failure this file exists to prevent, and it is invisible until a
+ * phone is offline in front of a grid it cannot draw.
+ *
+ * So the two bottom rungs are now sized from **measured** renditions rather
+ * than from reasoning about them. Against the local library, AVIF at quality
+ * 50 averages 8.8 KB at `image-xsmall` and 31.0 KB at `image-thumb`, which puts
+ * a 60,000-item library at 0.49 GB and 1.73 GB. The shares below give them
+ * 0.54 GB and 1.75 GB — the whole library with a little headroom, which is what
+ * the rule above actually asks for.
+ *
+ * The bytes come from `image-medium`, whose coverage falls from 50% of the
+ * library to 37%. That is the right line to charge, and its own note says why:
+ * it wants the whole library *if it fits*, where the two rungs below it are
+ * what make the app work at all when nothing fits. A missing `image-medium`
+ * degrades to a thumbnail; a missing thumbnail degrades to a grey square.
+ *
+ * `video-poster-thumb` follows `image-thumb` from 1 to 2, because the ladder
+ * pins the poster to the still rung and the same 2.56× applies to it.
+ *
+ * **The sample is small — seven originals — so treat these as a correction to
+ * numbers that were provably wrong rather than as the final word.** The figure
+ * to re-measure is bytes per rung across a real library, and the arithmetic
+ * above is the whole of what depends on it.
  *
  * ## What this budget does *not* govern
  *
@@ -114,11 +146,16 @@ export const PHONE_RETENTION: NodeRetentionPolicy = {
     [PHOTOS_APP_ID]: {
       rows: {
         // Everything the grid needs to draw itself with no network at all.
-        "image-xsmall": prefetched(2),
-        "image-thumb": prefetched(7),
+        // Sized to hold the whole library at the rungs' measured byte cost —
+        // 0.54 GB and 1.75 GB against 0.49 GB and 1.73 GB needed. See "Why
+        // these shares and not the old ones".
+        "image-xsmall": prefetched(4),
+        "image-thumb": prefetched(13),
         // The routine working rendition: fullscreen stage 1, share/export,
-        // on-device AI. Worth keeping the whole library's worth if it fits.
-        "image-medium": prefetched(28),
+        // on-device AI. Worth keeping the whole library's worth if it fits —
+        // and at 136 KB a record it does not fit, so this is the line that pays
+        // for the two above. 2.83 GB, or 37% of a 60,000-item library.
+        "image-medium": prefetched(21),
         // Fullscreen at retina. The budget starts to bite here, which under the
         // old table was spelled `recent-only` with a 30-day window — a rule
         // that never once bound, because a rendition carries no capture date.
@@ -127,7 +164,8 @@ export const PHONE_RETENTION: NodeRetentionPolicy = {
         "image-screen": prefetched(14),
         // 4K TV, zoom, print preview. Fetched when someone actually zooms.
         "image-large": onDemand(7),
-        "video-poster-thumb": prefetched(1),
+        // Pinned to `image-thumb` by the ladder, so it moved when that rung did.
+        "video-poster-thumb": prefetched(2),
         "video-poster-720p": prefetched(2),
         "video-skim": prefetched(4),
         "video-720p": prefetched(28),

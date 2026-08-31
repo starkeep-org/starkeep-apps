@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Starkeep",
-    "slug": "starkeep",
+    "name": "Starkeep Photos",
+    "slug": "starkeep-photos",
     "version": "0.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "android": {
-      "package": "app.starkeep.mobile",
+      "package": "app.starkeep.photos",
       "permissions": ["READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO"]
     },
     "plugins": [

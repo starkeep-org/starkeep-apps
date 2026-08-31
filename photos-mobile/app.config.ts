@@ -47,8 +47,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const file = readStarkeepConfig();
   return {
     ...config,
-    name: config.name ?? "Starkeep",
-    slug: config.slug ?? "starkeep",
+    name: config.name ?? "Starkeep Photos",
+    slug: config.slug ?? "starkeep-photos",
     extra: {
       ...config.extra,
       starkeep: file

@@ -289,7 +289,7 @@ export function HomeScreen({
         }
       >
         <View style={{ gap: 4 }}>
-          <Text style={styles.title}>Starkeep</Text>
+          <Text style={styles.title}>Starkeep Photos</Text>
           <Text style={styles.subtitle}>{sessionLabel(session, sessionKnown)}</Text>
         </View>
 

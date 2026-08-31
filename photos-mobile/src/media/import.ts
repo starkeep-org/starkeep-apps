@@ -44,8 +44,10 @@ import {
   createDataRecord,
   dataRecordObjectKey,
   defaultTypeForExtension,
+  typeCategory,
   type DataRecord,
   type HLCClock,
+  type StarkeepId,
 } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import type { ExpoFileSystem } from "../storage/expo-object-storage";
@@ -317,6 +319,7 @@ async function importOne(
     addedAtMs: context.nowMs,
   });
 
+  await writeDimensions(deps, record.id, type, item);
   await deps.database.put(record);
   return { record, sizeBytes: digest.sizeBytes, readMs: digest.readMs, hashMs: digest.hashMs };
 }
@@ -375,6 +378,77 @@ async function collect(stream: ReadableStream<Uint8Array> | null): Promise<Uint8
     at += chunk.byteLength;
   }
   return out;
+}
+
+/**
+ * Record the asset's pixel dimensions, which the media store already knows.
+ *
+ * ## Why this is not optional
+ *
+ * Variant resolution orders a record's renditions by long edge, so a candidate
+ * with no dimensions is unorderable and gets dropped. A *parent* with no
+ * dimensions is worse: there is no applicable set to compute, so
+ * `resolveLibraryRenditions` falls back to `resolveWithoutDimensions` and can
+ * only choose among renditions that happen to exist rather than name the rung
+ * a tile should have. The cloud reaches the same dead end and reports the
+ * original as having no renditions at all, which it cannot tell apart from
+ * "nothing derived yet" — the exact confusion that made Photos re-derive a
+ * complete ladder on every load before `1bcc03a`.
+ *
+ * The phone was the one importer writing no dimensions at all, and it is the
+ * importer with the least excuse: `expo-media-library` returns width and height
+ * on the same query row the import loop already reads, so this costs one write
+ * and no decode.
+ *
+ * ## Before the record, not after
+ *
+ * `1bcc03a` made metadata ride the record over the wire, read once per shipment
+ * after a round is cut. A row written *after* `put` is therefore invisible to
+ * any round that cuts in between, and only a later write to the record would
+ * offer it again. Writing first means the record's own clock — set by `put` on
+ * the next line — already covers the dimensions, and no window exists to lose
+ * them in.
+ *
+ * The interrupted state is a metadata row whose record was never written. It is
+ * self-repairing rather than merely harmless: a record id is content-addressed
+ * from `(parent, filename, hash)`, so a retry of the same asset mints the same
+ * id and overwrites the same row.
+ *
+ * ## Width and height only
+ *
+ * Both categories declare `captured_at`, and the media store's creation time is
+ * tempting for it. It is not written, because a metadata column must be
+ * derivable from the record's *file bytes* and the store's creation time is a
+ * fact about the store's own bookkeeping. `captured_at` belongs to whatever
+ * eventually reads EXIF. `duration_ms` is a genuine fact about a video's bytes
+ * and is left for the same pass, so that one commit owns "what the phone knows
+ * about a record without decoding it".
+ */
+async function writeDimensions(
+  deps: ImportDeps,
+  recordId: StarkeepId,
+  type: string,
+  item: DeviceMediaItem,
+): Promise<void> {
+  // The category, not the type. `SqliteDatabaseAdapter` happens to normalize a
+  // `<category>/<format>` id to its table, but `MockDatabaseAdapter` keys on
+  // the argument verbatim — so passing `image/jpeg` here would store a row that
+  // `getMetadataByIds("image", …)` never finds. Naming the category is what
+  // both adapters agree on, and it is what every reader already asks for.
+  const category = typeCategory(type);
+  // `other` has no metadata table — see `sqliteMetadataTableName`. Anything the
+  // extension did not identify lands there, and writing would target a table
+  // that is deliberately never created.
+  if (category === "other") return;
+  // The media store reports both or neither in practice, and a zero is how it
+  // spells "not known" for an asset it failed to probe. Either way a partial
+  // pair is worse than none: a width with no height still cannot be ordered,
+  // and it would look like a known value to every reader.
+  const { width, height } = item;
+  if (typeof width !== "number" || typeof height !== "number") return;
+  if (width <= 0 || height <= 0) return;
+
+  await deps.database.putMetadata(category, { recordId, width, height });
 }
 
 /**

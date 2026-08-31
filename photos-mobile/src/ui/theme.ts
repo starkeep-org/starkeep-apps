@@ -18,9 +18,19 @@ export const colors = {
   danger: "#f87171",
 } as const;
 
+/**
+ * The grid's geometry, named because something outside the stylesheet needs it.
+ *
+ * `use-library.ts` converts a tile's width into the pixel long edge it asks the
+ * ladder for, and a second copy of these numbers would drift from the layout
+ * silently — the tiles would keep rendering and simply request the wrong rung.
+ */
+export const CONTENT_PADDING = 20;
+export const TILE_WIDTH_FRACTION = 0.328;
+
 export const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  content: { padding: 20, gap: 20 },
+  content: { padding: CONTENT_PADDING, gap: 20 },
   centered: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
 
   title: { color: colors.heading, fontSize: 28, fontWeight: "600" },
@@ -63,7 +73,7 @@ export const styles = StyleSheet.create({
   // survive a rotation and a tablet without anyone measuring the screen.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 2 },
   tile: {
-    width: "32.8%",
+    width: `${TILE_WIDTH_FRACTION * 100}%`,
     aspectRatio: 1,
     backgroundColor: colors.surface,
     justifyContent: "flex-end",

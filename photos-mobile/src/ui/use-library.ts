@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Dimensions, PixelRatio } from "react-native";
 import { createHLCClock, type HLCClock } from "@starkeep/protocol-primitives";
 import { listLibrary, summarizeLibrary, type LibraryItem, type LibrarySummary } from "../library";
 import { importDeviceMedia, type ImportOutcome, type ImportProgress } from "../media/import";
@@ -16,9 +17,41 @@ import type { DeviceKey } from "../auth/device-key";
 import type { MobileNode, StorageReport } from "../node";
 import type { EvictionOutcome } from "@starkeep/sync-engine";
 import { bringUpNode, clearNodeData, importDepsFor } from "../platform";
+import { CONTENT_PADDING, TILE_WIDTH_FRACTION } from "./theme";
 
 /** How many tiles the grid shows. A ceiling, not a page size — see `MediaGrid`. */
 export const LIBRARY_PAGE = 60;
+
+/**
+ * The pixel long edge one grid tile wants.
+ *
+ * ## Pixels, never a class name
+ *
+ * The same contract every other Photos surface uses. A caller states what it
+ * needs in the only unit it actually knows — how many pixels it is about to
+ * paint — and the ladder decides which rung answers. That is what let
+ * `35d849d` respecify two rungs without touching a single consumer, and naming
+ * `image-thumb` here would put this file back in the set that has to change.
+ *
+ * ## Where the number comes from
+ *
+ * The layout in `theme.ts`: `styles.content` pads 20 each side and
+ * `styles.tile` takes 32.8% of what is left, three across. Multiplying by the
+ * device pixel ratio converts the result from layout points to the pixels the
+ * decoder will actually fill.
+ *
+ * Computed rather than measured with `onLayout`, because the grid is a fixed
+ * three columns and the arithmetic above is the whole of its geometry. The web
+ * app measures because a justified layout has no such closed form. If this grid
+ * ever gains one, this is the function to replace with a real measurement.
+ *
+ * Read at query time rather than cached, so a rotation is picked up by the next
+ * reload without a listener.
+ */
+function tileLongEdge(): number {
+  const gridWidth = Dimensions.get("window").width - CONTENT_PADDING * 2;
+  return Math.round(gridWidth * TILE_WIDTH_FRACTION * PixelRatio.get());
+}
 
 /** How many assets one import pass considers. */
 export const IMPORT_BATCH = 60;
@@ -239,7 +272,7 @@ export function useLibrary(node: NodeState): LibraryState {
         aliases: ready.node.mediaAliases,
       };
       const [page, totals] = await Promise.all([
-        listLibrary(deps, { limit: LIBRARY_PAGE }),
+        listLibrary(deps, { limit: LIBRARY_PAGE, tileLongEdge: tileLongEdge() }),
         summarizeLibrary(deps),
       ]);
       setItems(page.items);

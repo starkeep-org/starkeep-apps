@@ -270,3 +270,78 @@ describe("assets that cannot be read", () => {
     expect(outcome.failures[0]!.reason).toBeTruthy();
   });
 });
+
+/**
+ * Dimensions at import.
+ *
+ * The claim is narrow and load-bearing: an imported record carries the pixel
+ * dimensions the media store already reported, in the category table every
+ * reader looks in. Without them variant resolution has no applicable set, so
+ * the phone cannot name the rung a tile should have and the cloud cannot tell
+ * "this original has no renditions" from "this original has no dimensions".
+ */
+describe("dimensions", () => {
+  it("records the media store's dimensions against the imported record", async () => {
+    const outcome = await importDeviceMedia(deps(), { limit: 10 });
+    const record = outcome.records[0]!;
+
+    // Keyed by category, which is what `resolveLibraryRenditions` reads. A row
+    // filed under `image/jpeg` would be invisible to it while looking present
+    // in the database, so the table it lands in is the assertion.
+    const row = await database.getMetadata("image", record.id);
+    expect(row).toMatchObject({ width: 4032, height: 3024 });
+  });
+
+  it("writes the row before the record, so no sync round can cut between them", async () => {
+    // A metadata row reaches a peer only as a passenger on its record, read
+    // when a round is cut. Written after `put`, the dimensions would be absent
+    // from any round that cut in the gap and nothing would offer them again.
+    const order: string[] = [];
+    const watched = {
+      ...deps(),
+      database: Object.assign(Object.create(Object.getPrototypeOf(database)), database, {
+        putMetadata: async (t: string, r: Parameters<typeof database.putMetadata>[1]) => {
+          order.push("metadata");
+          return database.putMetadata(t, r);
+        },
+        put: async (r: Parameters<typeof database.put>[0]) => {
+          order.push("record");
+          return database.put(r);
+        },
+      }),
+    };
+
+    await importDeviceMedia(watched, { limit: 10 });
+
+    expect(order).toEqual(["metadata", "record"]);
+  });
+
+  it("writes nothing for an asset the store could not measure", async () => {
+    // A width with no height is still unorderable, and it would read as a known
+    // value to everything downstream. Half a pair is worse than none.
+    const d = {
+      ...deps(),
+      media: fakeMedia([asset({ id: URI_1, width: 4032, height: null })]),
+    };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.imported).toBe(1);
+    expect(await database.getMetadata("image", outcome.records[0]!.id)).toBeNull();
+  });
+
+  it("writes nothing for a record with no metadata table", async () => {
+    // `other` is the terminal category and has no table. The import still
+    // succeeds — an unrecognised file is a record like any other.
+    const d = {
+      ...deps(),
+      media: fakeMedia([asset({ id: URI_1, filename: "notes.unknownext" })]),
+    };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.imported).toBe(1);
+    expect(outcome.records[0]!.type).toBe("other/other");
+    expect(await database.getMetadata("other", outcome.records[0]!.id)).toBeNull();
+  });
+});

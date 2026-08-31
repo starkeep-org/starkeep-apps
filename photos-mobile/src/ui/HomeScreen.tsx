@@ -217,15 +217,156 @@ export function HomeScreen({
    * costs at most the round in flight and the next tap resumes in place.
    */
   const syncAbort = useRef<AbortController | null>(null);
+  /**
+   * Whether returning to the foreground should pick the sync back up.
+   *
+   * Armed only when backgrounding actually interrupted a running sync, so
+   * coming back to the app does not start one nobody asked for.
+   */
+  const resumeOnForeground = useRef(false);
+  /** True while a sync is in flight, readable from an event handler. */
+  const syncingRef = useRef(false);
+  /**
+   * The latest {@link runSync}, reachable from the subscription below.
+   *
+   * A ref rather than a dependency, because the effect's cleanup aborts the
+   * running sync: re-subscribing whenever `runSync`'s identity changed would
+   * abort the very sync this is meant to keep alive, on every render.
+   */
+  const runSyncRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") syncAbort.current?.abort();
+      if (state !== "active") {
+        // Arm the resume before aborting, and only for a sync that was actually
+        // running. Stopping is cheap — every round has persisted its watermarks
+        // — but nothing used to start it again, so a first library upload
+        // advanced only while someone watched the screen and stopped silently
+        // the moment they looked away. Checking whether the photos had arrived
+        // was itself the thing that stopped them arriving.
+        if (syncingRef.current) resumeOnForeground.current = true;
+        syncAbort.current?.abort();
+        return;
+      }
+      if (!resumeOnForeground.current) return;
+      resumeOnForeground.current = false;
+      runSyncRef.current?.();
     });
     return () => {
       subscription.remove();
       syncAbort.current?.abort();
     };
   }, []);
+
+  /**
+   * Run a sync, from a tap or from coming back to the foreground.
+   *
+   * Extracted from the button so the two callers are the same code. A resumed
+   * sync that differed from a tapped one would be a second implementation of
+   * the only path that matters on this screen, and the difference would show up
+   * exactly once, on a handset, as a library that stopped halfway.
+   *
+   * `sync()`, not `exchange()`: a round carries at most one round's budget, so
+   * one tap per round would make a first upload of a real library hundreds of
+   * taps.
+   */
+  const runSync = useCallback(() => {
+    if (node.status !== "ready" || node.node.engine === null) return;
+    // A resume and a tap can race — the listener fires while a sync the user
+    // started is already draining. Starting a second one against the same
+    // engine would serialize behind the first anyway and double the progress
+    // counter on the way.
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncing(true);
+    setSyncProgress(null);
+    syncAbort.current?.abort();
+    const abort = new AbortController();
+    syncAbort.current = abort;
+    let items = 0;
+    void node.node
+      .sync({
+        signal: abort.signal,
+        onRound: (result, rounds) => {
+          items += result.applied + result.shipped;
+          setSyncProgress({ rounds, items });
+          // Per round, because the totals cannot answer the
+          // question that matters here. `blocked` says something
+          // this round *selected* could not be moved — a blob that
+          // would not transfer — and it is deliberately kept out
+          // of `outboundHasMore`, so a sync that ships rows and
+          // moves no bytes looks identical in the totals to one
+          // that had no bytes to move.
+          console.warn(
+            `[sync] round=${rounds} applied=${result.applied} ` +
+              `shipped=${result.shipped} elided=${result.elided} ` +
+              `blocked=${result.blocked} hasMore=${result.hasMore} ` +
+              `outboundHasMore=${result.outboundHasMore} ` +
+              `progressed=${result.progressed}`,
+          );
+        },
+      })
+      .then(async (result) => {
+        // Every outcome, named. `sync()` has four exits and three
+        // of them used to render identically to success: the round
+        // cap, an abort, and a drained-but-incomplete return all
+        // set `complete: false` with `stalled: false`, and the
+        // chain below tested none of that. On a first library sync
+        // — where one 10 MB round carries one camera original, so
+        // sixty photographs need dozens of rounds — the abort is
+        // not the rare case. It fires every time the app loses
+        // focus, which is what checking whether the photos arrived
+        // does. The one state indistinguishable from success was
+        // the one that happened most.
+        console.warn(
+          `[sync] rounds=${result?.rounds} applied=${result?.applied} ` +
+            `shipped=${result?.shipped} elided=${result?.elided} ` +
+            `complete=${result?.complete} stalled=${result?.stalled} ` +
+            `aborted=${abort.signal.aborted}`,
+        );
+        // A stalled sync is not an error and not a success: the
+        // loop stopped because a round achieved nothing while work
+        // was still outstanding, which in practice is a transfer
+        // that will not go through. Saying nothing would show the
+        // same quiet "Sync now" as a completed sync.
+        // Ordered most specific first, so a diagnosis always beats
+        // the generic "did not finish". An abort leads because it
+        // is the only outcome the user caused and the only one
+        // whose remedy is simply tapping again.
+        setSyncError(
+          abort.signal.aborted
+            ? "Sync paused while the app was in the background. It carries on from where it stopped when you come back."
+            : result?.stalled
+              ? "Sync stopped making progress — something could not transfer. It will retry."
+              : result?.refusedAuthors?.length
+                ? "Some of this device's records are not reaching the cloud. Check backup to try again."
+                : result?.peerCoverageDegraded
+                  ? `The cloud could not report what it holds (${result.peerCoverageDegraded}), so this sync was conservative.`
+                  : result && !result.complete
+                    ? "Sync stopped before it finished. Tap Sync now to carry on."
+                    : null,
+        );
+        await library.reload();
+        // Sync is the event that fills the disk, so it is the
+        // event that should notice the disk is full. Without a
+        // caller here, a budget bounds new arrivals and nothing
+        // bounds what is already held: `decideResidency` starts
+        // answering `budget-exhausted`, the node quietly stops
+        // fetching that class, and stays full forever.
+        //
+        // After the reload rather than before, so the grid is
+        // already showing what arrived when the pass starts
+        // deciding what to let go.
+        await storage.reclaim();
+      })
+      .catch((err: unknown) => setSyncError(String(err)))
+      .finally(() => {
+        syncingRef.current = false;
+        setSyncing(false);
+      });
+  }, [node, library, storage]);
+  useEffect(() => {
+    runSyncRef.current = runSync;
+  }, [runSync]);
 
   const baseUrl = config?.baseUrl;
 
@@ -489,57 +630,7 @@ export function HomeScreen({
           {node.status === "ready" ? (
             <>
               <Pressable
-                onPress={() => {
-                  setSyncing(true);
-                  setSyncProgress(null);
-                  // sync(), not exchange(): a round carries at most one round's
-                  // budget, so one tap per round would make a first upload of a
-                  // real library hundreds of taps. Abandoning mid-loop is free —
-                  // each round persists its own watermarks — so backgrounding
-                  // the app costs at most the round in flight.
-                  syncAbort.current?.abort();
-                  const abort = new AbortController();
-                  syncAbort.current = abort;
-                  let items = 0;
-                  void node.node
-                    .sync({
-                      signal: abort.signal,
-                      onRound: (result, rounds) => {
-                        items += result.applied + result.shipped;
-                        setSyncProgress({ rounds, items });
-                      },
-                    })
-                    .then(async (result) => {
-                      // A stalled sync is not an error and not a success: the
-                      // loop stopped because a round achieved nothing while work
-                      // was still outstanding, which in practice is a transfer
-                      // that will not go through. Saying nothing would show the
-                      // same quiet "Sync now" as a completed sync.
-                      setSyncError(
-                        result?.stalled
-                          ? "Sync stopped making progress — something could not transfer. It will retry."
-                          : result?.refusedAuthors?.length
-                            ? "Some of this device's records are not reaching the cloud. Check backup to try again."
-                            : result?.peerCoverageDegraded
-                              ? `The cloud could not report what it holds (${result.peerCoverageDegraded}), so this sync was conservative.`
-                              : null,
-                      );
-                      await library.reload();
-                      // Sync is the event that fills the disk, so it is the
-                      // event that should notice the disk is full. Without a
-                      // caller here, a budget bounds new arrivals and nothing
-                      // bounds what is already held: `decideResidency` starts
-                      // answering `budget-exhausted`, the node quietly stops
-                      // fetching that class, and stays full forever.
-                      //
-                      // After the reload rather than before, so the grid is
-                      // already showing what arrived when the pass starts
-                      // deciding what to let go.
-                      await storage.reclaim();
-                    })
-                    .catch((err: unknown) => setSyncError(String(err)))
-                    .finally(() => setSyncing(false));
-                }}
+                onPress={() => runSync()}
                 disabled={syncing || node.node.engine === null}
                 style={[
                   styles.button,

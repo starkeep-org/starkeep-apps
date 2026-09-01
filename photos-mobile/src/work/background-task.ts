@@ -96,13 +96,69 @@ export const TICK_BUDGET_MS = 9 * 60_000;
  */
 export const TICK_IMPORT_LIMIT = 20;
 
+/**
+ * The task's own progress, either side of everything that can block.
+ *
+ * The tick reports per job, and that says nothing about the work either side of
+ * the jobs — opening the node and handing it back. A window that produced no
+ * output at all was indistinguishable from a process that never woke, and
+ * bringing the node up is exactly where a second connection to a database the
+ * previous window has not finished closing would wait.
+ */
+function taskLog(line: string): void {
+  console.warn(`[task] ${line}`);
+}
+
+/**
+ * The tick currently running, if any.
+ *
+ * ## Why a window has to be single-flight
+ *
+ * The OS delivered this task **twice, thirty milliseconds apart, into the same
+ * JavaScript runtime** — same process, same thread, two overlapping executor
+ * calls. Both opened the node, both started importing, and the second then
+ * blocked behind the first on the serialization `MobileNode` performs across
+ * `sync`, `exchange` and `verify`. The visible symptom was a window that
+ * produced no output and never wrote a report, which reads as a hang and is
+ * really two ticks queued behind each other, each taking minutes.
+ *
+ * The node handle was doing its job throughout — both calls received the same
+ * node, which is why this cost time rather than a corrupted database. What
+ * nothing enforced is the coarser rule: a window is one tick.
+ *
+ * The second delivery returns immediately rather than awaiting the first. The
+ * OS wants each delivery acknowledged, and the work it would have done is
+ * already being done; making it wait would report one tick's duration twice and
+ * bring both closer to the worker's ceiling for no gain.
+ */
+let inFlight: Promise<unknown> | null = null;
+
 TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
+  if (inFlight !== null) {
+    taskLog("a tick is already running in this process — this delivery does nothing");
+    return BackgroundTask.BackgroundTaskResult.Success;
+  }
+  let resolveInFlight: () => void = () => undefined;
+  inFlight = new Promise<void>((resolve) => {
+    resolveInFlight = resolve;
+  });
+
   let report: TickReport | null = null;
-  const lease = await acquireNode().catch(() => null);
-  if (lease === null) return BackgroundTask.BackgroundTaskResult.Failed;
+  taskLog("awake, acquiring the node");
+  const lease = await acquireNode().catch((err: unknown) => {
+    taskLog(`could not acquire the node: ${String(err)}`);
+    return null;
+  });
+  if (lease === null) {
+    inFlight = null;
+    resolveInFlight();
+    return BackgroundTask.BackgroundTaskResult.Failed;
+  }
+  taskLog("node acquired");
 
   try {
     const device = await readRealDeviceState();
+    taskLog(`device read: network=${device.hasNetwork} unmetered=${device.isUnmetered}`);
 
     const clock = createHLCClock({ nodeId: lease.identity.nodeId });
     report = await runWorkTick(
@@ -135,11 +191,20 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
     if (report !== null) {
       try {
         tickReportStore.write(report);
-      } catch {
+        taskLog("report written");
+      } catch (err) {
         // A report that cannot be written is not a reason to fail the window.
+        taskLog(`could not write the report: ${String(err)}`);
       }
     }
+    taskLog("releasing the node");
     await lease.release().catch(() => undefined);
+    // Cleared last, and in the `finally`, so a tick that threw does not leave
+    // the process believing one is still running — which would silently stop
+    // every future window in it.
+    inFlight = null;
+    resolveInFlight();
+    taskLog("done");
   }
 });
 

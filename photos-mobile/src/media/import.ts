@@ -52,7 +52,12 @@ import {
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import type { ExpoFileSystem } from "../storage/expo-object-storage";
 import { isContentUri, streamFromFile } from "../storage/expo-object-storage";
-import { listRecentMedia, type DeviceMediaItem, type DeviceMediaModule } from "./device-library";
+import {
+  listRecentMedia,
+  type DeviceMediaItem,
+  type DeviceMediaModule,
+  type Timers,
+} from "./device-library";
 import {
   advanceImportCursor,
   queryFloorFor,
@@ -187,6 +192,16 @@ export interface ImportOptions {
    * {@link ListRecentOptions.timeoutMs}.
    */
   readonly queryTimeoutMs?: number;
+  /**
+   * The timer {@link queryTimeoutMs} runs on.
+   *
+   * Supplied by the background tick and omitted by the foreground control, and
+   * the split is not a nicety: React Native drives `setTimeout` from a
+   * `Choreographer` frame callback, and a headless process receives no frames,
+   * so a deadline armed on the platform's timers in a background window never
+   * fires at all. See `work/native-timers.ts`.
+   */
+  readonly timers?: Timers;
 }
 
 /**
@@ -324,6 +339,7 @@ export async function importDeviceMedia(
       order: "modificationTime",
       mediaTypes: IMPORTABLE_MEDIA_TYPES,
       timeoutMs: options.queryTimeoutMs,
+      timers: options.timers,
     });
     const seed = newest[0]?.modifiedAt ?? null;
     if (seed !== null) cursorStore.set(seed);
@@ -344,6 +360,7 @@ export async function importDeviceMedia(
     modifiedSinceMs: queryFloorFor(cursor),
     mediaTypes: IMPORTABLE_MEDIA_TYPES,
     timeoutMs: options.queryTimeoutMs,
+    timers: options.timers,
     // Oldest first when walking from a watermark, newest first without one.
     // A fixed window taken from the newest end cannot drain a backlog without
     // either skipping assets or re-offering them forever — see

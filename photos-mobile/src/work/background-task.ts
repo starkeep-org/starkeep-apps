@@ -73,17 +73,28 @@ export const TICK_BUDGET_MS = 9 * 60_000;
 /**
  * How many of the newest assets one tick considers importing.
  *
- * Generous because the pass is cheap for anything already imported — an alias
- * lookup and a record read — and because the cost of being stingy is invisible.
- * Import walks the media store newest-first, so a limit that falls short of a
- * burst leaves the older half of it permanently unseen: the next tick looks at
- * the same newest N, finds them already imported, and stops.
+ * **Twenty, and the number was measured rather than chosen.** The first version
+ * said two hundred, on the reasoning that an already-imported asset costs only
+ * an alias lookup and a record read. That reasoning was about the wrong half of
+ * the work. `listRecentMedia` ends in `exeForMetadata()`, which runs
+ * `ExifInterface` and `MediaMetadataRetriever` per asset inside the media store,
+ * and against a roll containing video it measured **18.8 minutes for two
+ * hundred** on a Pixel 5 — long enough that the tick's own deadline cut the
+ * window after a single import and nothing synced at all.
  *
- * Two hundred covers any plausible burst between two windows. It does not cover
- * a library backfill, and is not meant to — bringing in sixty thousand older
- * photographs stays a foreground action with a progress count somebody can see.
+ * The cost is linear in this number and is **not** interruptible: it happens in
+ * one call before the loop, so `ImportOptions.signal` cannot bound it. The limit
+ * is therefore the bound, which is why it is small.
+ *
+ * What that gives up, stated rather than discovered later: a burst of more than
+ * twenty captures between two windows leaves the older part of it unseen, and
+ * no later tick recovers it, because import walks newest-first and the next tick
+ * looks at the same twenty. The foreground "Add photos" control takes sixty and
+ * shows a progress count, which is the route for a burst or a backfill. Fixing
+ * it properly needs a media query that can page or filter by time, and
+ * `MediaQuery` exposes neither.
  */
-export const TICK_IMPORT_LIMIT = 200;
+export const TICK_IMPORT_LIMIT = 20;
 
 TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
   let report: TickReport | null = null;

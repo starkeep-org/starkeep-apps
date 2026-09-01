@@ -56,10 +56,16 @@ function asset(overrides: Partial<AssetMetadataLike> & { id: string }): AssetMet
   };
 }
 
+/** What the last query asked the media store to sort by. */
+let lastOrderBy: { key: string; ascending?: boolean } | null = null;
+
 /** A media store whose asset ids are already `content://` URIs, as Android's are. */
 function fakeMedia(rows: AssetMetadataLike[]): DeviceMediaModule {
   const query = (): MediaQuery => ({
-    orderBy: () => query(),
+    orderBy: (sort) => {
+      lastOrderBy = sort;
+      return query();
+    },
     limit: () => query(),
     exeForMetadata: async () => rows,
   });
@@ -84,9 +90,9 @@ function putAsset(uri: string, bytes: Uint8Array): void {
   file.write(bytes);
 }
 
-function deps() {
+function deps(rows: AssetMetadataLike[] = [asset({ id: URI_1 })]) {
   return {
-    media: fakeMedia([asset({ id: URI_1 })]),
+    media: fakeMedia(rows),
     aliases,
     database,
     clock: createHLCClock({ nodeId: "phone" }),
@@ -343,5 +349,32 @@ describe("dimensions", () => {
     expect(outcome.imported).toBe(1);
     expect(outcome.records[0]!.type).toBe("other/other");
     expect(await database.getMetadata("other", outcome.records[0]!.id)).toBeNull();
+  });
+});
+
+
+describe("which assets import can reach", () => {
+  it("orders by modification time, never by the nullable creation time", async () => {
+    // The media store fills `creationTime` from EXIF, so an image carrying none
+    // has no value at all — and a null sort key behind a limit is not "last",
+    // it is unreachable, because every pass asks the same question and gets the
+    // same answer. An image saved from a messaging app or copied onto the
+    // device would never be imported, on any pass, foreground or background.
+    await importDeviceMedia(deps(), { limit: 20 });
+
+    expect(lastOrderBy).toEqual({ key: "modificationTime", ascending: false });
+  });
+
+  it("imports an asset the media store has no creation time for", async () => {
+    const undated = "content://media/external/images/media/999";
+    putAsset(undated, PHOTO);
+
+    const outcome = await importDeviceMedia(
+      deps([asset({ id: undated, creationTime: null })]),
+      { limit: 20 },
+    );
+
+    expect(outcome.imported).toBe(1);
+    expect(outcome.failed).toBe(0);
   });
 });

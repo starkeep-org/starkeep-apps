@@ -135,6 +135,19 @@ export interface ImportOptions {
    * that ingested an original is the one that derives from it.
    */
   readonly originAppId?: string;
+  /**
+   * Checked between assets. Set it to stop early.
+   *
+   * The same shape `SyncOptions.signal` takes, and for the same reason: a
+   * background window is bounded by the OS, and a pass that runs past its
+   * budget is killed rather than stopped — which loses the report of everything
+   * it did manage. Stopping costs nothing, because `alreadyImported` makes the
+   * next pass skip whatever this one finished.
+   *
+   * Checked *between* assets rather than inside one. A part-imported asset is
+   * not a state this wants to be able to reach.
+   */
+  readonly signal?: { readonly aborted: boolean };
 }
 
 /**
@@ -215,6 +228,9 @@ export async function importDeviceMedia(
   const yieldToUi = deps.yieldToUi ?? (() => new Promise<void>((r) => setTimeout(r, 0)));
 
   for (const [index, item] of items.entries()) {
+    // Between assets, so a stopped pass leaves whole records behind rather than
+    // a half-written one.
+    if (options.signal?.aborted) break;
     try {
       if (await alreadyImported(deps, item)) {
         skipped += 1;
@@ -248,7 +264,17 @@ export async function importDeviceMedia(
     }
   }
 
-  return { scanned: items.length, imported, skipped, failed: failures.length, failures, records };
+  return {
+    // What the pass actually considered, which is not `items.length` once a
+    // signal can stop it. A count of what was offered would make an interrupted
+    // pass report the work it never reached.
+    scanned: imported + skipped + failures.length,
+    imported,
+    skipped,
+    failed: failures.length,
+    failures,
+    records,
+  };
 }
 
 /**

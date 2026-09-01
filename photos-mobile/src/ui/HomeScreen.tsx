@@ -47,10 +47,11 @@ import {
 import { JOB_GRAPH, runnableJobs, type DeviceState } from "../work/job-graph";
 import {
   backgroundWorkStatus,
-  probeReportStore,
+  readRealDeviceState,
   registerBackgroundWork,
+  tickReportStore,
 } from "../work/background-task";
-import type { ProbeReport } from "../work/probe";
+import type { TickReport } from "../work/tick";
 import type { ImportOutcome } from "../media/import";
 import { formatBytes, LibraryGrid } from "./LibraryGrid";
 import { MediaGrid } from "./MediaGrid";
@@ -59,6 +60,19 @@ import { useLibrary, useNode, useStorage } from "./use-library";
 import type { EvictionOutcome } from "@starkeep/sync-engine";
 import { describeVerify, verifyFoundProblem } from "./verify-text";
 import type { VerifyResult } from "@starkeep/sync-engine";
+
+/** The device's conditions, as one line under the job count. */
+function describeDevice(device: DeviceState): string {
+  return [
+    device.hasNetwork ? (device.isUnmetered ? "unmetered network" : "metered network") : "offline",
+    device.isCharging ? "charging" : "on battery",
+    device.batteryLevel === undefined
+      ? "battery unknown"
+      : `battery ${Math.round(device.batteryLevel * 100)}%`,
+    device.isLowPowerMode ? "power saver on" : "power saver off",
+    device.isStorageLow ? "storage low" : "storage fine",
+  ].join(" · ");
+}
 
 interface Check {
   readonly name: string;
@@ -375,14 +389,20 @@ export function HomeScreen({
   }, [runSync]);
 
   /**
-   * What the last headless run found, and whether the OS will run one.
+   * What the last background tick did, whether the OS will run another, and
+   * what this device's conditions actually are.
    *
-   * Read once on mount rather than polled: a headless run cannot happen while
-   * this screen is in the foreground — the Android scheduler refuses and
-   * reschedules — so the file cannot change under an open screen.
+   * Read once on mount rather than polled: a tick cannot run while this screen
+   * is in the foreground — the Android scheduler refuses and reschedules — so
+   * the report file cannot change under an open screen.
+   *
+   * The device reading comes from the same function the tick uses. Two readers
+   * with two sources is how a debug panel comes to disagree with the scheduler
+   * it exists to explain.
    */
-  const [probeReport, setProbeReport] = useState<ProbeReport | null>(null);
+  const [tickReport, setTickReport] = useState<TickReport | null>(null);
   const [backgroundStatus, setBackgroundStatus] = useState<string | null>(null);
+  const [device, setDevice] = useState<DeviceState | null>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -393,8 +413,13 @@ export function HomeScreen({
       } catch (err) {
         if (!cancelled) setBackgroundStatus(String(err));
       }
-      const report = await probeReportStore.read();
-      if (!cancelled) setProbeReport(report);
+      const [report, conditions] = await Promise.all([
+        tickReportStore.read(),
+        readRealDeviceState(),
+      ]);
+      if (cancelled) return;
+      setTickReport(report);
+      setDevice(conditions);
     })();
     return () => {
       cancelled = true;
@@ -430,16 +455,6 @@ export function HomeScreen({
       cancelled = true;
     };
   }, [collect]);
-
-  // Assumed conditions until item 13 reports the real ones. Stated as assumed
-  // rather than shown as measured: a status screen that quietly makes things up
-  // is worse than one that admits what it does not know.
-  const assumedDevice: DeviceState = {
-    hasNetwork: true,
-    isUnmetered: true,
-    isCharging: false,
-    isStorageLow: false,
-  };
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -653,30 +668,29 @@ export function HomeScreen({
 
         <Section title="Work">
           <Text style={styles.muted}>
-            {JOB_GRAPH.length} jobs declared, {runnableJobs(assumedDevice).length} runnable under
-            assumed conditions. Device conditions are assumed until item 13 reports them.
+            {JOB_GRAPH.length} jobs declared,{" "}
+            {device ? `${runnableJobs(device).length} runnable right now` : "conditions loading…"}.
           </Text>
+          {device ? <Text style={styles.muted}>{describeDevice(device)}</Text> : null}
           <Text style={styles.muted}>Background task: {backgroundStatus ?? "registering…"}</Text>
-          {/* The last headless run, read from the file it left behind. The
-              process that produced it is gone, so this is the only place its
-              answer can appear — logcat needs a cable, and the whole question is
-              what the phone does with nobody watching. */}
-          {probeReport ? (
+          {/* The last tick, read from the file it left behind. The process that
+              produced it is gone, so this is the only place its report can
+              appear — logcat needs a cable, and the whole question is what the
+              phone does with nobody watching. */}
+          {tickReport ? (
             <>
               <Text style={styles.muted}>
-                Last headless run {probeReport.startedAt} ({probeReport.totalMs} ms)
+                Last background tick {tickReport.startedAt} ({tickReport.totalMs} ms
+                {tickReport.ranOutOfTime ? ", out of time" : ""})
               </Text>
-              {probeReport.steps.map((step) => (
-                <Text
-                  key={step.name}
-                  style={step.ok ? styles.muted : styles.error}
-                >
-                  {step.ok ? "OK" : "FAIL"} {step.name} ({step.ms} ms) — {step.detail}
+              {tickReport.outcomes.map((outcome) => (
+                <Text key={outcome.job} style={styles.muted}>
+                  {outcome.ran ? "ran" : "—"} {outcome.job}: {outcome.detail}
                 </Text>
               ))}
             </>
           ) : (
-            <Text style={styles.muted}>No headless run has reported yet.</Text>
+            <Text style={styles.muted}>No background tick has reported yet.</Text>
           )}
         </Section>
 

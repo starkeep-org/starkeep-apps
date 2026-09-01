@@ -44,7 +44,31 @@ export interface JobConstraints {
    * syncs, which is worse than a slightly emptier battery.
    */
   readonly requiresCharging: boolean;
-  /** Requires storage not to be low — eviction is exempt, since it frees space. */
+  /**
+   * Requires the device to have room.
+   *
+   * **True only for jobs that put bytes on this device**, which is a narrower
+   * rule than it first appears and was corrected against a real handset. The
+   * blanket version gated almost everything, and a Pixel at 97% full then did
+   * nothing at all: import was refused, sync was refused, and the one job left
+   * running was an eviction pass that freed nothing, because a phone's own
+   * photographs are aliases to the camera roll and cost the budget nothing to
+   * begin with.
+   *
+   * That is exactly backwards. A phone that is full is the phone whose
+   * photographs most need to be somewhere else, and the work that gets them
+   * there — noticing them, and sending them — writes rows measured in bytes
+   * and no blobs at all. Sending a blob to S3 consumes no local space
+   * whatsoever.
+   *
+   * So the floor belongs on `fetch-blobs` and on derivation, which are the jobs
+   * that actually land bytes here, and eviction stays exempt because it is what
+   * fixes the condition. One gap remains and is deliberate: `MobileNode.sync()`
+   * moves both directions, so a round can still pull a blob on a device with
+   * little room. The residency budget bounds that, the foreground "Sync now"
+   * button has never had a floor either, and the real repair is the same split
+   * the metered constraint needs — a push-only round, expressed in the engine.
+   */
   readonly requiresStorageNotLow: boolean;
 }
 
@@ -113,7 +137,9 @@ const NO_NETWORK: JobConstraints = {
   requiresUnmetered: false,
   requiresNetwork: false,
   requiresCharging: false,
-  requiresStorageNotLow: true,
+  // Exempt from the storage floor, along with everything else here that does
+  // not acquire bytes. See {@link JobConstraints.requiresStorageNotLow}.
+  requiresStorageNotLow: false,
 };
 
 export const JOB_GRAPH: readonly JobSpec[] = [
@@ -135,7 +161,9 @@ export const JOB_GRAPH: readonly JobSpec[] = [
       requiresUnmetered: false,
       requiresNetwork: true,
       requiresCharging: false,
-      requiresStorageNotLow: true,
+      // Rows, not blobs. A library that stays browsable on a full phone is
+      // worth a few kilobytes of them.
+      requiresStorageNotLow: false,
     },
     // Metadata is small, so this runs on cellular deliberately: the library
     // staying browsable is worth a few kilobytes, and it is what makes elided
@@ -213,7 +241,10 @@ export const JOB_GRAPH: readonly JobSpec[] = [
       requiresUnmetered: true,
       requiresNetwork: true,
       requiresCharging: false,
-      requiresStorageNotLow: true,
+      // **Deliberately exempt.** Uploading consumes no local space, and a full
+      // phone is the one whose photographs most need to be off it. Gating this
+      // on free space made backup stop exactly when it mattered most.
+      requiresStorageNotLow: false,
     },
     targetSecondsPerUnit: 5,
     resumable: true,

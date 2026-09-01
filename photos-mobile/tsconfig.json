@@ -18,6 +18,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "modules/**/*.ts",
     "src/**/*.tsx",
     "__tests__/**/*.ts",
     "App.tsx",

@@ -17,7 +17,13 @@ import { createHash } from "node:crypto";
 import { createHLCClock, dataRecordObjectKey } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, type RawDatabase } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "../src/media/media-alias";
-import { importDeviceMedia, MAX_INLINE_READ_BYTES, type HashBytes } from "../src/media/import";
+import {
+  importDeviceMedia,
+  IMPORTABLE_MEDIA_TYPES,
+  noYield,
+  MAX_INLINE_READ_BYTES,
+  type HashBytes,
+} from "../src/media/import";
 import type {
   AssetMetadataLike,
   DeviceMediaModule,
@@ -58,22 +64,82 @@ function asset(overrides: Partial<AssetMetadataLike> & { id: string }): AssetMet
 
 /** What the last query asked the media store to sort by. */
 let lastOrderBy: { key: string; ascending?: boolean } | null = null;
+/** How many rows the last query actually returned, before import looked at any. */
+let lastReturnedRows = 0;
 
-/** A media store whose asset ids are already `content://` URIs, as Android's are. */
+/**
+ * A media store whose asset ids are already `content://` URIs, as Android's are.
+ *
+ * **This fake applies the filter, the sort and the limit rather than ignoring
+ * them**, which the earlier version did. Ignoring them was harmless while the
+ * only question was what import did with the rows it was handed. It stopped
+ * being harmless once the rows themselves became the thing under test: the
+ * whole point of the watermark is that the media store never produces a row for
+ * an asset already imported, and a fake that returns everything regardless
+ * cannot tell a working filter from an absent one.
+ */
 function fakeMedia(rows: AssetMetadataLike[]): DeviceMediaModule {
-  const query = (): MediaQuery => ({
+  const build = (state: {
+    order: { key: string; ascending?: boolean } | null;
+    floor: { field: string; value: number } | null;
+    kinds: readonly string[] | null;
+    limit: number | null;
+  }): MediaQuery => ({
     orderBy: (sort) => {
       lastOrderBy = sort;
-      return query();
+      return build({ ...state, order: sort });
     },
-    limit: () => query(),
-    exeForMetadata: async () => rows,
+    limit: (count) => build({ ...state, limit: count }),
+    gte: (field, value) => build({ ...state, floor: { field, value } }),
+    within: (_field, values) => build({ ...state, kinds: values }),
+    exeForMetadata: async () => {
+      const key = (row: AssetMetadataLike, field: string): number =>
+        (field === "creationTime" ? row.creationTime : row.modificationTime) ?? 0;
+      let out = [...rows];
+      if (state.floor) {
+        const floor = state.floor;
+        out = out.filter((row) => key(row, floor.field) >= floor.value);
+      }
+      if (state.kinds) {
+        const kinds = state.kinds;
+        out = out.filter((row) => kinds.includes(row.mediaType));
+      }
+      if (state.order) {
+        const order = state.order;
+        out.sort((a, b) =>
+          order.ascending === true
+            ? key(a, order.key) - key(b, order.key)
+            : key(b, order.key) - key(a, order.key),
+        );
+      }
+      if (state.limit !== null) out = out.slice(0, state.limit);
+      lastReturnedRows = out.length;
+      return out;
+    },
   });
+  const query = (): MediaQuery =>
+    build({ order: null, floor: null, kinds: null, limit: null });
   return {
     getPermissions: async () => ({ granted: true, canAskAgain: true }),
     requestPermissions: async () => ({ granted: true, canAskAgain: true }),
     newQuery: query,
     uriFor: async (id) => id,
+  };
+}
+
+/** An import watermark held in memory, with the store's monotonic guarantee. */
+function fakeCursor(initial: number | null = null) {
+  let value = initial;
+  return {
+    store: {
+      get: () => value,
+      set: (next: number) => {
+        value = next;
+      },
+    },
+    get value(): number | null {
+      return value;
+    },
   };
 }
 
@@ -376,5 +442,273 @@ describe("which assets import can reach", () => {
 
     expect(outcome.imported).toBe(1);
     expect(outcome.failed).toBe(0);
+  });
+});
+
+describe("importing against a watermark", () => {
+  /** Three assets a second apart, oldest first, all readable. */
+  function roll(): AssetMetadataLike[] {
+    const rows: AssetMetadataLike[] = [];
+    for (const [i, at] of [1_000_000, 2_000_000, 3_000_000].entries()) {
+      const uri = `content://media/external/images/media/${10 + i}`;
+      putAsset(uri, new Uint8Array(PHOTO.map((b) => (b + i) % 256)));
+      rows.push(asset({ id: uri, modificationTime: at, creationTime: at }));
+    }
+    return rows;
+  }
+
+  it("imports nothing on a first look, and records where 'now' is", async () => {
+    // A node that has never imported must not spend its first background window
+    // hashing a camera roll: on the handset that window was stopped by Android
+    // mid-call and the process frozen holding it. Establishing the watermark
+    // costs one row's worth of media-store probe.
+    const cursor = fakeCursor();
+
+    const outcome = await importDeviceMedia(
+      { ...deps(roll()), importCursor: cursor.store },
+      { limit: 20 },
+    );
+
+    expect(outcome.cursorSeeded).toBe(true);
+    expect(outcome.imported).toBe(0);
+    expect(cursor.value).toBe(3_000_000);
+  });
+
+  it("asks the media store for one row when seeding, not the whole window", async () => {
+    // The cost being fixed is the *query*, not the loop after it:
+    // `exeForMetadata()` probes every row it returns, inside the media store,
+    // before import can look at any of them.
+    const cursor = fakeCursor();
+
+    await importDeviceMedia({ ...deps(roll()), importCursor: cursor.store }, { limit: 20 });
+
+    expect(lastReturnedRows).toBe(1);
+  });
+
+  it("imports only what has appeared since the watermark", async () => {
+    // Between the second and third assets, so the floor sits clear of both the
+    // overlap window and the assets already behind it.
+    const cursor = fakeCursor(2_500_000);
+
+    const outcome = await importDeviceMedia(
+      { ...deps(roll()), importCursor: cursor.store },
+      { limit: 20 },
+    );
+
+    expect(outcome.imported).toBe(1);
+    expect(lastReturnedRows).toBe(1);
+    expect(cursor.value).toBe(3_000_000);
+  });
+
+  it("costs one row rather than a whole window when nothing has changed", async () => {
+    // The steady state on a phone in a pocket, and the whole point of the
+    // watermark: the daily allowance is ten minutes of execution, and a query
+    // over twenty assets spent all of it on a roll with one new photograph.
+    //
+    // Not *zero* rows, and the difference is worth asserting rather than
+    // rounding off. `CURSOR_OVERLAP_MS` deliberately re-offers the last second
+    // below the watermark so a burst sharing that second cannot be lost, so a
+    // quiet roll returns the overlap and settles it with an alias lookup.
+    const rows = roll();
+    const cursor = fakeCursor(500_000);
+    await importDeviceMedia({ ...deps(rows), importCursor: cursor.store }, { limit: 20 });
+
+    const second = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 20 },
+    );
+
+    expect(lastReturnedRows).toBe(1);
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(1);
+  });
+
+  it("walks oldest first once it has a watermark", async () => {
+    // A fixed window taken from the *newest* end cannot drain a backlog:
+    // advancing the watermark to the newest asset skips everything the limit
+    // cut off, and advancing it to the oldest re-offers the batch forever.
+    const cursor = fakeCursor(500_000);
+
+    await importDeviceMedia({ ...deps(roll()), importCursor: cursor.store }, { limit: 20 });
+
+    expect(lastOrderBy).toEqual({ key: "modificationTime", ascending: true });
+  });
+
+  it("drains a backlog larger than one window without losing an asset", async () => {
+    const rows = roll();
+    const cursor = fakeCursor(500_000);
+
+    const first = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 2 },
+    );
+    const second = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 2 },
+    );
+
+    expect(first.imported).toBe(2);
+    expect(second.imported).toBe(1);
+    expect(cursor.value).toBe(3_000_000);
+  });
+
+  it("keeps an asset sharing its second with the last one imported", async () => {
+    // `DATE_MODIFIED` is whole seconds, so a burst carries one value for every
+    // asset in it. A strict floor at the watermark would drop the rest of the
+    // burst permanently — the same shape of defect as ordering on a nullable
+    // column, which cost this app a whole class of image once already.
+    const shared = 2_000_000;
+    const late = "content://media/external/images/media/77";
+    putAsset(late, new Uint8Array(PHOTO.map((b) => (b + 9) % 256)));
+    const rows = [
+      asset({ id: URI_1, modificationTime: shared }),
+      asset({ id: late, modificationTime: shared }),
+    ];
+    const cursor = fakeCursor(shared);
+
+    const outcome = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 20 },
+    );
+
+    expect(outcome.imported).toBe(2);
+  });
+
+  it("moves past an asset it can never read", async () => {
+    // Holding the watermark back would let one unreadable asset pin the floor
+    // forever, so every later window asks for it and everything newer — the
+    // result set grows without bound, which is the failure the watermark exists
+    // to prevent.
+    const rows = [
+      asset({ id: URI_1, modificationTime: 1_000_000 }),
+      asset({ id: "content://media/external/images/media/missing", modificationTime: 2_000_000 }),
+      asset({ id: "content://media/external/images/media/10", modificationTime: 3_000_000 }),
+    ];
+    putAsset("content://media/external/images/media/10", PHOTO);
+    const cursor = fakeCursor(500_000);
+
+    const outcome = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 20 },
+    );
+
+    expect(outcome.failed).toBe(1);
+    expect(cursor.value).toBe(3_000_000);
+  });
+
+  it("keeps the watermark it reached when the window closes early", async () => {
+    // Written per asset rather than once at the end, because the process
+    // running this loop is the one Android freezes and kills mid-call.
+    const rows = roll();
+    const cursor = fakeCursor(500_000);
+    let seen = 0;
+    const signal = {
+      get aborted(): boolean {
+        return seen++ >= 2;
+      },
+    };
+
+    await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 20, signal },
+    );
+
+    expect(cursor.value).toBe(2_000_000);
+  });
+
+  it("leaves the foreground control walking the whole roll", async () => {
+    // The split is the point. A watermark is right for work that runs every
+    // fifteen minutes forever and wrong for a person tapping "Add photos" to
+    // backfill a library that predates this node.
+    const outcome = await importDeviceMedia(deps(roll()), { limit: 20 });
+
+    expect(outcome.cursorSeeded).toBeUndefined();
+    expect(outcome.imported).toBe(3);
+    expect(lastOrderBy).toEqual({ key: "modificationTime", ascending: false });
+  });
+});
+
+describe("what import refuses to be offered", () => {
+  it("never sees a file the media store indexed that is neither image nor video", async () => {
+    // The row that stalled a real handset: an entry under another app's
+    // `Android/media/.../. trash/` directory, carrying `media_type = 0`, a null
+    // MIME type, a null size and no extension. `exeForMetadata()` runs over
+    // `MediaStore.Files`, so nothing excluded it, and import has nothing
+    // sensible to do with it — `typeOf` falls back to `other/binary` and the
+    // bytes are not this app's to read.
+    const trash = "content://media/external/file/1000008916";
+    putAsset(trash, PHOTO);
+    const rows = [
+      asset({ id: URI_1, modificationTime: 1_000_000 }),
+      asset({
+        id: trash,
+        filename: "e6477252-503e-46b7-a645-eef7e7b3c50f",
+        mediaType: "unknown",
+        width: null,
+        height: null,
+        modificationTime: 2_000_000,
+      }),
+    ];
+    const cursor = fakeCursor(500_000);
+
+    const outcome = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store },
+      { limit: 20 },
+    );
+
+    expect(lastReturnedRows).toBe(1);
+    expect(outcome.imported).toBe(1);
+    expect(outcome.records[0]!.originalFilename).toBe("IMG_0001.jpg");
+  });
+
+  it("asks for images and video, and nothing else", async () => {
+    // Audio included in the exclusion deliberately: this is a photos app, and a
+    // record it cannot show is a record it should not mint.
+    expect(IMPORTABLE_MEDIA_TYPES).toEqual(["image", "video"]);
+  });
+});
+
+describe("importing where no JS timer will ever fire", () => {
+  it("finishes the batch when the yield is timer-free", async () => {
+    // React Native runs no JS timers in a headless context. The default yield
+    // is a `setTimeout`, so a background window using it hangs forever on the
+    // first asset it actually wants to import — measured on a Pixel 5, where
+    // timers armed at 5 s and 20 s had not fired three minutes later.
+    const rows = [
+      asset({ id: URI_1, modificationTime: 1_000_000 }),
+      asset({ id: "content://media/external/images/media/10", modificationTime: 2_000_000 }),
+    ];
+    putAsset("content://media/external/images/media/10", PHOTO);
+    const cursor = fakeCursor(500_000);
+
+    const outcome = await importDeviceMedia(
+      { ...deps(rows), importCursor: cursor.store, yieldToUi: noYield },
+      { limit: 20 },
+    );
+
+    expect(outcome.imported).toBe(2);
+  });
+
+  it("hangs on the first import when the yield needs a timer that never fires", async () => {
+    // The failure itself, so the fix above is guarding something real rather
+    // than restating itself. A yield that never resolves must never resolve the
+    // pass either — and the import loop awaits it before the first `importOne`.
+    const neverFires = () => new Promise<void>(() => undefined);
+    const cursor = fakeCursor(500_000);
+
+    const pending = importDeviceMedia(
+      {
+        ...deps([asset({ id: URI_1, modificationTime: 1_000_000 })]),
+        importCursor: cursor.store,
+        yieldToUi: neverFires,
+      },
+      { limit: 20 },
+    );
+    const settled = await Promise.race([
+      pending.then(() => "settled"),
+      Promise.resolve().then(() => "still pending"),
+    ]);
+
+    expect(settled).toBe("still pending");
   });
 });

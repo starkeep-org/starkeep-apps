@@ -53,6 +53,10 @@ import type { DataRecord } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
 import { createSqliteScanCursorStore } from "./work/scan-cursor";
+import {
+  createSqliteImportCursorStore,
+  type ImportCursorStore,
+} from "./media/import-cursor";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
 
@@ -179,6 +183,19 @@ export interface MobileNodeOptions {
 
 export interface MobileNode {
   readonly databaseAdapter: DatabaseAdapter;
+  /**
+   * How far background import has walked the camera roll, or null when this
+   * node does not read one.
+   *
+   * Lives here for the same reason {@link MobileNode.mediaAliases} does: the
+   * table is in this node's database, which does not exist until
+   * `createMobileNode` builds it. Exposed rather than held privately because the
+   * two callers want opposite things from it — the background tick supplies it
+   * so a repeated scan stays cheap, and the foreground "Add photos" control
+   * deliberately runs without it so a person can backfill a library that
+   * predates this node. See `media/import-cursor.ts`.
+   */
+  readonly importCursor: ImportCursorStore | null;
   /**
    * What this node holds — including, when `deviceMedia` was supplied, the
    * camera-roll assets it has aliased rather than copied.
@@ -423,6 +440,11 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   const mediaAliases = options.deviceMedia
     ? createSqliteMediaAliasStore({ db: databaseAdapter.getRawDatabase() })
     : null;
+  // Built on the same condition as the alias table, because it answers a
+  // question only a node that reads a camera roll can ask.
+  const importCursor = options.deviceMedia
+    ? createSqliteImportCursorStore({ db: databaseAdapter.getRawDatabase() })
+    : null;
   const localObjectStorage =
     mediaAliases && options.deviceMedia
       ? new DeviceMediaObjectStorage({
@@ -533,6 +555,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     databaseAdapter,
     objectStorage: localObjectStorage,
     mediaAliases,
+    importCursor,
     engine,
     residency,
     exchange: async () => (engine ? serialized(() => engine.exchange()) : null),

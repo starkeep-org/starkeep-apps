@@ -165,6 +165,14 @@ function wrapQuery(query: MediaLibrary.Query): MediaQuery {
       query.limit(count);
       return wrapQuery(query);
     },
+    gte(field, value) {
+      query.gte(field as MediaLibrary.AssetField, value);
+      return wrapQuery(query);
+    },
+    within(field, values) {
+      query.within(field as MediaLibrary.AssetField, values as MediaLibrary.MediaType[]);
+      return wrapQuery(query);
+    },
     exeForMetadata: () => query.exeForMetadata(),
   };
 }

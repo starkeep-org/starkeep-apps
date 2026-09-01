@@ -26,6 +26,17 @@
  * drop a single unreadable asset without emptying the grid.
  */
 
+import { REAL_TIMERS, withDeadline, type Timers } from "../deadline";
+
+/**
+ * Re-exported because this module's options carry one.
+ *
+ * The race and the platform implementation live in `deadline.ts`, so a caller
+ * with a timer of its own — a background window, which cannot use the
+ * platform's — has one place to reach for.
+ */
+export type { Timers };
+
 /** What a permission response tells us, narrowed to what this app acts on. */
 export interface MediaPermission {
   readonly granted: boolean;
@@ -265,51 +276,12 @@ export interface ListRecentOptions {
   readonly timers?: Timers;
 }
 
-/** The two calls the deadline needs, so a test can supply its own clock. */
-export interface Timers {
-  setTimeout(handler: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
-
-const REAL_TIMERS: Timers = {
-  setTimeout: (handler, ms) => setTimeout(handler, ms),
-  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
-
 /** Thrown when the media store did not answer inside the caller's deadline. */
 export class MediaQueryTimeout extends Error {
   constructor(readonly timeoutMs: number) {
     super(`the media store did not answer within ${timeoutMs}ms`);
     this.name = "MediaQueryTimeout";
   }
-}
-
-/**
- * The query, or a failure once the deadline passes.
- *
- * A race rather than a cancellation, because there is nothing to cancel: the
- * work is a Kotlin coroutine reached across the bridge, and this side holds only
- * a promise. See {@link ListRecentOptions.timeoutMs}.
- */
-function withDeadline<T>(
-  work: Promise<T>,
-  timeoutMs: number | undefined,
-  timers: Timers,
-): Promise<T> {
-  if (timeoutMs === undefined) return work;
-  return new Promise<T>((resolve, reject) => {
-    const handle = timers.setTimeout(() => reject(new MediaQueryTimeout(timeoutMs)), timeoutMs);
-    work.then(
-      (value) => {
-        timers.clearTimeout(handle);
-        resolve(value);
-      },
-      (err: unknown) => {
-        timers.clearTimeout(handle);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      },
-    );
-  });
 }
 
 /**
@@ -340,11 +312,11 @@ export async function listRecentMedia(
   if (options.mediaTypes && options.mediaTypes.length > 0) {
     query = query.within("mediaType", options.mediaTypes);
   }
-  const rows = await withDeadline(
-    query.limit(options.limit).exeForMetadata(),
-    options.timeoutMs,
-    options.timers ?? REAL_TIMERS,
-  );
+  const rows = await withDeadline(query.limit(options.limit).exeForMetadata(), {
+    ms: options.timeoutMs,
+    timers: options.timers ?? REAL_TIMERS,
+    onExpiry: () => new MediaQueryTimeout(options.timeoutMs ?? 0),
+  });
 
   const items: DeviceMediaItem[] = [];
   for (const row of rows) {

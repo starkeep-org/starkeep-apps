@@ -45,6 +45,12 @@ import {
   opSqliteDriver,
 } from "../platform";
 import { JOB_GRAPH, runnableJobs, type DeviceState } from "../work/job-graph";
+import {
+  backgroundWorkStatus,
+  probeReportStore,
+  registerBackgroundWork,
+} from "../work/background-task";
+import type { ProbeReport } from "../work/probe";
 import type { ImportOutcome } from "../media/import";
 import { formatBytes, LibraryGrid } from "./LibraryGrid";
 import { MediaGrid } from "./MediaGrid";
@@ -368,6 +374,33 @@ export function HomeScreen({
     runSyncRef.current = runSync;
   }, [runSync]);
 
+  /**
+   * What the last headless run found, and whether the OS will run one.
+   *
+   * Read once on mount rather than polled: a headless run cannot happen while
+   * this screen is in the foreground — the Android scheduler refuses and
+   * reschedules — so the file cannot change under an open screen.
+   */
+  const [probeReport, setProbeReport] = useState<ProbeReport | null>(null);
+  const [backgroundStatus, setBackgroundStatus] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        await registerBackgroundWork();
+        const status = await backgroundWorkStatus();
+        if (!cancelled) setBackgroundStatus(status);
+      } catch (err) {
+        if (!cancelled) setBackgroundStatus(String(err));
+      }
+      const report = await probeReportStore.read();
+      if (!cancelled) setProbeReport(report);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const baseUrl = config?.baseUrl;
 
   const collect = useCallback(async (): Promise<Check[]> => {
@@ -621,9 +654,30 @@ export function HomeScreen({
         <Section title="Work">
           <Text style={styles.muted}>
             {JOB_GRAPH.length} jobs declared, {runnableJobs(assumedDevice).length} runnable under
-            assumed conditions. None are scheduled yet — WorkManager binding is item 14, and device
-            conditions are assumed until item 13 reports them.
+            assumed conditions. Device conditions are assumed until item 13 reports them.
           </Text>
+          <Text style={styles.muted}>Background task: {backgroundStatus ?? "registering…"}</Text>
+          {/* The last headless run, read from the file it left behind. The
+              process that produced it is gone, so this is the only place its
+              answer can appear — logcat needs a cable, and the whole question is
+              what the phone does with nobody watching. */}
+          {probeReport ? (
+            <>
+              <Text style={styles.muted}>
+                Last headless run {probeReport.startedAt} ({probeReport.totalMs} ms)
+              </Text>
+              {probeReport.steps.map((step) => (
+                <Text
+                  key={step.name}
+                  style={step.ok ? styles.muted : styles.error}
+                >
+                  {step.ok ? "OK" : "FAIL"} {step.name} ({step.ms} ms) — {step.detail}
+                </Text>
+              ))}
+            </>
+          ) : (
+            <Text style={styles.muted}>No headless run has reported yet.</Text>
+          )}
         </Section>
 
         <Section title="Sync">

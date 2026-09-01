@@ -13,6 +13,17 @@
  */
 import "react-native-get-random-values";
 
+/**
+ * Define the background task before anything asks for it.
+ *
+ * A side-effect import, and it must stay one. On a headless launch the OS
+ * evaluates this bundle and then immediately looks up the task by name, with no
+ * React tree in between to have registered it — so the definition has to happen
+ * here, and after the PRNG install above, because the node the task opens
+ * reaches ulidx's eager PRNG probe on its way up.
+ */
+import "./src/work/background-task";
+
 import { registerRootComponent } from "expo";
 import App from "./App";
 

@@ -24,6 +24,7 @@ import {
   MAX_INLINE_READ_BYTES,
   type HashBytes,
 } from "../src/media/import";
+import { MediaQueryTimeout } from "../src/media/device-library";
 import type {
   AssetMetadataLike,
   DeviceMediaModule,
@@ -710,5 +711,42 @@ describe("importing where no JS timer will ever fire", () => {
     ]);
 
     expect(settled).toBe("still pending");
+  });
+
+  it("bounds the media store on the caller's timer rather than the platform's", async () => {
+    // The deadline the background window relies on is only a deadline if the
+    // timer behind it fires, and the platform's does not in a headless process.
+    // Firing this one is what proves the injected timer reaches the query — a
+    // pass that took `REAL_TIMERS` instead would still be hanging here.
+    const armed: (() => void)[] = [];
+    const timers = {
+      setTimeout: (handler: () => void) => {
+        armed.push(handler);
+        return armed.length;
+      },
+      clearTimeout: () => undefined,
+    };
+    const hanging: DeviceMediaModule = {
+      ...deps().media,
+      newQuery: () => {
+        const query: MediaQuery = {
+          orderBy: () => query,
+          limit: () => query,
+          gte: () => query,
+          within: () => query,
+          exeForMetadata: () => new Promise(() => undefined),
+        };
+        return query;
+      },
+    };
+    const cursor = fakeCursor(500_000);
+
+    const pending = importDeviceMedia(
+      { ...deps(), media: hanging, importCursor: cursor.store },
+      { limit: 20, queryTimeoutMs: 30_000, timers },
+    );
+    armed.forEach((fire) => fire());
+
+    await expect(pending).rejects.toThrow(MediaQueryTimeout);
   });
 });

@@ -30,10 +30,12 @@ import { documentPath, expoFileSystem, importDepsFor } from "../platform";
 import { importDeviceMedia, noYield } from "../media/import";
 import { acquireNode } from "./node-handle";
 import { readDeviceState } from "./device-state";
-import { runWorkTick, type TickReport } from "./tick";
+import { inFlightJob, runWorkTick, type TickReport } from "./tick";
 import type { DeviceState } from "./job-graph";
 import { createTickReportStore } from "./tick-report-store";
 import { claimFor, decideClaim, type Claim } from "./single-flight";
+import { EXPIRED, raceDeadline } from "../deadline";
+import { backgroundWindow, nativeTimers } from "./native-timers";
 
 /**
  * The task's name, as WorkManager and `TaskManager` both know it.
@@ -124,6 +126,19 @@ export const TICK_IMPORT_LIMIT = 20;
 export const MEDIA_QUERY_TIMEOUT_MS = 30_000;
 
 /**
+ * How long after its own budget a tick is given to finish tidily.
+ *
+ * The tick checks the clock between jobs and every sync round checks it too, so
+ * a tick that reaches its budget normally stops itself, writes its report and
+ * releases the node. The watchdog exists for the other case — a call that never
+ * returns — and firing the two at the same instant would race an orderly finish
+ * against a watchdog that reports the window abandoned. Five seconds is longer
+ * than the tidying has ever taken and short enough to leave the day's allowance
+ * essentially untouched.
+ */
+export const WATCHDOG_GRACE_MS = 5_000;
+
+/**
  * The task's own progress, either side of everything that can block.
  *
  * The tick reports per job, and that says nothing about the work either side of
@@ -182,78 +197,151 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
     resolveInFlight();
   };
 
-  let report: TickReport | null = null;
-  taskLog("awake, acquiring the node");
-  const lease = await acquireNode().catch((err: unknown) => {
-    taskLog(`could not acquire the node: ${String(err)}`);
-    return null;
-  });
-  if (lease === null) {
-    releaseClaim();
-    return BackgroundTask.BackgroundTaskResult.Failed;
-  }
-  taskLog("node acquired");
+  const startedAt = Date.now();
+  const deadlineMs = startedAt + TICK_BUDGET_MS;
+  /**
+   * Where the window is, in words.
+   *
+   * The stages either side of the tick are not jobs and produce no outcome of
+   * their own, and opening the node is exactly where the first observed wedge
+   * happened. "The window was abandoned" with nothing after it is a report
+   * nobody can act on.
+   */
+  let stage = "acquiring the node";
+  /** The report the watchdog writes if the window never gets to write its own. */
+  let progress: TickReport = {
+    startedAt: new Date(startedAt).toISOString(),
+    device: null,
+    outcomes: [],
+    ranOutOfTime: false,
+    totalMs: 0,
+  };
 
-  try {
-    const device = await readRealDeviceState();
-    taskLog(`device read: network=${device.hasNetwork} unmetered=${device.isUnmetered}`);
-
-    const clock = createHLCClock({ nodeId: lease.identity.nodeId });
-    report = await runWorkTick(
-      {
-        node: lease.node,
-        device,
-        importRecent: async (signal) => {
-          // The watermark is what makes this job affordable in a background
-          // window. Supplied here and nowhere else: the foreground control
-          // deliberately runs without one. See `ImportDeps.importCursor`.
-          const outcome = await importDeviceMedia(
-            {
-              ...importDepsFor(lease.node, clock),
-              importCursor: lease.node.importCursor ?? undefined,
-              // Load-bearing in a headless process, where a `setTimeout` never
-              // fires and the default yield would hang the loop forever on the
-              // first asset worth importing. See `ImportDeps.yieldToUi`.
-              yieldToUi: noYield,
-            },
-            { limit: TICK_IMPORT_LIMIT, signal, queryTimeoutMs: MEDIA_QUERY_TIMEOUT_MS },
-          );
-          return {
-            imported: outcome.imported,
-            skipped: outcome.skipped,
-            failed: outcome.failed,
-            cursorSeeded: outcome.cursorSeeded ?? false,
-          };
-        },
-      },
-      { deadlineMs: Date.now() + TICK_BUDGET_MS },
-    );
-    return BackgroundTask.BackgroundTaskResult.Success;
-  } catch {
-    return BackgroundTask.BackgroundTaskResult.Failed;
-  } finally {
-    // Both in the `finally`, and the order matters. The report is what a person
-    // sees on the next launch, so it is written even for a tick that threw —
-    // and the database is handed back whatever happened, because a headless
-    // process about to be frozen with SQLite open is how the next launch finds
-    // a lock nobody holds.
-    if (report !== null) {
-      try {
-        tickReportStore.write(report);
-        taskLog("report written");
-      } catch (err) {
-        // A report that cannot be written is not a reason to fail the window.
-        taskLog(`could not write the report: ${String(err)}`);
-      }
+  const writeReport = (report: TickReport): void => {
+    try {
+      tickReportStore.write(report);
+      taskLog("report written");
+    } catch (err) {
+      // A report that cannot be written is not a reason to fail the window.
+      taskLog(`could not write the report: ${String(err)}`);
     }
-    taskLog("releasing the node");
-    await lease.release().catch(() => undefined);
-    // Cleared last, and in the `finally`, so a tick that threw does not leave
-    // the process believing one is still running — which would silently stop
-    // every future window in it.
-    releaseClaim();
-    taskLog("done");
-  }
+  };
+
+  // Every network call the node makes from here until the window closes is
+  // bounded by the window. See `window-guard.ts`.
+  backgroundWindow.open(deadlineMs);
+
+  const window = (async (): Promise<BackgroundTask.BackgroundTaskResult> => {
+    let report: TickReport | null = null;
+    taskLog("awake, acquiring the node");
+    const lease = await acquireNode().catch((err: unknown) => {
+      taskLog(`could not acquire the node: ${String(err)}`);
+      return null;
+    });
+    if (lease === null) {
+      releaseClaim();
+      return BackgroundTask.BackgroundTaskResult.Failed;
+    }
+    taskLog("node acquired");
+
+    try {
+      stage = "reading the device";
+      const device = await readRealDeviceState();
+      taskLog(`device read: network=${device.hasNetwork} unmetered=${device.isUnmetered}`);
+
+      stage = "running the tick";
+      const clock = createHLCClock({ nodeId: lease.identity.nodeId });
+      report = await runWorkTick(
+        {
+          node: lease.node,
+          device,
+          importRecent: async (signal) => {
+            // The watermark is what makes this job affordable in a background
+            // window. Supplied here and nowhere else: the foreground control
+            // deliberately runs without one. See `ImportDeps.importCursor`.
+            const outcome = await importDeviceMedia(
+              {
+                ...importDepsFor(lease.node, clock),
+                importCursor: lease.node.importCursor ?? undefined,
+                // Load-bearing in a headless process, where the default yield
+                // is a `setTimeout` and would hang the loop forever on the
+                // first asset worth importing. See `ImportDeps.yieldToUi`.
+                yieldToUi: noYield,
+              },
+              {
+                limit: TICK_IMPORT_LIMIT,
+                signal,
+                queryTimeoutMs: MEDIA_QUERY_TIMEOUT_MS,
+                // The deadline is only a deadline if the timer behind it fires,
+                // and the platform's does not here. See `native-timers.ts`.
+                timers: nativeTimers,
+              },
+            );
+            return {
+              imported: outcome.imported,
+              skipped: outcome.skipped,
+              failed: outcome.failed,
+              cursorSeeded: outcome.cursorSeeded ?? false,
+            };
+          },
+          // Kept so the watchdog has something to write. Each snapshot names
+          // the job in flight, so an abandoned window says which one it was.
+          onProgress: (snapshot) => {
+            progress = snapshot;
+            stage = inFlightJob(snapshot) ?? "running the tick";
+          },
+        },
+        { deadlineMs },
+      );
+      return BackgroundTask.BackgroundTaskResult.Success;
+    } catch {
+      return BackgroundTask.BackgroundTaskResult.Failed;
+    } finally {
+      // Both in the `finally`, and the order matters. The report is what a
+      // person sees on the next launch, so it is written even for a tick that
+      // threw — and the database is handed back whatever happened, because a
+      // headless process about to be frozen with SQLite open is how the next
+      // launch finds a lock nobody holds.
+      if (report !== null) writeReport(report);
+      stage = "releasing the node";
+      taskLog("releasing the node");
+      await lease.release().catch(() => undefined);
+      // Cleared last, and in the `finally`, so a tick that threw does not leave
+      // the process believing one is still running — which would silently stop
+      // every future window in it.
+      releaseClaim();
+      taskLog("done");
+    }
+  })();
+
+  const outcome = await raceDeadline(window, {
+    ms: TICK_BUDGET_MS + WATCHDOG_GRACE_MS,
+    timers: nativeTimers,
+  });
+  // Closed on both paths. A guard left open at a deadline in the past would
+  // abort every foreground request the moment someone opened the app.
+  backgroundWindow.close();
+  if (outcome !== EXPIRED) return outcome;
+
+  // The window is wedged on a call that will not return, and the only thing
+  // still able to act is this watchdog. The node is deliberately not released:
+  // whatever is wedged is most likely holding it, and a release that waits on
+  // the same lock would wedge the watchdog too. A later delivery takes the
+  // process over instead — see `single-flight.ts`.
+  taskLog(`abandoned while ${stage} — the window is over and the work is not`);
+  // Both fields re-based on the task's own start. The snapshot's `startedAt` is
+  // the *tick's*, which begins after the node is open, while `totalMs` is
+  // measured from the delivery — so carrying the snapshot's one unchanged
+  // produced a report whose two numbers described different intervals, off by
+  // however long SQLite took to open (2.8 s on a Pixel 5).
+  writeReport({
+    ...progress,
+    startedAt: new Date(startedAt).toISOString(),
+    totalMs: Date.now() - startedAt,
+    abandoned: stage,
+  });
+  releaseClaim();
+  return BackgroundTask.BackgroundTaskResult.Failed;
 });
 
 /**

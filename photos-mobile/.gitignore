@@ -5,5 +5,13 @@ dist/
 # actual sources. Committing them would create a second place native config
 # lives, and the two drift the first time someone edits a gradle file by hand
 # instead of the plugin that generates it. Run `pnpm prebuild` to recreate.
-android/
-ios/
+#
+# Anchored to this directory, because unanchored these also swallowed
+# `modules/*/android/` — the hand-written Kotlin of the local Expo modules,
+# which is a source and not prebuild output. Only the roots are generated.
+/android/
+/ios/
+
+# Gradle's output for the local Expo modules, whose source above is tracked.
+modules/*/android/build/
+modules/*/android/.cxx/

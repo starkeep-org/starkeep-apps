@@ -27,12 +27,13 @@ import { Paths } from "expo-file-system";
 import * as Network from "expo-network";
 import { createHLCClock } from "@starkeep/protocol-primitives";
 import { documentPath, expoFileSystem, importDepsFor } from "../platform";
-import { importDeviceMedia } from "../media/import";
+import { importDeviceMedia, noYield } from "../media/import";
 import { acquireNode } from "./node-handle";
 import { readDeviceState } from "./device-state";
 import { runWorkTick, type TickReport } from "./tick";
 import type { DeviceState } from "./job-graph";
 import { createTickReportStore } from "./tick-report-store";
+import { claimFor, decideClaim, type Claim } from "./single-flight";
 
 /**
  * The task's name, as WorkManager and `TaskManager` both know it.
@@ -63,38 +64,64 @@ export const MINIMUM_INTERVAL_MINUTES = 15;
 /**
  * How long one tick may take.
  *
- * WorkManager stops a worker at ten minutes, and a worker stopped mid-write is
- * not a failure here — every job is resumable and every round persists its own
- * watermarks — but it is a window whose report never gets written. Nine minutes
- * leaves room to finish, record what happened and hand the database back.
+ * **Ninety seconds, revised down from nine minutes, and the ceiling it is sized
+ * against changed rather than the reasoning.** Nine minutes was chosen against
+ * WorkManager's ten-minute stop, which is the right bound for a single window
+ * and the wrong bound for a day.
+ *
+ * An app nobody opens sits in Android's RARE standby bucket, and RARE grants
+ * **ten minutes of background execution and three job sessions per twenty-four
+ * hours** (`qc_allowed_time_per_period_rare_ms`, `qc_max_session_count_rare`).
+ * Measured on a Pixel 5 the app had spent forty minutes across eight sessions
+ * and was locked out for the following twenty-two hours. A nine-minute budget
+ * therefore does not bound a tick against the day's allowance — it spends the
+ * entire allowance on one window, by design.
+ *
+ * Ninety seconds turns the same allowance into six or seven windows. Every job
+ * in the graph is resumable precisely so that a short window is enough, and a
+ * sync round persists its own watermarks, so the cost of stopping is the round
+ * in flight and nothing else.
  */
-export const TICK_BUDGET_MS = 9 * 60_000;
+export const TICK_BUDGET_MS = 90_000;
 
 /**
- * How many of the newest assets one tick considers importing.
+ * How many assets one tick considers importing.
  *
- * **Twenty, and the number was measured rather than chosen.** The first version
- * said two hundred, on the reasoning that an already-imported asset costs only
- * an alias lookup and a record read. That reasoning was about the wrong half of
- * the work. `listRecentMedia` ends in `exeForMetadata()`, which runs
- * `ExifInterface` and `MediaMetadataRetriever` per asset inside the media store,
- * and against a roll containing video it measured **18.8 minutes for two
- * hundred** on a Pixel 5 — long enough that the tick's own deadline cut the
- * window after a single import and nothing synced at all.
+ * **Twenty, and what the number bounds has changed.** It used to bound the
+ * newest twenty assets on the device, imported or not, because the media-store
+ * probe behind `exeForMetadata()` is paid per returned row and is not
+ * interruptible — two hundred measured at 18.8 minutes on a Pixel 5, and twenty
+ * still measured at over nine and a half against a roll with one new photograph
+ * in it.
  *
- * The cost is linear in this number and is **not** interruptible: it happens in
- * one call before the loop, so `ImportOptions.signal` cannot bound it. The limit
- * is therefore the bound, which is why it is small.
+ * The tick now passes an import watermark, so the query returns only assets
+ * that have appeared or changed since the last window. Twenty is a backlog page
+ * rather than a scan width: a quiet phone returns nothing and pays nothing, and
+ * a burst of a hundred captures drains twenty per window, oldest first, without
+ * losing any of them. See `media/import-cursor.ts`.
  *
- * What that gives up, stated rather than discovered later: a burst of more than
- * twenty captures between two windows leaves the older part of it unseen, and
- * no later tick recovers it, because import walks newest-first and the next tick
- * looks at the same twenty. The foreground "Add photos" control takes sixty and
- * shows a progress count, which is the route for a burst or a backfill. Fixing
- * it properly needs a media query that can page or filter by time, and
- * `MediaQuery` exposes neither.
+ * The limitation the old number carried is therefore gone. What remains is the
+ * seeding pass — a node that has never imported establishes the watermark and
+ * imports nothing, leaving a pre-existing camera roll to the foreground "Add
+ * photos" control, which takes sixty at a time and shows a progress count.
  */
 export const TICK_IMPORT_LIMIT = 20;
+
+/**
+ * How long a background window waits for the media store.
+ *
+ * **Thirty seconds, and the number is chosen against the tick's budget rather
+ * than against any measurement of the media store.** A query that answers takes
+ * milliseconds once the watermark narrows it; the case this bounds is the one
+ * where the promise never settles at all, which has been observed on a Pixel 5
+ * in a process with no activity. See `ListRecentOptions.timeoutMs`.
+ *
+ * A third of the window, so a tick that loses this race still has time to sync
+ * what earlier windows imported. Import is the job that notices photographs and
+ * sync is the job that gets them off the device, and of the two the second is
+ * the one a person is waiting on.
+ */
+export const MEDIA_QUERY_TIMEOUT_MS = 30_000;
 
 /**
  * The task's own progress, either side of everything that can block.
@@ -110,38 +137,50 @@ function taskLog(line: string): void {
 }
 
 /**
- * The tick currently running, if any.
+ * The tick currently running, if any, and until when it may claim to be.
  *
- * ## Why a window has to be single-flight
+ * The rule and the reasoning behind it live in `single-flight.ts`, which is
+ * where they can be tested. In short: a window is one tick, because the OS has
+ * delivered this task twice thirty milliseconds apart into one runtime — and a
+ * claim expires, because a tick frozen mid-call otherwise holds the process
+ * forever and drops every delivery that would have replaced it.
  *
- * The OS delivered this task **twice, thirty milliseconds apart, into the same
- * JavaScript runtime** — same process, same thread, two overlapping executor
- * calls. Both opened the node, both started importing, and the second then
- * blocked behind the first on the serialization `MobileNode` performs across
- * `sync`, `exchange` and `verify`. The visible symptom was a window that
- * produced no output and never wrote a report, which reads as a hang and is
- * really two ticks queued behind each other, each taking minutes.
- *
- * The node handle was doing its job throughout — both calls received the same
- * node, which is why this cost time rather than a corrupted database. What
- * nothing enforced is the coarser rule: a window is one tick.
- *
- * The second delivery returns immediately rather than awaiting the first. The
- * OS wants each delivery acknowledged, and the work it would have done is
- * already being done; making it wait would report one tick's duration twice and
- * bring both closer to the worker's ceiling for no gain.
+ * A deferred delivery returns immediately rather than awaiting the holder. The
+ * OS wants each delivery acknowledged, the work it would have done is already
+ * being done, and making it wait would report one tick's duration twice.
  */
-let inFlight: Promise<unknown> | null = null;
+let inFlight: (Claim & { readonly promise: Promise<unknown> }) | null = null;
 
 TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
-  if (inFlight !== null) {
+  const decision = decideClaim(inFlight, Date.now());
+  if (decision.kind === "defer") {
     taskLog("a tick is already running in this process — this delivery does nothing");
     return BackgroundTask.BackgroundTaskResult.Success;
   }
+  if (decision.kind === "take-over") {
+    // Named, with the number, because this line is the whole difference between
+    // a diagnosable wedge and a silent one. See `single-flight.ts`.
+    taskLog(
+      `the previous tick outlived its claim by ${decision.overdueByMs}ms — taking the process over`,
+    );
+  }
   let resolveInFlight: () => void = () => undefined;
-  inFlight = new Promise<void>((resolve) => {
-    resolveInFlight = resolve;
-  });
+  const claim = {
+    ...claimFor(Date.now(), TICK_BUDGET_MS),
+    promise: new Promise<void>((resolve) => {
+      resolveInFlight = resolve;
+    }),
+  };
+  inFlight = claim;
+  // Only ever clears *this* delivery's claim. A tick that expired, was taken
+  // over, and then thawed and ran its `finally` anyway would otherwise release
+  // the claim belonging to the tick that replaced it — reintroducing the
+  // overlapping ticks the guard exists to prevent, and doing it in the one
+  // state where two of them are least affordable.
+  const releaseClaim = (): void => {
+    if (inFlight === claim) inFlight = null;
+    resolveInFlight();
+  };
 
   let report: TickReport | null = null;
   taskLog("awake, acquiring the node");
@@ -150,8 +189,7 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
     return null;
   });
   if (lease === null) {
-    inFlight = null;
-    resolveInFlight();
+    releaseClaim();
     return BackgroundTask.BackgroundTaskResult.Failed;
   }
   taskLog("node acquired");
@@ -166,14 +204,25 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
         node: lease.node,
         device,
         importRecent: async (signal) => {
-          const outcome = await importDeviceMedia(importDepsFor(lease.node, clock), {
-            limit: TICK_IMPORT_LIMIT,
-            signal,
-          });
+          // The watermark is what makes this job affordable in a background
+          // window. Supplied here and nowhere else: the foreground control
+          // deliberately runs without one. See `ImportDeps.importCursor`.
+          const outcome = await importDeviceMedia(
+            {
+              ...importDepsFor(lease.node, clock),
+              importCursor: lease.node.importCursor ?? undefined,
+              // Load-bearing in a headless process, where a `setTimeout` never
+              // fires and the default yield would hang the loop forever on the
+              // first asset worth importing. See `ImportDeps.yieldToUi`.
+              yieldToUi: noYield,
+            },
+            { limit: TICK_IMPORT_LIMIT, signal, queryTimeoutMs: MEDIA_QUERY_TIMEOUT_MS },
+          );
           return {
             imported: outcome.imported,
             skipped: outcome.skipped,
             failed: outcome.failed,
+            cursorSeeded: outcome.cursorSeeded ?? false,
           };
         },
       },
@@ -202,8 +251,7 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
     // Cleared last, and in the `finally`, so a tick that threw does not leave
     // the process believing one is still running — which would silently stop
     // every future window in it.
-    inFlight = null;
-    resolveInFlight();
+    releaseClaim();
     taskLog("done");
   }
 });

@@ -53,6 +53,11 @@ import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import type { ExpoFileSystem } from "../storage/expo-object-storage";
 import { isContentUri, streamFromFile } from "../storage/expo-object-storage";
 import { listRecentMedia, type DeviceMediaItem, type DeviceMediaModule } from "./device-library";
+import {
+  advanceImportCursor,
+  queryFloorFor,
+  type ImportCursorStore,
+} from "./import-cursor";
 import type { MediaAliasStore } from "./media-alias";
 
 /**
@@ -105,11 +110,35 @@ export interface ImportDeps {
   /**
    * Yield between assets, so the JS thread is not held for the whole batch.
    *
-   * Defaults to a real yield. Tests pass a no-op to stay synchronous, and the
-   * reason it is injectable rather than unconditional is that a `setTimeout`
-   * per asset in a suite of 200 tests is slower than the work being tested.
+   * Defaults to a real yield, which is a `setTimeout`.
+   *
+   * **A background window must pass {@link noYield} instead, and the reason is
+   * not a preference.** React Native does not run JS timers in a headless
+   * context: on a Pixel 5, in a process started for `SystemJobService`, timers
+   * armed at five and twenty seconds had not fired three minutes later, while
+   * native promises in the same context resolved in single-digit milliseconds.
+   * A `setTimeout` there never fires at all, so `await yieldToUi()` becomes a
+   * permanent hang on the first asset the loop actually wants to import — the
+   * whole window lost, holding a claim on the process, with nothing reported.
+   *
+   * The yield exists to let the UI draw a frame between assets. A background
+   * window has no UI to draw, so it gives up nothing by skipping it.
    */
   readonly yieldToUi?: () => Promise<void>;
+  /**
+   * Where this node stopped walking the media store last time.
+   *
+   * **Present for the background tick and absent for the foreground control**,
+   * and the split is the point rather than an oversight. A watermark makes a
+   * repeated scan cheap by asking the media store for nothing it has already
+   * been asked about, which is exactly right for work that runs every fifteen
+   * minutes forever and exactly wrong for a person tapping "Add photos" to
+   * backfill a library that predates this node.
+   *
+   * Absent restores the original behaviour verbatim: the newest `limit` assets
+   * by modification time, no floor, no watermark written.
+   */
+  readonly importCursor?: ImportCursorStore;
 }
 
 /** One asset's cost, reported as the loop goes rather than at the end. */
@@ -148,6 +177,16 @@ export interface ImportOptions {
    * not a state this wants to be able to reach.
    */
   readonly signal?: { readonly aborted: boolean };
+  /**
+   * How long to wait for the media store before failing the pass.
+   *
+   * Supplied by the background tick and omitted by the foreground control. The
+   * split matches the risk: a person watching a spinner can decide for
+   * themselves how long to wait, and a headless window cannot — it is the one
+   * that dies holding a claim on the process with nothing reported. See
+   * {@link ListRecentOptions.timeoutMs}.
+   */
+  readonly queryTimeoutMs?: number;
 }
 
 /**
@@ -175,6 +214,15 @@ export interface ImportOutcome {
   /** One entry per failure, in the order they happened. */
   readonly failures: readonly ImportFailure[];
   readonly records: readonly DataRecord[];
+  /**
+   * This pass only established the watermark, and imported nothing.
+   *
+   * Reported rather than left to look like an empty camera roll, because the
+   * two are indistinguishable from the counts alone and mean opposite things:
+   * one is a node that has just learned where "now" is and will import
+   * everything from here, the other is a node with nothing to do.
+   */
+  readonly cursorSeeded?: boolean;
 }
 
 /**
@@ -200,6 +248,30 @@ export interface ImportOutcome {
  * (item 13b) removes the need to hold anything whole.
  */
 export const MAX_INLINE_READ_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The kinds of asset import will consider.
+ *
+ * Named rather than left to the media store's default, which is every file it
+ * has indexed. `Query.exeForMetadata()` runs over `MediaStore.Files`, so without
+ * this the window fills with whatever else is on the device — including other
+ * applications' files under their own `Android/media/` directories, which this
+ * app can neither type nor read. See {@link ListRecentOptions.mediaTypes}.
+ *
+ * Audio is excluded along with the rest. This is a photos app, and a record it
+ * cannot show is a record it should not mint.
+ */
+export const IMPORTABLE_MEDIA_TYPES = ["image", "video"] as const;
+
+/**
+ * The yield for a caller with no user interface to yield to.
+ *
+ * A resolved promise rather than a timer, because React Native runs no JS
+ * timers in a headless context — see {@link ImportDeps.yieldToUi}. Exported so
+ * the background task names this decision rather than open-coding a bare
+ * `Promise.resolve` whose significance nobody could read.
+ */
+export const noYield = (): Promise<void> => Promise.resolve();
 
 /**
  * Import one batch of the device's most recent media.
@@ -229,9 +301,54 @@ export async function importDeviceMedia(
   // check below, which compares the very same field — so an asset edited in
   // place sorts back to the front exactly when {@link alreadyImported} has
   // decided it needs importing again.
+  //
+  // The watermark decides *which* window, and the three cases are different
+  // enough to be worth naming. See `import-cursor.ts` for why the watermark
+  // exists at all.
+  const cursorStore = deps.importCursor;
+  const cursor = cursorStore?.get() ?? null;
+
+  // A node that has never looked. Establishing the watermark is one row's worth
+  // of media-store probe; importing the newest twenty is nine and a half
+  // minutes' worth, and on a first background window that is a tick that gets
+  // stopped and a process that gets frozen holding it.
+  //
+  // So the seeding pass imports nothing and says so. The camera roll that
+  // predates this node is the foreground control's job — it takes sixty at a
+  // time and shows a progress count — and it always was: a background window
+  // that took the newest twenty and never looked further down was not
+  // backfilling a library either.
+  if (cursorStore && cursor === null) {
+    const newest = await listRecentMedia(deps.media, {
+      limit: 1,
+      order: "modificationTime",
+      mediaTypes: IMPORTABLE_MEDIA_TYPES,
+      timeoutMs: options.queryTimeoutMs,
+    });
+    const seed = newest[0]?.modifiedAt ?? null;
+    if (seed !== null) cursorStore.set(seed);
+    return {
+      scanned: 0,
+      imported: 0,
+      skipped: 0,
+      failed: 0,
+      failures: [],
+      records: [],
+      cursorSeeded: true,
+    };
+  }
+
   const items = await listRecentMedia(deps.media, {
     limit: options.limit,
     order: "modificationTime",
+    modifiedSinceMs: queryFloorFor(cursor),
+    mediaTypes: IMPORTABLE_MEDIA_TYPES,
+    timeoutMs: options.queryTimeoutMs,
+    // Oldest first when walking from a watermark, newest first without one.
+    // A fixed window taken from the newest end cannot drain a backlog without
+    // either skipping assets or re-offering them forever — see
+    // `ListRecentOptions.ascending`.
+    ascending: cursor !== null,
   });
 
   const records: DataRecord[] = [];
@@ -244,6 +361,24 @@ export async function importDeviceMedia(
 
   const yieldToUi = deps.yieldToUi ?? (() => new Promise<void>((r) => setTimeout(r, 0)));
 
+  // Written after each asset rather than once at the end, because the process
+  // running this loop is the one Android freezes and kills mid-call. A watermark
+  // that only lands on a clean exit is a watermark that never lands on the
+  // windows that matter, and the whole point of it is that the next window does
+  // not repeat this one's media-store probe.
+  //
+  // Safe per-asset only because the walk is oldest-first: reaching asset `i`
+  // means every asset below it is settled, so the watermark never steps over
+  // something still outstanding.
+  let watermark = cursor;
+  const markDone = (item: DeviceMediaItem): void => {
+    if (!cursorStore || item.modifiedAt === null) return;
+    const next = advanceImportCursor(watermark, item.modifiedAt);
+    if (next === watermark) return;
+    watermark = next;
+    cursorStore.set(next);
+  };
+
   for (const [index, item] of items.entries()) {
     // Between assets, so a stopped pass leaves whole records behind rather than
     // a half-written one.
@@ -251,6 +386,7 @@ export async function importDeviceMedia(
     try {
       if (await alreadyImported(deps, item)) {
         skipped += 1;
+        markDone(item);
         continue;
       }
       // Between assets, not inside one: the JS thread is single, and holding it
@@ -261,10 +397,25 @@ export async function importDeviceMedia(
       const record = await importOne(deps, item, { originAppId, nowMs: now() });
       if ("reason" in record) {
         fail(item, record.reason);
+        // **The watermark moves past a failure**, and the alternative was worse.
+        // Holding it back means an asset this device can never read — a video
+        // above `MAX_INLINE_READ_BYTES`, most obviously — pins the floor
+        // forever, and every window from then on asks the media store for that
+        // asset and everything newer than it. The result set grows without
+        // bound and the query cost grows with it, which is precisely the
+        // failure this watermark exists to prevent.
+        //
+        // What that gives up: a *transient* failure, such as an asset on a
+        // volume that happened to be unmounted, is not retried by the
+        // background loop. The failure is reported rather than swallowed, and
+        // the foreground control runs without a watermark, so re-importing is
+        // a tap rather than a lost photograph.
+        markDone(item);
         continue;
       }
       records.push(record.record);
       imported += 1;
+      markDone(item);
       deps.onProgress?.({
         done: index + 1,
         total: items.length,
@@ -278,6 +429,9 @@ export async function importDeviceMedia(
       // store cannot produce costs one record, and throwing would cost the run.
       // The reason is kept, because a count on its own cannot be acted on.
       fail(item, String(err));
+      // Past a throw for the same reason as past a returned failure above: an
+      // asset that always throws would otherwise pin the watermark forever.
+      markDone(item);
     }
   }
 

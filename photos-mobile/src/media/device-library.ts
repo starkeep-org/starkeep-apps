@@ -61,6 +61,25 @@ export interface AssetMetadataLike {
 export interface MediaQuery {
   orderBy(sort: { key: string; ascending?: boolean }): MediaQuery;
   limit(count: number): MediaQuery;
+  /**
+   * Keep only assets whose field is at or above a value.
+   *
+   * Wrapped because the cost of this query lives in the *rows it returns*, not
+   * in the work of deciding about them: `exeForMetadata()` probes each returned
+   * asset inside the media store, so the only way to make a repeated scan cheap
+   * is to stop the store from producing rows the caller already knows about.
+   * See `import-cursor.ts`.
+   */
+  gte(field: string, value: number): MediaQuery;
+  /**
+   * Keep only assets whose field is one of these values.
+   *
+   * Wrapped for one predicate — the media type. `Query.exeForMetadata()` builds
+   * its cursor over **`MediaStore.Files`**, not over the image and video
+   * collections, so an unfiltered query returns whatever the media store has
+   * indexed. See {@link ListRecentOptions.mediaTypes}.
+   */
+  within(field: string, values: readonly string[]): MediaQuery;
   exeForMetadata(): Promise<AssetMetadataLike[]>;
 }
 
@@ -174,6 +193,123 @@ export interface ListRecentOptions {
    * wrong for anything that must not miss an asset. See {@link RecentOrder}.
    */
   readonly order?: RecentOrder;
+  /**
+   * Keep only assets modified at or after this time, in milliseconds.
+   *
+   * Filters on `modificationTime` whatever {@link ListRecentOptions.order}
+   * says, because the two questions are separate: a caller may want the newest
+   * assets by shutter time and still only want the ones that have appeared here
+   * since it last looked.
+   *
+   * Omitted means no floor, which is what a reader of a camera roll wants and
+   * what import wants on the one pass that establishes a watermark.
+   */
+  readonly modifiedSinceMs?: number | null;
+  /**
+   * Oldest first rather than newest first.
+   *
+   * Exists for the one caller that walks *forwards* from a watermark. A window
+   * of fixed size taken from the newest end cannot drain a backlog: setting the
+   * watermark to the newest asset in the batch skips everything the limit cut
+   * off, and setting it to the oldest re-offers the whole batch forever. Taken
+   * from the oldest end the same window advances a watermark monotonically and
+   * reaches every asset eventually. See `import-cursor.ts`.
+   */
+  readonly ascending?: boolean;
+  /**
+   * Which kinds of asset to return. Omitted means every kind the store indexes.
+   *
+   * **The default is wrong for anything that imports**, and the reason is not
+   * visible from this app's side. `Query.exeForMetadata()` queries
+   * `MediaStore.Files` rather than the image and video collections, so an
+   * unfiltered result set contains whatever the media store has indexed —
+   * including files belonging to other applications, under their own
+   * `Android/media/` directories.
+   *
+   * Measured on a Pixel 5: a three-row window over the last twelve hours held
+   * two photographs and one entry from WhatsApp's trash directory, carrying
+   * `media_type = 0`, a null MIME type, a null size and no extension. Import has
+   * nothing sensible to do with such a row — `typeOf` falls back to
+   * `other/binary` and the bytes are not this app's to read — so the honest
+   * thing is to never be offered it.
+   */
+  readonly mediaTypes?: readonly MediaKind[];
+  /**
+   * How long to wait for the media store before giving up, in milliseconds.
+   *
+   * **A promise that never settles is the failure this defends against**, not a
+   * slow one. On a Pixel 5, in a process started for `SystemJobService` with no
+   * activity, `exeForMetadata()` has been observed never to return: four minutes
+   * in, the process held 4.5 seconds of CPU, every thread slept, the coroutine
+   * dispatchers were idle and no I/O was outstanding. Nothing was computing and
+   * nothing was blocked; the promise simply never resolved.
+   *
+   * A hang there is worse than a failure anywhere else in the tick, because the
+   * call happens *before* the loop `ImportOptions.signal` guards, so no deadline
+   * downstream of it can bound it. The window then dies holding a claim on the
+   * process instead of reporting what it found.
+   *
+   * The underlying call cannot be cancelled, so the loser of this race stays
+   * pending until the process ends. Accepted deliberately: a leaked coroutine in
+   * a process the OS is about to reclaim costs nothing, and the alternative is a
+   * window that reports nothing at all.
+   */
+  readonly timeoutMs?: number;
+  /**
+   * The timer the deadline runs on.
+   *
+   * Injected for the same reason every other dependency here is: so the
+   * behaviour is decidable in Node. A test that had to wait out a real timeout
+   * would be a test nobody runs.
+   */
+  readonly timers?: Timers;
+}
+
+/** The two calls the deadline needs, so a test can supply its own clock. */
+export interface Timers {
+  setTimeout(handler: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const REAL_TIMERS: Timers = {
+  setTimeout: (handler, ms) => setTimeout(handler, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/** Thrown when the media store did not answer inside the caller's deadline. */
+export class MediaQueryTimeout extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`the media store did not answer within ${timeoutMs}ms`);
+    this.name = "MediaQueryTimeout";
+  }
+}
+
+/**
+ * The query, or a failure once the deadline passes.
+ *
+ * A race rather than a cancellation, because there is nothing to cancel: the
+ * work is a Kotlin coroutine reached across the bridge, and this side holds only
+ * a promise. See {@link ListRecentOptions.timeoutMs}.
+ */
+function withDeadline<T>(
+  work: Promise<T>,
+  timeoutMs: number | undefined,
+  timers: Timers,
+): Promise<T> {
+  if (timeoutMs === undefined) return work;
+  return new Promise<T>((resolve, reject) => {
+    const handle = timers.setTimeout(() => reject(new MediaQueryTimeout(timeoutMs)), timeoutMs);
+    work.then(
+      (value) => {
+        timers.clearTimeout(handle);
+        resolve(value);
+      },
+      (err: unknown) => {
+        timers.clearTimeout(handle);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
 }
 
 /**
@@ -188,11 +324,27 @@ export async function listRecentMedia(
   media: DeviceMediaModule,
   options: ListRecentOptions,
 ): Promise<DeviceMediaItem[]> {
-  const rows = await media
+  let query = media
     .newQuery()
-    .orderBy({ key: options.order ?? "creationTime", ascending: false })
-    .limit(options.limit)
-    .exeForMetadata();
+    .orderBy({ key: options.order ?? "creationTime", ascending: options.ascending ?? false });
+  // Before the limit, and it has to be: a limit applied to an unfiltered set
+  // takes the newest twenty assets and *then* discards the ones below the floor,
+  // which returns nothing while costing everything. The filter is what keeps the
+  // rows — and therefore the media store's per-asset probe — out of the result.
+  if (typeof options.modifiedSinceMs === "number") {
+    query = query.gte("modificationTime", options.modifiedSinceMs);
+  }
+  // Before the limit, like the floor above, and for a sharper reason: an
+  // unwanted row inside the limit is a photograph pushed out of the window
+  // entirely. See {@link ListRecentOptions.mediaTypes}.
+  if (options.mediaTypes && options.mediaTypes.length > 0) {
+    query = query.within("mediaType", options.mediaTypes);
+  }
+  const rows = await withDeadline(
+    query.limit(options.limit).exeForMetadata(),
+    options.timeoutMs,
+    options.timers ?? REAL_TIMERS,
+  );
 
   const items: DeviceMediaItem[] = [];
   for (const row of rows) {

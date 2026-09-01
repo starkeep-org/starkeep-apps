@@ -44,6 +44,8 @@ function fakeMedia(rows: AssetMetadataLike[]): DeviceMediaModule {
   const query = (): MediaQuery => ({
     orderBy: () => query(),
     limit: () => query(),
+    gte: () => query(),
+    within: () => query(),
     exeForMetadata: async () => rows,
   });
   return {

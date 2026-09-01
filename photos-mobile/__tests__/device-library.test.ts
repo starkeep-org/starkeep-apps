@@ -74,6 +74,16 @@ describe("listing recent media", () => {
     expect(built.limit).toBe(60);
   });
 
+  it("sorts by whichever newest the caller asked for", async () => {
+    // `creationTime` is the media store's nullable DATE_TAKEN, so a caller that
+    // must not miss an asset has to be able to pick a key that is always set.
+    const { media, built } = fakeMedia([asset({ id: "content://1" })]);
+
+    await listRecentMedia(media, { limit: 10, order: "modificationTime" });
+
+    expect(built.orderBy).toEqual({ key: "modificationTime", ascending: false });
+  });
+
   it("maps the media store's fields onto items", async () => {
     const { media } = fakeMedia([
       asset({

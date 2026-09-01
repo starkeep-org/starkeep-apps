@@ -215,7 +215,24 @@ export async function importDeviceMedia(
 ): Promise<ImportOutcome> {
   const now = deps.now ?? Date.now;
   const originAppId = options.originAppId ?? "photos";
-  const items = await listRecentMedia(deps.media, { limit: options.limit });
+  // **By modification time, not creation time**, and the difference is the
+  // difference between importing a photograph and losing it. `creationTime` is
+  // the media store's `DATE_TAKEN`, read from EXIF and null for any image that
+  // carries none — and a null sort key behind a limit is not "last", it is
+  // unreachable, because every pass asks the same question and gets the same
+  // answer. `DATE_MODIFIED` is always set.
+  //
+  // It is also the better question for this caller. Import wants what has
+  // recently *appeared or changed here*, which is not the same as what was
+  // recently taken: a photograph copied from somebody else is new to this
+  // device and years old in its own EXIF. And it lines up with the staleness
+  // check below, which compares the very same field — so an asset edited in
+  // place sorts back to the front exactly when {@link alreadyImported} has
+  // decided it needs importing again.
+  const items = await listRecentMedia(deps.media, {
+    limit: options.limit,
+    order: "modificationTime",
+  });
 
   const records: DataRecord[] = [];
   const failures: ImportFailure[] = [];

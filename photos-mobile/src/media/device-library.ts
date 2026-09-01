@@ -135,8 +135,45 @@ export function formatDuration(durationMs: number | null): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/**
+ * Which "newest" a caller means.
+ *
+ * The distinction is not cosmetic, and getting it wrong loses photographs
+ * silently.
+ *
+ * `creationTime` is `MediaStore.DATE_TAKEN`, a fact about the **content** —
+ * when the shutter fired. It is what a person means by the order of a camera
+ * roll, and it is **nullable**: the media store fills it from the file's EXIF,
+ * so an image that carries none has no value at all. Screenshots from the
+ * system carry one; an image saved from a messaging app, downloaded, or copied
+ * onto the device may not.
+ *
+ * `modificationTime` is `MediaStore.DATE_MODIFIED`, a fact about the **file** —
+ * when these bytes last changed on this device. The media store always sets it.
+ *
+ * ## Why a sort turns into a filter
+ *
+ * Ordering alone would be harmless. Ordering *with a limit* is a window, and an
+ * asset whose sort key is null sorts to the far end of it — behind every asset
+ * that has one. On a roll of several thousand it is not merely last, it is
+ * unreachable, and no later pass recovers it because every pass asks the same
+ * question and gets the same answer.
+ *
+ * So a caller that must not miss anything cannot sort by a nullable key.
+ */
+export type RecentOrder =
+  /** When the shutter fired. What a camera roll looks like. Nullable. */
+  | "creationTime"
+  /** When these bytes last changed here. Always present. */
+  | "modificationTime";
+
 export interface ListRecentOptions {
   readonly limit: number;
+  /**
+   * Defaults to `creationTime`, which is right for anything a person reads and
+   * wrong for anything that must not miss an asset. See {@link RecentOrder}.
+   */
+  readonly order?: RecentOrder;
 }
 
 /**
@@ -144,7 +181,8 @@ export interface ListRecentOptions {
  *
  * Newest first is not a preference — a camera roll opening on photos from years
  * ago reads as the wrong library rather than the wrong sort order, and nobody
- * scrolls far enough to find out otherwise.
+ * scrolls far enough to find out otherwise. Which *newest* is the caller's
+ * choice, and {@link RecentOrder} explains why the choice matters.
  */
 export async function listRecentMedia(
   media: DeviceMediaModule,
@@ -152,7 +190,7 @@ export async function listRecentMedia(
 ): Promise<DeviceMediaItem[]> {
   const rows = await media
     .newQuery()
-    .orderBy({ key: "creationTime", ascending: false })
+    .orderBy({ key: options.order ?? "creationTime", ascending: false })
     .limit(options.limit)
     .exeForMetadata();
 

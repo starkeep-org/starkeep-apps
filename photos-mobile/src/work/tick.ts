@@ -137,6 +137,11 @@ export async function runWorkTick(deps: TickDeps, options: TickOptions): Promise
     }
 
     const began = now();
+    // Logged on entry as well as on exit. A line only on completion says
+    // nothing at all about the job that never completes, which is exactly the
+    // one worth naming — a window that hangs is otherwise indistinguishable
+    // from a window that never started.
+    log(`[tick] ${job}: starting`);
     try {
       const detail = await runJob(job, deps, options, now);
       outcomes.push({ job, ran: true, detail, ms: now() - began });

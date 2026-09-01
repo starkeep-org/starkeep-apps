@@ -142,9 +142,35 @@ describe("storage policy", () => {
     expect(canRun(jobSpec("evict"), device({ isStorageLow: true }))).toBe(true);
   });
 
-  it("stops everything else when storage is low", () => {
+  // Measured on a Pixel at 97% full, where the blanket version of this policy
+  // left the phone doing nothing at all: import refused, sync refused, and the
+  // one job still running an eviction pass that freed nothing, because a
+  // phone's own photographs are aliases and cost the budget nothing.
+  it("stops only the jobs that would land bytes on a full device", () => {
     const runnable = runnableJobs(device({ isStorageLow: true }));
-    expect(runnable).toEqual(["evict"]);
+    expect(runnable).not.toContain("fetch-blobs");
+    expect(runnable).not.toContain("derive-ladder-cheap");
+    expect(runnable).not.toContain("derive-ladder-full");
+  });
+
+  it("still notices and sends photographs when storage is low", () => {
+    // The case the policy exists for, and the one it used to get backwards. A
+    // phone that is full is the phone whose photographs most need to be
+    // somewhere else, and neither noticing them nor uploading them consumes a
+    // byte of local space.
+    const runnable = runnableJobs(device({ isStorageLow: true }));
+    expect(runnable).toContain("scan-media-store");
+    expect(runnable).toContain("sync-metadata");
+    expect(runnable).toContain("push-blobs");
+  });
+
+  it("keeps the floor on every job that writes bytes to this device", () => {
+    // Stated as a property over the graph rather than a list, so a job added
+    // later has to decide which side it is on.
+    for (const job of JOB_GRAPH) {
+      const acquiresBytes = job.id === "fetch-blobs" || job.id.startsWith("derive-");
+      expect(job.constraints.requiresStorageNotLow, job.id).toBe(acquiresBytes);
+    }
   });
 });
 

@@ -104,6 +104,49 @@ export function rawDatabaseFrom(connection: OpSqliteConnection): RawDatabase {
  * vocabularies are correct for their own module, so the conversion belongs at
  * the boundary between them, which is here.
  */
+/**
+ * How this connection behaves when it is not the only one.
+ *
+ * ## Why a phone has more than one connection
+ *
+ * It should not, and `work/node-handle.ts` is what makes sure of it — one node
+ * per process, shared by the screen and the background tick. These pragmas are
+ * the insurance behind that argument rather than a substitute for it: the
+ * reasoning about which JavaScript context a headless task lands in depends on
+ * Expo internals, and being wrong about it should cost a wait rather than a
+ * failed write.
+ *
+ * ## The two settings
+ *
+ * `busy_timeout` is the one that matters. SQLite's default is **zero** — a
+ * second writer does not wait, it returns `SQLITE_BUSY` immediately — so
+ * without this the failure mode of two connections is an exception rather than
+ * a pause. Five seconds is far longer than any write here takes and far shorter
+ * than a window.
+ *
+ * WAL lets a reader proceed while a writer works, which is the difference
+ * between a background sync blocking a grid query and not. It also survives
+ * process death cleanly, which matters on a platform that ends processes
+ * without warning.
+ *
+ * Applied per connection, because both are connection-scoped in SQLite — WAL
+ * persists in the database file, `busy_timeout` does not.
+ */
+export function applyConcurrencyPragmas(connection: OpSqliteConnection): void {
+  // One statement per call: op-sqlite runs only the first statement of a
+  // multi-statement string on native, so a batched pragma string would silently
+  // apply only its first line. The same constraint the schema bootstrap works
+  // under, for the same reason.
+  try {
+    connection.executeSync("PRAGMA journal_mode = WAL");
+    connection.executeSync("PRAGMA busy_timeout = 5000");
+  } catch {
+    // A driver that cannot set a pragma is still a usable driver. Failing the
+    // open here would turn a tuning setting into a reason the app does not
+    // start, which is a worse trade than running with SQLite's defaults.
+  }
+}
+
 export function createOpSqliteDriver(op: OpSqliteModule): SqliteDriver {
   const connections = new WeakMap<RawDatabase, OpSqliteConnection>();
   return {
@@ -113,6 +156,7 @@ export function createOpSqliteDriver(op: OpSqliteModule): SqliteDriver {
       const name = slash >= 0 ? path.slice(slash + 1) : path;
       const location = slash > 0 ? path.slice(0, slash) : undefined;
       const connection = op.open({ name, ...(location ? { location } : {}) });
+      applyConcurrencyPragmas(connection);
       const db = rawDatabaseFrom(connection);
       // Kept beside the wrapper rather than on it: `RawDatabase` deliberately
       // has no `close`, because consumers of a connection have no business

@@ -333,6 +333,19 @@ export const DRIVE_APP_ID = "starkeep-drive";
  */
 export async function clearNodeData(node: MobileNode): Promise<void> {
   await node.close();
+  discardNodeFiles();
+}
+
+/**
+ * Delete the node's files, assuming it is already closed.
+ *
+ * Split from {@link clearNodeData} because the node is no longer the caller's
+ * to close: it is shared through `work/node-handle.ts`, and closing the handle
+ * is a separate step that invalidates every outstanding claim on it. Deleting
+ * a database SQLite still has open is how one ends up half-there, so the two
+ * halves stay in this order and the caller performs both.
+ */
+export function discardNodeFiles(): void {
   clearNodeFiles(expoFileSystem, {
     databasePath: DATABASE_PATH,
     objectsPath: OBJECTS_PATH,

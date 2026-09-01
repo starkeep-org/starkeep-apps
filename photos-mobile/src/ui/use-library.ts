@@ -16,7 +16,8 @@ import type { NodeIdentity } from "../node-identity";
 import type { DeviceKey } from "../auth/device-key";
 import type { MobileNode, StorageReport } from "../node";
 import type { EvictionOutcome } from "@starkeep/sync-engine";
-import { bringUpNode, clearNodeData, importDepsFor } from "../platform";
+import { discardNodeFiles, importDepsFor } from "../platform";
+import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
 import { CONTENT_PADDING, TILE_WIDTH_FRACTION } from "./theme";
 
 /** How many tiles the grid shows. A ceiling, not a page size — see `MediaGrid`. */
@@ -97,24 +98,24 @@ export function useNode(): NodeHandle {
 
   useEffect(() => {
     let cancelled = false;
-    let opened: MobileNode | null = null;
+    let lease: NodeLease | null = null;
 
-    void bringUpNode()
-      .then(({ node, identity, deviceKey }) => {
-        opened = node;
+    void acquireNode()
+      .then((acquired) => {
+        lease = acquired;
         if (cancelled) {
-          // Brought up after the screen went away — close it rather than leak
-          // an open database handle for the rest of the process's life.
-          void node.close();
+          // Acquired after the screen went away — hand the claim straight back
+          // rather than hold one for the rest of the process's life.
+          void acquired.release();
           return;
         }
-        current.current = node;
+        current.current = acquired.node;
         setState({
           status: "ready",
-          node,
-          identity,
-          clock: createHLCClock({ nodeId: identity.nodeId }),
-          deviceKey,
+          node: acquired.node,
+          identity: acquired.identity,
+          clock: createHLCClock({ nodeId: acquired.identity.nodeId }),
+          deviceKey: acquired.deviceKey,
         });
       })
       .catch((err: unknown) => {
@@ -127,24 +128,27 @@ export function useNode(): NodeHandle {
 
     return () => {
       cancelled = true;
-      // Only if this is still the live node. A reset closes the old one itself
-      // — it has to, before deleting the file out from under SQLite — and then
-      // bumps `generation`, which runs this cleanup for a node that is already
-      // shut. Closing twice is not free: the second `close()` runs against a
-      // handle that no longer has a database behind it.
-      if (opened && current.current === opened) {
-        current.current = null;
-        void opened.close();
-      }
+      current.current = null;
+      // Release rather than close. The background tick may hold a claim on the
+      // same node, and the screen going away is not a reason to shut the
+      // database under it — the handle closes when the last holder lets go.
+      // A claim from before a reset releases to nothing, which the handle's
+      // own generation check enforces.
+      void lease?.release();
     };
   }, [generation]);
 
   const reset = useCallback(async () => {
-    const node = current.current;
-    if (!node) return;
+    if (!current.current) return;
     current.current = null;
     setState({ status: "starting" });
-    await clearNodeData(node);
+    // Close the shared node before deleting its files, and in that order:
+    // SQLite holds the database open, and removing it underneath a live
+    // connection is how one ends up half-there. Every outstanding claim is
+    // invalidated by the close, which is the honest shape of the operation —
+    // the thing they hold a claim on is being deleted.
+    await closeNodeForReset();
+    discardNodeFiles();
 
     // Wait for the effect's replacement rather than building one here: two code
     // paths creating nodes is two code paths that can disagree about how, and

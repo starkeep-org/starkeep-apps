@@ -38,6 +38,7 @@ import { PHONE_RETENTION, PHOTOS_APP_ID, PHOTOS_SIZE_CLASS_KEY } from "./retenti
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { clearNodeFiles } from "./node-reset";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
+import { backgroundWindow } from "./work/native-timers";
 import type { DeviceMediaModule, MediaQuery } from "./media/device-library";
 import {
   ExpoObjectStorageAdapter,
@@ -115,12 +116,22 @@ export const expoFileSystem: ExpoFileSystem = {
  * `SignatureDoesNotMatch`.
  */
 export const uploadFile: UploadFile = async (fileUri, url, init) => {
-  const result = await new File(fileUri).upload(url, {
-    httpMethod: init.method,
-    uploadType: UploadType.BINARY_CONTENT,
-    headers: init.headers,
-  });
-  return { status: result.status, body: result.body };
+  // Bounded by the background window when one is open. The upload task carries
+  // OkHttp's own sixty-second connect, read and write timeouts, which is a
+  // bound on a stalled socket and not a bound on a window: sixty seconds is two
+  // thirds of a tick's whole budget. See `work/window-guard.ts`.
+  const abort = backgroundWindow.transferAbort();
+  try {
+    const result = await new File(fileUri).upload(url, {
+      httpMethod: init.method,
+      uploadType: UploadType.BINARY_CONTENT,
+      headers: init.headers,
+      ...(abort ? { signal: abort.signal } : {}),
+    });
+    return { status: result.status, body: result.body };
+  } finally {
+    abort?.release();
+  }
 };
 
 /**
@@ -297,11 +308,21 @@ function driveChannel(baseUrl: string, deviceKey: DeviceKey) {
       typeof body === "string" ? new TextEncoder().encode(body) : body,
     );
 
+  // Every request either channel makes, bounded by the window that made it.
+  // React Native's `fetch` has no timeouts of its own — `OkHttpClientProvider`
+  // sets connect, read and write to zero — so a stalled socket in a background
+  // window would otherwise hold the process until WorkManager cancelled it ten
+  // minutes later, which is the whole daily allowance in the RARE bucket.
+  const boundedFetch = backgroundWindow.boundFetch((input, init) =>
+    globalThis.fetch(input, init),
+  );
+
   return {
-    transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest }),
+    transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest, fetch: boundedFetch }),
     remoteObjectStorage: new HttpObjectStorageAdapter({
       baseUrl: `${channelUrl}/files`,
       signRequest,
+      fetch: boundedFetch,
       // Supplying this is what turns on `putFromFileUri`, and with it the path
       // where a video's bytes go from the media store to S3 without passing
       // through Hermes. See {@link uploadFile}.

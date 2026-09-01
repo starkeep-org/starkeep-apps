@@ -42,11 +42,22 @@ export interface JobOutcome {
 
 export interface TickReport {
   readonly startedAt: string;
-  readonly device: DeviceState;
+  /** Null when the window ended before the device could be read. */
+  readonly device: DeviceState | null;
   readonly outcomes: readonly JobOutcome[];
   /** True when the deadline closed the window before every job was considered. */
   readonly ranOutOfTime: boolean;
   readonly totalMs: number;
+  /**
+   * Set when something outside the tick gave up on it, naming what it was
+   * doing.
+   *
+   * A window that hangs writes no report of its own, and a report that never
+   * arrives is indistinguishable from a process that never woke — which is the
+   * ambiguity that cost three sessions of diagnosis. The watchdog in
+   * `background-task.ts` writes the last progress snapshot with this set.
+   */
+  readonly abandoned?: string;
 }
 
 /**
@@ -82,6 +93,15 @@ export interface TickDeps {
   }>;
   readonly now?: () => number;
   readonly log?: (line: string) => void;
+  /**
+   * The report the tick would produce if it stopped right now.
+   *
+   * Called on entry, before each job and after each job, so a watchdog outside
+   * the tick has something to write when a job never returns. The in-flight job
+   * appears in the snapshot as an outcome that has not run, carrying the reason
+   * it would have if the window ended there.
+   */
+  readonly onProgress?: (snapshot: TickReport) => void;
 }
 
 export interface TickOptions {
@@ -111,6 +131,28 @@ export const SYNC_DEADLINE_SHARE = 0.8;
 export const IMPORT_DEADLINE_SHARE = 0.25;
 
 /**
+ * What an outcome says while its job is still running.
+ *
+ * A progress snapshot has to describe a job that has not finished, and the only
+ * honest thing to say about one is that it started. The string is a constant
+ * because {@link inFlightJob} reads it back — a watchdog naming the wrong job
+ * would be worse than a watchdog naming none.
+ */
+export const IN_FLIGHT_DETAIL = "started and did not return";
+
+/**
+ * Which job a progress snapshot was inside, or null between jobs.
+ *
+ * The tick appends the running job as an outcome that has not run, so the last
+ * entry is the one the window is inside. See {@link TickDeps.onProgress}.
+ */
+export function inFlightJob(snapshot: TickReport): JobId | null {
+  const last = snapshot.outcomes[snapshot.outcomes.length - 1];
+  if (last === undefined) return null;
+  return !last.ran && last.detail === IN_FLIGHT_DETAIL ? last.job : null;
+}
+
+/**
  * Run everything the conditions allow, in the graph's preferred order, until
  * the deadline.
  *
@@ -125,6 +167,16 @@ export async function runWorkTick(deps: TickDeps, options: TickOptions): Promise
   const outcomes: JobOutcome[] = [];
   let ranOutOfTime = false;
 
+  const snapshot = (inFlight: JobOutcome | null): TickReport => ({
+    startedAt: new Date(start).toISOString(),
+    device: deps.device,
+    outcomes: inFlight === null ? [...outcomes] : [...outcomes, inFlight],
+    ranOutOfTime,
+    totalMs: now() - start,
+  });
+  const progress = (inFlight: JobOutcome | null): void => deps.onProgress?.(snapshot(inFlight));
+
+  progress(null);
   for (const job of preferredOrder()) {
     if (now() >= options.deadlineMs) {
       ranOutOfTime = true;
@@ -133,12 +185,14 @@ export async function runWorkTick(deps: TickDeps, options: TickOptions): Promise
 
     if (UNBOUND_JOBS.includes(job)) {
       outcomes.push({ job, ran: false, detail: "no implementation on this device", ms: 0 });
+      progress(null);
       continue;
     }
 
     const spec = jobSpec(job);
     if (!canRun(spec, deps.device)) {
       outcomes.push({ job, ran: false, detail: ruledOutBy(job, deps.device), ms: 0 });
+      progress(null);
       continue;
     }
 
@@ -148,6 +202,7 @@ export async function runWorkTick(deps: TickDeps, options: TickOptions): Promise
     // one worth naming — a window that hangs is otherwise indistinguishable
     // from a window that never started.
     log(`[tick] ${job}: starting`);
+    progress({ job, ran: false, detail: IN_FLIGHT_DETAIL, ms: 0 });
     try {
       const detail = await runJob(job, deps, options, now);
       outcomes.push({ job, ran: true, detail, ms: now() - began });
@@ -156,15 +211,10 @@ export async function runWorkTick(deps: TickDeps, options: TickOptions): Promise
       outcomes.push({ job, ran: false, detail: String(err), ms: now() - began });
       log(`[tick] ${job}: failed — ${String(err)}`);
     }
+    progress(null);
   }
 
-  return {
-    startedAt: new Date(start).toISOString(),
-    device: deps.device,
-    outcomes,
-    ranOutOfTime,
-    totalMs: now() - start,
-  };
+  return snapshot(null);
 }
 
 async function runJob(

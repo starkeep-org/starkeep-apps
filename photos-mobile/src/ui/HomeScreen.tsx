@@ -683,6 +683,13 @@ export function HomeScreen({
                 Last background tick {tickReport.startedAt} ({tickReport.totalMs} ms
                 {tickReport.ranOutOfTime ? ", out of time" : ""})
               </Text>
+              {/* The whole point of the field is that a person sees it here. A
+                  window wedged on a call that never returns writes no report of
+                  its own, so this line is the only account of what it was doing
+                  when the watchdog gave up on it. */}
+              {tickReport.abandoned ? (
+                <Text style={styles.muted}>Abandoned while {tickReport.abandoned}</Text>
+              ) : null}
               {tickReport.outcomes.map((outcome) => (
                 <Text key={outcome.job} style={styles.muted}>
                   {outcome.ran ? "ran" : "—"} {outcome.job}: {outcome.detail}

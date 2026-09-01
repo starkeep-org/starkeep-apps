@@ -10,9 +10,11 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   IMPORT_DEADLINE_SHARE,
+  inFlightJob,
   runWorkTick,
   SYNC_DEADLINE_SHARE,
   UNBOUND_JOBS,
+  type TickReport,
 } from "../src/work/tick";
 import { JOB_GRAPH, type DeviceState } from "../src/work/job-graph";
 import type { MobileNode } from "../src/node";
@@ -189,5 +191,50 @@ describe("failure", () => {
     const report = await runWorkTick(deps({ node }), far());
     expect(find(report, "sync-metadata").ran).toBe(true);
     expect(find(report, "sync-metadata").detail).toContain("no cloud");
+  });
+});
+
+/**
+ * What a watchdog outside the tick has to write when a job never returns.
+ *
+ * A window wedged on a native call writes no report of its own, and a report
+ * that never arrives is indistinguishable from a process that never woke —
+ * which is the ambiguity that cost three sessions of diagnosis. These snapshots
+ * are the only record such a window leaves.
+ */
+describe("progress, for a window that may not survive", () => {
+  it("names the job in flight while it is running", async () => {
+    const snapshots: TickReport[] = [];
+    const stalls = new Promise<never>(() => undefined);
+    const node = fakeNode({ scanForAcquirable: vi.fn(() => stalls) });
+    void runWorkTick(deps({ node, onProgress: (s: TickReport) => snapshots.push(s) }), far());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const latest = snapshots[snapshots.length - 1]!;
+    expect(inFlightJob(latest)).toBe("scan-acquirable");
+  });
+
+  it("names no job between them", async () => {
+    const snapshots: TickReport[] = [];
+    await runWorkTick(deps({ onProgress: (s: TickReport) => snapshots.push(s) }), far());
+    expect(inFlightJob(snapshots[snapshots.length - 1]!)).toBeNull();
+  });
+
+  it("carries everything already finished, so an abandoned window still reports it", async () => {
+    const snapshots: TickReport[] = [];
+    const stalls = new Promise<never>(() => undefined);
+    const node = fakeNode({ scanForAcquirable: vi.fn(() => stalls) });
+    void runWorkTick(deps({ node, onProgress: (s: TickReport) => snapshots.push(s) }), far());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const latest = snapshots[snapshots.length - 1]!;
+    expect(find(latest, "scan-media-store").detail).toBe("imported=2 skipped=8 failed=0");
+    expect(find(latest, "sync-metadata").ran).toBe(true);
+  });
+
+  it("reports once before any job has been considered", async () => {
+    const snapshots: TickReport[] = [];
+    await runWorkTick(deps({ onProgress: (s: TickReport) => snapshots.push(s) }), far());
+    expect(snapshots[0]!.outcomes).toEqual([]);
   });
 });

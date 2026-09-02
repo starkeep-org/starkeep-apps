@@ -24,7 +24,12 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Image, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+// Glide-backed, for the same reason `LibraryGrid` uses it: RN's own `<Image>`
+// cannot decode the AVIF this app produces. A camera-roll asset is a JPEG and
+// would render either way, but two grids drawing the same pictures through two
+// different pipelines is a difference nobody would think to suspect.
+import { Image } from "expo-image";
 import {
   describeAccess,
   formatDuration,
@@ -33,6 +38,7 @@ import {
   type DeviceMediaModule,
   type MediaAccess,
 } from "../media/device-library";
+import { IMPORTABLE_MEDIA_TYPES } from "../media/import";
 import { styles } from "./theme";
 
 /** How many tiles the shell shows. Not a page size — a deliberate ceiling. */
@@ -62,7 +68,22 @@ export function MediaGrid({ media }: Props) {
         setState({
           status: "ready",
           access,
-          items: await listRecentMedia(media, { limit: RECENT_LIMIT }),
+          // **Filtered to the kinds import will consider, not left to the
+          // media store's default.** `exeForMetadata()` queries
+          // `MediaStore.Files`, so an unfiltered window contains whatever the
+          // store has indexed — other applications' files under their own
+          // `Android/media/` directories, rows with `media_type = 0` and a null
+          // MIME type, entries in a messaging app's trash. Import refuses all
+          // of it, so showing it here made this grid disagree with the library
+          // by rows that could never become records, which reads as data
+          // missing rather than as data excluded.
+          //
+          // The same constant import uses, so the two cannot drift apart into
+          // separate answers to "what is on this phone".
+          items: await listRecentMedia(media, {
+            limit: RECENT_LIMIT,
+            mediaTypes: IMPORTABLE_MEDIA_TYPES,
+          }),
         });
       } catch (err) {
         setState({ status: "failed", error: String(err) });
@@ -150,7 +171,7 @@ export function MediaGrid({ media }: Props) {
 function Tile({ item }: { item: DeviceMediaItem }) {
   return (
     <View style={styles.tile}>
-      <Image source={{ uri: item.uri }} style={styles.tileImage} resizeMode="cover" />
+      <Image source={{ uri: item.uri }} style={styles.tileImage} contentFit="cover" />
       {/* Videos are worth marking: a still frame with no marker reads as a photo
           that will not play when tapped. */}
       {item.kind === "video" ? (

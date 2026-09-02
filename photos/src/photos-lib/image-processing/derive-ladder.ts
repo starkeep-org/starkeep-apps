@@ -329,7 +329,22 @@ async function encodeOne(
 
   const { data, info } =
     codec === "avif"
-      ? await pipeline.avif({ quality: spec.quality }).toBuffer({ resolveWithObject: true })
+      ? // **`chromaSubsampling` is set rather than left to sharp**, whose AVIF
+        // default is `4:4:4` — unlike its JPEG default, and unlike what anyone
+        // reading `avif({ quality })` would assume. Full-resolution chroma
+        // emits AV1 *profile 1* instead of Main, which is the narrower of the
+        // two profiles decoders actually implement, and it costs real bytes for
+        // a difference nobody can see in a photograph: measured on a 3024×4032
+        // still off the phone, the same picture is 1.20 MB at 4:4:4 and 748 KB
+        // at 4:2:0, a 38% saving at identical quality.
+        //
+        // This is not what makes AVIF renditions unpaintable on Android — a
+        // Pixel 5 on API 34 fails the same picture at both profiles — so it is
+        // a size and compatibility fix, not the fix for that. See
+        // `photos-mobile-status-2026-08-31.md`.
+        await pipeline
+          .avif({ quality: spec.quality, chromaSubsampling: "4:2:0" })
+          .toBuffer({ resolveWithObject: true })
       : codec === "webp"
         ? await pipeline.webp({ quality: spec.quality }).toBuffer({ resolveWithObject: true })
         : await pipeline.jpeg({ quality: spec.quality }).toBuffer({ resolveWithObject: true });

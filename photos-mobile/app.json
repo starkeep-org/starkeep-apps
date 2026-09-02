@@ -12,6 +12,7 @@
     },
     "plugins": [
       "expo-file-system",
+      "expo-image",
       [
         "expo-media-library",
         {

@@ -29,7 +29,7 @@
  * `photos/renditions.ts`. Nothing in this file names a size class.
  */
 
-import type { DataRecord, StarkeepId } from "@starkeep/protocol-primitives";
+import { typeCategory, type DataRecord, type StarkeepId } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
 import { renditionToPaint, resolveLibraryRenditions } from "./photos/renditions";
@@ -51,15 +51,25 @@ export interface LibraryDeps {
 export interface LibraryItem {
   readonly record: DataRecord;
   /**
-   * A URI an `<Image>` can render, or null when the bytes are not on this
-   * device.
+   * A URI an `<Image>` can render, or null when there is no still to render.
    *
-   * Null is a real and expected state, not an error — it is a record whose
-   * blob is elided or still owed, and it is what a placeholder tile is for. A
-   * grid that treated it as a failure would report the working case of a
+   * Null is a real and expected state, not an error. Two different situations
+   * produce it and {@link bytesHere} is what tells them apart: a record whose
+   * blob is elided or still owed, and a video with no poster rendition yet.
+   * A grid that treated either as a failure would report the working case of a
    * budgeted phone as broken.
    */
   readonly uri: string | null;
+  /**
+   * Whether this record's own bytes are on this device.
+   *
+   * Carried separately from {@link uri} because the two stopped being the same
+   * question the moment a record could hold bytes nothing can paint. A video
+   * imported from the camera roll has its bytes right here and no still to
+   * show, and a viewer that read a null `uri` as "the bytes are missing" told
+   * the user the opposite of the truth — which is exactly what it did.
+   */
+  readonly bytesHere: boolean;
 }
 
 export interface LibraryPage {
@@ -138,9 +148,18 @@ export async function listLibrary(
       // rendition is known but not yet fetched still has its original on this
       // device, and showing that beats showing a placeholder.
       const renditionUri = rendition ? uriFor(deps.objectStorage, rendition) : null;
+      const ownUri = uriFor(deps.objectStorage, record);
+      // Falling back to the record's own bytes is right only when those bytes
+      // are a still. A video's are not: handing its `content://` URI to an
+      // `<Image>` paints nothing and — worse — makes the record look like it
+      // has a picture, so the viewer suppressed its own explanation and showed
+      // a blank rectangle instead. A video with no poster rendition has no
+      // still to offer, and saying so is what lets the UI say something true.
+      const paintable = typeCategory(record.type) !== "video";
       return {
         record,
-        uri: renditionUri ?? uriFor(deps.objectStorage, record),
+        uri: renditionUri ?? (paintable ? ownUri : null),
+        bytesHere: ownUri !== null,
       };
     }),
     nextCursor: result.nextCursor,

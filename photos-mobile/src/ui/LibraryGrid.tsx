@@ -25,7 +25,17 @@
  */
 
 import { useState } from "react";
-import { Image, Modal, Pressable, Text, View } from "react-native";
+import { Modal, Pressable, Text, View } from "react-native";
+// **`expo-image`, not React Native's `<Image>`, and the reason is a decode.**
+// RN's image pipeline is Fresco, whose AVIF path defers to the platform
+// decoder — and a Pixel 5 on API 34 fails every AVIF still the ladder produces,
+// at both AV1 profiles, without instantiating an AV1 codec at all. Every rung
+// of the ladder is AVIF, so the entire rendition ladder painted nothing on
+// Android; it went unnoticed only because no image rendition had ever been
+// fetched and every tile fell back to the camera-roll original. `expo-image`
+// renders through Glide, which carries its own AVIF decoder.
+// See `photos-mobile-status-2026-08-31.md`.
+import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LibraryItem } from "../library";
 import { styles } from "./theme";
@@ -105,12 +115,15 @@ export function LibraryGrid({
         {items.map((item) => (
           <Pressable key={item.record.id} onPress={() => openItem(item)} style={styles.tile}>
             {item.uri ? (
-              <Image source={{ uri: item.uri }} style={styles.tileImage} resizeMode="cover" />
+              <Image source={{ uri: item.uri }} style={styles.tileImage} contentFit="cover" />
             ) : (
-              // A record whose bytes are not on this device. Expected, not an
-              // error — it is what an elided or not-yet-fetched blob looks like.
+              // Two different states share this shape and must not share a
+              // symbol. `▶` is a video whose bytes are here and which has no
+              // poster rendition yet — nothing is missing and nothing is
+              // wrong. `◇` is a blob elided or still owed, which is what the
+              // fetch control in the viewer exists for.
               <View style={[styles.tileImage, styles.tilePlaceholder]}>
-                <Text style={styles.tilePlaceholderMark}>◇</Text>
+                <Text style={styles.tilePlaceholderMark}>{item.bytesHere ? "▶" : "◇"}</Text>
               </View>
             )}
           </Pressable>
@@ -156,14 +169,23 @@ function Viewer({
   onClose: () => void;
 }) {
   if (!item) return null;
-  const { record, uri } = item;
+  const { record, uri, bytesHere } = item;
 
   return (
     <Modal visible animationType="fade" onRequestClose={onClose} transparent={false}>
       <SafeAreaView style={styles.viewerSafe}>
         <Pressable style={styles.viewerImageArea} onPress={onClose}>
           {uri ? (
-            <Image source={{ uri }} style={styles.viewerImage} resizeMode="contain" />
+            <Image source={{ uri }} style={styles.viewerImage} contentFit="contain" />
+          ) : bytesHere ? (
+            // The bytes are right here and there is simply no still to draw.
+            // This screen used to print the missing-bytes line for this case,
+            // which was the exact opposite of the truth, and then — once the
+            // video's own URI was handed to an `<Image>` — printed nothing at
+            // all and showed a blank rectangle.
+            <Text style={styles.muted}>
+              This video is on this device. Starkeep cannot play it back yet.
+            </Text>
           ) : (
             <Text style={styles.muted}>
               This record&rsquo;s bytes are not on this device.
@@ -185,7 +207,7 @@ function Viewer({
               so no sync round will offer the bytes again — without this button
               a budget on a phone would be indistinguishable from losing the
               photo. */}
-          {uri ? null : (
+          {uri || bytesHere ? null : (
             <Pressable
               onPress={() => void onFetch(item)}
               disabled={busy}

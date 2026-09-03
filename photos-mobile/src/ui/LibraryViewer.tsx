@@ -89,7 +89,7 @@ function ViewerBody({
   onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   onClose: () => void;
 }) {
-  const { record, uri, bytesHere, playbackUri } = item;
+  const { record, uri, bytesHere, playbackUri, thumbHash } = item;
 
   /**
    * The player, or a player with nothing in it for a still.
@@ -200,8 +200,35 @@ function ViewerBody({
               contentFit="contain"
               nativeControls={false}
             />
-          ) : uri ? (
-            <Image source={{ uri }} style={styles.viewerImage} contentFit="contain" />
+          ) : uri || thumbHash ? (
+            <Image
+              // Null rather than absent when there is no source, so the
+              // placeholder below is what gets drawn. A record with a ThumbHash
+              // and no resolvable bytes is not nothing to look at — it is a
+              // blurred version of the right photograph, which is a far better
+              // answer than a line of text about storage.
+              source={uri ? { uri } : null}
+              style={styles.viewerImage}
+              contentFit="contain"
+              // The same floor the tile has, and it matters more here: this
+              // screen is showing one picture, and the alternative to a
+              // ThumbHash is an empty rectangle the size of the display. Decoded
+              // natively by `expo-image` from the base64 string — see
+              // `media/thumb-hash.ts`.
+              placeholder={thumbHash ? { thumbhash: thumbHash } : null}
+              // Contain, unlike the tile's placeholder. A tile's ThumbHash fills
+              // a box of the photograph's own shape, so there is nothing to
+              // crop; a full screen is not that shape, and a stretched blur
+              // reads as a rendering fault rather than as a picture arriving.
+              placeholderContentFit="contain"
+              // Memory, unlike the grid's tiles. One picture at a time, and
+              // re-decoding a full-size rendition every time somebody swipes
+              // back to it is exactly the cost worth paying once.
+              cachePolicy="memory-disk"
+              // The opposite of the tile's. Whatever is on this screen is the
+              // thing somebody is waiting for.
+              priority="high"
+            />
           ) : bytesHere ? (
             // A record whose bytes are here and which has no still to draw and
             // nothing to play. Not a video — those take the branch above — so
@@ -251,8 +278,14 @@ function ViewerBody({
             this node declined has already had its watermark advanced past it,
             so no sync round will offer the bytes again — without this button
             a budget on a phone would be indistinguishable from losing the
-            photo. */}
-        {uri || bytesHere ? null : (
+            photo.
+
+            Offered on `bytesHere` alone now, where it used to also check `uri`.
+            The two stopped agreeing the moment a rendition could stand in for an
+            absent original: such a record paints a picture and still does not
+            have its own bytes, and hiding the control for it would have hidden
+            it in exactly the case it was written for. */}
+        {bytesHere ? null : (
           <Pressable
             onPress={() => void onFetch(item)}
             disabled={busy}

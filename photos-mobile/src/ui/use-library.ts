@@ -9,8 +9,19 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dimensions, PixelRatio } from "react-native";
-import { createHLCClock, type HLCClock } from "@starkeep/protocol-primitives";
-import { listLibrary, summarizeLibrary, type LibraryItem, type LibrarySummary } from "../library";
+import {
+  createHLCClock,
+  typeCategory,
+  type HLCClock,
+  type StarkeepId,
+} from "@starkeep/protocol-primitives";
+import {
+  listLibrary,
+  resolveForViewer,
+  summarizeLibrary,
+  type LibraryItem,
+  type LibrarySummary,
+} from "../library";
 import {
   IMAGE_EXIF_BACKFILL_LIMIT,
   importDeviceMedia,
@@ -18,12 +29,14 @@ import {
   type ImportOutcome,
   type ImportProgress,
 } from "../media/import";
+import { THUMB_HASH_BACKFILL_LIMIT } from "../media/thumb-hash";
 import type { NodeIdentity } from "../node-identity";
 import type { DeviceKey } from "../auth/device-key";
 import type { MobileNode, StorageReport } from "../node";
 import type { EvictionOutcome } from "@starkeep/sync-engine";
 import {
   backfillImageExifFor,
+  backfillThumbHashesFor,
   backfillVideoDurationsFor,
   deviceMedia,
   discardNodeFiles,
@@ -34,7 +47,27 @@ import {
 } from "../platform";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
-import { CONTENT_PADDING, GRID_COLUMNS, GRID_GAP, TILE_WIDTH_FRACTION } from "./theme";
+import { CONTENT_PADDING, GRID_GAP, LIBRARY_ROW_HEIGHT } from "./theme";
+import { viewerTarget, type GridGeometry } from "../photos/render-target";
+import { createInFlight, RENDITION_FETCH_CONCURRENCY } from "../work/in-flight";
+
+/**
+ * Which surface is asking for a rendition.
+ *
+ * The two differ in size and in when they fire, and both differences matter
+ * enough to name rather than to pass a number for.
+ *
+ * A **tile** wants a box in a justified row, and the page already resolved what
+ * it is missing — so the fetch costs no resolution. It fires only when the tile
+ * has no resident rung at all, because a grid that issued a request per tile per
+ * scroll would be a request storm; the rungs the sync prefetches exist so the
+ * grid draws from disk.
+ *
+ * The **viewer** wants a full screen, which is a bigger target than any tile's
+ * and therefore usually a different rung. It resolves on open, unconditionally,
+ * because there is exactly one of it and somebody is looking at it.
+ */
+export type RenditionSurface = "tile" | "viewer";
 
 /**
  * How many records one library page asks for.
@@ -63,13 +96,44 @@ import { CONTENT_PADDING, GRID_COLUMNS, GRID_GAP, TILE_WIDTH_FRACTION } from "./
  */
 export function libraryPageSize(): number {
   const window = Dimensions.get("window");
-  const gridWidth = window.width - CONTENT_PADDING * 2;
-  const rowHeight = gridWidth * TILE_WIDTH_FRACTION + GRID_GAP;
+  const rowHeight = LIBRARY_ROW_HEIGHT + GRID_GAP;
   const rowsOnScreen = Math.ceil(window.height / rowHeight);
-  const tiles = rowsOnScreen * 2 * GRID_COLUMNS;
-  const clamped = Math.min(Math.max(tiles, 30), 90);
-  return Math.ceil(clamped / GRID_COLUMNS) * GRID_COLUMNS;
+  const tiles = rowsOnScreen * 2 * nominalItemsPerRow(window.width);
+  return Math.round(Math.min(Math.max(tiles, 30), 90));
 }
+
+/**
+ * Roughly how many photographs a justified row holds, for paging arithmetic.
+ *
+ * **An estimate, and it has to be, which is the difference from the three
+ * columns this replaced.** A justified row's length depends on the shapes it is
+ * given: a row of portraits holds more than a row of landscapes, and the
+ * layout only knows how many once it has the records — which is the thing the
+ * page size is being computed to fetch.
+ *
+ * So it is estimated from the same mild landscape guess a record with unknown
+ * dimensions gets. Being wrong costs a fraction of a screen either way, and the
+ * clamp above bounds both directions.
+ *
+ * Nothing rounds the result to a whole row any more, and nothing should: rows
+ * are not a fixed length, so there is no ragged trailing row to avoid.
+ */
+function nominalItemsPerRow(windowWidth: number): number {
+  const gridWidth = windowWidth - CONTENT_PADDING * 2;
+  const nominalTileWidth = LIBRARY_ROW_HEIGHT * UNKNOWN_ASPECT_ESTIMATE + GRID_GAP;
+  return Math.max(1, gridWidth / nominalTileWidth);
+}
+
+/**
+ * The shape assumed for a photograph nobody has measured.
+ *
+ * The same 1.5 the shared layout guesses with, restated here rather than
+ * imported because `__tests__/ladder-boundary.test.ts` keeps this file out of
+ * `@starkeep/photos-ladder` and routing a paging estimate through the Photos
+ * layer would be ceremony for one number. It feeds an estimate, never a layout:
+ * the rows themselves are laid out from each record's real aspect ratio.
+ */
+const UNKNOWN_ASPECT_ESTIMATE = 1.5;
 
 /**
  * How many pages a reload re-fetches before it gives up and starts over.
@@ -86,34 +150,38 @@ export function libraryPageSize(): number {
 export const MAX_RELOADED_PAGES = 10;
 
 /**
- * The pixel long edge one grid tile wants.
+ * The grid a library page will be laid out in.
  *
- * ## Pixels, never a class name
+ * ## Geometry, never a pixel count and never a class name
  *
- * The same contract every other Photos surface uses. A caller states what it
- * needs in the only unit it actually knows — how many pixels it is about to
- * paint — and the ladder decides which rung answers. That is what let
- * `35d849d` respecify two rungs without touching a single consumer, and naming
- * `image-thumb` here would put this file back in the set that has to change.
+ * This used to answer one `tileLongEdge` for a whole page — 32.8% of the padded
+ * width, three across, times the device pixel ratio. That was a closed form over
+ * a fixed square grid, and the grid is no longer either: a justified row gives
+ * every photograph a box of its own shape, so the pixel count is per record and
+ * has to be derived from the shape.
  *
- * ## Where the number comes from
+ * What travels instead is the geometry the layout will use, and
+ * `photos/render-target.ts` turns it into a request per record. The unit at that
+ * boundary is still pixels and never a class name — the contract every Photos
+ * surface shares, and what lets the ladder be respecified without touching a
+ * caller.
  *
- * The layout in `theme.ts`: `styles.content` pads 20 each side and
- * `styles.tile` takes 32.8% of what is left, three across. Multiplying by the
- * device pixel ratio converts the result from layout points to the pixels the
- * decoder will actually fill.
+ * ## Still computed rather than measured
  *
- * Computed rather than measured with `onLayout`, because the grid is a fixed
- * three columns and the arithmetic above is the whole of its geometry. The web
- * app measures because a justified layout has no such closed form. If this grid
- * ever gains one, this is the function to replace with a real measurement.
+ * Every input is known before layout runs: the window, the padding `theme.ts`
+ * owns, and the row height it names. An `onLayout` here would report a number
+ * this already has, one frame later. The web app's viewer makes the same
+ * argument about its own stage.
  *
  * Read at query time rather than cached, so a rotation is picked up by the next
  * reload without a listener.
  */
-function tileLongEdge(): number {
-  const gridWidth = Dimensions.get("window").width - CONTENT_PADDING * 2;
-  return Math.round(gridWidth * TILE_WIDTH_FRACTION * PixelRatio.get());
+function gridGeometry(): GridGeometry {
+  return {
+    targetRowHeight: LIBRARY_ROW_HEIGHT,
+    containerWidth: Dimensions.get("window").width - CONTENT_PADDING * 2,
+    devicePixelRatio: PixelRatio.get(),
+  };
 }
 
 /** How many assets one import pass considers. */
@@ -152,6 +220,24 @@ export const VIDEO_DURATION_BACKFILL_LIMIT = 25;
  * open.
  */
 export const MAX_EXIF_BACKFILL_PASSES = 60;
+
+/**
+ * How many ThumbHash batches one app open will run before giving up the thread.
+ *
+ * **Ten, where the EXIF walk gets sixty, and the difference is the point.** The
+ * EXIF walk runs to completion in one open because a half-repaired library is
+ * *ordered* worse than an unrepaired one — the records that happen to have a
+ * capture time float above every record that does not, so the intermediate
+ * state is something somebody looks at. Placeholders have no such property: a
+ * library where some tiles have one and the rest paint what they already
+ * painted is strictly better than one where none do, and it improves in the same
+ * direction on every open.
+ *
+ * So this pass takes the opposite trade. Each batch decodes twelve photographs,
+ * which is real work on a thread that is drawing a grid, and there is no reason
+ * to spend a minute of it at once for a result nobody is waiting on.
+ */
+export const MAX_THUMB_HASH_BACKFILL_PASSES = 10;
 
 export type NodeState =
   | { readonly status: "starting" }
@@ -340,6 +426,13 @@ export interface LibraryState {
    */
   backfillExif: () => Promise<boolean>;
   /**
+   * Give a placeholder to records imported before this device made them.
+   *
+   * Resolves true when there is nothing left to repair, which is the caller's
+   * signal to stop asking. See `backfillThumbHashes`.
+   */
+  backfillThumbHashes: () => Promise<boolean>;
+  /**
    * Import the assets the import watermark can never reach.
    *
    * Resolves the number imported, so a caller can decide whether the grid needs
@@ -368,6 +461,41 @@ export interface LibraryState {
    * from, and silently doing nothing would read as a broken button.
    */
   fetchBlob: (item: LibraryItem) => Promise<boolean>;
+  /**
+   * Fetch the rung a surface wants, when its bytes are not on this device.
+   *
+   * **The thing that used to be missing entirely.** The phone resolved which
+   * rung it wanted, found the bytes absent, and painted the original instead —
+   * so nothing ever fetched a rendition, and the only transfer the app could
+   * start was a download of a whole original.
+   *
+   * Resolves true when bytes arrived. False covers every other outcome and none
+   * of them is an error worth a line on screen: there was nothing to fetch, the
+   * ideal rung has not been derived anywhere, or this device has no session.
+   *
+   * Deduplicated per record and target, and capped at three at once. See
+   * `work/in-flight.ts`.
+   */
+  fetchRendition: (item: LibraryItem, surface: RenditionSurface) => Promise<boolean>;
+  /**
+   * The item as the viewer should paint it, resolved at the viewer's own size.
+   *
+   * Called on open and again after a fetch lands. The second call is what stops
+   * the viewer from reporting bytes as absent once they have arrived — it holds
+   * the item it was opened with, and nothing else would tell it otherwise. See
+   * `resolveForViewer`.
+   */
+  openForViewer: (item: LibraryItem) => Promise<LibraryItem>;
+  /**
+   * Run an eviction pass, because a viewing burst just ended.
+   *
+   * The viewer's close is when a person stops asking for bytes, so it is the
+   * moment nothing is waiting on the disk — which makes it the cheapest time to
+   * spend it. `SyncEngine.fetchBlob` deliberately charges bytes on arrival
+   * without asking whether they fit, so a burst of opens leaves the budget over
+   * and this is what brings it back.
+   */
+  reclaimAfterViewing: () => Promise<void>;
   /** Pin or release a record on this device. Returns the state afterwards. */
   setPinned: (recordId: string, pinned: boolean) => boolean;
   isPinned: (recordId: string) => boolean;
@@ -495,7 +623,7 @@ export function useLibrary(node: NodeState): LibraryState {
     try {
       const deps = depsFor(ready);
       const limit = libraryPageSize();
-      const edge = tileLongEdge();
+      const grid = gridGeometry();
       const pages = Math.min(pagesLoaded.current, MAX_RELOADED_PAGES);
 
       const collected: LibraryItem[] = [];
@@ -504,7 +632,7 @@ export function useLibrary(node: NodeState): LibraryState {
       for (let page = 0; page < pages; page += 1) {
         const result: Awaited<ReturnType<typeof listLibrary>> = await listLibrary(deps, {
           limit,
-          tileLongEdge: edge,
+          grid,
           ...(next ? { cursor: next } : {}),
         });
         collected.push(...result.items);
@@ -544,7 +672,7 @@ export function useLibrary(node: NodeState): LibraryState {
     try {
       const page = await listLibrary(depsFor(ready), {
         limit: libraryPageSize(),
-        tileLongEdge: tileLongEdge(),
+        grid: gridGeometry(),
         cursor: from,
       });
       // Checked against the cursor this call started from. A reload that landed
@@ -727,6 +855,54 @@ export function useLibrary(node: NodeState): LibraryState {
     }
   }, [ready, reload]);
 
+  /**
+   * Give a batch of records the placeholder they were imported without.
+   *
+   * Bounded by {@link MAX_THUMB_HASH_BACKFILL_PASSES} rather than run to
+   * completion, unlike the EXIF walk beside it — see that constant for why the
+   * two make opposite trades over the same walk.
+   *
+   * Reloads once at the end rather than per batch, on the argument every pass
+   * here makes: a reload redraws the whole grid, and doing it ten times to land
+   * in the same place is work nobody asked for.
+   */
+  const backfillThumbHashes = useCallback(async (): Promise<boolean> => {
+    if (!ready) return true;
+    let written = 0;
+    try {
+      let after: string | null = null;
+      for (let pass = 0; pass < MAX_THUMB_HASH_BACKFILL_PASSES; pass += 1) {
+        const outcome = await backfillThumbHashesFor(ready.node, {
+          limit: THUMB_HASH_BACKFILL_LIMIT,
+          after,
+        });
+        written += outcome.written;
+        if (outcome.complete) {
+          if (written > 0) await reload();
+          return true;
+        }
+        after = outcome.resumeAfter;
+        // Between batches, so the thread this runs on can draw a frame. It
+        // matters more here than in the passes beside it: a batch is twelve full
+        // decodes, and holding the thread across ten of them would be a visibly
+        // frozen grid.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      // Out of passes rather than out of work. The next app open resumes from
+      // the beginning of the walk, which costs a metadata read per batch and
+      // decodes only the files that still answer nothing.
+      if (written > 0) await reload();
+      return false;
+    } catch (err) {
+      setError(String(err));
+      if (written > 0) await reload();
+      // Stop asking, for the reason the two passes beside it give: a pass that
+      // throws will throw again on the next app open, and a repair that repeats
+      // its own failure forever is worse than a tile with no placeholder.
+      return true;
+    }
+  }, [ready, reload]);
+
   const sweepNullModified = useCallback(async (): Promise<number> => {
     if (!ready) return 0;
     try {
@@ -790,6 +966,169 @@ export function useLibrary(node: NodeState): LibraryState {
     [ready, reload],
   );
 
+  /**
+   * One single-flight for the whole hook's lifetime.
+   *
+   * A ref rather than state, and created once rather than per render: the point
+   * of it is that two callers meet, and a map rebuilt on every render is a map
+   * nobody ever meets in.
+   */
+  const fetches = useRef(createInFlight({ limit: RENDITION_FETCH_CONCURRENCY }));
+
+  const fetchRendition = useCallback(
+    async (item: LibraryItem, surface: RenditionSurface): Promise<boolean> => {
+      if (!ready) return false;
+      const node = ready.node;
+      // Nowhere to fetch from. Silent rather than reported, unlike `fetchBlob`:
+      // that one is a button somebody pressed and this one is a surface deciding
+      // for itself, so an error line would appear without anybody having asked
+      // for anything.
+      if (!node.engine) return false;
+
+      // The tile's rule, and the only difference between the two surfaces. A
+      // tile already painting a rung is showing a picture, and the step up to
+      // the ideal is not worth a request during a scroll; the viewer asks
+      // unconditionally, because there is one of it and somebody is looking at
+      // it.
+      if (surface === "tile" && item.paintedRendition !== null) return false;
+
+      // The ordinary answer, and it is not a failure. The ideal rung is already
+      // here, or nothing has derived it anywhere yet — and this fetch moves
+      // bytes, it does not commission work.
+      const renditionId = item.missingRendition;
+      if (!renditionId) return false;
+
+      try {
+        return await fetches.current.run(`${item.record.id}:${renditionId}`, async () => {
+          // Re-read at the point of use rather than trusting the id the caller
+          // resolved from: a rendition record can arrive, or be superseded,
+          // between the resolution and this call.
+          const rendition = await node.databaseAdapter.get(renditionId);
+          if (!rendition) return false;
+          // `fetchBlob` takes a `DataRecord` and a rendition *is* one — same
+          // key, same content hash, same size. No new transport and no new API.
+          const ok = await node.fetchBlob(rendition);
+          if (ok) {
+            // Reload rather than patching the one item, for the reason
+            // `fetchBlob` gives: the URI is derived from the object store, so
+            // the grid re-deriving it is the same code path that produced the
+            // placeholder, and there is exactly one of it.
+            await reload();
+          }
+          return ok;
+        });
+      } catch (err) {
+        // Reported but not fatal to the surface. What is on screen is whatever
+        // already resolved — a smaller rung, the original, or the ThumbHash —
+        // which is a working grid rather than a broken one.
+        setError(String(err));
+        return false;
+      }
+    },
+    [ready, reload],
+  );
+
+  /**
+   * The item as the viewer should paint it, resolved at the viewer's own size.
+   *
+   * Resolves the item unchanged when the node is not ready, so the viewer opens
+   * on the tile's answer rather than on nothing. That is a worse picture and not
+   * a broken one, which is the right way to degrade for a surface somebody has
+   * just tapped.
+   */
+  const openForViewer = useCallback(
+    async (item: LibraryItem): Promise<LibraryItem> => {
+      if (!ready) return item;
+      const screen = Dimensions.get("window");
+      try {
+        return await resolveForViewer(depsFor(ready), item, {
+          screen: { width: screen.width, height: screen.height },
+          devicePixelRatio: PixelRatio.get(),
+        });
+      } catch (err) {
+        setError(String(err));
+        return item;
+      }
+    },
+    [ready, depsFor],
+  );
+
+  /**
+   * Renditions this run has already gone looking for.
+   *
+   * A record of *attempts*, not of successes, and it is what stops a failing
+   * fetch from being retried on every reload. A rendition that arrives makes its
+   * own repeat impossible — the next page resolves it as resident and reports
+   * nothing missing — so the only thing this changes is the failing case, which
+   * waits for the next launch or for the viewer's own fetch control rather than
+   * hammering.
+   *
+   * A ref and not state: nothing on screen depends on it, and setting state here
+   * would re-render the grid for a bookkeeping entry.
+   */
+  const attempted = useRef(new Set<string>());
+
+  /**
+   * Go and get the rungs this page is missing.
+   *
+   * ## Why this fires from the page and not from the tile
+   *
+   * A tile is a row of a virtualized list: it mounts and unmounts every time it
+   * crosses the viewport, so an effect inside one fires per tile *per scroll*.
+   * That is precisely the request storm the fetch rule exists to avoid. The page
+   * changes when records do, which is the honest trigger — and it bounds the
+   * work to one page's worth however far somebody flicks.
+   *
+   * ## Why the volume is small in practice
+   *
+   * `missingRendition` is non-null only when the rendition **record** exists and
+   * its blob does not, which means metadata sync brought the row down from a
+   * node that derived it. A phone showing its own camera roll before anything
+   * has been derived has no rendition records at all, so this fires for nothing.
+   * The case it serves is a library synced from elsewhere, where the rungs are
+   * exactly what the phone wants and exactly what it has not got.
+   */
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    void (async () => {
+      for (const item of items) {
+        if (cancelled) return;
+        // The rule, stated once: only a tile with *no* resident rung at all.
+        // A tile already painting a smaller rung is showing a picture, and the
+        // difference between it and the ideal is not worth a request during a
+        // scroll.
+        if (item.paintedRendition !== null || item.missingRendition === null) continue;
+        if (attempted.current.has(item.missingRendition)) continue;
+        attempted.current.add(item.missingRendition);
+        // Awaited in sequence rather than fired in parallel. The concurrency cap
+        // would hold either way, but a loop that awaits leaves the thread between
+        // records instead of queueing a page's worth in one frame.
+        await fetchRendition(item, "tile");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, items, fetchRendition]);
+
+  /**
+   * Give the budget back after a viewing burst.
+   *
+   * Errors are swallowed, and that is the difference from the Storage screen's
+   * own reclaim button. That one is a person asking what happened; this fires on
+   * closing a photograph, and a red line appearing under the grid because a
+   * housekeeping pass failed would describe the wrong thing entirely.
+   */
+  const reclaimAfterViewing = useCallback(async () => {
+    if (!ready) return;
+    try {
+      await ready.node.reclaimSpace();
+    } catch {
+      // The next pass — a tick's, or the Storage button's — runs the same rule.
+    }
+  }, [ready]);
+
   const setPinned = useCallback(
     (recordId: string, pinned: boolean) => {
       if (!ready) return false;
@@ -827,9 +1166,13 @@ export function useLibrary(node: NodeState): LibraryState {
     importQuietly,
     backfillDurations,
     backfillExif,
+    backfillThumbHashes,
     sweepNullModified,
     openMotion,
     fetchBlob,
+    fetchRendition,
+    openForViewer,
+    reclaimAfterViewing,
     setPinned,
     isPinned,
     noteOpened,

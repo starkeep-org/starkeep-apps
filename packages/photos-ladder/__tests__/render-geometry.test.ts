@@ -5,7 +5,7 @@ import {
   coverRenderedLongEdge,
   measuredPhysicalLongEdge,
   normalizedDevicePixelRatio,
-} from "../src/photos-lib/render-geometry";
+} from "../src/render-geometry";
 
 const policy = {
   kind: "still" as const,
@@ -56,6 +56,53 @@ describe("render target geometry", () => {
     expect(canonicalMeasuredTarget(policy, 129)).toBe(400);
     expect(canonicalMeasuredTarget(policy, 5000)).toBe(4272);
     expect(canonicalMeasuredTarget(policy, null)).toBeNull();
+  });
+
+  it("keeps contain-fit measurements off the rung above when they land on one", () => {
+    // The case the phone's viewer and its justified tiles both sit on: a
+    // container whose contain fit lands *exactly* on a rung boundary must ask
+    // for that rung, not the one above it. `canonicalTarget` takes the first
+    // target `>= required`, so an off-by-one in the measurement is the
+    // difference between fetching 1280 and fetching 2560 — four times the bytes
+    // for a picture nothing can tell apart at that size.
+    const contained = measuredPhysicalLongEdge({
+      source: { width: 3000, height: 4000 },
+      container: { width: 320, height: 320 },
+      fit: "contain",
+      devicePixelRatio: 4,
+    });
+    expect(contained).toBe(1280);
+    expect(canonicalMeasuredTarget(policy, contained)).toBe(1280);
+
+    // One pixel more of container is a whole rung more of request, which is why
+    // the boundary is asserted from both sides rather than approached from one.
+    const overByOne = measuredPhysicalLongEdge({
+      source: { width: 3000, height: 4000 },
+      container: { width: 320.25, height: 320.25 },
+      fit: "contain",
+      devicePixelRatio: 4,
+    });
+    expect(overByOne).toBe(1281);
+    expect(canonicalMeasuredTarget(policy, overByOne)).toBe(2560);
+  });
+
+  it("measures contain against the displayed shape, not the stored one", () => {
+    // Orientation is what makes this a real case rather than a rewording of the
+    // one above. A portrait photograph stored landscape with `orientation: 6`
+    // fits a portrait box on its *height*, and reading the stored width instead
+    // asks for a rung and a half more than the box can show.
+    const upright = measuredPhysicalLongEdge({
+      source: { width: 4000, height: 3000 },
+      container: { width: 300, height: 400 },
+      orientation: 6,
+      fit: "contain",
+      devicePixelRatio: 3,
+    });
+    // Displayed 3000x4000 into 300x400 is a scale of 0.1, so the long edge is
+    // 400 points and 1200 pixels — where the uncorrected shape would have
+    // measured 400 points on the *width* and asked for 1600.
+    expect(upright).toBe(1200);
+    expect(canonicalMeasuredTarget(policy, upright)).toBe(1280);
   });
 
   it("falls back invalid display density to one", () => {

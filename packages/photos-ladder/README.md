@@ -16,11 +16,27 @@ Two implementations of the resolution rule that disagree is a rendering bug
 visible on one device class only, which is close to the worst kind to find. So
 the ladder lives here and every surface consumes it.
 
+## What is in here
+
+Five modules, and they are one chain rather than five utilities. A surface
+measures its container; `justified-layout.ts` decides what box each photograph
+gets; `render-geometry.ts` turns that box, the photograph's shape and the
+device pixel ratio into a pixel count; `rendition-policy.ts` snaps that count
+onto a rung of `ladder.ts`; `rendition-resolution.ts` picks the record that
+answers it. Every link has to agree across surfaces, or a photograph is fetched
+at one size and painted at another.
+
+The layout is in here for the strongest version of that argument. It decides
+the *box*, and the box is what the pixel count is measured from — so a second
+implementation would disagree about which rung to fetch as well as about where
+to put it.
+
 ## What may go in here
 
-Pure arithmetic over sizes: no I/O, no platform packages, no React, no sharp.
-That is what lets it be imported from a Lambda, a Next server and a React
-Native bundle alike.
+Pure arithmetic over sizes and shapes: no I/O, no platform packages, no React,
+no DOM, no sharp. That is what lets it be imported from a Lambda, a Next server
+and a React Native bundle alike — and it is why a layout module qualifies while
+the component that renders its rows does not.
 
 ## What may not
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { justifiedRows } from "../src/photos-ui/components/grid/justified-layout";
+import { justifiedRows } from "../src/justified-layout";
 
 interface Photo {
   id: string;
@@ -42,7 +42,7 @@ describe("justifiedRows", () => {
     const shapes = [0.5, 0.67, 0.75, 1, 1.33, 1.5, 1.78, 2, 3, 10];
     for (const containerWidth of [320, 390, 430, 768, 1200, 1600]) {
       for (const targetRowHeight of [100, 180, 240, 320, 480]) {
-        const spread = Array.from({ length: 40 }, (_, i) => shapes[(i * 7) % shapes.length]);
+        const spread = Array.from({ length: 40 }, (_, i) => shapes[(i * 7) % shapes.length]!);
         const rows = justifiedRows(photos(...spread), aspectOf, {
           containerWidth,
           targetRowHeight,
@@ -88,7 +88,7 @@ describe("justifiedRows", () => {
     // Two 16:9 photos overflow a phone badly enough that one photo per row,
     // scaled up, bends less than two photos squeezed in.
     const rows = justifiedRows(photos(16 / 9, 16 / 9, 16 / 9), aspectOf, PHONE);
-    const first = rows[0];
+    const first = rows[0]!;
 
     expect(first.placements).toHaveLength(1);
     expect(first.cropScale).toBe(1);
@@ -101,7 +101,7 @@ describe("justifiedRows", () => {
     // degenerate row — it is what the photo looks like at that width, and the
     // only way to make it taller is to stop showing most of it.
     const rows = justifiedRows(photos(10, 1.5, 1.5), aspectOf, PHONE);
-    const panorama = rows[0];
+    const panorama = rows[0]!;
 
     expect(panorama.placements).toHaveLength(1);
     expect(1 - panorama.cropScale).toBeLessThanOrEqual(MAX_CROP + 1e-9);
@@ -112,7 +112,7 @@ describe("justifiedRows", () => {
   it("leaves an underfilled final row uncropped and at the requested height", () => {
     // Four 3:2 photos pack three into the first row and leave one over.
     const rows = justifiedRows(photos(1.5, 1.5, 1.5, 1.5), aspectOf, DESKTOP);
-    const last = rows[rows.length - 1];
+    const last = rows[rows.length - 1]!;
 
     expect(rows).toHaveLength(2);
     expect(last.placements).toHaveLength(1);
@@ -128,8 +128,8 @@ describe("justifiedRows", () => {
   it("shows a single photo narrower than the container uncropped", () => {
     const rows = justifiedRows(photos(1.5), aspectOf, DESKTOP);
     expect(rows).toHaveLength(1);
-    expect(rows[0].cropScale).toBe(1);
-    expect(rows[0].placements[0].width).toBeCloseTo(480, 6);
+    expect(rows[0]!.cropScale).toBe(1);
+    expect(rows[0]!.placements[0]!.width).toBeCloseTo(480, 6);
   });
 
   it("accounts for the gaps between photos when filling the width", () => {
@@ -140,7 +140,7 @@ describe("justifiedRows", () => {
       targetRowHeight: 200,
     });
     expect(rows).toHaveLength(1);
-    expect(rowWidth(rows[0], DESKTOP.gap)).toBeCloseTo(1200, 6);
+    expect(rowWidth(rows[0]!, DESKTOP.gap)).toBeCloseTo(1200, 6);
   });
 
   it("lays nothing out before the container has been measured", () => {

@@ -1,6 +1,6 @@
 import React from "react";
 import type { AppImage } from "@/photos-lib/client";
-import { displayedDimensions } from "@/photos-lib/render-geometry";
+import { displayedAspect } from "@/photos-lib/render-geometry";
 import { justifiedRows } from "./justified-layout";
 import { PhotoThumbnail } from "./photo-thumbnail";
 
@@ -8,16 +8,16 @@ export const PHOTO_GAP = 4;
 
 /**
  * The shape a record will be drawn in: its stored dimensions, swapped when EXIF
- * orientation rotates it a quarter turn. A record whose dimensions were never
- * read gets a mild landscape guess, which is wrong in the least disruptive way
- * available — it is a row-width estimate, not a crop.
+ * orientation rotates it a quarter turn, and a mild landscape guess when
+ * nothing has read them.
+ *
+ * The rule moved into `@starkeep/photos-ladder` when the phone's grid became
+ * justified rows too. Two surfaces that disagreed about a photograph's shape
+ * would put it in differently sized boxes and therefore request different rungs
+ * for the same picture — the layout and the sizing are one decision.
  */
-const UNKNOWN_ASPECT = 1.5;
-
 export function displayAspect(image: AppImage): number {
-  if (!(image.width > 0 && image.height > 0)) return UNKNOWN_ASPECT;
-  const displayed = displayedDimensions({ width: image.width, height: image.height }, image.exif.orientation);
-  return displayed.width / displayed.height;
+  return displayedAspect({ width: image.width, height: image.height }, image.exif.orientation);
 }
 
 interface PhotoRowsProps {

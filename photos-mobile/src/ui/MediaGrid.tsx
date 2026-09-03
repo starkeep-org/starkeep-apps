@@ -24,7 +24,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Modal, Pressable, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 // Glide-backed, for the same reason `LibraryGrid` uses it: RN's own `<Image>`
 // cannot decode the AVIF this app produces. A camera-roll asset is a JPEG and
 // would render either way, but two grids drawing the same pictures through two
@@ -32,7 +33,6 @@ import { Pressable, Text, View } from "react-native";
 import { Image } from "expo-image";
 import {
   describeAccess,
-  formatDuration,
   listRecentMedia,
   type DeviceMediaItem,
   type DeviceMediaModule,
@@ -40,12 +40,26 @@ import {
 } from "../media/device-library";
 import { IMPORTABLE_MEDIA_TYPES } from "../media/import";
 import { styles } from "./theme";
+import { VideoBadge } from "./VideoBadge";
 
 /** How many tiles the shell shows. Not a page size — a deliberate ceiling. */
 export const RECENT_LIMIT = 60;
 
 interface Props {
   readonly media: DeviceMediaModule;
+  /**
+   * Whether this node already holds the asset behind a tile.
+   *
+   * Supplied rather than looked up here, because the answer lives in the node's
+   * alias table and this component deliberately knows nothing about the node —
+   * it reads the device's media store and nothing else.
+   *
+   * Optional, and absent means "do not say". A grid that marked every tile as
+   * missing because nobody told it otherwise would be worse than one that marks
+   * nothing: this is the control somebody reaches for when the two grids
+   * disagree, so it has to be right or silent.
+   */
+  readonly isImported?: (assetId: string) => boolean;
 }
 
 type State =
@@ -54,8 +68,10 @@ type State =
   | { readonly status: "ready"; readonly access: MediaAccess; readonly items: DeviceMediaItem[] }
   | { readonly status: "failed"; readonly error: string };
 
-export function MediaGrid({ media }: Props) {
+export function MediaGrid({ media, isImported }: Props) {
   const [state, setState] = useState<State>({ status: "checking" });
+  /** The asset whose details are open, so a filename can be read off a tile. */
+  const [inspecting, setInspecting] = useState<DeviceMediaItem | null>(null);
 
   const load = useCallback(
     async (permission: Awaited<ReturnType<DeviceMediaModule["getPermissions"]>>) => {
@@ -152,31 +168,127 @@ export function MediaGrid({ media }: Props) {
     );
   }
 
+  const missing = isImported
+    ? state.items.filter((item) => !isImported(item.id)).length
+    : null;
+
   return (
     <View style={{ gap: 8 }}>
       <View style={styles.grid}>
         {state.items.map((item) => (
-          <Tile key={item.id} item={item} />
+          <Tile
+            key={item.id}
+            item={item}
+            inNode={isImported ? isImported(item.id) : null}
+            onPress={() => setInspecting(item)}
+          />
         ))}
       </View>
+      {/* Says what the two grids disagree about, which is the question anybody
+          opens this section to answer. A count is enough to know whether to look
+          further; the tiles say which ones. */}
       <Text style={styles.muted}>
         The {state.items.length} most recent
-        {state.access === "limited" ? " of the items shared with this app" : " on this device"}. Read
-        from the device&rsquo;s media store — none of it has been imported into the node yet.
+        {state.access === "limited" ? " of the items shared with this app" : " on this device"}, read
+        from the device&rsquo;s media store.
+        {missing === null
+          ? " Nothing here says whether the node holds it."
+          : missing === 0
+            ? " Every one of them is in this node's library."
+            : ` ${missing} of them ${missing === 1 ? "is" : "are"} not in this node's library — tap a dimmed tile to see which.`}
       </Text>
+
+      <AssetDetail
+        item={inspecting}
+        inNode={inspecting && isImported ? isImported(inspecting.id) : null}
+        onClose={() => setInspecting(null)}
+      />
     </View>
   );
 }
 
-function Tile({ item }: { item: DeviceMediaItem }) {
+function Tile({
+  item,
+  inNode,
+  onPress,
+}: {
+  readonly item: DeviceMediaItem;
+  /** Null when nobody can say — see {@link Props.isImported}. */
+  readonly inNode: boolean | null;
+  readonly onPress: () => void;
+}) {
   return (
-    <View style={styles.tile}>
-      <Image source={{ uri: item.uri }} style={styles.tileImage} contentFit="cover" />
+    <Pressable style={styles.tile} onPress={onPress}>
+      <Image
+        source={{ uri: item.uri }}
+        style={[styles.tileImage, inNode === false ? styles.tileNotImported : null]}
+        contentFit="cover"
+        recyclingKey={item.id}
+      />
       {/* Videos are worth marking: a still frame with no marker reads as a photo
-          that will not play when tapped. */}
-      {item.kind === "video" ? (
-        <Text style={styles.tileBadge}>{formatDuration(item.durationMs)}</Text>
-      ) : null}
-    </View>
+          that will not play when tapped. The same component the library grid
+          uses, in the same corner — the two grids draw the same files, and
+          marking them differently reads as two apps. */}
+      {item.kind === "video" ? <VideoBadge durationMs={item.durationMs} /> : null}
+      {/* Dimming alone would read as a loading state, so the tile says which
+          state it is in. Only for the absent case: marking all of a working
+          library would be noise on every tile to report nothing. */}
+      {inNode === false ? <Text style={styles.tileMissingMark}>not in node</Text> : null}
+    </Pressable>
+  );
+}
+
+/**
+ * What one asset is, for somebody comparing the two grids by hand.
+ *
+ * The filename is the whole point. When the device grid and the library grid
+ * disagree, the only way to say *which* photograph is at issue is to name it,
+ * and until now nothing on this screen ever showed a filename.
+ */
+function AssetDetail({
+  item,
+  inNode,
+  onClose,
+}: {
+  readonly item: DeviceMediaItem | null;
+  readonly inNode: boolean | null;
+  readonly onClose: () => void;
+}) {
+  if (!item) return null;
+  return (
+    <Modal visible animationType="fade" onRequestClose={onClose} transparent={false}>
+      <SafeAreaView style={styles.viewerSafe}>
+        <Pressable style={styles.viewerImageArea} onPress={onClose}>
+          <Image source={{ uri: item.uri }} style={styles.viewerImage} contentFit="contain" />
+        </Pressable>
+        <View style={styles.viewerFooter}>
+          <Text style={styles.body}>{item.filename ?? "unnamed"}</Text>
+          <Text style={styles.muted}>
+            {item.kind}
+            {item.width && item.height ? ` · ${item.width}×${item.height}` : ""}
+            {item.createdAt ? ` · taken ${new Date(item.createdAt).toLocaleString()}` : " · no capture time"}
+          </Text>
+          <Text style={styles.muted}>
+            {item.modifiedAt
+              ? `changed here ${new Date(item.modifiedAt).toLocaleString()}`
+              : "the media store recorded no modification time for this asset"}
+          </Text>
+          {/* The asset id, because it is what every diagnostic on the other side
+              keys on — the alias table, the import cursor, and an `adb` query
+              against the media store all name an asset this way. */}
+          <Text style={styles.mono}>{item.id}</Text>
+          <Text style={inNode === false ? styles.error : styles.muted}>
+            {inNode === null
+              ? "Whether this node holds it is not known here."
+              : inNode
+                ? "This node holds it."
+                : "This node does not hold it."}
+          </Text>
+          <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
+            <Text style={styles.linkLabel}>Close</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </Modal>
   );
 }

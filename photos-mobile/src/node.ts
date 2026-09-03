@@ -52,9 +52,11 @@ import { totalBudgetBytes } from "./retention";
 import type { DataRecord } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
+import { createSqliteMotionIndexStore, type MotionIndexStore } from "./media/motion-index";
 import { createSqliteScanCursorStore } from "./work/scan-cursor";
 import {
   createSqliteImportCursorStore,
+  VIDEO_DURATION_CURSOR_TABLE,
   type ImportCursorStore,
 } from "./media/import-cursor";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
@@ -196,6 +198,31 @@ export interface MobileNode {
    * predates this node. See `media/import-cursor.ts`.
    */
   readonly importCursor: ImportCursorStore | null;
+  /**
+   * How far the duration backfill has walked the camera roll's videos, or null
+   * when this node does not read one.
+   *
+   * A second watermark rather than a reuse of {@link MobileNode.importCursor},
+   * because the two walk the same field for opposite reasons: import walks
+   * forward from "now" to notice what is new, and the backfill walks forward
+   * from the beginning of the roll to repair clips imported before a record
+   * carried a duration. See `backfillVideoDurations`.
+   */
+  readonly videoDurationCursor: ImportCursorStore | null;
+  /**
+   * Where the video inside a Motion Photo is, or null when this node reads no
+   * camera roll.
+   *
+   * Exposed for the same reason the alias table is: the import loop writes it
+   * and the viewer reads it, and the table lives in this node's database, which
+   * does not exist until `createMobileNode` builds it.
+   *
+   * Deliberately invisible to the sync engine. The row describes a byte range
+   * inside a blob the engine already moves whole, and teaching the engine that a
+   * record has an inside would be the first crack in the seam that keeps mobile
+   * a configuration of the node rather than a fork of it.
+   */
+  readonly motionIndex: MotionIndexStore | null;
   /**
    * What this node holds — including, when `deviceMedia` was supplied, the
    * camera-roll assets it has aliased rather than copied.
@@ -445,6 +472,18 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   const importCursor = options.deviceMedia
     ? createSqliteImportCursorStore({ db: databaseAdapter.getRawDatabase() })
     : null;
+  // Same shape, its own table. See `MobileNode.videoDurationCursor`.
+  const videoDurationCursor = options.deviceMedia
+    ? createSqliteImportCursorStore({
+        db: databaseAdapter.getRawDatabase(),
+        table: VIDEO_DURATION_CURSOR_TABLE,
+      })
+    : null;
+  // Built on the same condition, because import is the only writer and import
+  // is what a camera roll makes possible. See `media/motion-index.ts`.
+  const motionIndex = options.deviceMedia
+    ? createSqliteMotionIndexStore({ db: databaseAdapter.getRawDatabase() })
+    : null;
   const localObjectStorage =
     mediaAliases && options.deviceMedia
       ? new DeviceMediaObjectStorage({
@@ -556,6 +595,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     objectStorage: localObjectStorage,
     mediaAliases,
     importCursor,
+    videoDurationCursor,
+    motionIndex,
     engine,
     residency,
     exchange: async () => (engine ? serialized(() => engine.exchange()) : null),

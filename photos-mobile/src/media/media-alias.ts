@@ -87,6 +87,24 @@ export interface MediaAliasStore {
   byAssetId(assetId: string): MediaAlias | null;
   /** Total aliased bytes — reported by the residency inspector, never budgeted. */
   totalBytes(): number;
+  /**
+   * A page of aliases, in primary-key order, for a pass that must visit them all.
+   *
+   * Exists because the EXIF backfill needs *the records this node imported from
+   * this device*, and that set lives here rather than in the media store. Its
+   * first design walked the media store instead, the way `backfillVideoDurations`
+   * does, and could not work: a duration is a fact only the store holds, so that
+   * pass has to ask the store — but EXIF is in the file, and this table already
+   * names the file. On the handset it was written for the difference is 96 rows
+   * against 4,806, with the 96 at the far end of the walk.
+   *
+   * Ordered by `object_storage_key`, the primary key, because it is the one
+   * column with no ties — so a caller paging on it visits every row exactly
+   * once. `added_at_ms` would have been the natural choice and is not usable:
+   * an import batch stamps many aliases inside one millisecond, so a page could
+   * end mid-tie and either repeat the group forever or skip the rest of it.
+   */
+  listAfter(afterKey: string | null, limit: number): MediaAlias[];
 }
 
 type DB = Record<string, Record<string, unknown>>;
@@ -227,6 +245,23 @@ export function createSqliteMediaAliasStore(options: { readonly db: RawDatabase 
       .select(({ fn }) => fn.coalesce(fn.sum<number>("size_bytes"), sql.lit(0)).as("total"))
       .compile().sql,
   );
+  const pageStmt = db.prepare(
+    qb
+      .selectFrom(TABLE)
+      .selectAll()
+      .where("object_storage_key", ">", sql.raw("?"))
+      .orderBy("object_storage_key", "asc")
+      .limit(sql.raw("?"))
+      .compile().sql,
+  );
+  const firstPageStmt = db.prepare(
+    qb
+      .selectFrom(TABLE)
+      .selectAll()
+      .orderBy("object_storage_key", "asc")
+      .limit(sql.raw("?"))
+      .compile().sql,
+  );
 
   return {
     add(alias) {
@@ -261,6 +296,12 @@ export function createSqliteMediaAliasStore(options: { readonly db: RawDatabase 
     totalBytes() {
       const row = totalStmt.get() as { total: number } | undefined;
       return row?.total ?? 0;
+    },
+    listAfter(afterKey, limit) {
+      const rows = (afterKey === null
+        ? firstPageStmt.all(limit)
+        : pageStmt.all(afterKey, limit)) as Row[];
+      return rows.map(toAlias);
     },
   };
 }

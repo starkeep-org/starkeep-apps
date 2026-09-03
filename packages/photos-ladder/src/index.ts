@@ -29,3 +29,32 @@ export {
   type RenditionState,
   type ResolveOptions,
 } from "./rendition-resolution";
+
+export {
+  currentRenditionPolicies,
+  canonicalTarget,
+  type MediaPolicyKind,
+  type RenditionPolicies,
+  type RenditionThresholdPolicy,
+} from "./rendition-policy";
+
+export {
+  canonicalMeasuredTarget,
+  containRenderedLongEdge,
+  coverRenderedLongEdge,
+  displayedAspect,
+  displayedDimensions,
+  measuredPhysicalLongEdge,
+  normalizedDevicePixelRatio,
+  orientationSwapsAxes,
+  UNKNOWN_DISPLAY_ASPECT,
+  type Dimensions,
+  type MeasuredNeedOptions,
+} from "./render-geometry";
+
+export {
+  justifiedRows,
+  type JustifiedLayoutOptions,
+  type JustifiedPlacement,
+  type JustifiedRow,
+} from "./justified-layout";

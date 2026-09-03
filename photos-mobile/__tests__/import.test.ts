@@ -19,6 +19,7 @@ import { MockDatabaseAdapter, type RawDatabase } from "@starkeep/storage-adapter
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "../src/media/media-alias";
 import {
   backfillImageExif,
+  backfillThumbHashes,
   backfillVideoDurations,
   importDeviceMedia,
   importNullModified,
@@ -1399,5 +1400,223 @@ describe("assets the watermark can never see", () => {
     // reach: SQLite sorts NULLs first ascending, and the media store is SQLite.
     // Either alone leaves them exactly as unreachable as the import walk does.
     expect(lastOrderBy).toEqual({ key: "modificationTime", ascending: true });
+  });
+});
+
+describe("backfillThumbHashes", () => {
+  /**
+   * A node that imported some records before it could make a placeholder.
+   *
+   * The state every record on this device was in until now: `thumb_hash` is
+   * written during derivation, and this device derives nothing — so a photograph
+   * from its own camera roll had no placeholder until another node ran `sharp`
+   * over it and synced the column back.
+   */
+  async function importedWithoutThumbHashes(count: number): Promise<StarkeepId[]> {
+    const rows = [];
+    for (let i = 0; i < count; i += 1) {
+      const uri = `content://media/external/images/media/${200 + i}`;
+      // Distinct bytes per asset, not the shared fixture. The alias table is
+      // keyed by object storage key, which is the content hash — so three copies
+      // of one photograph are one record and one alias, and a backfill over them
+      // would have exactly one thing to repair.
+      putAsset(uri, Uint8Array.from(PHOTO, (byte) => (byte + i) % 256));
+      rows.push(asset({ id: uri, modificationTime: 1_700_000_000_000 + i * 1000 }));
+    }
+    // No `thumbHash` dep, which is exactly how the import ran before this
+    // existed — the encoder is optional and its absence means "do not compute
+    // one".
+    const outcome = await importDeviceMedia(deps(rows), { limit: count });
+    return outcome.records.map((record) => record.id);
+  }
+
+  /** An encoder that answers, and counts what it was asked about. */
+  function encoder(options: { readonly fails?: Set<string> } = {}) {
+    const seen: string[] = [];
+    return {
+      seen,
+      encode: async (uri: string) => {
+        seen.push(uri);
+        // Null for a file the decoder could not read, which must cost nothing.
+        return options.fails?.has(uri) ? null : `hash-for-${uri.split("/").pop()}`;
+      },
+    };
+  }
+
+  function backfillDeps(encode: (uri: string) => Promise<string | null>) {
+    return { aliases, database, encode };
+  }
+
+  /** Run batches back to back, the way the screen does. */
+  async function runToCompletion(limit: number, encode: (uri: string) => Promise<string | null>) {
+    let after: string | null = null;
+    let written = 0;
+    let passes = 0;
+    for (;;) {
+      const outcome = await backfillThumbHashes(backfillDeps(encode), { limit, after });
+      written += outcome.written;
+      passes += 1;
+      if (outcome.complete) return { written, passes };
+      after = outcome.resumeAfter;
+      if (passes > 50) throw new Error("backfill did not terminate");
+    }
+  }
+
+  it("gives a placeholder to every record that had none", async () => {
+    const ids = await importedWithoutThumbHashes(3);
+    const { encode } = encoder();
+
+    const outcome = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });
+
+    expect(outcome.written).toBe(3);
+    expect(outcome.complete).toBe(true);
+    for (const id of ids) {
+      expect((await database.getMetadata("image", id))?.["thumb_hash"]).toMatch(/^hash-for-/);
+    }
+  });
+
+  it("reports completion only at the end of the walk, and resumes where it stopped", async () => {
+    await importedWithoutThumbHashes(5);
+    const { encode } = encoder();
+
+    const first = await backfillThumbHashes(backfillDeps(encode), { limit: 2 });
+    expect(first.complete).toBe(false);
+    expect(first.resumeAfter).not.toBeNull();
+
+    // Resuming rather than restarting is the whole of the position: a walk that
+    // began again from the top would re-decode the batch it just finished, on
+    // every pass, forever.
+    const { written, passes } = await runToCompletion(2, encode);
+    expect(first.written + written).toBe(5);
+    expect(passes).toBeGreaterThan(1);
+  });
+
+  it("skips a record that already has one, without decoding it", async () => {
+    const ids = await importedWithoutThumbHashes(3);
+    await database.putMetadata("image", { recordId: ids[0]!, thumb_hash: "already-here" });
+    const { encode, seen } = encoder();
+
+    const outcome = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });
+
+    // The point of reading the metadata before opening any file: the expensive
+    // step runs only for records that need it.
+    expect(outcome.written).toBe(2);
+    expect(seen).toHaveLength(2);
+    expect((await database.getMetadata("image", ids[0]!))?.["thumb_hash"]).toBe("already-here");
+  });
+
+  it("writes nothing for a file the decoder could not read, and does not fail", async () => {
+    const ids = await importedWithoutThumbHashes(2);
+    // Which URI belongs to which record is the alias table's answer, and the
+    // walk is over that table — so the failing file is named the way the pass
+    // will find it.
+    const failing = aliases.listAfter(null, 10).find((alias) => alias.recordId === ids[0])!;
+    const { encode } = encoder({ fails: new Set([failing.contentUri]) });
+
+    const outcome = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });
+
+    // One repaired, one left alone, and the pass reports completion rather than
+    // an error. A photograph with no placeholder is an ordinary state.
+    expect(outcome.written).toBe(1);
+    expect(outcome.scanned).toBe(2);
+    expect(outcome.complete).toBe(true);
+    expect((await database.getMetadata("image", ids[0]!))?.["thumb_hash"]).toBeUndefined();
+  });
+
+  it("survives a decoder that throws", async () => {
+    await importedWithoutThumbHashes(2);
+
+    const outcome = await backfillThumbHashes(
+      backfillDeps(() => Promise.reject(new Error("no decoder here"))),
+      { limit: 24 },
+    );
+
+    expect(outcome.written).toBe(0);
+    expect(outcome.complete).toBe(true);
+  });
+
+  it("gives a clip a placeholder too, in the video table", async () => {
+    // `expo-image` paints a clip's first frame, so the same encoder answers for
+    // a video — and the `video` category declares `thumb_hash` for exactly this
+    // reason. A grid that placed every still and left a hole where each clip
+    // goes would look like a grid with missing data.
+    const uri = "content://media/external/video/media/300";
+    putAsset(uri, PHOTO);
+    const outcome = await importDeviceMedia(
+      deps([asset({ id: uri, filename: "clip.mp4", mediaType: "video" })]),
+      { limit: 1 },
+    );
+    const id = outcome.records[0]!.id;
+    const { encode } = encoder();
+
+    const pass = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });
+
+    expect(pass.written).toBe(1);
+    expect((await database.getMetadata("video", id))?.["thumb_hash"]).toMatch(/^hash-for-/);
+  });
+
+  it("leaves the import watermark exactly where it was", async () => {
+    // The pass walks the node's own alias table and never the media store, so
+    // there is nothing for it to move. Asserted rather than assumed, because a
+    // repair that dragged the import watermark forward would make the ordinary
+    // import skip whatever it had passed.
+    const cursor = createSqliteImportCursorStore({ db: rawDb() });
+    cursor.set(1_700_000_004_000);
+    await importedWithoutThumbHashes(3);
+    const { encode } = encoder();
+
+    await runToCompletion(2, encode);
+
+    expect(cursor.get()).toBe(1_700_000_004_000);
+  });
+
+  it("reports completion on a node that imported nothing", async () => {
+    const { encode } = encoder();
+
+    const outcome = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });
+
+    expect(outcome).toEqual({ scanned: 0, written: 0, complete: true, resumeAfter: null });
+  });
+});
+
+describe("the ThumbHash written at import", () => {
+  it("lands on the record's metadata row alongside everything else", async () => {
+    // One `putMetadata`, not two: a second write for one column is a second
+    // write of every column beside it.
+    const outcome = await importDeviceMedia(
+      { ...deps(), thumbHash: async () => "inline-hash" },
+      { limit: 1 },
+    );
+
+    const row = await database.getMetadata("image", outcome.records[0]!.id);
+    expect(row?.["thumb_hash"]).toBe("inline-hash");
+    expect(row?.["width"]).toBeDefined();
+  });
+
+  it("imports the record anyway when the encoder throws", async () => {
+    // A decode that fails must not cost a record. What is lost is 25 bytes, and
+    // the backfill offers the same file again on a later app open.
+    const outcome = await importDeviceMedia(
+      {
+        ...deps(),
+        thumbHash: () => Promise.reject(new Error("no decoder here")),
+      },
+      { limit: 1 },
+    );
+
+    expect(outcome.imported).toBe(1);
+    expect(
+      (await database.getMetadata("image", outcome.records[0]!.id))?.["thumb_hash"],
+    ).toBeUndefined();
+  });
+
+  it("writes none when no encoder is supplied", async () => {
+    // The default for a node with no image decoder — a laptop's fixtures, or the
+    // seeding pass.
+    const outcome = await importDeviceMedia(deps(), { limit: 1 });
+
+    expect(
+      (await database.getMetadata("image", outcome.records[0]!.id))?.["thumb_hash"],
+    ).toBeUndefined();
   });
 });

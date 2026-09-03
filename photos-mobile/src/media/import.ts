@@ -68,6 +68,7 @@ import type { MediaAliasStore } from "./media-alias";
 import { findMotionPhotoVideo } from "./motion-photo";
 import { readImageExif } from "./exif";
 import type { MotionIndexStore } from "./motion-index";
+import type { ThumbHashEncoder } from "./thumb-hash";
 
 /**
  * SHA-256 over a whole buffer, supplied by the app's edge.
@@ -157,6 +158,16 @@ export interface ImportDeps {
    * extra read at all. See `motion-index.ts`.
    */
   readonly motionIndex?: MotionIndexStore;
+  /**
+   * How to turn an asset into the ~25-byte placeholder its record carries.
+   *
+   * Absent means "do not compute one", which is the right default for a node
+   * with no image decoder — a laptop's fixtures, or a Node test. Present costs
+   * one decode per imported asset, on the argument that a record with no
+   * placeholder is a tile that paints nothing until some other node derives its
+   * ladder. See `thumb-hash.ts`.
+   */
+  readonly thumbHash?: ThumbHashEncoder;
 }
 
 /** One asset's cost, reported as the loop goes rather than at the end. */
@@ -1103,6 +1114,125 @@ export async function backfillImageExif(
   };
 }
 
+/** What the ThumbHash backfill needs: the node's own tables, plus a decoder. */
+export interface ThumbHashBackfillDeps {
+  readonly aliases: MediaAliasStore;
+  readonly database: DatabaseAdapter;
+  readonly encode: ThumbHashEncoder;
+}
+
+/** Where a ThumbHash backfill pass stopped, so the next one resumes. */
+export interface ThumbHashBackfillOutcome extends BackfillOutcome {
+  /**
+   * The alias key to resume after, or null once the walk is done.
+   *
+   * Carried in the outcome rather than persisted, for the reason
+   * {@link ImageExifBackfillOutcome} gives: the set is bounded by what this node
+   * imported, the caller runs batches back to back, and a run cut short by the
+   * app closing simply starts again.
+   */
+  readonly resumeAfter: string | null;
+}
+
+/**
+ * Give a placeholder to every record imported before this device made them.
+ *
+ * ## Why the walk is the EXIF backfill's and not the duration backfill's
+ *
+ * Because the fact is about the file, and the alias table already names every
+ * file this node holds. Walking the media store instead would put the pass at
+ * the oldest end of a camera roll whose newest records are the ones missing a
+ * hash — the measured failure `backfillImageExif` documents at length, where a
+ * watermark crawled to November 2018 and repaired nothing. Nothing about
+ * ThumbHash changes that argument, so the shape is shared deliberately.
+ *
+ * It also needs no media-store query at all. The alias carries the `content://`
+ * URI, and the decoder opens it directly.
+ *
+ * ## Why videos are included
+ *
+ * `expo-image` paints a clip's first frame — settled on a handset and recorded
+ * in `library.ts` — so the same encoder answers for a video, and the `video`
+ * category declares `thumb_hash` for exactly this reason. A grid that placed
+ * every still and left a hole where each clip goes would look like a grid with
+ * missing data rather than one with mixed media.
+ *
+ * ## What it cannot repair, and what it re-reads
+ *
+ * A record whose bytes arrived by sync has no alias and no file here. It keeps
+ * whatever the node that derived it wrote, which is the right answer — and
+ * unlike the EXIF case that node almost certainly did write one, because
+ * `thumb_hash` is part of derivation.
+ *
+ * A file the decoder cannot read is asked again on every walk, because nothing
+ * records that it was already asked. That is the same known cost
+ * `backfillImageExif` names, and the same fix would answer both: a column
+ * saying "looked, found nothing". It is not worth one until the unreadable
+ * share of a library grows.
+ */
+export async function backfillThumbHashes(
+  deps: ThumbHashBackfillDeps,
+  options: { readonly limit: number; readonly after?: string | null },
+): Promise<ThumbHashBackfillOutcome> {
+  const page = deps.aliases.listAfter(options.after ?? null, options.limit);
+  if (page.length === 0) {
+    return { scanned: 0, written: 0, complete: true, resumeAfter: null };
+  }
+
+  // The records themselves, because the category decides which metadata table
+  // the hash goes in and an alias does not carry one. A record the alias names
+  // but the database has lost is the interrupted-import window this file is
+  // built around, and it is simply skipped — the next import re-mints it.
+  const ids = page.map((alias) => alias.recordId as StarkeepId);
+  const found = await deps.database.query({
+    filters: [{ field: "id", operator: "in", value: ids }],
+    limit: ids.length,
+  });
+  const categoryOf = new Map<StarkeepId, "image" | "video">();
+  for (const record of found.records) {
+    const category = typeCategory(record.type);
+    if (category === "image" || category === "video") categoryOf.set(record.id, category);
+  }
+
+  // Two metadata reads for the batch — one per table — before any file is
+  // opened, so the decode runs only for records that actually need it. The same
+  // argument the EXIF pass makes with one read; there are two here because a
+  // page of aliases mixes stills and clips and `getMetadataByIds` is per table.
+  const byCategory = { image: [] as StarkeepId[], video: [] as StarkeepId[] };
+  for (const [id, category] of categoryOf) byCategory[category].push(id);
+  const existing = {
+    image: await deps.database.getMetadataByIds("image", byCategory.image),
+    video: await deps.database.getMetadataByIds("video", byCategory.video),
+  };
+
+  let written = 0;
+  let scanned = 0;
+  for (const alias of page) {
+    const recordId = alias.recordId as StarkeepId;
+    const category = categoryOf.get(recordId);
+    if (!category) continue;
+    // `!= null`, not `!== undefined`, for the reason `backfillImageExif` spells
+    // out: `SqliteDatabaseAdapter` returns an unwritten column as `null` and
+    // `MockDatabaseAdapter` omits it, so testing for one of the two passes every
+    // test and skips every record on the handset.
+    if (existing[category].get(recordId)?.["thumb_hash"] != null) continue;
+
+    scanned += 1;
+    const hash = await safeThumbHash(deps.encode, alias.contentUri);
+    if (!hash) continue;
+    await deps.database.putMetadata(category, { recordId, thumb_hash: hash });
+    written += 1;
+  }
+
+  const complete = page.length < options.limit;
+  return {
+    scanned,
+    written,
+    complete,
+    resumeAfter: complete ? null : page[page.length - 1]!.objectStorageKey,
+  };
+}
+
 /**
  * Record what the media store already knows about the asset without decoding it.
  *
@@ -1230,10 +1360,42 @@ async function writeMediaMetadata(
     row["duration_ms"] = item.durationMs;
   }
 
+  // The placeholder, and the one column here that costs a decode.
+  //
+  // Last, and awaited into the same row rather than written after it, because a
+  // second `putMetadata` for one column is a second write of every column
+  // beside it. It is also why this is guarded the same way everything above is:
+  // a decoder that answered nothing leaves the column absent, which is the
+  // state every reader already handles.
+  //
+  // Both categories declare `thumb_hash`, and a video gets one for the same
+  // reason a still does — `expo-image` paints a clip's first frame, so the
+  // encoder answers for either, and a grid mixing stills and clips must not
+  // have a hole where one kind of placeholder should be.
+  const thumbHash = deps.thumbHash ? await safeThumbHash(deps.thumbHash, item.uri) : null;
+  if (thumbHash) row["thumb_hash"] = thumbHash;
+
   // Nothing but the key means the store measured nothing, and a row holding one
   // column is a row every reader has to treat as present-but-empty.
   if (Object.keys(row).length === 1) return;
   await deps.database.putMetadata(category, row);
+}
+
+/**
+ * The placeholder for one asset, or null, and never a throw.
+ *
+ * A decode that fails must not fail an import. The bytes are hashed, aliased
+ * and about to become a record either way; what is lost is a 25-byte
+ * placeholder, and {@link backfillThumbHashes} will offer the same file again on
+ * a later app open. Letting the error out here would trade a record for a
+ * placeholder, which is exactly the wrong way round.
+ */
+async function safeThumbHash(encode: ThumbHashEncoder, uri: string): Promise<string | null> {
+  try {
+    return await encode(uri);
+  } catch {
+    return null;
+  }
 }
 
 /**

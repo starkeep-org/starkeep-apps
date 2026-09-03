@@ -21,6 +21,10 @@
 import { open as openOpSqlite } from "@op-engineering/op-sqlite";
 import { Directory, File, Paths, UploadType } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
+// The app's only image decoder, and the one that already paints every tile. See
+// `thumbHashFor` below for why the ThumbHash is taken from it rather than
+// computed in JavaScript.
+import { Image } from "expo-image";
 import { generateId, type DataRecord, type HLCClock } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
@@ -34,6 +38,7 @@ import { loadDeviceKey, type DeviceKey } from "./auth/device-key";
 import { loadCloudConfig } from "./config";
 import {
   backfillImageExif,
+  backfillThumbHashes,
   backfillVideoDurations,
   importDeviceMedia,
   importNullModified,
@@ -43,7 +48,9 @@ import {
   type ImportDeps,
   type ImageExifBackfillOutcome,
   type ImportOutcome,
+  type ThumbHashBackfillOutcome,
 } from "./media/import";
+import type { ThumbHashEncoder } from "./media/thumb-hash";
 import { createMobileNode, type MobileNode } from "./node";
 import {
   openMotionPhoto,
@@ -432,9 +439,45 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
     clock,
     fs: expoFileSystem,
     hash: sha256Bytes,
+    thumbHash: thumbHashFor,
     ...(node.motionIndex ? { motionIndex: node.motionIndex } : {}),
   };
 }
+
+/**
+ * The ~25-byte placeholder for whatever is at this URI.
+ *
+ * ## Why the decode is `expo-image`'s
+ *
+ * It is the decoder this app already trusts to paint every tile. On Android
+ * that is Glide, which reads a `content://` asset, a `file://` blob and an
+ * extensionless synced original alike, sniffing the source rather than trusting
+ * a file extension — the same property that makes a video's first frame
+ * paintable. Adding a second decoder to answer the same question in JavaScript
+ * would be a second thing that can disagree about what a file contains.
+ *
+ * The returned string is base64 of the ThumbHash bytes, which is exactly what
+ * `derive-ladder.ts` writes on a node running `sharp`. `media/thumb-hash.ts`
+ * records why the two agree.
+ *
+ * ## Why every failure is null
+ *
+ * A missing placeholder is an ordinary state — most records had none until this
+ * pass existed — so nothing here is worth failing an import or a backfill for.
+ * The one case worth naming is a video the decoder cannot open: it answers
+ * null, the tile paints its own first frame as it already does, and no
+ * placeholder is lost that anything was relying on.
+ */
+export const thumbHashFor: ThumbHashEncoder = async (uri) => {
+  try {
+    const hash = await Image.generateThumbhashAsync(uri);
+    // An empty string is not a placeholder. Normalising it here means every
+    // reader downstream can treat "a string" as "a hash".
+    return hash ? hash : null;
+  } catch {
+    return null;
+  }
+};
 
 /**
  * Bring in whatever the camera has taken since this node last looked.
@@ -567,6 +610,34 @@ export function backfillImageExifFor(
       aliases: node.mediaAliases,
       database: node.databaseAdapter,
       fs: expoFileSystem,
+    },
+    { limit: options.limit, ...(options.after !== undefined ? { after: options.after } : {}) },
+  );
+}
+
+/**
+ * Give a placeholder to records imported before this device made them.
+ *
+ * Answers `complete: true` on a node that reads no camera roll, because such a
+ * node has nothing to repair and the caller's job is to stop asking.
+ *
+ * Foreground only, and the argument is the EXIF backfill's carried one step
+ * further: this pass decodes whole photographs rather than reading their
+ * headers, and a background window's budget belongs to the sync that gets them
+ * off the device.
+ */
+export function backfillThumbHashesFor(
+  node: MobileNode,
+  options: { readonly limit: number; readonly after?: string | null },
+): Promise<ThumbHashBackfillOutcome> {
+  if (!node.mediaAliases) {
+    return Promise.resolve({ scanned: 0, written: 0, complete: true, resumeAfter: null });
+  }
+  return backfillThumbHashes(
+    {
+      aliases: node.mediaAliases,
+      database: node.databaseAdapter,
+      encode: thumbHashFor,
     },
     { limit: options.limit, ...(options.after !== undefined ? { after: options.after } : {}) },
   );

@@ -42,6 +42,39 @@ export const GRID_COLUMNS = 3;
 /** The gap `styles.grid` puts between tiles, in both axes. */
 export const GRID_GAP = 2;
 
+/**
+ * The height a justified library row aims for, in layout points.
+ *
+ * ## Why the library grid has a row height and the device grid still has columns
+ *
+ * They answer different questions. `MediaGrid` shows the camera roll as the
+ * media store reports it — a contact sheet, where a square crop is the point
+ * because the question is *which of these do I have*. The library shows
+ * photographs, and a square crop of a photograph is not the photograph. So the
+ * library became justified rows, where every picture in a row shares a height
+ * and keeps its own shape, and nothing is ever cropped to a square.
+ *
+ * That also fixed the sizing. A square tile is the wrong box to measure a
+ * rendition request against: a portrait photograph in a square tile is drawn
+ * shorter and narrower than the tile, so the request was computed against pixels
+ * the picture does not occupy.
+ *
+ * ## Why 120
+ *
+ * It lands close to the density the three-column grid had, without inheriting
+ * its crop. Three squares across a 390-point phone are about 115 points wide;
+ * at a 120-point row a landscape 3:2 photograph is 180 points and a portrait 3:4
+ * is 90, so a mixed row holds between two and four. Fewer, larger tiles for
+ * landscape pictures and more, narrower ones for portraits is what a justified
+ * grid is *for* — it spends the width on the pictures that can use it.
+ *
+ * Rows do not hold to this exactly. A row grows or shrinks to fill the width,
+ * which is what `justifiedRows` does with the slack; this is the height it aims
+ * for. See `photos/render-target.ts` for why the rendition request is measured
+ * against this number rather than against the height a row lands on.
+ */
+export const LIBRARY_ROW_HEIGHT = 120;
+
 export const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   content: { padding: CONTENT_PADDING, gap: 20 },
@@ -110,6 +143,14 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     justifyContent: "flex-end",
   },
+  /**
+   * One tile of the justified library grid.
+   *
+   * No `width` and no `aspectRatio`, unlike `tile` above: the layout assigns
+   * both per photograph, so a style that carried either would be a second
+   * opinion about the shape and the two would disagree on every row.
+   */
+  justifiedTile: { backgroundColor: colors.surface, justifyContent: "flex-end" },
   tileImage: { width: "100%", height: "100%" },
   /**
    * A device asset this node does not hold.
@@ -161,6 +202,24 @@ export const styles = StyleSheet.create({
 
   /** A record this node has but whose bytes are elsewhere. Not an error state. */
   tilePlaceholder: { alignItems: "center", justifyContent: "center" },
+  /**
+   * The mark on a tile with no bytes here at all, over whatever is behind it.
+   *
+   * Absolutely positioned rather than a replacement for the image, because the
+   * image is no longer absent when the bytes are: a ThumbHash paints under this,
+   * and the mark says the full picture is still owed. Drawing this *instead* of
+   * the image — which is what the grid used to do — would have thrown the
+   * placeholder away in the one case it exists for.
+   */
+  tileMissingOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   tilePlaceholderMark: { color: colors.border, fontSize: 22 },
 
   // The viewer deliberately goes black rather than using the app background:

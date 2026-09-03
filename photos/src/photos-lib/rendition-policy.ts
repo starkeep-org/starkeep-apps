@@ -1,49 +1,23 @@
-import { STILL_LADDER, VIDEO_LADDER } from "./ladder";
+/**
+ * The browser-facing selection boundaries, and the snap onto them — re-exported
+ * from the package every Photos surface shares.
+ *
+ * The definitions moved out to `@starkeep/photos-ladder` for the reason
+ * `ladder.ts` beside this file already gives: `photos-mobile` cannot reach
+ * anything under `photos/`, so a phone that measured its own surfaces would
+ * have meant a second copy of `canonicalTarget`. A snap rule that disagreed
+ * with the web app's would put one device class on a different rung for the
+ * same photograph at the same size — a difference nothing would report, because
+ * both answers are a valid rung.
+ *
+ * This file stays as the name every call site in this app already imports, so
+ * the extraction is invisible from here.
+ */
 
-export type MediaPolicyKind = "still" | "video";
-
-export interface RenditionThresholdPolicy {
-  kind: MediaPolicyKind;
-  version: string;
-  targetLongEdges: number[];
-}
-
-export interface RenditionPolicies {
-  still: RenditionThresholdPolicy;
-  video: RenditionThresholdPolicy;
-}
-
-function semanticVersion(kind: MediaPolicyKind, targets: readonly number[]): string {
-  const semantics = `${kind}:${targets.join(",")}`;
-  let hash = 2166136261;
-  for (let index = 0; index < semantics.length; index++) {
-    hash ^= semantics.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${kind}-${(hash >>> 0).toString(36)}`;
-}
-
-function policy(kind: MediaPolicyKind, targets: readonly number[]): RenditionThresholdPolicy {
-  const targetLongEdges = [...new Set(targets)].sort((a, b) => a - b);
-  return { kind, version: semanticVersion(kind, targetLongEdges), targetLongEdges };
-}
-
-/** Server-owned browser selection boundaries, generated from canonical ladders. */
-export function currentRenditionPolicies(): RenditionPolicies {
-  return {
-    still: policy("still", STILL_LADDER.map((spec) => spec.maxLongEdge)),
-    video: policy(
-      "video",
-      VIDEO_LADDER
-        .filter((spec) => spec.kind === "poster" || spec.kind === "transcode")
-        .map((spec) => spec.maxLongEdge),
-    ),
-  };
-}
-
-export function canonicalTarget(policy: RenditionThresholdPolicy, requiredLongEdge: number): number {
-  return (
-    policy.targetLongEdges.find((target) => target >= requiredLongEdge) ??
-    policy.targetLongEdges[policy.targetLongEdges.length - 1]!
-  );
-}
+export {
+  currentRenditionPolicies,
+  canonicalTarget,
+  type MediaPolicyKind,
+  type RenditionPolicies,
+  type RenditionThresholdPolicy,
+} from "@starkeep/photos-ladder";

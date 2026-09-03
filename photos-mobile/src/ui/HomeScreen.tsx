@@ -41,6 +41,7 @@ import {
   Pressable,
   RefreshControl,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 // Glide-backed, like both grids. Imported here only for `clearMemoryCache`, so
@@ -73,6 +74,7 @@ import {
   LibraryRow,
   useLibraryViewer,
 } from "./LibraryGrid";
+import type { JustifiedRow } from "../photos/render-target";
 import type { LibraryItem } from "../library";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
@@ -207,6 +209,10 @@ export function HomeScreen({
 }: Props) {
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // The hook rather than `Dimensions.get`, because this value has to re-render
+  // the screen: the justified rows are laid out against it, and a rotation that
+  // did not re-flow them would leave every row measured for the other width.
+  const window = useWindowDimensions();
   const { state: node, reset } = useNode();
   const library = useLibrary(node);
   const storage = useStorage(node);
@@ -293,6 +299,8 @@ export function HomeScreen({
   const durationsBackfilled = useRef(false);
   /** Same, for the stills' capture time and orientation. */
   const exifBackfilled = useRef(false);
+  /** Same, for the placeholder every record paints before its bytes resolve. */
+  const thumbHashesBackfilled = useRef(false);
 
   /**
    * Run a sync, from a tap or from a foreground catch-up.
@@ -463,6 +471,18 @@ export function HomeScreen({
         exifBackfilled.current = await library.backfillExif();
       }
 
+      // The placeholder every tile falls back to, for the records this device
+      // imported before it could make one. Last of the three, and deliberately:
+      // the two above decide where a tile *sits*, which changes what somebody is
+      // looking at, and this decides what an unresolved tile paints — an
+      // improvement to a grid that is already in the right order.
+      //
+      // Unlike those two it does not finish in one open, and does not need to.
+      // See `MAX_THUMB_HASH_BACKFILL_PASSES`.
+      if (plan.import && !thumbHashesBackfilled.current) {
+        thumbHashesBackfilled.current = await library.backfillThumbHashes();
+      }
+
       // The assets the import watermark can never reach. Run on every catch-up
       // rather than once per launch, because the pass costs ten media-store
       // probes and a screenshot taken while the app is open would otherwise wait
@@ -603,10 +623,13 @@ export function HomeScreen({
    */
   const viewer = useLibraryViewer({
     onFetch: library.fetchBlob,
+    onFetchRendition: library.fetchRendition,
+    onOpenForViewer: library.openForViewer,
     onSetPinned: library.setPinned,
     isPinned: library.isPinned,
     onOpened: library.noteOpened,
     onOpenMotion: library.openMotion,
+    onClosed: library.reclaimAfterViewing,
   });
 
   /**
@@ -624,11 +647,17 @@ export function HomeScreen({
     [aliases],
   );
 
-  const rows = useMemo(() => libraryRows(library.items), [library.items]);
+  // Laid out against the window's current width, so a rotation re-flows the rows
+  // rather than leaving them measured for the old one. `useWindowDimensions`
+  // re-renders on the change, which is what makes the memo re-run.
+  const rows = useMemo(
+    () => libraryRows(library.items, window.width),
+    [library.items, window.width],
+  );
 
   const openItem = viewer.open;
   const renderRow = useCallback(
-    ({ item }: { item: LibraryItem[] }) => <LibraryRow row={item} onOpen={openItem} />,
+    ({ item }: { item: JustifiedRow<LibraryItem> }) => <LibraryRow row={item} onOpen={openItem} />,
     [openItem],
   );
 

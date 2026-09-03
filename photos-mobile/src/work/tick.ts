@@ -131,6 +131,26 @@ export const SYNC_DEADLINE_SHARE = 0.8;
 export const IMPORT_DEADLINE_SHARE = 0.25;
 
 /**
+ * How long a background window waits for the media store.
+ *
+ * **Thirty seconds, and the number is chosen against the tick's budget rather
+ * than against any measurement of the media store.** A query that answers takes
+ * milliseconds once the watermark narrows it; the case this bounds is the one
+ * where the promise never settles at all, which has been observed on a Pixel 5
+ * in a process with no activity. See `ListRecentOptions.timeoutMs`.
+ *
+ * A third of the window — `TICK_BUDGET_MS` in `background-task.ts` — so a tick
+ * that loses this race still has time to sync what earlier windows imported.
+ * Import is the job that notices photographs and sync is the job that gets them
+ * off the device, and of the two the second is the one a person is waiting on.
+ *
+ * Declared here rather than beside that budget so `platform.ts` can read it
+ * without importing the module whose evaluation registers the OS task. See
+ * `importRecentFor`.
+ */
+export const MEDIA_QUERY_TIMEOUT_MS = 30_000;
+
+/**
  * What an outcome says while its job is still running.
  *
  * A progress snapshot has to describe a job that has not finished, and the only

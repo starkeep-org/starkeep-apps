@@ -22,10 +22,22 @@
  * The viewer renders the original, which is fine at one-photo-at-a-time and is
  * exactly what `import-loop-design.md` §3.2 says renditions are not needed for
  * yet.
+ *
+ * ## Three things the viewer can be showing
+ *
+ * A still, a video, or a photograph that moves — and they are three because the
+ * records are two and the second of them has an inside.
+ *
+ * A **video record** gets a player with the platform's own controls, opened on
+ * its first frame and never autoplaying. A **still** gets an `<Image>` and a tap
+ * anywhere dismisses it. A **Motion Photo** is a still until somebody asks: it is
+ * one image record whose bytes happen to carry a trailing MP4, and the control
+ * that plays it materialises a scratch file for that viewing and deletes it
+ * afterwards. See `media/motion-photo-playback.ts` for why nothing is kept.
  */
 
-import { useState } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import { memo, useCallback, useState } from "react";
+import { Pressable, Text, View } from "react-native";
 // **`expo-image`, not React Native's `<Image>`, and the reason is a decode.**
 // RN's image pipeline is Fresco, whose AVIF path defers to the platform
 // decoder — and a Pixel 5 on API 34 fails every AVIF still the ladder produces,
@@ -36,13 +48,16 @@ import { Modal, Pressable, Text, View } from "react-native";
 // renders through Glide, which carries its own AVIF decoder.
 // See `photos-mobile-status-2026-08-31.md`.
 import { Image } from "expo-image";
-import { SafeAreaView } from "react-native-safe-area-context";
 import type { LibraryItem } from "../library";
-import { styles } from "./theme";
+import type { OpenMotionPhoto } from "../media/motion-photo-playback";
+import { CONTENT_PADDING, GRID_COLUMNS, GRID_GAP, styles, TILE_WIDTH_FRACTION } from "./theme";
+import { MotionBadge } from "./MotionBadge";
+import { VideoBadge } from "./VideoBadge";
+import { LibraryViewer } from "./LibraryViewer";
+import { isVideo } from "./format";
 
-interface Props {
-  readonly items: readonly LibraryItem[];
-  readonly loading: boolean;
+/** What the viewer needs from the screen that hosts it. */
+export interface ViewerHost {
   /**
    * Fetch a record whose bytes are not on this device.
    *
@@ -68,191 +83,175 @@ interface Props {
    * ever happened for records this device had already declined.
    */
   readonly onOpened: (recordId: string) => void;
+  /**
+   * The clip inside a Motion Photo, materialised for one viewing.
+   *
+   * Answers null for the ordinary photograph, which is most of them — the viewer
+   * simply shows no motion control. The handle it does answer must be released
+   * when the viewer closes; the scratch file lasts exactly one viewing by design.
+   */
+  readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
 }
 
-export function LibraryGrid({
-  items,
-  loading,
+/**
+ * The rows a page of records lays out as.
+ *
+ * Rows rather than tiles, because the list that draws them is virtualized and a
+ * virtualized list windows whole items: one tile per item would let a list
+ * unmount two thirds of a visible row. Chunking here also puts the column count
+ * in one place — `theme.ts` — instead of implying it from a width fraction.
+ */
+export function libraryRows(items: readonly LibraryItem[]): LibraryItem[][] {
+  const rows: LibraryItem[][] = [];
+  for (let i = 0; i < items.length; i += GRID_COLUMNS) {
+    rows.push(items.slice(i, i + GRID_COLUMNS));
+  }
+  return rows;
+}
+
+/**
+ * How tall one row is, in layout points.
+ *
+ * Computed rather than measured, and supplied to the list as `getItemLayout`, so
+ * scrolling and position restoration need no measurement pass at all. The
+ * arithmetic is the grid's whole geometry: a tile is square and takes
+ * {@link TILE_WIDTH_FRACTION} of the padded width, and the rows are separated by
+ * the same gap the tiles are.
+ */
+export function libraryRowHeight(windowWidth: number): number {
+  return (windowWidth - CONTENT_PADDING * 2) * TILE_WIDTH_FRACTION + GRID_GAP;
+}
+
+/** A stable key for a row: its first record, which never moves within the row. */
+export function libraryRowKey(row: readonly LibraryItem[]): string {
+  return row[0]?.record.id ?? "empty";
+}
+
+/**
+ * One row of the library grid.
+ *
+ * `memo` because a virtualized list re-renders its container far more often
+ * than its contents change — every scroll event, every appended page — and a row
+ * that re-renders hands `expo-image` a new source object, which is what makes a
+ * tile flash back to nothing and decode again.
+ */
+export const LibraryRow = memo(function LibraryRow({
+  row,
+  onOpen,
+}: {
+  readonly row: readonly LibraryItem[];
+  readonly onOpen: (item: LibraryItem) => void;
+}) {
+  return (
+    <View style={styles.gridRow}>
+      {row.map((item) => (
+        <Pressable key={item.record.id} onPress={() => onOpen(item)} style={styles.tile}>
+          {item.uri ? (
+            <Image
+              source={{ uri: item.uri }}
+              style={styles.tileImage}
+              contentFit="cover"
+              // **The recycling key, and it is not optional in a virtualized
+              // list.** `expo-image` reuses the native view when a row scrolls
+              // out and another takes its slot; without a key tying the view to
+              // a record, the recycled view keeps painting the previous
+              // photograph until the new one decodes. The symptom is a grid that
+              // shows the wrong pictures for a frame or two during a fast
+              // scroll, which reads as data corruption rather than as a decode.
+              recyclingKey={item.record.id}
+              // Disk, not memory. A tile is cheap to decode again from a file
+              // that is already on this device, and there are thousands of them
+              // — a memory cache over the whole library is unbounded growth for
+              // a saving nobody notices. The viewer keeps its own memory cache,
+              // because it holds one picture at a time and re-decoding a 40
+              // megapixel original is exactly the cost worth paying once.
+              cachePolicy="disk"
+              // A tile loses to a photograph somebody is waiting to look at.
+              priority="low"
+            />
+          ) : (
+            // A record with no bytes on this device to draw from. `◇` is a
+            // blob elided or still owed, which is what the fetch control in
+            // the viewer exists for. A video no longer lands here whenever
+            // its bytes are present: `expo-image` paints its first frame, so
+            // it draws above like any still, and the badge below marks it as
+            // a clip in the same corner the device grid uses.
+            <View style={[styles.tileImage, styles.tilePlaceholder]}>
+              {item.bytesHere ? null : <Text style={styles.tilePlaceholderMark}>◇</Text>}
+            </View>
+          )}
+          {/* On the tile whatever is underneath it, because the question it
+              answers — is this a clip, and how long — does not change when a
+              poster rendition finally arrives.
+
+              The two marks are exclusive by construction: a Motion Photo is an
+              image record, so `isVideo` is false for every tile that could
+              carry the motion mark. */}
+          {isVideo(item) ? (
+            <VideoBadge durationMs={item.durationMs} />
+          ) : item.hasMotion ? (
+            <MotionBadge />
+          ) : null}
+        </Pressable>
+      ))}
+    </View>
+  );
+});
+
+/**
+ * The viewer's state, and the element that draws it.
+ *
+ * A hook rather than a component wrapping the grid, because the grid is no
+ * longer a component that contains its tiles — the rows are items of a list the
+ * screen owns. So the screen owns the viewer too, calls {@link open} from a row,
+ * and renders {@link element} once, outside the list. Rendering it inside would
+ * put a full-screen modal inside a recycled row.
+ */
+export function useLibraryViewer({
   onFetch,
   onSetPinned,
   isPinned,
   onOpened,
-}: Props) {
-  const [open, setOpen] = useState<LibraryItem | null>(null);
-  /** The key currently being fetched, so the tile can say so. */
+  onOpenMotion,
+}: ViewerHost): { open: (item: LibraryItem) => void; element: React.ReactElement } {
+  const [item, setItem] = useState<LibraryItem | null>(null);
+  /** The key currently being fetched, so the control can say so. */
   const [fetching, setFetching] = useState<string | null>(null);
   /** Pinned state of the open record, so the toggle is not a round trip. */
   const [pinned, setPinned] = useState(false);
 
-  async function fetchNow(item: LibraryItem): Promise<boolean> {
-    setFetching(item.record.id);
-    try {
-      return await onFetch(item);
-    } finally {
-      setFetching(null);
-    }
-  }
-
-  function openItem(item: LibraryItem): void {
-    onOpened(item.record.id);
-    setPinned(isPinned(item.record.id));
-    setOpen(item);
-  }
-
-  if (items.length === 0) {
-    return (
-      <Text style={styles.muted}>
-        {loading
-          ? "Reading this node's library…"
-          : "Nothing has been added to this node yet. The photos on this device are still just on this device."}
-      </Text>
-    );
-  }
-
-  return (
-    <View style={{ gap: 8 }}>
-      <View style={styles.grid}>
-        {items.map((item) => (
-          <Pressable key={item.record.id} onPress={() => openItem(item)} style={styles.tile}>
-            {item.uri ? (
-              <Image source={{ uri: item.uri }} style={styles.tileImage} contentFit="cover" />
-            ) : (
-              // Two different states share this shape and must not share a
-              // symbol. `▶` is a video whose bytes are here and which has no
-              // poster rendition yet — nothing is missing and nothing is
-              // wrong. `◇` is a blob elided or still owed, which is what the
-              // fetch control in the viewer exists for.
-              <View style={[styles.tileImage, styles.tilePlaceholder]}>
-                <Text style={styles.tilePlaceholderMark}>{item.bytesHere ? "▶" : "◇"}</Text>
-              </View>
-            )}
-          </Pressable>
-        ))}
-      </View>
-      <Text style={styles.muted}>
-        {items.length} {items.length === 1 ? "record" : "records"} in this node&rsquo;s library.
-        Tap one to open it.
-      </Text>
-
-      <Viewer
-        item={open}
-        busy={open !== null && fetching === open.record.id}
-        pinned={pinned}
-        onTogglePin={(item) => setPinned(onSetPinned(item.record.id, !pinned))}
-        onFetch={fetchNow}
-        onClose={() => setOpen(null)}
-      />
-    </View>
+  const open = useCallback(
+    (opened: LibraryItem) => {
+      onOpened(opened.record.id);
+      setPinned(isPinned(opened.record.id));
+      setItem(opened);
+    },
+    [onOpened, isPinned],
   );
-}
 
-/**
- * One photo, full screen.
- *
- * A `Modal` rather than a navigator: there is one thing to push and one way
- * back, and the day there is a stack worth managing is the day to add one —
- * the same argument `App.tsx` makes about the shell.
- */
-function Viewer({
-  item,
-  busy,
-  pinned,
-  onTogglePin,
-  onFetch,
-  onClose,
-}: {
-  item: LibraryItem | null;
-  busy: boolean;
-  pinned: boolean;
-  onTogglePin: (item: LibraryItem) => void;
-  onFetch: (item: LibraryItem) => Promise<boolean>;
-  onClose: () => void;
-}) {
-  if (!item) return null;
-  const { record, uri, bytesHere } = item;
-
-  return (
-    <Modal visible animationType="fade" onRequestClose={onClose} transparent={false}>
-      <SafeAreaView style={styles.viewerSafe}>
-        <Pressable style={styles.viewerImageArea} onPress={onClose}>
-          {uri ? (
-            <Image source={{ uri }} style={styles.viewerImage} contentFit="contain" />
-          ) : bytesHere ? (
-            // The bytes are right here and there is simply no still to draw.
-            // This screen used to print the missing-bytes line for this case,
-            // which was the exact opposite of the truth, and then — once the
-            // video's own URI was handed to an `<Image>` — printed nothing at
-            // all and showed a blank rectangle.
-            <Text style={styles.muted}>
-              This video is on this device. Starkeep cannot play it back yet.
-            </Text>
-          ) : (
-            <Text style={styles.muted}>
-              This record&rsquo;s bytes are not on this device.
-            </Text>
-          )}
-        </Pressable>
-
-        <View style={styles.viewerFooter}>
-          <Text style={styles.body}>{record.originalFilename ?? "unnamed"}</Text>
-          <Text style={styles.muted}>
-            {record.type} · {formatBytes(record.sizeBytes)}
-          </Text>
-          {/* The content hash, abbreviated. On screen because this is the one
-              place the difference between "a photo" and "a record" is visible,
-              and because it is what a second device would match it by. */}
-          <Text style={styles.mono}>{record.contentHash?.slice(0, 16) ?? "no hash"}…</Text>
-          {/* The reversal half of eliding, and the only one there is. A record
-              this node declined has already had its watermark advanced past it,
-              so no sync round will offer the bytes again — without this button
-              a budget on a phone would be indistinguishable from losing the
-              photo. */}
-          {uri || bytesHere ? null : (
-            <Pressable
-              onPress={() => void onFetch(item)}
-              disabled={busy}
-              style={{ paddingVertical: 8 }}
-            >
-              <Text style={styles.linkLabel}>
-                {busy ? "Fetching…" : "Fetch these bytes"}
-              </Text>
-            </Pressable>
-          )}
-          {/* A pin is this device's own preference and travels with nothing —
-              deliberately not a label, because a pin shared as a label would let
-              one device's choice silently rewrite every other device's cache
-              policy. It beats every budget and recency rule, and it still counts
-              against the class's budget, so pinning a lot makes the overage
-              visible rather than swallowing it. */}
-          <Pressable onPress={() => onTogglePin(item)} style={{ paddingVertical: 8 }}>
-            <Text style={styles.linkLabel}>
-              {pinned ? "★ Kept on this device — tap to release" : "☆ Keep on this device"}
-            </Text>
-          </Pressable>
-          {pinned ? (
-            <Text style={styles.muted}>
-              This one stays whatever the storage budget says, and is never chosen when space is
-              reclaimed.
-            </Text>
-          ) : null}
-          <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
-            <Text style={styles.linkLabel}>Close</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
-    </Modal>
+  const fetchNow = useCallback(
+    async (target: LibraryItem): Promise<boolean> => {
+      setFetching(target.record.id);
+      try {
+        return await onFetch(target);
+      } finally {
+        setFetching(null);
+      }
+    },
+    [onFetch],
   );
-}
 
-export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined) return "unknown size";
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["kB", "MB", "GB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+  const element = (
+    <LibraryViewer
+      item={item}
+      busy={item !== null && fetching === item.record.id}
+      pinned={pinned}
+      onTogglePin={(target) => setPinned(onSetPinned(target.record.id, !pinned))}
+      onFetch={fetchNow}
+      onOpenMotion={onOpenMotion}
+      onClose={() => setItem(null)}
+    />
+  );
+
+  return { open, element };
 }

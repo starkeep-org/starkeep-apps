@@ -31,10 +31,19 @@
  *
  * ## Why one row rather than a general key-value table
  *
- * Because there is one watermark, and a table that could hold others is a table
- * somebody will put something else in. `work/scan-cursor.ts` makes the same
- * argument for the acquisition sweep's cursor and this file deliberately mirrors
- * it — two cursors with two shapes would be two things to reason about.
+ * Because there is one watermark per table, and a table that could hold others
+ * is a table somebody will put something else in. `work/scan-cursor.ts` makes
+ * the same argument for the acquisition sweep's cursor and this file
+ * deliberately mirrors it — two cursors with two shapes would be two things to
+ * reason about.
+ *
+ * ## Why the table is a parameter
+ *
+ * Because a second pass walks the media store the same way for a different
+ * reason: {@link backfillVideoDurations} fills in the length of clips imported
+ * before the record carried one. Same field, same monotonic rule, same
+ * one-second overlap — and its own table, so neither watermark can be moved by
+ * the other's progress. The shape is shared; the row never is.
  */
 
 import type { RawDatabase } from "@starkeep/storage-adapter";
@@ -64,7 +73,20 @@ const qb = new Kysely<DB>({
   },
 });
 
-const TABLE = "media_import_cursor";
+/** Where the import loop stopped walking the media store. */
+export const IMPORT_CURSOR_TABLE = "media_import_cursor";
+
+/**
+ * Where the duration backfill stopped walking it.
+ *
+ * A separate row in a separate table, because the two passes walk the same
+ * field in opposite directions for different reasons: import walks forward from
+ * "now" to notice what is new, and the backfill walks forward from the
+ * beginning of the roll to repair what is old. One watermark serving both would
+ * make each pass skip whatever the other had reached.
+ */
+export const VIDEO_DURATION_CURSOR_TABLE = "video_duration_backfill_cursor";
+
 
 /**
  * How far back of the watermark the next query starts.
@@ -105,8 +127,11 @@ export function advanceImportCursor(current: number | null, seen: number): numbe
 
 export function createSqliteImportCursorStore(options: {
   readonly db: RawDatabase;
+  /** Defaults to {@link IMPORT_CURSOR_TABLE}. */
+  readonly table?: string;
 }): ImportCursorStore {
   const { db } = options;
+  const TABLE = options.table ?? IMPORT_CURSOR_TABLE;
 
   db.exec(
     qb.schema

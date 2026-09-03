@@ -151,6 +151,20 @@ describe("listing recent media", () => {
     expect(built.orderBy).toEqual({ key: "modificationTime", ascending: false });
   });
 
+  it("carries the duration through in milliseconds, unconverted", async () => {
+    // The unit, asserted rather than assumed, because the record's `duration_ms`
+    // column is written straight from this field and the older `Asset.duration`
+    // on the same library is *seconds*. Both platforms answer in milliseconds on
+    // the `Query` API this port declares — Android forwards `MediaStore.DURATION`
+    // untouched, iOS multiplies `PHAsset.duration` by a thousand — so a
+    // conversion here would divide a real clip's length by a factor of a
+    // thousand and make every tile read "0:00".
+    const { media } = fakeMedia([
+      asset({ id: "content://9", mediaType: "video", duration: 12_500 }),
+    ]);
+    expect(await listRecentMedia(media, { limit: 10 })).toMatchObject([{ durationMs: 12_500 }]);
+  });
+
   it("maps the media store's fields onto items", async () => {
     const { media } = fakeMedia([
       asset({

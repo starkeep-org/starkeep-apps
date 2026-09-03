@@ -26,8 +26,7 @@ import * as TaskManager from "expo-task-manager";
 import { Paths } from "expo-file-system";
 import * as Network from "expo-network";
 import { createHLCClock } from "@starkeep/protocol-primitives";
-import { documentPath, expoFileSystem, importDepsFor } from "../platform";
-import { importDeviceMedia, noYield } from "../media/import";
+import { documentPath, expoFileSystem, importRecentFor } from "../platform";
 import { acquireNode } from "./node-handle";
 import { readDeviceState } from "./device-state";
 import { inFlightJob, runWorkTick, type TickReport } from "./tick";
@@ -108,22 +107,6 @@ export const TICK_BUDGET_MS = 90_000;
  * photos" control, which takes sixty at a time and shows a progress count.
  */
 export const TICK_IMPORT_LIMIT = 20;
-
-/**
- * How long a background window waits for the media store.
- *
- * **Thirty seconds, and the number is chosen against the tick's budget rather
- * than against any measurement of the media store.** A query that answers takes
- * milliseconds once the watermark narrows it; the case this bounds is the one
- * where the promise never settles at all, which has been observed on a Pixel 5
- * in a process with no activity. See `ListRecentOptions.timeoutMs`.
- *
- * A third of the window, so a tick that loses this race still has time to sync
- * what earlier windows imported. Import is the job that notices photographs and
- * sync is the job that gets them off the device, and of the two the second is
- * the one a person is waiting on.
- */
-export const MEDIA_QUERY_TIMEOUT_MS = 30_000;
 
 /**
  * How long after its own budget a tick is given to finish tidily.
@@ -256,27 +239,15 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
           node: lease.node,
           device,
           importRecent: async (signal) => {
-            // The watermark is what makes this job affordable in a background
-            // window. Supplied here and nowhere else: the foreground control
-            // deliberately runs without one. See `ImportDeps.importCursor`.
-            const outcome = await importDeviceMedia(
-              {
-                ...importDepsFor(lease.node, clock),
-                importCursor: lease.node.importCursor ?? undefined,
-                // Load-bearing in a headless process, where the default yield
-                // is a `setTimeout` and would hang the loop forever on the
-                // first asset worth importing. See `ImportDeps.yieldToUi`.
-                yieldToUi: noYield,
-              },
-              {
-                limit: TICK_IMPORT_LIMIT,
-                signal,
-                queryTimeoutMs: MEDIA_QUERY_TIMEOUT_MS,
-                // The deadline is only a deadline if the timer behind it fires,
-                // and the platform's does not here. See `native-timers.ts`.
-                timers: nativeTimers,
-              },
-            );
+            // `background: true` is what supplies the headless yield and the
+            // native timers behind the media-store deadline — both load-bearing
+            // in a process where a `setTimeout` never fires. The foreground
+            // catch-up makes the same call with `false`. See `importRecentFor`.
+            const outcome = await importRecentFor(lease.node, clock, {
+              limit: TICK_IMPORT_LIMIT,
+              background: true,
+              signal,
+            });
             return {
               imported: outcome.imported,
               skipped: outcome.skipped,

@@ -361,9 +361,15 @@ export function getLatestLibraryPolicies(): RenditionPolicies | null {
 }
 
 // No `type` filter: a type-less query is server-scoped to the app's granted
-// types, which for Photos are exactly the image types — so this returns every
-// image the app can see in one request, across all of image/jpeg/png/heic/…
-// rather than a single hardcoded type.
+// types, which for Photos are the seventeen image types **and nine video
+// types** — so this returns every photograph and clip the app can see in one
+// request, rather than a single hardcoded type.
+//
+// The videos are not an oversight to be filtered out later. The manifest states
+// why it grants them: "a phone camera roll is photos and clips together, and a
+// library that showed only half of it would not be a library." Photos handles
+// them throughout, from the video ladder to the viewer's `VideoPlayer`, and a
+// reader who believed this call returned only stills would not expect one.
 export async function listPhotos(): Promise<PhotoRecord[]> {
   const result = await requestOwnApi<{ records: PhotoRecord[]; policies: RenditionPolicies }>(libraryQuery());
   latestLibraryPolicies = result.policies;

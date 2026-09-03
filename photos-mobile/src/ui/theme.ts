@@ -19,14 +19,28 @@ export const colors = {
 } as const;
 
 /**
- * The grid's geometry, named because something outside the stylesheet needs it.
+ * The grid's geometry, named because several things outside the stylesheet need
+ * it.
  *
  * `use-library.ts` converts a tile's width into the pixel long edge it asks the
- * ladder for, and a second copy of these numbers would drift from the layout
- * silently — the tiles would keep rendering and simply request the wrong rung.
+ * ladder for and into how many records a page should hold; `LibraryGrid` turns
+ * a row height into the `getItemLayout` the virtualized list needs. A second
+ * copy of any of these numbers would drift from the layout silently — the tiles
+ * would keep rendering and simply request the wrong rung, or the list would
+ * scroll to the wrong offset.
  */
 export const CONTENT_PADDING = 20;
 export const TILE_WIDTH_FRACTION = 0.328;
+/**
+ * Three across, which is what `TILE_WIDTH_FRACTION` is chosen to fit.
+ *
+ * Named rather than left implicit in the fraction, because the row-building and
+ * paging arithmetic both divide by it and `0.328` does not say "three" to a
+ * reader.
+ */
+export const GRID_COLUMNS = 3;
+/** The gap `styles.grid` puts between tiles, in both axes. */
+export const GRID_GAP = 2;
 
 export const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
@@ -71,7 +85,25 @@ export const styles = StyleSheet.create({
 
   // Three across, by percentage rather than a measured width: the tiles then
   // survive a rotation and a tablet without anyone measuring the screen.
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 2 },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: GRID_GAP },
+  /**
+   * One row of the library grid, as a virtualized list item.
+   *
+   * Its own style rather than a reuse of `grid`, because the two lay out
+   * differently now: `grid` wraps a whole set of tiles and is what the device
+   * grid still uses, and this is a single row whose height the list computes in
+   * advance. `marginBottom` rather than a container `gap`, because the list puts
+   * nothing between its items.
+   */
+  gridRow: { flexDirection: "row", gap: GRID_GAP, marginBottom: GRID_GAP },
+  /**
+   * The list's own padding, without `content`'s gap.
+   *
+   * `content` separates the screen's sections by 20; applied to a list it would
+   * separate every grid row by 20 as well. The sections keep their spacing by
+   * carrying it on the header and footer instead.
+   */
+  listContent: { padding: CONTENT_PADDING },
   tile: {
     width: `${TILE_WIDTH_FRACTION * 100}%`,
     aspectRatio: 1,
@@ -79,15 +111,50 @@ export const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   tileImage: { width: "100%", height: "100%" },
+  /**
+   * A device asset this node does not hold.
+   *
+   * Dimmed rather than badged alone, because the question somebody opens the
+   * device grid to answer is "which ones are missing" — and scanning sixty
+   * tiles for a small mark is not answering it. The mark beside this says which
+   * state the dimming means, since a faded tile on its own reads as one still
+   * loading.
+   */
+  tileNotImported: { opacity: 0.35 },
+  tileMissingMark: {
+    position: "absolute",
+    bottom: 3,
+    left: 3,
+    right: 3,
+    color: colors.danger,
+    fontSize: 9,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  /**
+   * The mark on a video tile, in both grids. See `VideoBadge.tsx`.
+   *
+   * Top right rather than bottom right, which is where the device grid used to
+   * put a bare duration. The bottom of a tile is where a photograph's subject
+   * most often is, and the top right is the corner every other photos app on the
+   * device reserves for exactly this.
+   *
+   * No backdrop, so this leans on the shadow to stay legible over a bright
+   * frame — cheaper than a gradient and enough at this size.
+   */
+  /**
+   * The corner mark a tile carries: `▶ 0:42` on a clip, `◉ motion` on a Motion
+   * Photo. One style for both, because a tile never carries both — a Motion
+   * Photo is an image record — and two marks in the same corner drawn two ways
+   * would read as two unrelated features.
+   */
   tileBadge: {
     position: "absolute",
     right: 4,
-    bottom: 3,
+    top: 4,
     color: "#fff",
     fontSize: 10,
     fontWeight: "600",
-    // No backdrop, so this leans on the shadow to stay legible over a bright
-    // frame — cheaper than a gradient and enough at this size.
     textShadowColor: "rgba(0,0,0,0.9)",
     textShadowRadius: 3,
   },

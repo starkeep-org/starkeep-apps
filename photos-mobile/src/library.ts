@@ -30,8 +30,9 @@
  */
 
 import { typeCategory, type DataRecord, type StarkeepId } from "@starkeep/protocol-primitives";
-import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
+import type { DatabaseAdapter, ObjectStorageAdapter, SortField } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
+import type { MotionIndexStore } from "./media/motion-index";
 import { renditionToPaint, resolveLibraryRenditions } from "./photos/renditions";
 
 /**
@@ -45,31 +46,73 @@ export interface LibraryDeps {
   readonly database: DatabaseAdapter;
   readonly objectStorage: ObjectStorageAdapter;
   readonly aliases: MediaAliasStore | null;
+  /**
+   * The motion index, when this node has one.
+   *
+   * Null is an ordinary state rather than a degraded one: a page with no index
+   * marks no tile as a Motion Photo, which is the same answer it gives for a
+   * photograph nobody has scanned yet. Nothing else on the tile depends on it.
+   */
+  readonly motionIndex?: MotionIndexStore | null;
 }
 
 /** One item as the UI needs it: a record, plus where to get a picture. */
 export interface LibraryItem {
   readonly record: DataRecord;
   /**
-   * A URI an `<Image>` can render, or null when there is no still to render.
+   * A URI an `<Image>` can render, or null when this device holds no bytes to
+   * render from.
    *
-   * Null is a real and expected state, not an error. Two different situations
-   * produce it and {@link bytesHere} is what tells them apart: a record whose
-   * blob is elided or still owed, and a video with no poster rendition yet.
-   * A grid that treated either as a failure would report the working case of a
-   * budgeted phone as broken.
+   * Null is a real and expected state, not an error: it means the record's blob
+   * is elided or still owed and no rendition stands in for it. A grid that
+   * treated that as a failure would report the working case of a budgeted phone
+   * as broken.
+   *
+   * A video is not one of the null cases. `expo-image` paints a video's first
+   * frame, so a clip whose bytes are here has a picture like any still — see the
+   * settled note beside the assignment below.
    */
   readonly uri: string | null;
   /**
-   * Whether this record's own bytes are on this device.
+   * Whether this record's **own** bytes are on this device.
    *
-   * Carried separately from {@link uri} because the two stopped being the same
-   * question the moment a record could hold bytes nothing can paint. A video
-   * imported from the camera roll has its bytes right here and no still to
-   * show, and a viewer that read a null `uri` as "the bytes are missing" told
-   * the user the opposite of the truth — which is exactly what it did.
+   * Carried separately from {@link uri} because a non-null `uri` does not imply
+   * it: a record whose original is elided still paints, from the rendition that
+   * stands in for it. This field is the one that answers whether the full-size
+   * file is here — which is what decides whether a video can be played and
+   * whether the viewer offers the original at all.
    */
   readonly bytesHere: boolean;
+  /**
+   * A URI a video player can open, or null when this record is not a video or
+   * its bytes are not on this device.
+   *
+   * A third field rather than a widening of {@link uri}, because the two ask
+   * different questions and get different answers for the same record. `uri`
+   * may name a poster rendition — a still, which a player handed it plays
+   * nothing from — and it is non-null for a video whose original is elided,
+   * which is exactly the video that cannot be played.
+   */
+  readonly playbackUri: string | null;
+  /**
+   * How long this video runs, in milliseconds, or null when nothing knows.
+   *
+   * Null for every still, and for a video whose bytes arrived by sync from a
+   * node that recorded no duration. `formatDuration` renders the absence as the
+   * word "video" rather than as `0:00`, because a zero-length clip describes a
+   * broken file and the file is fine.
+   */
+  readonly durationMs: number | null;
+  /**
+   * Whether these bytes are known to hold a Motion Photo's clip.
+   *
+   * True only when the index says so. A photograph nobody has scanned reads
+   * false, exactly like one scanned and found still — the flag drives a badge,
+   * and a badge that appeared on unscanned tiles and vanished once they were
+   * read would be worse than no badge. The viewer's own fallback scan still
+   * finds motion on a record this returns false for, and offers playback there.
+   */
+  readonly hasMotion: boolean;
 }
 
 export interface LibraryPage {
@@ -94,18 +137,41 @@ export interface LibraryQuery {
 }
 
 /**
- * One page of the library, newest first.
+ * How the library is ordered.
  *
- * Newest first for the same reason `listRecentMedia` sorts that way: a library
+ * **By when the picture was taken, and only then by when it was imported.**
+ * `created_at` alone — which is what this used to be — orders the grid by the
+ * moment a record entered the node, and import walks the camera roll
+ * oldest-first. So every batch of old photographs took the top of the grid and
+ * pushed the recent ones down; tapping "Add photos from this device" made
+ * yesterday's pictures harder to find, which is the opposite of what the control
+ * promises.
+ *
+ * Newest first, for the same reason `listRecentMedia` sorts that way: a library
  * opening on photos from years ago reads as the wrong library rather than the
  * wrong sort order, and nobody scrolls far enough to find out otherwise.
+ *
+ * `created_at` stays as the second key rather than as a `COALESCE` fallback
+ * inside the first, and the distinction is not cosmetic — the two values are not
+ * comparable, so a record with no capture time cannot be interleaved with ones
+ * that have it. It lands in a bucket at the end, ordered by import time. See
+ * `record-queries.ts` in `@starkeep/storage-adapter` for why, and
+ * `backfillImageExif` for what shrinks that bucket to nothing.
+ */
+const LIBRARY_ORDER: SortField[] = [
+  { field: "capturedAt", direction: "desc" },
+  { field: "createdAt", direction: "desc" },
+];
+
+/**
+ * One page of the library, in {@link LIBRARY_ORDER}.
  */
 export async function listLibrary(
   deps: LibraryDeps,
   query: LibraryQuery,
 ): Promise<LibraryPage> {
   const result = await deps.database.query({
-    sort: [{ field: "created_at", direction: "desc" }],
+    sort: LIBRARY_ORDER,
     limit: query.limit,
     ...(query.cursor ? { cursor: query.cursor } : {}),
     // Renditions are child records carrying `photos/rendition`. None exist yet,
@@ -140,6 +206,21 @@ export async function listLibrary(
     for (const row of found.records) renditionRows.set(row.id, row);
   }
 
+  // One query for the page's videos, never one per tile — the same argument the
+  // rendition resolution above makes. A page of sixty stills issues none at all.
+  const videoIds = result.records
+    .filter((record) => typeCategory(record.type) === "video")
+    .map((record) => record.id);
+  const videoMetadata =
+    videoIds.length > 0 ? await deps.database.getMetadataByIds("video", videoIds) : null;
+
+  // One query for the page's stills, on the same argument. A Motion Photo is an
+  // image record, so videos are not asked about at all.
+  const motionKeys = result.records
+    .filter((record) => typeCategory(record.type) === "image" && record.objectStorageKey)
+    .map((record) => record.objectStorageKey as string);
+  const withMotion = deps.motionIndex?.withMotion(motionKeys) ?? null;
+
   return {
     items: result.records.map((record) => {
       const renditionId = chosen.get(record.id);
@@ -149,17 +230,40 @@ export async function listLibrary(
       // device, and showing that beats showing a placeholder.
       const renditionUri = rendition ? uriFor(deps.objectStorage, rendition) : null;
       const ownUri = uriFor(deps.objectStorage, record);
-      // Falling back to the record's own bytes is right only when those bytes
-      // are a still. A video's are not: handing its `content://` URI to an
-      // `<Image>` paints nothing and — worse — makes the record look like it
-      // has a picture, so the viewer suppressed its own explanation and showed
-      // a blank rectangle instead. A video with no poster rendition has no
-      // still to offer, and saying so is what lets the UI say something true.
-      const paintable = typeCategory(record.type) !== "video";
+      // A video falls back to its own bytes exactly like a still does, because
+      // `expo-image` paints a video's first frame.
+      //
+      // **Settled on a handset, 2026-09-02.** This line used to null the URI
+      // for every video, on the claim that handing one to an `<Image>` paints
+      // nothing. The claim was false, and `ui/MediaGrid.tsx` was the standing
+      // counter-example the whole time: the device grid hands exactly such a
+      // URI to the same `expo-image` and has always drawn frames. Under
+      // Android, `expo-image` is Glide, and Glide decodes a frame from a local
+      // video through `MediaMetadataRetriever` — it sniffs the source rather
+      // than trusting a file extension, which is what makes an extensionless
+      // synced blob work as well as a camera-roll `content://` asset.
+      //
+      // Nulling it here was what made a library tile a black square where the
+      // device tile beside it, drawn from the same file, showed a picture. It
+      // is also what would have justified building the poster cache in
+      // workstream C5 of
+      // `plan-photos-mobile-video-and-foreground-sync-2026-09-02.md`; that cache
+      // is not needed and is not built.
+      const isVideo = typeCategory(record.type) === "video";
+      const duration = videoMetadata?.get(record.id)?.["duration_ms"];
       return {
         record,
-        uri: renditionUri ?? (paintable ? ownUri : null),
+        uri: renditionUri ?? ownUri,
         bytesHere: ownUri !== null,
+        // The record's own bytes, never the rendition's: a poster is a still and
+        // a player handed one plays nothing. `localFileUriFor` already covers
+        // both the camera-roll asset behind an alias and a blob fetched from the
+        // cloud, so one call names a playable file for either.
+        playbackUri: isVideo ? ownUri : null,
+        durationMs: typeof duration === "number" ? duration : null,
+        hasMotion:
+          record.objectStorageKey !== undefined &&
+          (withMotion?.has(record.objectStorageKey) ?? false),
       };
     }),
     nextCursor: result.nextCursor,
@@ -196,17 +300,19 @@ export interface LibrarySummary {
 }
 
 export async function summarizeLibrary(deps: LibraryDeps): Promise<LibrarySummary> {
-  // Counted by paging rather than by a `COUNT(*)`, because `DatabaseAdapter`
-  // exposes no count and inventing one through the raw handle would put a
-  // second SQL dialect assumption in the app. Fine at this size; a real number
-  // belongs on the adapter when the library is big enough for it to matter.
-  let records = 0;
-  let cursor: string | null = null;
-  do {
-    const page: LibraryPage = await listLibrary(deps, { limit: 500, ...(cursor ? { cursor } : {}) });
-    records += page.items.length;
-    cursor = page.hasMore ? page.nextCursor : null;
-  } while (cursor);
+  // One `COUNT(*)`, not a walk. This used to page the whole library five
+  // hundred records at a time to put one number on screen — through the very
+  // cursor whose correctness the number is supposed to be independent of, so a
+  // library larger than one page reported a total that depended on how the ids
+  // happened to sort. The adapter answers counts now, which is where the old
+  // comment here said the number belonged.
+  //
+  // The same `excludeLabel` the page query carries, so the count and the grid
+  // agree about what a record is: a rendition is a child record, and counting
+  // it would report five numbers for every photograph.
+  const records = await deps.database.countRecords({
+    excludeLabel: { appId: "photos", key: "rendition" },
+  });
 
   return { records, aliasedBytes: deps.aliases?.totalBytes() ?? 0 };
 }

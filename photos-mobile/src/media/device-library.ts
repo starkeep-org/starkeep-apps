@@ -52,6 +52,20 @@ export interface AssetMetadataLike {
   readonly mediaType: string;
   readonly width: number | null;
   readonly height: number | null;
+  /**
+   * A video's length in **milliseconds**, or null when the store recorded none.
+   *
+   * The unit is worth stating, because the older `Asset.duration` on this same
+   * library is *seconds* and a reader who knows that one will assume this one
+   * matches. It does not. `AssetMetadata` comes from the newer `Query` API,
+   * whose Android mapper passes `MediaStore.*.DURATION` — already milliseconds
+   * — through untouched, and whose iOS mapper multiplies `PHAsset.duration` by
+   * a thousand on the way out. Both platforms therefore answer in milliseconds
+   * here, and {@link DeviceMediaItem.durationMs} carries the value unconverted.
+   *
+   * Both mappers also answer null rather than zero for an asset they could not
+   * measure, which is why zero is treated as "not known" wherever this is read.
+   */
   readonly duration: number | null;
   readonly creationTime: number | null;
   /**
@@ -112,6 +126,13 @@ export interface DeviceMediaItem {
   readonly kind: MediaKind;
   readonly width: number | null;
   readonly height: number | null;
+  /**
+   * A video's length in milliseconds, carried straight from the media store.
+   *
+   * No conversion happens on the way here, and that is a conclusion rather than
+   * an omission — see {@link AssetMetadataLike.duration} for why both platforms
+   * already answer in this unit.
+   */
   readonly durationMs: number | null;
   readonly createdAt: number | null;
   /**

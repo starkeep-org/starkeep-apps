@@ -21,7 +21,7 @@
 import { open as openOpSqlite } from "@op-engineering/op-sqlite";
 import { Directory, File, Paths, UploadType } from "expo-file-system";
 import * as MediaLibrary from "expo-media-library";
-import { generateId, type HLCClock } from "@starkeep/protocol-primitives";
+import { generateId, type DataRecord, type HLCClock } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -32,13 +32,31 @@ import {
 import { createSessionStore } from "./auth/session-store";
 import { loadDeviceKey, type DeviceKey } from "./auth/device-key";
 import { loadCloudConfig } from "./config";
-import type { HashBytes, ImportDeps } from "./media/import";
+import {
+  backfillImageExif,
+  backfillVideoDurations,
+  importDeviceMedia,
+  importNullModified,
+  noYield,
+  type BackfillOutcome,
+  type HashBytes,
+  type ImportDeps,
+  type ImageExifBackfillOutcome,
+  type ImportOutcome,
+} from "./media/import";
 import { createMobileNode, type MobileNode } from "./node";
+import {
+  openMotionPhoto,
+  sweepMotionScratch,
+  type MotionPhotoDeps,
+  type OpenMotionPhoto,
+} from "./media/motion-photo-playback";
 import { PHONE_RETENTION, PHOTOS_APP_ID, PHOTOS_SIZE_CLASS_KEY } from "./retention";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { clearNodeFiles } from "./node-reset";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
-import { backgroundWindow } from "./work/native-timers";
+import { backgroundWindow, nativeTimers } from "./work/native-timers";
+import { MEDIA_QUERY_TIMEOUT_MS } from "./work/tick";
 import type { DeviceMediaModule, MediaQuery } from "./media/device-library";
 import {
   ExpoObjectStorageAdapter,
@@ -144,6 +162,19 @@ export const uploadFile: UploadFile = async (fileUri, url, init) => {
  */
 export function documentPath(...segments: string[]): string {
   return [Paths.document.uri.replace(/\/$/, ""), ...segments].join("/");
+}
+
+/**
+ * Where bytes this app can always make again go.
+ *
+ * The reasoning is {@link documentPath}'s, inverted. That one exists because the
+ * OS must never delete the database: a phone that silently lost it would re-sync
+ * the whole library over a network, against a budget, from a node that believed
+ * it already had everything. This one exists because the OS reclaiming these
+ * bytes costs one re-extraction and nothing else.
+ */
+export function cachePath(...segments: string[]): string {
+  return [Paths.cache.uri.replace(/\/$/, ""), ...segments].join("/");
 }
 
 export const DATABASE_PATH = documentPath("starkeep", "local.sqlite");
@@ -256,6 +287,10 @@ export async function bringUpNode(): Promise<{
   identity: NodeIdentity;
   deviceKey: DeviceKey;
 }> {
+  // Before anything else, because the thing it collects belongs to a process
+  // that is already gone: a viewer killed mid-playback runs no `release()`. See
+  // `sweepMotionScratchFiles`.
+  sweepMotionScratchFiles();
   const identity = await loadNodeIdentity(expoFileSystem, NODE_IDENTITY_PATH, generateId);
   const deviceKey = await loadDeviceKey({
     store: SecureStore,
@@ -379,6 +414,10 @@ export function discardNodeFiles(): void {
     databasePath: DATABASE_PATH,
     objectsPath: OBJECTS_PATH,
   });
+  // The scratch clips go too. They are derived from bytes this node is about to
+  // forget, and a clip left behind would be the one thing a cleared node still
+  // held of the photographs it no longer knows about.
+  sweepMotionScratchFiles();
 }
 
 /** Import dependencies, assembled from the real modules for a live node. */
@@ -393,5 +432,177 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
     clock,
     fs: expoFileSystem,
     hash: sha256Bytes,
+    ...(node.motionIndex ? { motionIndex: node.motionIndex } : {}),
   };
+}
+
+/**
+ * Bring in whatever the camera has taken since this node last looked.
+ *
+ * ## Why the two callers share one call
+ *
+ * The background tick and the foreground catch-up want the same import with two
+ * differences, and both differences are consequences of one fact: **React
+ * Native runs no JS timers in a headless context.** A `setTimeout` in a process
+ * started for `SystemJobService` never fires, so the default yield between
+ * assets becomes a permanent hang and a deadline armed on the platform's timers
+ * never expires. `background: true` is the name of that fact, and it supplies
+ * all three of the answers to it at once — see `ImportDeps.yieldToUi` and
+ * `work/native-timers.ts`.
+ *
+ * The tick used to build this inline. A second caller building it inline again
+ * is how one of the two comes to run without the headless yield, which fails
+ * only on a handset, only in the background, and only as a window that reports
+ * nothing.
+ *
+ * ## Both callers pass the cursor, and "Add photos" still does not
+ *
+ * The watermark is what makes a repeated scan cheap, which is right for a pass
+ * that runs on every app open and on every background window. It is wrong for a
+ * person tapping "Add photos from this device" to backfill a library that
+ * predates this node, and that control keeps running without one. See
+ * `ImportDeps.importCursor`.
+ */
+export function importRecentFor(
+  node: MobileNode,
+  clock: HLCClock,
+  options: {
+    readonly limit: number;
+    /** True in a headless window, false on a screen someone is looking at. */
+    readonly background: boolean;
+    readonly signal?: { readonly aborted: boolean };
+    readonly onProgress?: ImportDeps["onProgress"];
+  },
+): Promise<ImportOutcome> {
+  return importDeviceMedia(
+    {
+      ...importDepsFor(node, clock),
+      importCursor: node.importCursor ?? undefined,
+      ...(options.background ? { yieldToUi: noYield } : {}),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+    },
+    {
+      limit: options.limit,
+      ...(options.signal ? { signal: options.signal } : {}),
+      // Omitted in the foreground, deliberately. A person watching a spinner can
+      // decide for themselves how long to wait, and the platform's own timers
+      // work on a screen that is drawing frames — so the deadline and the timer
+      // it runs on are both the background window's business and nobody else's.
+      ...(options.background
+        ? { queryTimeoutMs: MEDIA_QUERY_TIMEOUT_MS, timers: nativeTimers }
+        : {}),
+    },
+  );
+}
+
+/**
+ * Import the assets the import watermark can never reach.
+ *
+ * Foreground only, and the reason is the same one the duration backfill gives:
+ * the pass costs ten media-store probes for a payoff that is rare, and a
+ * background window's budget is better spent on assets that do have a position
+ * on the field the watermark measures.
+ *
+ * Deliberately passes **no** `importCursor`. The pass must not move the
+ * watermark, and the cleanest way to guarantee that is for it never to hold
+ * one — see `importNullModified`.
+ */
+export function sweepNullModifiedFor(
+  node: MobileNode,
+  clock: HLCClock,
+  options: { readonly limit: number },
+): Promise<ImportOutcome> {
+  return importNullModified(importDepsFor(node, clock), { limit: options.limit });
+}
+
+/**
+ * Fill in the length of clips imported before a record carried one.
+ *
+ * Answers `complete: true` on a node that reads no camera roll, because such a
+ * node has nothing to repair and the caller's job is to stop asking.
+ *
+ * Foreground only, and not because it would be unsafe in a window: the pass
+ * costs one media-store query per call and the background window's whole
+ * remaining budget is better spent on the sync that gets photographs off the
+ * device. A duration is a nicety on a tile; a backup is not.
+ */
+export function backfillVideoDurationsFor(
+  node: MobileNode,
+  options: { readonly limit: number },
+): Promise<BackfillOutcome> {
+  if (!node.mediaAliases || !node.videoDurationCursor) {
+    return Promise.resolve({ scanned: 0, written: 0, complete: true });
+  }
+  return backfillVideoDurations(
+    {
+      media: deviceMedia,
+      aliases: node.mediaAliases,
+      database: node.databaseAdapter,
+      cursor: node.videoDurationCursor,
+    },
+    { limit: options.limit },
+  );
+}
+
+/**
+ * Repair the capture time and orientation of stills imported before a record
+ * carried them.
+ *
+ * Answers `complete: true` on a node that reads no camera roll, because such a
+ * node has nothing to repair and the caller's job is to stop asking.
+ *
+ * Foreground only, on the same argument the duration backfill makes and more
+ * strongly: this pass reads whole photographs across JSI, and a background
+ * window's budget belongs to the sync that gets them off the device.
+ */
+export function backfillImageExifFor(
+  node: MobileNode,
+  options: { readonly limit: number; readonly after?: string | null },
+): Promise<ImageExifBackfillOutcome> {
+  if (!node.mediaAliases) {
+    return Promise.resolve({ scanned: 0, written: 0, complete: true, resumeAfter: null });
+  }
+  return backfillImageExif(
+    {
+      aliases: node.mediaAliases,
+      database: node.databaseAdapter,
+      fs: expoFileSystem,
+    },
+    { limit: options.limit, ...(options.after !== undefined ? { after: options.after } : {}) },
+  );
+}
+
+/**
+ * The clip inside a Motion Photo, as a file a player can open.
+ *
+ * Answers null on a node that reads no camera roll, and on the ordinary
+ * photograph that carries no motion at all. The caller must call `release()` —
+ * on closing the viewer and on leaving the foreground — because the scratch file
+ * is the only thing this leaves behind and it is meant to last exactly one
+ * viewing. See `media/motion-photo-playback.ts`.
+ */
+export function openMotionPhotoFor(
+  node: MobileNode,
+  record: DataRecord,
+): Promise<OpenMotionPhoto | null> {
+  if (!node.motionIndex) return Promise.resolve(null);
+  const deps: MotionPhotoDeps = {
+    fs: expoFileSystem,
+    index: node.motionIndex,
+    objectStorage: node.objectStorage,
+    aliases: node.mediaAliases,
+    cachePath,
+  };
+  return openMotionPhoto(deps, record);
+}
+
+/**
+ * Collect scratch clips a previous run left behind.
+ *
+ * Called on the way up rather than on the way down, because the case it exists
+ * for is a process that had no way down: a viewer killed mid-playback runs no
+ * `release()`, and this sweep is the only thing that will ever collect that file.
+ */
+export function sweepMotionScratchFiles(): void {
+  sweepMotionScratch({ fs: expoFileSystem, cachePath });
 }

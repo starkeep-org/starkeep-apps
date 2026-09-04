@@ -25,6 +25,21 @@
  * transcode; neither is an AVIF encode of a decoded still, so neither belongs in
  * this pass.
  *
+ * ## Two entry points, and why one was not enough
+ *
+ * {@link deriveRenditions} sweeps, from a cursor, in `object_storage_key` order.
+ * That is the right shape for a backlog and the wrong one for what somebody is
+ * looking at: the key is a content hash, so the records a sweep reaches bear no
+ * relation to the records on screen, and the budgets that keep a sweep
+ * affordable — four records a background window, twelve an app open — mean a
+ * camera roll that predates this build converges in years.
+ *
+ * {@link deriveForRecord} is the other shape: one named record, now, because a
+ * surface could not paint it. The grid knows exactly which records it could not
+ * paint, which makes it the best-ordered work queue in the app. The sweep still
+ * grinds the tail, and neither can mint a rung the other already made — both
+ * decide missing the same way, through {@link missingClasses}.
+ *
  * ## Why the walk is the alias table's
  *
  * The population is *the originals whose bytes are on this device*, and that set
@@ -413,6 +428,84 @@ export async function derivePage(
     complete,
     resumeAfter: complete ? null : dealtWith,
   };
+}
+
+/**
+ * Derive one named record's missing rungs, now, because a surface is showing it.
+ *
+ * ## Why the cursor walk is not enough on its own
+ *
+ * {@link deriveRenditions} walks the alias table in `object_storage_key` order,
+ * which is a content hash — so the records it reaches bear no relation to the
+ * ones on screen. Paired with the budgets that keep a sweep affordable (four
+ * records a background window, twelve an app open), a camera roll that predates
+ * this build converges in years, and the twelve it does derive are twelve
+ * arbitrary photographs. The sweep is the right shape for a backlog and the
+ * wrong shape for the thing somebody is looking at.
+ *
+ * This is the other half: the grid knows exactly which records it could not
+ * paint, and that is the best-ordered work queue in the app. The sweep still
+ * grinds the tail.
+ *
+ * ## What it will not do, and why each refusal matters
+ *
+ * **Nothing for a record without an alias.** The bytes have to be on this device
+ * already, which for this app means the camera roll. A record that arrived by
+ * sync is the other node's to derive — the rule the sweep follows, restated here
+ * because this entry point is reachable per tile and would otherwise become a
+ * way for a phone to volunteer for every original it ever fetched.
+ *
+ * **Nothing for a rung that already has a record.** {@link missingClasses} is
+ * the only definition of missing, and it counts records rather than bytes. That
+ * is load-bearing here rather than incidental: a rung derived on another node
+ * and synced down as a row has bytes this device can *fetch*, and re-encoding it
+ * locally would produce different bytes, a different content hash and therefore
+ * a **second record for the same rung of the same photograph**. An evicted rung
+ * is the same case. Both want `fetchBlob`, not this.
+ *
+ * **Nothing for a video, and nothing without stored dimensions.** The first
+ * because a poster is a frame extraction rather than an encode of a decoded
+ * still; the second because there is no applicable set to compute, which is
+ * skipped rather than guessed.
+ *
+ * ## What the return value distinguishes
+ *
+ * `null` — nothing here can be derived, ever, for this record: not a still, not
+ * aliased, no dimensions, or the file would not decode. A caller may stop
+ * asking.
+ *
+ * `0` — nothing is missing. Every rung this device makes already has a record,
+ * so what the surface wants is a fetch.
+ *
+ * `n` — rungs written, and the caller should re-resolve the record.
+ *
+ * Throws only what {@link deriveOne} throws, which is one encode's failure. The
+ * caller decides whether one photograph failing is worth reporting; the sweep
+ * counts it and carries on.
+ */
+export async function deriveForRecord(
+  deps: DeriveLadderDeps,
+  record: DataRecord,
+): Promise<number | null> {
+  if (typeCategory(record.type) !== "image") return null;
+
+  // The alias is both the permission and the address: it says these bytes are
+  // this device's to decode, and it carries the `content://` URI to open. One
+  // indexed lookup, which is what makes this affordable per tile.
+  const alias = deps.aliases.ofRecord(record.id)[0];
+  if (!alias) return null;
+
+  const row = (await deps.database.getMetadataByIds("image", [record.id])).get(record.id);
+  const width = typeof row?.["width"] === "number" ? row["width"] : 0;
+  const height = typeof row?.["height"] === "number" ? row["height"] : 0;
+  const sourceLongEdge = Math.max(width, height);
+  if (sourceLongEdge <= 0) return null;
+
+  const existing = await loadVariantCandidatesForPage(deps.database, [record], RENDITION_LABEL);
+  const missing = missingClasses(sourceLongEdge, existing.get(record.id) ?? []);
+  if (missing.length === 0) return 0;
+
+  return deriveOne(deps, record, alias.contentUri, sourceLongEdge, missing);
 }
 
 /**

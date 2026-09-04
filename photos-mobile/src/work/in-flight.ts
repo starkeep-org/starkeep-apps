@@ -73,6 +73,24 @@ export interface InFlight {
  */
 export const RENDITION_FETCH_CONCURRENCY = 3;
 
+/**
+ * How many records may be having their rungs derived at once.
+ *
+ * **One, and the asymmetry with {@link RENDITION_FETCH_CONCURRENCY} is the
+ * point.** A fetch is a socket and costs this device almost nothing while it
+ * waits, so three of them overlap freely. A derivation is a decode plus up to
+ * three AVIF encodes — the most expensive thing this app does, and AVIF is three
+ * to ten times JPEG to encode — and running two at once buys nothing a phone can
+ * use: the encoder is already the busy resource, so the second only adds a
+ * decoded bitmap held in native memory beside the first.
+ *
+ * Serialising also makes the order mean something. The queue is FIFO and the
+ * grid enqueues in the order it lays tiles out, so a cold library derives from
+ * the top of the screen down rather than in whatever order thirty parallel
+ * encodes happen to finish.
+ */
+export const RENDITION_DERIVE_CONCURRENCY = 1;
+
 /** A single-flight admitting at most `limit` concurrent calls. */
 export function createInFlight(options: { readonly limit: number }): InFlight {
   const joined = new Map<string, Promise<unknown>>();

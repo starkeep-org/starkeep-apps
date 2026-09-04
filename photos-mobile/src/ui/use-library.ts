@@ -38,6 +38,7 @@ import type { EvictionOutcome } from "@starkeep/sync-engine";
 import {
   backfillImageExifFor,
   backfillThumbHashesFor,
+  deriveRecordFor,
   deriveRenditionsFor,
   backfillVideoDurationsFor,
   deviceMedia,
@@ -51,7 +52,11 @@ import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
 import { CONTENT_PADDING, GRID_GAP, LIBRARY_ROW_HEIGHT } from "./theme";
 import { viewerTarget, type GridGeometry } from "../photos/render-target";
-import { createInFlight, RENDITION_FETCH_CONCURRENCY } from "../work/in-flight";
+import {
+  createInFlight,
+  RENDITION_DERIVE_CONCURRENCY,
+  RENDITION_FETCH_CONCURRENCY,
+} from "../work/in-flight";
 
 /**
  * Which surface is asking for a rendition.
@@ -510,6 +515,25 @@ export interface LibraryState {
    * `work/in-flight.ts`.
    */
   fetchRendition: (item: LibraryItem, surface: RenditionSurface) => Promise<boolean>;
+  /**
+   * Make this record's missing rungs now, because a surface cannot paint it.
+   *
+   * The producer beside {@link fetchRendition}'s consumer, and the distinction
+   * between them is which node owns the original. A record whose rungs exist
+   * somewhere wants bytes moved; a photograph out of this device's own camera
+   * roll that nothing has derived wants work commissioned, and until this
+   * existed nothing on any surface could ask for it — the sweep got to it
+   * eventually, in content-hash order, twelve records to an app open.
+   *
+   * Resolves true when rungs were written and the tile is worth re-resolving.
+   * False covers every other outcome and none is an error worth a line on
+   * screen: the record is not this device's to derive, its rungs already exist,
+   * or the build has no encoder.
+   *
+   * Deduplicated per record and capped, on its own pool rather than the fetch
+   * pool — a decode and three encodes must not be able to starve a download.
+   */
+  deriveNow: (item: LibraryItem) => Promise<boolean>;
   /**
    * The item as the viewer should paint it, resolved at the viewer's own size.
    *
@@ -1130,6 +1154,56 @@ export function useLibrary(node: NodeState): LibraryState {
   );
 
   /**
+   * One derivation at a time, for the lifetime of the hook.
+   *
+   * Separate from {@link fetches} rather than sharing its pool, because the two
+   * bound different resources and a shared queue would let a cold grid's encodes
+   * sit in front of the download somebody is waiting on. See
+   * `RENDITION_DERIVE_CONCURRENCY`.
+   */
+  const derivations = useRef(createInFlight({ limit: RENDITION_DERIVE_CONCURRENCY }));
+
+  const deriveNow = useCallback(
+    async (item: LibraryItem): Promise<boolean> => {
+      if (!ready) return false;
+      const node = ready.node;
+      const clock = ready.clock;
+      // Nothing to make. The tile is already painting a rung, so the work is at
+      // worst a marginal improvement and at best none — and this is the most
+      // expensive call in the app to make for a marginal improvement.
+      if (item.paintedRendition !== null) return false;
+      // A rung exists somewhere and its bytes do not. That is a fetch, and
+      // deriving here would mint a second record for the same rung — see
+      // `deriveForRecord`.
+      if (item.missingRendition !== null) return false;
+      // Nothing on this device to decode. Checked here as well as inside
+      // `deriveForRecord` so the ordinary synced record costs no query at all.
+      if (!item.bytesHere) return false;
+
+      try {
+        return await derivations.current.run(item.record.id, async () => {
+          const written = await deriveRecordFor(node, clock, item.record);
+          if (written === null || written === 0) return false;
+          // The one record, through the same code a page is built from. A
+          // reload here would re-resolve every loaded tile to change this one,
+          // which on a Pixel 5 is 5.8 s of held JavaScript thread — and this
+          // pass fires once per undived record in a cold library.
+          await refreshItem(item.record.id);
+          return true;
+        });
+      } catch (err) {
+        // One photograph that would not encode. Reported, because unlike a
+        // fetch there is no network to blame and a device failing to decode its
+        // own camera roll is worth knowing about — but not fatal: the tile keeps
+        // its placeholder and every other record still derives.
+        setError(String(err));
+        return false;
+      }
+    },
+    [ready, refreshItem],
+  );
+
+  /**
    * The item as the viewer should paint it, resolved at the viewer's own size.
    *
    * Resolves the item unchanged when the node is not ready, so the viewer opens
@@ -1155,14 +1229,20 @@ export function useLibrary(node: NodeState): LibraryState {
   );
 
   /**
-   * Renditions this run has already gone looking for.
+   * What this run has already gone after, whether by fetching or by deriving.
    *
-   * A record of *attempts*, not of successes, and it is what stops a failing
-   * fetch from being retried on every reload. A rendition that arrives makes its
-   * own repeat impossible — the next page resolves it as resident and reports
+   * A record of *attempts*, not of successes, and it is what stops a failure
+   * from being retried on every reload. A rendition that arrives makes its own
+   * repeat impossible — the next page resolves it as resident and reports
    * nothing missing — so the only thing this changes is the failing case, which
-   * waits for the next launch or for the viewer's own fetch control rather than
+   * waits for the next launch or for the viewer's own control rather than
    * hammering.
+   *
+   * **Two kinds of key in one set, and they cannot collide.** A fetch is keyed
+   * on the rendition record's id and a derivation on the parent record's, and a
+   * record is never both — see the effect below. One set rather than two because
+   * the question it answers is the same one for both: has this run already tried
+   * to make this tile paint?
    *
    * A ref and not state: nothing on screen depends on it, and setting state here
    * would re-render the grid for a bookkeeping entry.
@@ -1170,7 +1250,8 @@ export function useLibrary(node: NodeState): LibraryState {
   const attempted = useRef(new Set<string>());
 
   /**
-   * Go and get the rungs this page is missing.
+   * Give this page the rungs it needs to paint: fetch what exists, make what
+   * does not.
    *
    * ## Why this fires from the page and not from the tile
    *
@@ -1180,14 +1261,33 @@ export function useLibrary(node: NodeState): LibraryState {
    * changes when records do, which is the honest trigger — and it bounds the
    * work to one page's worth however far somebody flicks.
    *
-   * ## Why the volume is small in practice
+   * ## The two branches, and why a record is only ever in one
    *
-   * `missingRendition` is non-null only when the rendition **record** exists and
-   * its blob does not, which means metadata sync brought the row down from a
-   * node that derived it. A phone showing its own camera roll before anything
-   * has been derived has no rendition records at all, so this fires for nothing.
-   * The case it serves is a library synced from elsewhere, where the rungs are
-   * exactly what the phone wants and exactly what it has not got.
+   * `missingRendition` is non-null exactly when the rendition **record** exists
+   * and its blob does not — metadata sync brought the row down from a node that
+   * derived it, or this device evicted the bytes. That is a transfer, and
+   * {@link fetchRendition} is what does it.
+   *
+   * Null with nothing painted is the opposite state: no rung exists anywhere, so
+   * there is nothing to fetch and the answer is to make one. On a phone showing
+   * its own camera roll that is nearly every record, and until {@link deriveNow}
+   * this branch did not exist — the loop skipped those records entirely and the
+   * only thing that would ever derive them was a cursor sweep in content-hash
+   * order, twelve records to an app open. That is what made the grid decode
+   * originals: not the paint rule, but that nothing ever asked for the rungs the
+   * paint rule wanted.
+   *
+   * The two are mutually exclusive by construction, so this is a branch and not
+   * a fallthrough — and getting it wrong in the other direction is the expensive
+   * mistake, since deriving a rung that already has a record mints a second
+   * record for it.
+   *
+   * ## Why the order is the page's order
+   *
+   * Both pools are FIFO and this loop walks `items`, which is the order the grid
+   * lays tiles out. So a cold library resolves from the top down, which is where
+   * somebody is looking, rather than in whatever order a content hash happens to
+   * sort.
    */
   useEffect(() => {
     if (!ready) return;
@@ -1197,9 +1297,21 @@ export function useLibrary(node: NodeState): LibraryState {
         if (cancelled) return;
         // The rule, stated once: only a tile with *no* resident rung at all.
         // A tile already painting a smaller rung is showing a picture, and the
-        // difference between it and the ideal is not worth a request during a
-        // scroll.
-        if (item.paintedRendition !== null || item.missingRendition === null) continue;
+        // difference between it and the ideal is not worth a request — or an
+        // encode — during a scroll.
+        if (item.paintedRendition !== null) continue;
+
+        // Keyed on the record rather than on a rendition id, because in this
+        // branch there is no rendition to name yet. Attempts and not successes,
+        // for the reason the fetch side gives: a record that derives makes its
+        // own repeat impossible, so this only bounds the failing case.
+        if (item.missingRendition === null) {
+          if (attempted.current.has(item.record.id)) continue;
+          attempted.current.add(item.record.id);
+          await deriveNow(item);
+          continue;
+        }
+
         if (attempted.current.has(item.missingRendition)) continue;
         attempted.current.add(item.missingRendition);
         // Awaited in sequence rather than fired in parallel. The concurrency cap
@@ -1211,7 +1323,7 @@ export function useLibrary(node: NodeState): LibraryState {
     return () => {
       cancelled = true;
     };
-  }, [ready, items, fetchRendition]);
+  }, [ready, items, fetchRendition, deriveNow]);
 
   /**
    * Give the budget back after a viewing burst.
@@ -1273,6 +1385,7 @@ export function useLibrary(node: NodeState): LibraryState {
     openMotion,
     fetchBlob,
     fetchRendition,
+    deriveNow,
     openForViewer,
     reclaimAfterViewing,
     setPinned,

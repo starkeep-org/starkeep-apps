@@ -261,8 +261,14 @@ export const LibraryRow = memo(function LibraryRow({
               the tile's own colour. The fetch control in the viewer is what it
               exists for — eliding advances the watermark, so nothing in a sync
               round will offer those bytes again and that is the only route
-              back. A video no longer lands here whenever its bytes are present:
-              `expo-image` paints its first frame. */}
+              back.
+
+              **Both halves of the condition are load-bearing now that the list
+              paints rungs only.** A null `uri` on its own no longer means
+              anything is wrong — it is the ordinary state of a photograph out of
+              this device's own camera roll that nothing has derived yet, which
+              wants a ThumbHash and a derivation rather than a mark saying its
+              bytes are elsewhere. `bytesHere` is what separates the two. */}
           {item.uri === null && !item.bytesHere ? (
             <View style={styles.tileMissingOverlay} pointerEvents="none">
               <Text style={styles.tilePlaceholderMark}>◇</Text>

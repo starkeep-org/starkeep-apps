@@ -54,7 +54,7 @@
  */
 
 import { memo, useCallback, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { InteractionManager, Pressable, Text, View } from "react-native";
 // **`expo-image`, not React Native's `<Image>`, and the reason is a decode.**
 // RN's image pipeline is Fresco, whose AVIF path defers to the platform
 // decoder — and a Pixel 5 on API 34 fails every AVIF still the ladder produces,
@@ -71,8 +71,9 @@ import { layOutRows, type JustifiedRow } from "../photos/render-target";
 import { CONTENT_PADDING, GRID_GAP, LIBRARY_ROW_HEIGHT, styles } from "./theme";
 import { MotionBadge } from "./MotionBadge";
 import { VideoBadge } from "./VideoBadge";
-import { LibraryViewer } from "./LibraryViewer";
+import { LibraryViewer, type ViewerStep } from "./LibraryViewer";
 import { isVideo } from "./format";
+import { perf } from "./perf";
 
 /** What the viewer needs from the screen that hosts it. */
 export interface ViewerHost {
@@ -207,14 +208,21 @@ export const LibraryRow = memo(function LibraryRow({
           <Image
             source={item.uri ? { uri: item.uri } : null}
             style={styles.tileImage}
-            // **Contain, not cover, and the row is what makes it free.** A
-            // justified row gives every photograph a box of its own shape, so
-            // there is nothing to crop and the two fits draw the same pixels.
-            // Saying `contain` is what keeps that true: if a box ever stops
-            // matching its photograph — a stale aspect ratio, a rendition of
-            // unexpected shape — `cover` would silently crop the picture, and
-            // this shows it whole with the tile's own colour beside it.
-            contentFit="contain"
+            // **Cover, because the row has already decided what to crop.** A
+            // justified row closes the gap between its photographs and the
+            // container two ways: it scales the row, and it takes an equal
+            // fraction off every photograph's width — `JustifiedRow.cropScale`,
+            // which is below 1 on most rows of a real library. The box this tile
+            // is given is the *cropped* box, so it is narrower than the
+            // photograph's own shape at this height.
+            //
+            // `contain` refused that crop. Asked to fit a picture into a box
+            // narrower than itself, it shrank the picture on both axes and left
+            // the tile's own colour above and below — 3 to 12 points of it,
+            // which is what made the space between rows look uneven when the
+            // gap between them is a constant two. `cover` spends the difference
+            // where the layout intended it, on the sides.
+            contentFit="cover"
             // **The floor of the paint rule, and why no tile is ever empty.**
             // `expo-image` decodes the ThumbHash natively from this base64
             // string — no JavaScript decode, no data URL, no dependency — and
@@ -235,13 +243,16 @@ export const LibraryRow = memo(function LibraryRow({
             // shows the wrong pictures for a frame or two during a fast
             // scroll, which reads as data corruption rather than as a decode.
             recyclingKey={item.record.id}
-            // Disk, not memory. A tile is cheap to decode again from a file
-            // that is already on this device, and there are thousands of them
-            // — a memory cache over the whole library is unbounded growth for
-            // a saving nobody notices. The viewer keeps its own memory cache,
-            // because it holds one picture at a time and re-decoding a 40
-            // megapixel original is exactly the cost worth paying once.
-            cachePolicy="disk"
+            // **Memory and disk, where this used to be disk alone.** The old
+            // reasoning feared unbounded growth over a library of thousands,
+            // and that is not what a memory cache is: Glide sizes an LRU from
+            // the display and evicts against it, so the ceiling is a couple of
+            // screens whether the library holds sixty photographs or sixty
+            // thousand. What `disk` bought instead was a decode every time a
+            // tile came back into the window — 100 to 250 ms per AVIF on a
+            // Pixel 5 — which is the blank rectangle somebody sees scrolling
+            // back up over pictures they were just looking at.
+            cachePolicy="memory-disk"
             // A tile loses to a photograph somebody is waiting to look at.
             priority="low"
           />
@@ -273,7 +284,47 @@ export const LibraryRow = memo(function LibraryRow({
       ))}
     </View>
   );
-});
+}, sameRow);
+
+/**
+ * Whether two renderings of a row would draw the same thing.
+ *
+ * **`memo`'s default comparison is not enough here, because the row object is
+ * never the same one twice.** A reload replaces `items` wholesale — that is what
+ * it is for, since the URI a tile paints is derived from the object store and
+ * re-deriving it is the only code path that produces one — and `libraryRows`
+ * then builds fresh row and placement objects from the fresh items. Compared by
+ * identity every row is new, so every row re-rendered and every `<Image>` was
+ * handed a new `source`, which is a re-resolve and often a re-decode. A reload
+ * that changed one tile redrew the whole grid.
+ *
+ * So the comparison is over what a tile actually draws with: which record, where
+ * the pixels come from, how big the box is, and the marks. `thumbHash` is in
+ * there because it is the placeholder, and it is exactly what a backfill pass
+ * changes about a record that is otherwise untouched.
+ */
+function sameRow(
+  before: { readonly row: JustifiedRow<LibraryItem>; readonly onOpen: unknown },
+  after: { readonly row: JustifiedRow<LibraryItem>; readonly onOpen: unknown },
+): boolean {
+  if (before.onOpen !== after.onOpen) return false;
+  if (before.row.height !== after.row.height) return false;
+  if (before.row.placements.length !== after.row.placements.length) return false;
+  return before.row.placements.every((placement, index) => {
+    const other = after.row.placements[index];
+    if (!other || placement.width !== other.width) return false;
+    const a = placement.item;
+    const b = other.item;
+    return (
+      a.record.id === b.record.id &&
+      a.uri === b.uri &&
+      a.thumbHash === b.thumbHash &&
+      a.bytesHere === b.bytesHere &&
+      a.hasMotion === b.hasMotion &&
+      a.durationMs === b.durationMs
+    );
+  });
+}
 
 /**
  * The viewer's state, and the element that draws it.
@@ -283,17 +334,31 @@ export const LibraryRow = memo(function LibraryRow({
  * screen owns. So the screen owns the viewer too, calls {@link open} from a row,
  * and renders {@link element} once, outside the list. Rendering it inside would
  * put a full-screen modal inside a recycled row.
+ *
+ * ## Why the whole page comes in, and not just the item that was tapped
+ *
+ * Swiping to the next photograph needs to know what the next photograph *is*,
+ * and the only thing that knows the order is the list the grid is drawing —
+ * `LIBRARY_ORDER`, applied by `listLibrary`. Passing the page in is what lets
+ * the viewer step through it without inventing a second ordering that would
+ * disagree with the grid the moment a record's capture time was backfilled.
+ *
+ * A swipe past the last loaded record does nothing rather than paging: the page
+ * is what the grid has, and `loadMore` belongs to the list that scrolls.
  */
-export function useLibraryViewer({
-  onFetch,
-  onFetchRendition,
-  onOpenForViewer,
-  onSetPinned,
-  isPinned,
-  onOpened,
-  onOpenMotion,
-  onClosed,
-}: ViewerHost): { open: (item: LibraryItem) => void; element: React.ReactElement } {
+export function useLibraryViewer(
+  {
+    onFetch,
+    onFetchRendition,
+    onOpenForViewer,
+    onSetPinned,
+    isPinned,
+    onOpened,
+    onOpenMotion,
+    onClosed,
+  }: ViewerHost,
+  items: readonly LibraryItem[],
+): { open: (item: LibraryItem) => void; element: React.ReactElement } {
   const [item, setItem] = useState<LibraryItem | null>(null);
   /** The key currently being fetched, so the control can say so. */
   const [fetching, setFetching] = useState<string | null>(null);
@@ -309,9 +374,19 @@ export function useLibraryViewer({
    * wrong record with no visible cause.
    */
   const showing = useRef<string | null>(null);
+  /**
+   * The page, readable from a callback that is not re-created when it changes.
+   *
+   * A dependency instead would rebuild {@link open} on every reload, and `open`
+   * is what a row's `onPress` closes over — so the grid's rows would all
+   * re-render for a list the viewer only reads when somebody swipes.
+   */
+  const pageRef = useRef(items);
+  pageRef.current = items;
 
-  const open = useCallback(
+  const show = useCallback(
     (opened: LibraryItem) => {
+      perf("show:enter");
       onOpened(opened.record.id);
       // **The rendition too, not only the parent.** Eviction is an LRU over
       // `last_opened_at_ms`, so a rung painted from disk that nothing ever
@@ -319,31 +394,64 @@ export function useLibraryViewer({
       // the very rendition the grid is drawing from. See
       // `LibraryItem.paintedRendition`.
       if (opened.paintedRendition) onOpened(opened.paintedRendition);
+      perf("show:noted");
       setPinned(isPinned(opened.record.id));
+      perf("show:pinned");
       showing.current = opened.record.id;
       // Opened on the tile's answer first, and improved a moment later. The
       // resolve is a database round trip, and a viewer that waited for one would
       // show a black screen for the length of it — where the tile's picture is
       // already decoded and already correct, just smaller than it could be.
       setItem(opened);
+      perf("show:setItem");
 
       void (async () => {
         const resolved = await onOpenForViewer(opened);
+        perf("show:resolved");
         if (showing.current !== opened.record.id) return;
-        setItem(resolved);
+        // **Only when it resolved to a different picture.** A record whose best
+        // resident rung is the one the tile was already painting resolves to the
+        // same URI, and setting it again is a re-render that hands `expo-image`
+        // a fresh `source` object for bytes it has already decoded — a second
+        // full-screen decode, and a second full-screen ThumbHash under it, for
+        // no change on screen.
+        if (!samePicture(resolved, opened)) setItem(resolved);
         // The rung this screen actually wants, which is usually not the one the
         // tile resolved. Not awaited by anything on screen: the viewer paints
         // what it has and improves when the bytes land.
         const arrived = await onFetchRendition(resolved, "viewer");
+        perf(`show:renditionFetch arrived=${arrived}`);
         if (!arrived || showing.current !== opened.record.id) return;
         // **And this is what stops the open item going stale.** The fetch
         // changed what the store holds, and nothing else would tell the viewer:
         // it would go on painting the smaller rung and go on saying the bytes
         // are absent.
-        setItem(await onOpenForViewer(resolved));
+        const fetched = await onOpenForViewer(resolved);
+        if (showing.current !== opened.record.id) return;
+        if (!samePicture(fetched, resolved)) setItem(fetched);
       })();
     },
     [onOpened, isPinned, onOpenForViewer, onFetchRendition],
+  );
+
+  /** Where the open record sits in the page, or -1 once a reload has dropped it. */
+  const indexOfOpen = (): number =>
+    showing.current === null
+      ? -1
+      : pageRef.current.findIndex((candidate) => candidate.record.id === showing.current);
+
+  const step = useCallback(
+    (delta: ViewerStep) => {
+      const index = indexOfOpen();
+      if (index < 0) return;
+      const next = pageRef.current[index + delta];
+      // The ends of the page are where a swipe stops. Silently, because a
+      // gesture that does nothing at the edge is what every gallery does, and
+      // there is nothing to report.
+      if (!next) return;
+      show(next);
+    },
+    [show],
   );
 
   const fetchNow = useCallback(
@@ -358,21 +466,52 @@ export function useLibraryViewer({
     [onFetch],
   );
 
+  const index = item ? items.findIndex((c) => c.record.id === item.record.id) : -1;
+
   const element = (
     <LibraryViewer
       item={item}
       busy={item !== null && fetching === item.record.id}
       pinned={pinned}
+      hasPrevious={index > 0}
+      hasNext={index >= 0 && index < items.length - 1}
+      onStep={step}
       onTogglePin={(target) => setPinned(onSetPinned(target.record.id, !pinned))}
       onFetch={fetchNow}
       onOpenMotion={onOpenMotion}
       onClose={() => {
+        perf("close:press");
         showing.current = null;
         setItem(null);
-        onClosed();
+        perf("close:cleared");
+        // **After the dismissal, not in front of it.** `onClosed` runs an
+        // eviction pass, and calling it here ran it on the JavaScript thread
+        // before React could render the unmount — half a second on a Pixel 5
+        // between the tap on Close and the viewer going away. The pass is not
+        // urgent and the dismissal is, so the interaction goes first.
+        InteractionManager.runAfterInteractions(() => {
+          void Promise.resolve(onClosed()).then(() => perf("close:reclaimed"));
+        });
       }}
     />
   );
 
-  return { open, element };
+  return { open: show, element };
+}
+
+/**
+ * Whether two resolutions of the same record would paint the same thing.
+ *
+ * Compared on what the viewer draws with rather than by identity, because
+ * `resolveForViewer` builds a fresh object every time and most of the time it
+ * has resolved to the rung the tile had already found. See {@link show}.
+ */
+function samePicture(a: LibraryItem, b: LibraryItem): boolean {
+  return (
+    a.record.id === b.record.id &&
+    a.uri === b.uri &&
+    a.playbackUri === b.playbackUri &&
+    a.thumbHash === b.thumbHash &&
+    a.bytesHere === b.bytesHere
+  );
 }

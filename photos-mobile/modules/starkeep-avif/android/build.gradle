@@ -1,0 +1,51 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.starkeep.avif'
+version = '0.1.0'
+
+android {
+  namespace "app.starkeep.avif"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+repositories {
+  // Declared here rather than relied upon from the root project, because
+  // `android/` is prebuild output and is not checked in: a regenerated root
+  // build file is not something this module may assume the contents of.
+  mavenCentral()
+}
+
+dependencies {
+  // The AVIF encoder. See `StarkeepAvifModule.kt` for what it costs and why it
+  // is bundled rather than driven through `MediaCodec`.
+  //
+  // **The Kotlin stdlib it asks for is excluded deliberately.** avif-coder 2.2.1
+  // declares `kotlin-stdlib:2.3.0`, and Gradle resolves a version conflict by
+  // taking the highest — which would raise the stdlib for *every* module in the
+  // app, including the ones compiled by this project's Kotlin 2.1 toolchain,
+  // whose reader rejects 2.3 metadata. The library's own classes use nothing
+  // from the newer stdlib; excluding it leaves the app on one Kotlin and costs
+  // nothing.
+  implementation('io.github.awxkee:avif-coder:2.2.1') {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
+  }
+}
+
+// avif-coder's own class files carry Kotlin metadata version 2.3.0 while this
+// project compiles at 2.1, so the reader refuses them by default. The check is
+// about *source*-level compatibility of Kotlin declarations, and everything this
+// module touches — `HeifCoder.encodeAvif` and four enums — is plain JVM shape
+// with no newer-language feature in its signature.
+//
+// Delete this once the project's Kotlin reaches 2.3.
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+  compilerOptions {
+    freeCompilerArgs.add("-Xskip-metadata-version-check")
+  }
+}

@@ -383,3 +383,26 @@ export function applicableVideoClasses(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Naming
+// ---------------------------------------------------------------------------
+
+/**
+ * What a published still rung is called.
+ *
+ * Here rather than beside either publisher because two nodes now derive: a
+ * machine running `sharp` and a phone running `avif-coder`. The name is part of
+ * a record's content-addressed id — `(parent, filename, contentHash)` — so two
+ * spellings of it are two ids for the same rung of the same photograph, which
+ * nothing downstream would ever reconcile.
+ *
+ * No extension is appended, deliberately, and the video publisher's own rule is
+ * the reason it can stay that way: a poster changes container relative to its
+ * parent, so it has to say so, while a still rung's name is only ever read as a
+ * label and its type travels in the record.
+ */
+export function renditionFileName(originalFilename: string | null, sizeClass: string): string {
+  const base = originalFilename ?? "image";
+  return `${sizeClass}_${base}`;
+}

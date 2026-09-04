@@ -6,6 +6,7 @@
  */
 
 import { StyleSheet } from "react-native";
+import { CONTENT_PADDING, GRID_GAP, TILE_WIDTH_FRACTION } from "./grid-geometry";
 
 export const colors = {
   background: "#111",
@@ -19,61 +20,19 @@ export const colors = {
 } as const;
 
 /**
- * The grid's geometry, named because several things outside the stylesheet need
- * it.
+ * The grid's geometry, re-exported so every reader still finds it here.
  *
- * `use-library.ts` converts a tile's width into the pixel long edge it asks the
- * ladder for and into how many records a page should hold; `LibraryGrid` turns
- * a row height into the `getItemLayout` the virtualized list needs. A second
- * copy of any of these numbers would drift from the layout silently — the tiles
- * would keep rendering and simply request the wrong rung, or the list would
- * scroll to the wrong offset.
+ * The values live in `grid-geometry.ts`, which imports nothing — this file calls
+ * `StyleSheet.create`, so anything defined here is unreachable from a Node test.
+ * See that file for what each number is and why.
  */
-export const CONTENT_PADDING = 20;
-export const TILE_WIDTH_FRACTION = 0.328;
-/**
- * Three across, which is what `TILE_WIDTH_FRACTION` is chosen to fit.
- *
- * Named rather than left implicit in the fraction, because the row-building and
- * paging arithmetic both divide by it and `0.328` does not say "three" to a
- * reader.
- */
-export const GRID_COLUMNS = 3;
-/** The gap `styles.grid` puts between tiles, in both axes. */
-export const GRID_GAP = 2;
-
-/**
- * The height a justified library row aims for, in layout points.
- *
- * ## Why the library grid has a row height and the device grid still has columns
- *
- * They answer different questions. `MediaGrid` shows the camera roll as the
- * media store reports it — a contact sheet, where a square crop is the point
- * because the question is *which of these do I have*. The library shows
- * photographs, and a square crop of a photograph is not the photograph. So the
- * library became justified rows, where every picture in a row shares a height
- * and keeps its own shape, and nothing is ever cropped to a square.
- *
- * That also fixed the sizing. A square tile is the wrong box to measure a
- * rendition request against: a portrait photograph in a square tile is drawn
- * shorter and narrower than the tile, so the request was computed against pixels
- * the picture does not occupy.
- *
- * ## Why 120
- *
- * It lands close to the density the three-column grid had, without inheriting
- * its crop. Three squares across a 390-point phone are about 115 points wide;
- * at a 120-point row a landscape 3:2 photograph is 180 points and a portrait 3:4
- * is 90, so a mixed row holds between two and four. Fewer, larger tiles for
- * landscape pictures and more, narrower ones for portraits is what a justified
- * grid is *for* — it spends the width on the pictures that can use it.
- *
- * Rows do not hold to this exactly. A row grows or shrinks to fill the width,
- * which is what `justifiedRows` does with the slack; this is the height it aims
- * for. See `photos/render-target.ts` for why the rendition request is measured
- * against this number rather than against the height a row lands on.
- */
-export const LIBRARY_ROW_HEIGHT = 120;
+export {
+  CONTENT_PADDING,
+  GRID_COLUMNS,
+  GRID_GAP,
+  LIBRARY_ROW_HEIGHT,
+  TILE_WIDTH_FRACTION,
+} from "./grid-geometry";
 
 export const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
@@ -226,6 +185,17 @@ export const styles = StyleSheet.create({
   // a photograph is the only thing on screen and every other pixel should get
   // out of its way.
   viewerSafe: { flex: 1, backgroundColor: "#000" },
+  /**
+   * The swipe wrapper around the still, and deliberately nothing but `flex`.
+   *
+   * `viewerImageArea` centres on both axes, and a parent that centres sizes its
+   * child to the child's own content rather than stretching it. Giving the
+   * wrapper that style collapsed the `Pressable` inside it to zero width, which
+   * made `viewerImage`'s `width: "100%"` resolve to zero — a full-screen
+   * photograph that never loaded, because `expo-image` does not fetch for a view
+   * with no size.
+   */
+  viewerStage: { flex: 1 },
   viewerImageArea: { flex: 1, alignItems: "center", justifyContent: "center" },
   viewerImage: { width: "100%", height: "100%" },
   viewerFooter: { padding: 20, gap: 4, backgroundColor: colors.background },

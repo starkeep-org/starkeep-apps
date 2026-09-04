@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import {
+  DERIVE_DEADLINE_SHARE,
   IMPORT_DEADLINE_SHARE,
   inFlightJob,
   runWorkTick,
@@ -168,6 +169,64 @@ describe("import's own share", () => {
     await runWorkTick(d, { deadlineMs: Date.now() + 60_000 });
     expect(d.node.sync).toHaveBeenCalledTimes(1);
     expect(d.importRecent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("derivation", () => {
+  const derived = (over: Partial<Record<string, number | boolean>> = {}) => ({
+    scanned: 1,
+    written: 3,
+    failed: 0,
+    complete: false,
+    ...over,
+  });
+
+  it("runs the sweep and reports what it made", async () => {
+    const deriveRenditions = vi.fn(async () => derived());
+    const report = await runWorkTick(deps({ deriveRenditions }), far());
+
+    expect(find(report, "derive-ladder-cheap").ran).toBe(true);
+    expect(find(report, "derive-ladder-cheap").detail).toContain("rungs=3");
+    expect(deriveRenditions).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes a caller that offers no derivation from a device that cannot", async () => {
+    // Two different sentences for two different facts, and neither is a
+    // failure: nothing wired it up, versus a build with no encoder in it.
+    const absent = await runWorkTick(deps(), far());
+    expect(find(absent, "derive-ladder-cheap").ran).toBe(true);
+    expect(find(absent, "derive-ladder-cheap").detail).toContain("nothing here derives");
+
+    const unable = await runWorkTick(deps({ deriveRenditions: async () => null }), far());
+    expect(find(unable, "derive-ladder-cheap").detail).toContain("cannot derive");
+  });
+
+  it("gives derivation a share of what is left rather than the rest of the window", async () => {
+    // Eviction is behind derivation in the graph's order, and eviction is what
+    // frees the space a rendition is written into. A sweep that spent
+    // everything left would be a phone that derives until its disk is full and
+    // then cannot derive again.
+    let signal: { readonly aborted: boolean } | null = null;
+    const deriveRenditions = vi.fn(async (s: { readonly aborted: boolean }) => {
+      signal = s;
+      await new Promise((r) => setTimeout(r, 40));
+      return derived();
+    });
+    await runWorkTick(deps({ deriveRenditions }), { deadlineMs: Date.now() + 30 });
+
+    // The signal is a getter over the clock, so a long sweep observes its share
+    // expiring without anything having to fire.
+    expect(signal!.aborted).toBe(true);
+    expect(DERIVE_DEADLINE_SHARE).toBeLessThan(1);
+  });
+
+  it("keeps the expensive rungs unbound", async () => {
+    const report = await runWorkTick(deps({ deriveRenditions: async () => derived() }), far());
+
+    // 2560 and 4272 pixels on a side is real CPU for pixels no phone screen can
+    // show. They stay a `sharp` node's work.
+    expect(UNBOUND_JOBS).toEqual(["derive-ladder-full"]);
+    expect(find(report, "derive-ladder-full").ran).toBe(false);
   });
 });
 

@@ -63,12 +63,21 @@ export interface TickReport {
 /**
  * Jobs the graph declares and this device cannot yet perform.
  *
- * Named here rather than silently skipped. The phone derives nothing — there is
- * no encoder on it — so binding a derive job would mean scheduling work with no
- * implementation behind it, and the honest report says which of the graph's
- * eight jobs are actually wired.
+ * Named here rather than silently skipped, so the report says which of the
+ * graph's eight jobs are actually wired.
+ *
+ * One job left this list when the phone gained an encoder.
+ * `derive-ladder-full` stays: the rungs above `image-medium` are 2560 and 4272
+ * pixels on a side, which is real CPU for pixels no phone screen can show, and
+ * they remain the work of a node running `sharp`. See
+ * `MOBILE_DERIVE_CEILING_LONG_EDGE`.
+ *
+ * `derive-ladder-cheap` is bound but still conditional — a build without the
+ * native encoder module reports so through {@link TickDeps.deriveRenditions}
+ * rather than by appearing here, because that is a property of the binary rather
+ * than of the graph.
  */
-export const UNBOUND_JOBS: readonly JobId[] = ["derive-ladder-cheap", "derive-ladder-full"];
+export const UNBOUND_JOBS: readonly JobId[] = ["derive-ladder-full"];
 
 export interface TickDeps {
   readonly node: MobileNode;
@@ -91,6 +100,30 @@ export interface TickDeps {
     /** This pass only established the import watermark. See `media/import-cursor.ts`. */
     cursorSeeded?: boolean;
   }>;
+  /**
+   * Make the rungs this device's own photographs are missing.
+   *
+   * Takes a signal for the reason `importRecent` does, and more sharply: one
+   * record costs a decode and up to three AVIF encodes, and the pass is
+   * deliberately allowed to walk more than one page inside a window. Without a
+   * signal it would run to the end of the alias table or to the moment the OS
+   * killed the process, which loses the report of everything the window did.
+   *
+   * Resolves null on a device that cannot derive at all — no camera roll, or a
+   * build with no encoder in it. Absent entirely on a caller that has no
+   * derivation to offer, which is how the tick's own tests are written.
+   */
+  readonly deriveRenditions?: (signal: {
+    readonly aborted: boolean;
+  }) => Promise<{
+    /** Records this pass paid a decode for. */
+    scanned: number;
+    /** Rungs written. */
+    written: number;
+    failed: number;
+    /** Every original this device holds has now been looked at. */
+    complete: boolean;
+  } | null>;
   readonly now?: () => number;
   readonly log?: (line: string) => void;
   /**
@@ -129,6 +162,26 @@ export const SYNC_DEADLINE_SHARE = 0.8;
  * upload nothing at all.
  */
 export const IMPORT_DEADLINE_SHARE = 0.25;
+
+/**
+ * How much of a window derivation may take.
+ *
+ * Half of what is left when it starts, which on an ordinary window is a handful
+ * of seconds — sync has taken its share by then, and derivation sits behind it
+ * in the graph's order.
+ *
+ * A share at all, rather than the rest of the window, because the jobs behind
+ * this one are the ones that keep a full phone working: `evict` is what frees
+ * the space a rendition is written into, and it is last in the order. A pass
+ * that spent everything left would be a phone that derives until its disk is
+ * full and then cannot derive again.
+ *
+ * Half rather than a smaller fraction because the unit is coarse. One record is
+ * a decode and up to three encodes — `derive-ladder-cheap` budgets ten seconds
+ * for it — so a share that leaves less than one record's worth of time is a job
+ * that is scheduled and never does anything.
+ */
+export const DERIVE_DEADLINE_SHARE = 0.5;
 
 /**
  * How long a background window waits for the media store.
@@ -276,6 +329,23 @@ async function runJob(
       return (
         `rounds=${result.rounds} applied=${result.applied} shipped=${result.shipped} ` +
         `elided=${result.elided} complete=${result.complete} stalled=${result.stalled}`
+      );
+    }
+
+    // The one job whose binding can be absent from a *build* rather than from
+    // the graph, so its two "did nothing" answers are different sentences. No
+    // callback at all is a caller that offers no derivation; a null outcome is a
+    // device that cannot derive — no camera roll to walk, or no encoder in the
+    // binary. Both are ordinary, and neither is a failure.
+    case "derive-ladder-cheap": {
+      if (!deps.deriveRenditions) return "nothing here derives renditions";
+      const outcome = await deps.deriveRenditions(
+        shareOf(options, now, DERIVE_DEADLINE_SHARE),
+      );
+      if (outcome === null) return "this device cannot derive — no encoder, or no camera roll";
+      return (
+        `decoded=${outcome.scanned} rungs=${outcome.written} ` +
+        `failed=${outcome.failed} complete=${outcome.complete}`
       );
     }
 

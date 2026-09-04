@@ -76,17 +76,72 @@ export interface DeviceMediaObjectStorageOptions {
    * handed to `fs.file()`, and inventing a second port would hide that.
    */
   readonly fs: ExpoFileSystem;
+  /** The clock the probe window is measured on. Injected only by tests. */
+  readonly now?: () => number;
+}
+
+/**
+ * How long a live-asset probe is trusted before the media store is asked again.
+ *
+ * The probe is two `ContentResolver` round trips, and on a Pixel 5 the pair
+ * costs about 85 ms. Nothing cached them, so listing a library page of thirty
+ * records — which asks for every record's own URI and for every painted
+ * rendition's — spent 2.5 s inside them, and a reload of two pages spent 5 s
+ * with the JavaScript thread held the whole time. That reload, and therefore
+ * the frozen tap behind it, is what
+ * `photos-mobile-grid-and-viewer-2026-09-04.md` measures.
+ *
+ * Thirty seconds is chosen against what a stale answer costs rather than
+ * against what it saves. A stale *positive* hands a caller a URI for an asset
+ * the user has since deleted elsewhere: a transfer fails and is retried, or a
+ * tile paints a placeholder, and the next probe past the window corrects both.
+ * A stale *negative* demotes a record to `staged` for the rest of the window,
+ * which is where the record was already heading. Neither answer is durable and
+ * neither is written down, so this stays a cache of one question rather than
+ * the authority this table must never become.
+ */
+const ALIAS_PROBE_TTL_MS = 30_000;
+
+/**
+ * How many probes are remembered at once.
+ *
+ * A cap rather than a growth curve, because this is keyed by object storage key
+ * and a library can hold sixty thousand of them. Eviction is insertion-ordered
+ * — a `Map` iterates in insertion order and every write re-inserts — so what
+ * falls out is what nothing has asked about recently, which on this app's
+ * surfaces is a screen somebody has scrolled away from.
+ */
+const ALIAS_PROBE_LIMIT = 2048;
+
+/** One remembered answer to "is the asset behind this alias still there". */
+interface AliasProbe {
+  /**
+   * The alias the answer was measured against, as URI and size.
+   *
+   * Compared rather than assumed, which is what makes a re-import invalidate
+   * the cache for free: a record re-aliased to a new asset, or to the same
+   * asset at a new size, does not match the stamp and is probed again. The
+   * window therefore covers only the case an alias row cannot see — the asset
+   * at this exact URI and this exact size disappearing — which is the case the
+   * scan job exists to catch.
+   */
+  readonly stamp: string;
+  readonly atMs: number;
+  readonly live: boolean;
 }
 
 export class DeviceMediaObjectStorage implements FileBackedObjectStorage {
   private readonly inner: FileBackedObjectStorage;
   private readonly aliases: MediaAliasStore;
   private readonly fs: ExpoFileSystem;
+  private readonly probes = new Map<string, AliasProbe>();
+  private readonly now: () => number;
 
   constructor(options: DeviceMediaObjectStorageOptions) {
     this.inner = options.inner;
     this.aliases = options.aliases;
     this.fs = options.fs;
+    this.now = options.now ?? Date.now;
   }
 
   /**
@@ -106,10 +161,44 @@ export class DeviceMediaObjectStorage implements FileBackedObjectStorage {
   private resolve(key: string): { alias: MediaAlias; file: ReturnType<ExpoFileSystem["file"]> } | null {
     const alias = this.aliases.get(key);
     if (!alias) return null;
+    // Built unconditionally because building it is free: `fs.file()` wraps a
+    // string, and every round trip to the media store sits behind one of the
+    // handle's accessors. A cached probe touches none of them.
     const file = this.fs.file(alias.contentUri);
-    if (!file.exists) return null;
-    if (file.size !== null && file.size !== alias.sizeBytes) return null;
+    if (!this.live(alias, file)) return null;
     return { alias, file };
+  }
+
+  /**
+   * Whether the asset behind this alias is still there, remembered briefly.
+   *
+   * The alias row is read fresh on every call — a primary-key lookup in the
+   * SQLite file the caller is already reading — so what is cached here is only
+   * the expensive half. {@link ALIAS_PROBE_TTL_MS} carries what the window is
+   * worth and what a stale answer costs.
+   */
+  private live(alias: MediaAlias, file: ReturnType<ExpoFileSystem["file"]>): boolean {
+    const stamp = `${alias.contentUri}\u0000${alias.sizeBytes}`;
+    const at = this.now();
+    const remembered = this.probes.get(alias.objectStorageKey);
+    if (remembered && remembered.stamp === stamp && at - remembered.atMs < ALIAS_PROBE_TTL_MS) {
+      return remembered.live;
+    }
+    const live = file.exists && (file.size === null || file.size === alias.sizeBytes);
+    this.remember(alias.objectStorageKey, { stamp, atMs: at, live });
+    return live;
+  }
+
+  private remember(key: string, probe: AliasProbe): void {
+    // Deleted first so a re-probe moves the key to the end of the insertion
+    // order rather than keeping the position it was first written at.
+    this.probes.delete(key);
+    this.probes.set(key, probe);
+    while (this.probes.size > ALIAS_PROBE_LIMIT) {
+      const oldest = this.probes.keys().next();
+      if (oldest.done) break;
+      this.probes.delete(oldest.value);
+    }
   }
 
   async init(): Promise<void> {
@@ -239,6 +328,10 @@ export class DeviceMediaObjectStorage implements FileBackedObjectStorage {
   async delete(key: string): Promise<void> {
     if (this.aliases.isAliased(key)) {
       this.aliases.remove(key);
+      // The alias is gone, so the probe describes nothing. Dropped here rather
+      // than left to age out, because this is the one mutation the adapter can
+      // see and the window should not have to cover it.
+      this.probes.delete(key);
       return;
     }
     return this.inner.delete(key);

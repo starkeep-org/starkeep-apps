@@ -17,7 +17,19 @@
  */
 
 import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS } from "../labels";
+import { renditionFileName } from "../ladder";
 import type { DerivedRendition } from "./derive-ladder";
+
+/**
+ * What a published rung is called.
+ *
+ * Re-exported rather than defined here since the phone began deriving too. The
+ * name is part of a record's content-addressed id, so it has to be one rule
+ * shared by every node that publishes a rung; `@starkeep/photos-ladder` is where
+ * it now lives, and this export is the name the tests and call sites in this app
+ * already import.
+ */
+export { renditionFileName };
 
 /** Minimal view of the record a rendition is derived from. */
 export interface RenditionParent {
@@ -218,17 +230,6 @@ export async function publishRendition(
     contentHash,
     sizeBytes: rendition.data.byteLength,
   };
-}
-
-/**
- * What a published rung is called.
- *
- * Exported because a test asserting the name has to read it from here; spelling
- * it a second time is how a rename passes a suite that is checking the old one.
- */
-export function renditionFileName(originalFilename: string | null, sizeClass: string): string {
-  const base = originalFilename ?? "image";
-  return `${sizeClass}_${base}`;
 }
 
 /**

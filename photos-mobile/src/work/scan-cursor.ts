@@ -14,10 +14,15 @@
  *
  * ## Why one row rather than a general key-value table
  *
- * Because there is one cursor, and a table that could hold others is a table
- * somebody will put something else in. `null` is the whole vocabulary besides a
- * position: it means "start from the beginning", which is both the initial
- * state and what a completed sweep resets to.
+ * Because a cursor is one position, and a table that could hold others is a
+ * table somebody will put something else in. `null` is the whole vocabulary
+ * besides a position: it means "start from the beginning", which is both the
+ * initial state and what a completed sweep resets to.
+ *
+ * A second *sweep* gets a second table rather than a second row, for the reason
+ * `VIDEO_DURATION_CURSOR_TABLE` gives about the import watermarks: two passes
+ * over the same rows for different reasons must not be able to skip what the
+ * other has reached. See {@link DERIVATION_CURSOR_TABLE}.
  */
 
 import type { RawDatabase } from "@starkeep/storage-adapter";
@@ -47,12 +52,26 @@ const qb = new Kysely<DB>({
   },
 });
 
-const TABLE = "acquisition_scan_cursor";
+/** Where the catalogue scan stopped walking the records this device may want. */
+export const ACQUISITION_SCAN_CURSOR_TABLE = "acquisition_scan_cursor";
+
+/**
+ * Where the derivation sweep stopped walking this device's own originals.
+ *
+ * Its own table, because the two sweeps walk different sets for opposite
+ * purposes: the acquisition scan walks the catalogue looking for bytes to
+ * *fetch*, and this one walks the alias table looking for rungs to *make*. One
+ * cursor serving both would have each pass skip whatever the other had reached.
+ */
+export const DERIVATION_CURSOR_TABLE = "rendition_derivation_cursor";
 
 export function createSqliteScanCursorStore(options: {
   readonly db: RawDatabase;
+  /** Defaults to the acquisition scan's, which was the only sweep for a while. */
+  readonly table?: string;
 }): ScanCursorStore {
   const { db } = options;
+  const TABLE = options.table ?? ACQUISITION_SCAN_CURSOR_TABLE;
 
   db.exec(
     qb.schema

@@ -26,7 +26,12 @@ import * as TaskManager from "expo-task-manager";
 import { Paths } from "expo-file-system";
 import * as Network from "expo-network";
 import { createHLCClock } from "@starkeep/protocol-primitives";
-import { documentPath, expoFileSystem, importRecentFor } from "../platform";
+import {
+  deriveRenditionsFor,
+  documentPath,
+  expoFileSystem,
+  importRecentFor,
+} from "../platform";
 import { acquireNode } from "./node-handle";
 import { readDeviceState } from "./device-state";
 import { inFlightJob, runWorkTick, type TickReport } from "./tick";
@@ -255,6 +260,11 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
               cursorSeeded: outcome.cursorSeeded ?? false,
             };
           },
+          // The rungs this device's own photographs need, made here rather than
+          // waited on from a node running `sharp`. Bounded by the share the tick
+          // gives it and by its own record budget, and resumable from a cursor —
+          // so a window that closes mid-sweep costs the record in flight.
+          deriveRenditions: (signal) => deriveRenditionsFor(lease.node, clock, { signal }),
           // Kept so the watchdog has something to write. Each snapshot names
           // the job in flight, so an abandoned window says which one it was.
           onProgress: (snapshot) => {

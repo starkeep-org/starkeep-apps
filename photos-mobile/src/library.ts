@@ -262,12 +262,36 @@ export async function listLibrary(
     excludeLabel: { appId: "photos", key: "rendition" },
   });
 
+  return {
+    items: await resolveLibraryItems(deps, result.records, query.grid ?? null),
+    nextCursor: result.nextCursor,
+    hasMore: result.hasMore,
+  };
+}
+
+/**
+ * The records of one page, turned into what a grid draws.
+ *
+ * Split out of {@link listLibrary} so that re-deriving *one* record goes through
+ * exactly this code — see {@link refreshLibraryItem}. The alternative was the
+ * one this replaced: a rendition arriving re-listed and re-resolved the whole
+ * loaded library to change a single tile, which on a Pixel 5 cost 5.8 s with the
+ * JavaScript thread held, and did it once per arriving rendition.
+ *
+ * Every query it issues is per call and never per record, which is what makes
+ * the page affordable and the single-record case cheap for the same reason.
+ */
+export async function resolveLibraryItems(
+  deps: LibraryDeps,
+  records: readonly DataRecord[],
+  grid: GridGeometry | null,
+): Promise<LibraryItem[]> {
   // One read of the stills' metadata for the whole page, and it answers three
   // questions at once: the shape each record is laid out in, the placeholder it
   // paints, and the source long edge the rendition resolution measures against.
   // Reading it once here is why `resolveLibraryRenditions` takes dimensions
   // rather than fetching its own.
-  const imageIds = result.records
+  const imageIds = records
     .filter((record) => typeCategory(record.type) === "image")
     .map((record) => record.id);
   const imageMetadata =
@@ -276,7 +300,7 @@ export async function listLibrary(
   // The clips' own row, for the duration a tile badges and the placeholder a
   // clip paints. A page of sixty stills issues neither this query nor the one
   // above's video counterpart.
-  const videoIds = result.records
+  const videoIds = records
     .filter((record) => typeCategory(record.type) === "video")
     .map((record) => record.id);
   const videoMetadata =
@@ -300,7 +324,6 @@ export async function listLibrary(
   // make: that flag says the rendition *record* exists.
   const isResident = (key: string) => (deps.objectStorage.localFileUriFor?.(key) ?? null) !== null;
 
-  const grid = query.grid;
   const targetFor = (record: DataRecord): number | null => {
     if (!grid) return null;
     const dims = dimensionsOf(record);
@@ -314,7 +337,7 @@ export async function listLibrary(
   // children of every record on the page come back in one query rather than one
   // per tile.
   const renditions = grid
-    ? await resolveLibraryRenditions(deps.database, result.records, {
+    ? await resolveLibraryRenditions(deps.database, records, {
         targetFor,
         isResident,
         dimensionsOf,
@@ -323,79 +346,110 @@ export async function listLibrary(
 
   // One query for the page's stills, on the same argument. A Motion Photo is an
   // image record, so videos are not asked about at all.
-  const motionKeys = result.records
+  const motionKeys = records
     .filter((record) => typeCategory(record.type) === "image" && record.objectStorageKey)
     .map((record) => record.objectStorageKey as string);
   const withMotion = deps.motionIndex?.withMotion(motionKeys) ?? null;
 
-  return {
-    items: result.records.map((record) => {
-      const resolved = renditions?.get(record.id) ?? null;
-      // The rendition when its bytes are actually here — which is what `paint`
-      // means, and why nothing here re-checks residency. A record whose ideal
-      // rung is known but not yet fetched paints the largest resident rung below
-      // it, and if there is none it paints its own original when that is here
-      // and its ThumbHash when it is not.
-      const renditionUri = resolved?.paint
-        ? (deps.objectStorage.localFileUriFor?.(resolved.paint.objectStorageKey) ?? null)
-        : null;
-      const ownUri = uriFor(deps.objectStorage, record);
-      // A video falls back to its own bytes exactly like a still does, because
-      // `expo-image` paints a video's first frame.
+  return records.map((record) => {
+    const resolved = renditions?.get(record.id) ?? null;
+    // The rendition when its bytes are actually here — which is what `paint`
+    // means, and why nothing here re-checks residency. A record whose ideal
+    // rung is known but not yet fetched paints the largest resident rung below
+    // it, and if there is none it paints its own original when that is here
+    // and its ThumbHash when it is not.
+    const renditionUri = resolved?.paint
+      ? (deps.objectStorage.localFileUriFor?.(resolved.paint.objectStorageKey) ?? null)
+      : null;
+    const ownUri = uriFor(deps.objectStorage, record);
+    // A video falls back to its own bytes exactly like a still does, because
+    // `expo-image` paints a video's first frame.
+    //
+    // **Settled on a handset, 2026-09-02.** This line used to null the URI
+    // for every video, on the claim that handing one to an `<Image>` paints
+    // nothing. The claim was false, and `ui/MediaGrid.tsx` was the standing
+    // counter-example the whole time: the device grid hands exactly such a
+    // URI to the same `expo-image` and has always drawn frames. Under
+    // Android, `expo-image` is Glide, and Glide decodes a frame from a local
+    // video through `MediaMetadataRetriever` — it sniffs the source rather
+    // than trusting a file extension, which is what makes an extensionless
+    // synced blob work as well as a camera-roll `content://` asset.
+    const isVideo = typeCategory(record.type) === "video";
+    const row = metadataFor(record);
+    const duration = row?.["duration_ms"];
+    const thumbHash = row?.["thumb_hash"];
+    const dims = dimensionsOf(record);
+    return {
+      record,
+      // **The original is deliberately still in this list, and it is the one
+      // step the plan's paint rule does not have.** The rule says: the ideal
+      // rung, else the largest resident rung below it, else the ThumbHash. On
+      // a phone there is a fourth thing, and it is better than both fallbacks:
+      // the full-size file, sitting in the camera roll this node imported it
+      // from. There is no download to avoid — only a decode — so painting it
+      // beats painting a placeholder for a picture the device already holds.
       //
-      // **Settled on a handset, 2026-09-02.** This line used to null the URI
-      // for every video, on the claim that handing one to an `<Image>` paints
-      // nothing. The claim was false, and `ui/MediaGrid.tsx` was the standing
-      // counter-example the whole time: the device grid hands exactly such a
-      // URI to the same `expo-image` and has always drawn frames. Under
-      // Android, `expo-image` is Glide, and Glide decodes a frame from a local
-      // video through `MediaMetadataRetriever` — it sniffs the source rather
-      // than trusting a file extension, which is what makes an extensionless
-      // synced blob work as well as a camera-roll `content://` asset.
-      const isVideo = typeCategory(record.type) === "video";
-      const row = metadataFor(record);
-      const duration = row?.["duration_ms"];
-      const thumbHash = row?.["thumb_hash"];
-      const dims = dimensionsOf(record);
-      return {
-        record,
-        // **The original is deliberately still in this list, and it is the one
-        // step the plan's paint rule does not have.** The rule says: the ideal
-        // rung, else the largest resident rung below it, else the ThumbHash. On
-        // a phone there is a fourth thing, and it is better than both fallbacks:
-        // the full-size file, sitting in the camera roll this node imported it
-        // from. There is no download to avoid — only a decode — so painting it
-        // beats painting a placeholder for a picture the device already holds.
-        //
-        // It is last, after both rungs, because the decode is what the rungs
-        // exist to avoid.
-        uri: renditionUri ?? ownUri,
-        bytesHere: ownUri !== null,
-        // The record's own bytes, never the rendition's: a poster is a still and
-        // a player handed one plays nothing. `localFileUriFor` already covers
-        // both the camera-roll asset behind an alias and a blob fetched from the
-        // cloud, so one call names a playable file for either.
-        playbackUri: isVideo ? ownUri : null,
-        durationMs: typeof duration === "number" ? duration : null,
-        hasMotion:
-          record.objectStorageKey !== undefined &&
-          (withMotion?.has(record.objectStorageKey) ?? false),
-        aspect: displayedAspectOf(
-          dims && dims.width && dims.height ? { width: dims.width, height: dims.height } : null,
-          orientationOf(record),
-        ),
-        thumbHash: typeof thumbHash === "string" && thumbHash.length > 0 ? thumbHash : null,
-        missingRendition: resolved?.missingIdeal ?? null,
-        // The rendition only when it is the thing on screen. `renditionUri` is
-        // null exactly when the rung's bytes are absent, and in that case the
-        // tile fell through to the original — so nothing was painted from a
-        // rendition and nothing about one should be recorded.
-        paintedRendition: renditionUri ? (resolved?.paint?.id ?? null) : null,
-      };
-    }),
-    nextCursor: result.nextCursor,
-    hasMore: result.hasMore,
-  };
+      // It is last, after both rungs, because the decode is what the rungs
+      // exist to avoid.
+      uri: renditionUri ?? ownUri,
+      bytesHere: ownUri !== null,
+      // The record's own bytes, never the rendition's: a poster is a still and
+      // a player handed one plays nothing. `localFileUriFor` already covers
+      // both the camera-roll asset behind an alias and a blob fetched from the
+      // cloud, so one call names a playable file for either.
+      playbackUri: isVideo ? ownUri : null,
+      durationMs: typeof duration === "number" ? duration : null,
+      hasMotion:
+        record.objectStorageKey !== undefined &&
+        (withMotion?.has(record.objectStorageKey) ?? false),
+      aspect: displayedAspectOf(
+        dims && dims.width && dims.height ? { width: dims.width, height: dims.height } : null,
+        orientationOf(record),
+      ),
+      thumbHash: typeof thumbHash === "string" && thumbHash.length > 0 ? thumbHash : null,
+      missingRendition: resolved?.missingIdeal ?? null,
+      // The rendition only when it is the thing on screen. `renditionUri` is
+      // null exactly when the rung's bytes are absent, and in that case the
+      // tile fell through to the original — so nothing was painted from a
+      // rendition and nothing about one should be recorded.
+      paintedRendition: renditionUri ? (resolved?.paint?.id ?? null) : null,
+    };
+  });
+}
+
+/**
+ * One record's tile, derived again after something changed underneath it.
+ *
+ * ## What this replaced
+ *
+ * A reload. `fetchRendition` used to answer an arriving rung by re-listing the
+ * whole loaded library, on the argument that the URI is derived from the object
+ * store and there should be exactly one code path that derives it. The argument
+ * was right and the implementation was the wrong size: {@link
+ * resolveLibraryItems} is that one code path, and handing it a single record
+ * satisfies the argument without re-deriving the fifty-nine tiles that did not
+ * change.
+ *
+ * The cost was not theoretical. On a Pixel 5 a two-page reload took 5.8 s with
+ * the JavaScript thread held throughout, so every touch queued behind it — and
+ * because the tile prefetch loop is keyed on the page it rebuilt, each arriving
+ * rendition also restarted the loop that had asked for it.
+ *
+ * ## Why it answers null rather than the record it was given
+ *
+ * A record can be gone by the time the bytes for it arrive — evicted, or
+ * removed by a sync round. Null says so, and the caller drops the tile rather
+ * than splicing a stale one back into a page that had already lost it.
+ */
+export async function refreshLibraryItem(
+  deps: LibraryDeps,
+  recordId: StarkeepId,
+  grid: GridGeometry | null,
+): Promise<LibraryItem | null> {
+  const record = await deps.database.get(recordId);
+  if (!record) return null;
+  const [item] = await resolveLibraryItems(deps, [record], grid);
+  return item ?? null;
 }
 
 /**

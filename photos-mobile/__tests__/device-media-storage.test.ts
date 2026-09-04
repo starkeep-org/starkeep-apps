@@ -276,3 +276,102 @@ describe("unaliased keys are untouched", () => {
     expect(await storage.stat("shared/image/zz/nope")).toBeNull();
   });
 });
+
+/**
+ * The probe cache, which exists because the probe is a media-store round trip.
+ *
+ * `resolve()` asks whether the asset behind an alias is still there, and on a
+ * Pixel 5 asking costs about 85 ms. A library page asks it twice per record, so
+ * a two-page reload spent five seconds inside it with the JavaScript thread
+ * held — see `photos-mobile-grid-and-viewer-2026-09-04.md`. What is cached is
+ * only that question; the alias row itself is still read every time.
+ */
+describe("remembering whether an asset is still there", () => {
+  /** The same port, counting how often anything asks a file whether it exists. */
+  function counting(inner: ReturnType<typeof fakeExpoFs>["fs"]) {
+    const probes: string[] = [];
+    return {
+      probes,
+      port: {
+        ...inner,
+        file(path: string) {
+          const handle = inner.file(path);
+          return {
+            ...handle,
+            get exists() {
+              probes.push(path);
+              return handle.exists;
+            },
+            get size() {
+              return handle.size;
+            },
+            get uri() {
+              return handle.uri;
+            },
+          } as ReturnType<typeof inner.file>;
+        },
+      } as ReturnType<typeof fakeExpoFs>["fs"],
+    };
+  }
+
+  it("asks the media store once for a run of reads", async () => {
+    const counted = counting(fs.fs);
+    let clock = 1_000;
+    const cached = new DeviceMediaObjectStorage({
+      inner,
+      aliases,
+      fs: counted.port,
+      now: () => clock,
+    });
+    aliasAPhoto();
+
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+    expect(await cached.has(KEY)).toBe(true);
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+    clock += 1_000;
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+
+    expect(counted.probes).toEqual([URI]);
+  });
+
+  it("asks again once the window has passed", async () => {
+    const counted = counting(fs.fs);
+    let clock = 1_000;
+    const cached = new DeviceMediaObjectStorage({
+      inner,
+      aliases,
+      fs: counted.port,
+      now: () => clock,
+    });
+    aliasAPhoto();
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+
+    // The asset goes away behind the app's back, which is the case the window
+    // exists to bound: the answer is stale until it expires and correct after.
+    fs.fs.file(URI).delete();
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+    clock += 30_000;
+    expect(cached.localFileUriFor(KEY)).toBeNull();
+
+    expect(counted.probes.length).toBe(2);
+  });
+
+  it("asks again when the alias itself changed", () => {
+    const counted = counting(fs.fs);
+    const cached = new DeviceMediaObjectStorage({
+      inner,
+      aliases,
+      fs: counted.port,
+      now: () => 1_000,
+    });
+    aliasAPhoto();
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+
+    // A re-import writes a new row for the same key, and the stamp is what
+    // notices — so nothing has to tell this adapter that an import ran.
+    aliasAPhoto(new Uint8Array(16));
+    expect(cached.localFileUriFor(KEY)).toBe(URI);
+
+    expect(counted.probes.length).toBe(2);
+  });
+});

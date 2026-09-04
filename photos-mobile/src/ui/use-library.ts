@@ -17,6 +17,7 @@ import {
 } from "@starkeep/protocol-primitives";
 import {
   listLibrary,
+  refreshLibraryItem,
   resolveForViewer,
   summarizeLibrary,
   type LibraryItem,
@@ -37,6 +38,7 @@ import type { EvictionOutcome } from "@starkeep/sync-engine";
 import {
   backfillImageExifFor,
   backfillThumbHashesFor,
+  deriveRenditionsFor,
   backfillVideoDurationsFor,
   deviceMedia,
   discardNodeFiles,
@@ -239,6 +241,27 @@ export const MAX_EXIF_BACKFILL_PASSES = 60;
  */
 export const MAX_THUMB_HASH_BACKFILL_PASSES = 10;
 
+/**
+ * How many records one app open derives renditions for.
+ *
+ * **Twelve, and the number exists because the background window cannot carry
+ * this on its own.** A window is ninety seconds, import and sync take their
+ * shares first, and derivation's own share of what is left comes to a handful of
+ * records — against roughly six windows in a day's allowance. A camera roll that
+ * predates this build would converge in years.
+ *
+ * So the foreground pays for the backlog and the background keeps up with new
+ * captures, which is the same division of labour "Add photos from this device"
+ * already makes with the import watermark.
+ *
+ * Twelve rather than the ThumbHash pass's hundred-and-twenty (ten batches of
+ * twelve) because one record here is a decode *and* up to three AVIF encodes.
+ * Both of those run on native queues rather than on the JavaScript thread, so
+ * the grid keeps drawing — what this number actually bounds is battery and heat
+ * on an app open, not frames.
+ */
+export const DERIVE_RECORDS_PER_OPEN = 12;
+
 export type NodeState =
   | { readonly status: "starting" }
   | {
@@ -432,6 +455,16 @@ export interface LibraryState {
    * signal to stop asking. See `backfillThumbHashes`.
    */
   backfillThumbHashes: () => Promise<boolean>;
+  /**
+   * Make the rungs this device's own photographs are missing.
+   *
+   * Resolves true when the sweep has walked every original this node holds,
+   * which is the caller's signal to stop asking for this app open. Unlike the
+   * repairs beside it that is not a permanent answer — a photograph imported
+   * afterwards needs rungs too — so the sweep's cursor resets and the next open
+   * walks again. See `photos/derive-ladder.ts`.
+   */
+  deriveRenditions: () => Promise<boolean>;
   /**
    * Import the assets the import watermark can never reach.
    *
@@ -696,6 +729,38 @@ export function useLibrary(node: NodeState): LibraryState {
     }
   }, [ready, depsFor]);
 
+  /**
+   * Re-derive one record's tile in place, leaving every other tile alone.
+   *
+   * The narrow answer to "something about this record changed", and the reason
+   * {@link refreshLibraryItem} exists. Nothing about it is cheaper than a reload
+   * per record — it runs the same queries — it is cheaper because it runs them
+   * once instead of sixty times, and because `LibraryRow`'s comparator then
+   * re-renders the one row holding the tile rather than every row on screen.
+   *
+   * A record the refresh cannot find is dropped from the page rather than left
+   * as it was. Not finding it means it is gone — evicted, or removed by a sync
+   * round — and a grid still drawing it would be drawing something the node no
+   * longer holds.
+   */
+  const refreshItem = useCallback(
+    async (recordId: StarkeepId) => {
+      if (!ready) return;
+      const fresh = await refreshLibraryItem(depsFor(ready), recordId, gridGeometry());
+      setItems((current) => {
+        const at = current.findIndex((candidate) => candidate.record.id === recordId);
+        // Not on the loaded page any more, so there is nothing to patch. A
+        // reload between the fetch and here is the ordinary way that happens.
+        if (at < 0) return current;
+        const next = current.slice();
+        if (fresh) next[at] = fresh;
+        else next.splice(at, 1);
+        return next;
+      });
+    },
+    [ready, depsFor],
+  );
+
   useEffect(() => {
     void reload();
   }, [reload]);
@@ -903,6 +968,40 @@ export function useLibrary(node: NodeState): LibraryState {
     }
   }, [ready, reload]);
 
+  /**
+   * Make the rungs this device's own photographs are missing.
+   *
+   * One sweep per app open, bounded by {@link DERIVE_RECORDS_PER_OPEN}. It runs
+   * last among the passes here for the same reason the ThumbHash backfill runs
+   * after the two that decide where a tile *sits*: this improves what a tile
+   * paints, and a grid in the wrong order is the worse problem.
+   *
+   * Reloads once at the end rather than per record, on the argument every pass
+   * here makes: a reload redraws the whole grid, and doing it twelve times to
+   * land in the same place is work nobody asked for.
+   */
+  const deriveRenditions = useCallback(async (): Promise<boolean> => {
+    if (!ready) return true;
+    try {
+      const outcome = await deriveRenditionsFor(ready.node, ready.clock, {
+        maxRecords: DERIVE_RECORDS_PER_OPEN,
+      });
+      // Null is a device that cannot derive at all — no camera roll, or a build
+      // with no encoder in it. Stop asking; nothing about this app open will
+      // change either.
+      if (outcome === null) return true;
+      if (outcome.written > 0) await reload();
+      return outcome.complete;
+    } catch (err) {
+      setError(String(err));
+      // Stop asking, for the reason every pass beside it gives: a sweep that
+      // throws will throw again on the next open, and a repair that repeats its
+      // own failure forever is worse than a library whose rungs arrive from
+      // another node.
+      return true;
+    }
+  }, [ready, reload]);
+
   const sweepNullModified = useCallback(async (): Promise<number> => {
     if (!ready) return 0;
     try {
@@ -953,17 +1052,18 @@ export function useLibrary(node: NodeState): LibraryState {
           return false;
         }
         setError(null);
-        // Reload rather than patching the one item: the URI is derived from the
-        // object store, so the grid re-deriving it is the same code path that
-        // produced the placeholder — and there is exactly one of it.
-        await reload();
+        // The one record, re-derived by the code a page is built from. The URI
+        // is derived from the object store and there is exactly one path that
+        // derives it — `refreshItem` runs that path over a single record rather
+        // than over the whole loaded library.
+        await refreshItem(item.record.id);
         return true;
       } catch (err) {
         setError(String(err));
         return false;
       }
     },
-    [ready, reload],
+    [ready, refreshItem],
   );
 
   /**
@@ -1009,11 +1109,12 @@ export function useLibrary(node: NodeState): LibraryState {
           // key, same content hash, same size. No new transport and no new API.
           const ok = await node.fetchBlob(rendition);
           if (ok) {
-            // Reload rather than patching the one item, for the reason
-            // `fetchBlob` gives: the URI is derived from the object store, so
-            // the grid re-deriving it is the same code path that produced the
-            // placeholder, and there is exactly one of it.
-            await reload();
+            // The one record, re-derived by the same code a page is built from
+            // — which is the whole of what `fetchBlob`'s reload was after. A
+            // reload here re-derived the entire loaded library to change one
+            // tile, cost 5.8 s of held JavaScript thread on a Pixel 5, and
+            // restarted the prefetch loop that had asked for these very bytes.
+            await refreshItem(item.record.id);
           }
           return ok;
         });
@@ -1025,7 +1126,7 @@ export function useLibrary(node: NodeState): LibraryState {
         return false;
       }
     },
-    [ready, reload],
+    [ready, refreshItem],
   );
 
   /**
@@ -1167,6 +1268,7 @@ export function useLibrary(node: NodeState): LibraryState {
     backfillDurations,
     backfillExif,
     backfillThumbHashes,
+    deriveRenditions,
     sweepNullModified,
     openMotion,
     fetchBlob,

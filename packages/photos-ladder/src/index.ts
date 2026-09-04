@@ -5,6 +5,7 @@ export {
   applicableStillClasses,
   applicableVideoClasses,
   classForTargetLongEdge,
+  renditionFileName,
   renditionLongEdge,
   topApplicableStillClass,
   transcodeWouldChangeAnything,

@@ -51,6 +51,12 @@ import {
   type ThumbHashBackfillOutcome,
 } from "./media/import";
 import type { ThumbHashEncoder } from "./media/thumb-hash";
+import StarkeepAvif from "../modules/starkeep-avif";
+import {
+  deriveRenditions,
+  type DeriveLadderOutcome,
+  type ImageEncoder,
+} from "./photos/derive-ladder";
 import { createMobileNode, type MobileNode } from "./node";
 import {
   openMotionPhoto,
@@ -640,6 +646,121 @@ export function backfillThumbHashesFor(
       encode: thumbHashFor,
     },
     { limit: options.limit, ...(options.after !== undefined ? { after: options.after } : {}) },
+  );
+}
+
+/**
+ * Decode a photograph once and encode AVIF rungs from it, or null on a build
+ * with no encoder.
+ *
+ * ## The decode is expo-image's, and only the encode is ours
+ *
+ * `Image.loadAsync` hands back an `ImageRef` — on Android a `SharedRef<Drawable>`
+ * over a Glide-decoded bitmap — and bounding it to `maxLongEdge` here is what
+ * makes the ceiling cost nothing: a 12-megapixel original is never held whole,
+ * and every rung below reads the one bitmap. It is also the decoder this app
+ * already trusts to paint every tile, which is the argument `thumbHashFor`
+ * makes: a second decoder is a second thing that can disagree about what a file
+ * contains.
+ *
+ * ## Why the bytes go through the cache directory
+ *
+ * The encoder writes to a path rather than returning bytes across the bridge —
+ * see the module's own header — and the caller needs them in hand to hash them
+ * into a content-addressed key. The cache is the right place for a file whose
+ * whole life is those two steps: it is deleted immediately, and an encode killed
+ * between the write and the delete leaves behind exactly the kind of bytes
+ * {@link cachePath} exists for, which the OS may reclaim whenever it likes.
+ *
+ * ## Every failure is null, and only at the decode
+ *
+ * A camera roll contains files this device cannot read — a RAW original, a
+ * truncated JPEG, an asset the media store has lost since the alias was written
+ * — and none of them is a reason to fail a pass. An encode that fails after a
+ * successful decode is a different matter and is left to throw: it means the
+ * encoder rejected a bitmap it should have taken, which is worth surfacing as
+ * the record's failure rather than silently producing nothing.
+ */
+export const avifEncoder: ImageEncoder | null = ((avif) =>
+  avif === null
+    ? null
+    : (async (uri, maxLongEdge) => {
+        const ref = await Image.loadAsync(uri, {
+          // Both axes, because the cap is on the long edge and the loader does
+          // not know which one that is. It preserves the aspect ratio, so the
+          // pair bounds the larger and leaves the smaller wherever it lands.
+          maxWidth: maxLongEdge,
+          maxHeight: maxLongEdge,
+        }).catch(() => null);
+        if (ref === null) return null;
+        return {
+          async encode(longEdge, quality) {
+            const path = cachePath("starkeep-derive", `${generateId()}.avif`);
+            const file = expoFileSystem.file(path);
+            try {
+              const result = await avif.encodeAsync(ref, path, longEdge, quality);
+              // Read back rather than trusted from the result, which reports a
+              // length and not the bytes. The dimensions do come from the
+              // encoder, because it is what applied the cap.
+              return { bytes: file.bytesSync(), width: result.width, height: result.height };
+            } finally {
+              try {
+                file.delete();
+              } catch {
+                // The bytes are already in hand or already lost, and either way
+                // this is a cache file. Failing a rendition over it would be the
+                // wrong trade.
+              }
+            }
+          },
+          release() {
+            ref.release();
+          },
+        };
+        // Bound once rather than read per call, because TypeScript cannot see
+        // that a module-level null check still holds inside a closure — and the
+        // alternative, a non-null assertion at the call site, would be the same
+        // claim with nothing checking it.
+      }) satisfies ImageEncoder)(StarkeepAvif);
+
+/**
+ * Make the rungs this device's own photographs are missing.
+ *
+ * Resolves null when this node cannot derive at all — no camera roll to walk, or
+ * a build with no encoder in it. Null rather than an empty outcome because the
+ * two mean different things to the tick: an outcome of zero is a pass that found
+ * nothing to do, and null is a device that will never find anything.
+ *
+ * Runs in the background window, where the job graph places it. The pass is
+ * bounded by its page and stops between records on the signal, so a window that
+ * closes mid-page costs the record in flight and nothing else.
+ */
+export function deriveRenditionsFor(
+  node: MobileNode,
+  clock: HLCClock,
+  options: {
+    readonly maxRecords?: number;
+    readonly signal?: { readonly aborted: boolean };
+  } = {},
+): Promise<DeriveLadderOutcome | null> {
+  if (!node.mediaAliases || !node.derivationCursor || avifEncoder === null) {
+    return Promise.resolve(null);
+  }
+  return deriveRenditions(
+    {
+      aliases: node.mediaAliases,
+      database: node.databaseAdapter,
+      objectStorage: node.objectStorage,
+      cursor: node.derivationCursor,
+      clock,
+      hash: sha256Bytes,
+      encode: avifEncoder,
+      noteDerived: (record) => node.noteDerived(record),
+    },
+    {
+      ...(options.maxRecords !== undefined ? { maxRecords: options.maxRecords } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
   );
 }
 

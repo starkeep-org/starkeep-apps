@@ -53,7 +53,11 @@ import type { DataRecord } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
 import { createSqliteMotionIndexStore, type MotionIndexStore } from "./media/motion-index";
-import { createSqliteScanCursorStore } from "./work/scan-cursor";
+import {
+  createSqliteScanCursorStore,
+  DERIVATION_CURSOR_TABLE,
+  type ScanCursorStore,
+} from "./work/scan-cursor";
 import {
   createSqliteImportCursorStore,
   VIDEO_DURATION_CURSOR_TABLE,
@@ -210,6 +214,18 @@ export interface MobileNode {
    */
   readonly videoDurationCursor: ImportCursorStore | null;
   /**
+   * How far the derivation sweep has walked this device's own originals, or
+   * null when this node reads no camera roll.
+   *
+   * Persisted rather than held in a window, and that is the whole reason it
+   * exists: a background window derives a handful of records, and a sweep that
+   * restarted at the beginning of the alias table each time would re-read the
+   * same pages forever and never reach the records at the far end. The
+   * acquisition scan's cursor makes the same argument about the same problem;
+   * this is a second table of the same shape. See `work/scan-cursor.ts`.
+   */
+  readonly derivationCursor: ScanCursorStore | null;
+  /**
    * Where the video inside a Motion Photo is, or null when this node reads no
    * camera roll.
    *
@@ -346,6 +362,24 @@ export interface MobileNode {
    */
   fetchBlob(record: DataRecord): Promise<boolean>;
   /**
+   * Charge a budget for bytes this node produced itself.
+   *
+   * Every other route into local storage is a transfer, and a transfer accounts
+   * for itself — `SyncEngine` calls `onLanded` on arrival. Derivation is the
+   * first route that is not: the rendition pass encodes bytes, writes them, and
+   * would leave them invisible to every budget. `reclaimSpace` names that state
+   * precisely — `unknownKeys`, bytes on disk no line describes — and expects the
+   * count to be zero, which is only true if the producer says so.
+   *
+   * Call it **after** the record and its rendition label are written. The class
+   * is resolved from the record's labels, so charging any earlier resolves every
+   * rung this device makes as an original and puts it in the wrong budget line.
+   *
+   * A no-op on a node with no retention policy, which is a node with no budget
+   * to be over.
+   */
+  noteDerived(record: DataRecord): Promise<void>;
+  /**
    * Free space: reconcile what this node believes it holds against what it
    * actually holds, then run an eviction pass over every class and namespace
    * that is over budget.
@@ -479,6 +513,14 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         table: VIDEO_DURATION_CURSOR_TABLE,
       })
     : null;
+  // Built on the same condition as the alias table, because the sweep it
+  // positions walks that table. See `MobileNode.derivationCursor`.
+  const derivationCursor = options.deviceMedia
+    ? createSqliteScanCursorStore({
+        db: databaseAdapter.getRawDatabase(),
+        table: DERIVATION_CURSOR_TABLE,
+      })
+    : null;
   // Built on the same condition, because import is the only writer and import
   // is what a camera roll makes possible. See `media/motion-index.ts`.
   const motionIndex = options.deviceMedia
@@ -596,6 +638,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     mediaAliases,
     importCursor,
     videoDurationCursor,
+    derivationCursor,
     motionIndex,
     engine,
     residency,
@@ -683,19 +726,56 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         },
       );
     },
+    async noteDerived(record) {
+      if (!residency) return;
+      const candidate = {
+        recordId: record.id,
+        objectStorageKey: record.objectStorageKey,
+        sizeBytes: record.sizeBytes,
+        type: record.type,
+        parentId: record.parentId,
+        appId: null,
+        originAppId: record.originAppId,
+        // Both null, and both honestly so. These bytes have no capture date of
+        // their own — `recencyInputs` walks to the parent for a rendition's,
+        // which is exactly what it does for a synced one — and nobody has opened
+        // them: they exist because a background pass made them, not because
+        // somebody looked at the photograph.
+        recencyAtMs: null,
+        lastOpenedAtMs: null,
+      };
+      // Resolved from the record's labels, which is why the caller writes them
+      // first. A rung charged without its class lands in the originals line, and
+      // an originals line holding renditions is a budget that describes nothing.
+      const sizeClass = await residency.classOf(candidate);
+      await residency.noteArrival(candidate, {
+        decision: "fetch",
+        sizeClass,
+        // The nearest true thing the vocabulary has: these bytes are here
+        // because something outside the policy put them here, not because the
+        // policy chose to fetch them. `SyncEngine.fetchBlob` reports the same
+        // value for the same reason.
+        reason: "explicit-request",
+      });
+    },
+
     async reclaimSpace() {
       if (!residency) return [];
       // Reconcile first, always. See the doc comment: a pass run against a
       // stale index works to a target it may already have passed.
       //
-      // `unknownKeys` are bytes on disk that no budget knows about — a rendition
-      // some future derivation pass wrote, anything that arrived by a route
-      // other than a sync pull. They are *reported* and not adopted, because
-      // charging them to a budget means resolving which class they belong to,
-      // and that needs the record row. Logged rather than silently dropped: on
-      // this build the expected count is zero, and a non-zero one is worth
-      // knowing about before it becomes a budget that no longer describes the
-      // disk.
+      // `unknownKeys` are bytes on disk that no budget knows about — anything
+      // that arrived by a route other than a sync pull. They are *reported* and
+      // not adopted, because charging them to a budget means resolving which
+      // class they belong to, and that needs the record row. Logged rather than
+      // silently dropped: the expected count is zero, and a non-zero one is
+      // worth knowing about before it becomes a budget that no longer describes
+      // the disk.
+      //
+      // The derivation pass is the one producer that could make it non-zero, and
+      // it accounts for itself — see {@link MobileNode.noteDerived}. A count that
+      // climbs with the number of rungs this device has made is that call having
+      // been skipped.
       try {
         const report = await residency.reconcile();
         if (report.corrected > 0 || report.unknownKeys.length > 0) {

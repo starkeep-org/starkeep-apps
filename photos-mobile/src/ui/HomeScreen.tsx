@@ -301,6 +301,16 @@ export function HomeScreen({
   const exifBackfilled = useRef(false);
   /** Same, for the placeholder every record paints before its bytes resolve. */
   const thumbHashesBackfilled = useRef(false);
+  /**
+   * Same, for the rungs this device makes for its own photographs.
+   *
+   * The one flag here that a completed pass does not settle for good. The others
+   * repair a fact about a record that was already imported, so "nothing left"
+   * stays true; a derivation sweep that reaches the end of the roll is only
+   * current until the next photograph is taken. Its own cursor resets on
+   * completion, so a later app open walks again. See `photos/derive-ladder.ts`.
+   */
+  const renditionsDerived = useRef(false);
 
   /**
    * Run a sync, from a tap or from a foreground catch-up.
@@ -483,6 +493,20 @@ export function HomeScreen({
         thumbHashesBackfilled.current = await library.backfillThumbHashes();
       }
 
+      // The rungs this device's own camera roll needs, which is what makes its
+      // grid legible without another node's help. Last of the four, and for the
+      // reason the ThumbHash pass gives about the two above it: this improves
+      // what a tile paints, and where a tile *sits* is the worse thing to have
+      // wrong.
+      //
+      // Run here and not only in the background window, because the window
+      // cannot carry it. Ninety seconds, shared with import and sync, six or
+      // seven times a day, is a handful of records — against a camera roll with
+      // thousands. See `DERIVE_RECORDS_PER_OPEN`.
+      if (plan.import && !renditionsDerived.current) {
+        renditionsDerived.current = await library.deriveRenditions();
+      }
+
       // The assets the import watermark can never reach. Run on every catch-up
       // rather than once per launch, because the pass costs ten media-store
       // probes and a screenshot taken while the app is open would otherwise wait
@@ -630,7 +654,7 @@ export function HomeScreen({
     onOpened: library.noteOpened,
     onOpenMotion: library.openMotion,
     onClosed: library.reclaimAfterViewing,
-  });
+  }, library.items);
 
   /**
    * Whether the node already holds a device asset, for the device grid's marks.
@@ -1135,7 +1159,14 @@ export function HomeScreen({
         windowSize={5}
         initialNumToRender={7}
         maxToRenderPerBatch={6}
-        removeClippedSubviews
+        // **No `removeClippedSubviews`.** It detaches an item's native views
+        // while the item stays mounted, which on Android is the second half of
+        // the blank rectangle somebody sees scrolling back over pictures they
+        // were just looking at — the first half being a tile that had to be
+        // decoded again, which `cachePolicy="memory-disk"` now answers.
+        // `windowSize` already bounds how many rows are resident, and it bounds
+        // it by unmounting, which releases the bitmaps rather than orphaning
+        // them.
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

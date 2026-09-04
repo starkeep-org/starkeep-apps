@@ -159,18 +159,28 @@ describe("the library the UI reads", () => {
     expect(created[0]).toBeGreaterThanOrEqual(created[1]!);
   });
 
-  it("gives every item a URI an Image can render", async () => {
+  it("resolves every imported record back to its camera-roll asset", async () => {
     await importBoth();
     const deps = { database: phone.databaseAdapter, objectStorage: phone.objectStorage, aliases: phone.mediaAliases };
 
     const page = await listLibrary(deps, { limit: 10 });
 
-    // This is what makes a tile show a picture: the alias resolves the record
-    // straight back to the camera-roll asset holding its bytes.
-    expect(page.items.map((i) => i.uri).sort()).toEqual([URI_A, URI_B]);
+    // The alias resolving the record straight back to the asset holding its
+    // bytes, which is the whole of what import buys without copying anything.
+    //
+    // Asserted through `bytesHere` and the object store rather than through
+    // `uri`, because those are now different questions. `uri` names a rendition
+    // and these records have none, so a tile paints its ThumbHash — see
+    // `library.ts`'s header for why the list refuses the original.
+    expect(page.items.every((i) => i.bytesHere)).toBe(true);
+    expect(page.items.every((i) => i.uri === null)).toBe(true);
+    const resolved = page.items
+      .map((i) => phone.objectStorage.localFileUriFor!(i.record.objectStorageKey!))
+      .sort();
+    expect(resolved).toEqual([URI_A, URI_B]);
   });
 
-  it("reports no URI for a record whose bytes are not on this device", async () => {
+  it("reports no bytes for a record whose asset is not on this device", async () => {
     const { records } = await importBoth();
     // Drop the alias, as a stale one would be dropped: the record survives, its
     // bytes do not. A placeholder tile, not an error.
@@ -181,7 +191,13 @@ describe("the library the UI reads", () => {
       { limit: 10 },
     );
 
-    expect(page.items.filter((i) => i.uri === null)).toHaveLength(1);
+    // `bytesHere` rather than `uri`, and the swap is the point: both records
+    // paint nothing on the list, so `uri` no longer distinguishes them. What
+    // separates a record this device can still open from one it cannot is
+    // whether its bytes are here, and that is the field the viewer and the fetch
+    // control both read.
+    expect(page.items.filter((i) => !i.bytesHere)).toHaveLength(1);
+    expect(page.items.filter((i) => i.bytesHere)).toHaveLength(1);
   });
 
   it("summarises what the node holds and what the media store holds for it", async () => {

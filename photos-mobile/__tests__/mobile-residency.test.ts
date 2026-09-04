@@ -268,9 +268,15 @@ describe("fetching back a declined photo", () => {
     expect(await phone.objectStorage.has(record.objectStorageKey!)).toBe(true);
   });
 
-  it("makes the tile renderable, which is the point of fetching it", async () => {
-    // The user-visible half. A fetch that lands bytes the grid still cannot
-    // name is a fetch that changed nothing anyone can see.
+  it("makes the record openable, which is the point of fetching it", async () => {
+    // The user-visible half. A fetch that lands bytes nothing can name is a
+    // fetch that changed nothing anyone can see.
+    //
+    // Asserted on `bytesHere` rather than on `uri`, because the list stopped
+    // painting originals: fetching an original back gives the viewer a
+    // photograph and gives the tile nothing, which is the intended shape. `uri`
+    // moves here only for a fetched *rendition*, and this case fetches the
+    // original.
     const record = await seedCloud(10 * KB);
     phone = await startPhone(declineEverything);
     await phone.sync();
@@ -281,12 +287,13 @@ describe("fetching back a declined photo", () => {
       aliases: phone.mediaAliases,
     };
     const before = await listLibrary(deps, { limit: 10 });
-    expect(before.items[0]!.uri, "an elided record has no picture yet").toBeNull();
+    expect(before.items[0]!.bytesHere, "an elided record has no bytes yet").toBe(false);
+    expect(before.items[0]!.uri).toBeNull();
 
     await phone.fetchBlob((await phone.databaseAdapter.get(record.id))!);
 
     const after = await listLibrary(deps, { limit: 10 });
-    expect(after.items[0]!.uri).not.toBeNull();
+    expect(after.items[0]!.bytesHere).toBe(true);
   });
 
   it("says no, rather than throwing, on a phone with no cloud", async () => {

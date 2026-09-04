@@ -120,24 +120,33 @@ describe("playbackUri", () => {
     const page = await listLibrary(deps(), { limit: 10 });
 
     expect(page.items[0]!.playbackUri).toBeNull();
-    expect(page.items[0]!.uri).not.toBeNull();
+    // `uri` is null too, and for an unrelated reason: the list paints rungs and
+    // this record has none. The pair being null together is what makes the two
+    // fields worth asserting separately — see `bytesHere`, which is true.
+    expect(page.items[0]!.bytesHere).toBe(true);
   });
 
-  it("paints a video with no poster from its own bytes, and still plays it", async () => {
-    // Settled on a handset, 2026-09-02: `expo-image` decodes a video's first
-    // frame, so a clip whose bytes are here has a picture like any still. This
-    // used to be null, which is what drew a black square in the library grid
-    // beside a device tile of the same file that showed a frame.
+  it("paints no video with no poster, and still plays it", async () => {
+    // **A knowing loss, recorded here so it cannot be mistaken for the bug it
+    // replaced.** `expo-image` does decode a video's first frame — settled on a
+    // handset 2026-09-02 — and the list used to show one. It stopped when the
+    // list stopped painting originals, because that frame comes out of
+    // `MediaMetadataRetriever` and is the most expensive decode on the surface.
+    //
+    // The consequence is sharper for a clip than for a still: this device
+    // derives no video rungs at all, so a phone-only library's clips paint their
+    // ThumbHash until a poster arrives by sync, where a still is derived within
+    // seconds of being looked at.
+    //
+    // Playback is untouched, which is the assertion that matters most here — a
+    // tile that paints nothing must still open and play.
     await seed("video/mp4");
 
     const item = (await listLibrary(deps(), { limit: 10 })).items[0]!;
 
-    expect(item.uri).not.toBeNull();
+    expect(item.uri).toBeNull();
     expect(item.bytesHere).toBe(true);
     expect(item.playbackUri).not.toBeNull();
-    // Still two questions, not one: the tile paints the record's own bytes and
-    // the player opens them, but a poster rendition would change only the first.
-    expect(item.uri).toBe(item.playbackUri);
   });
 });
 

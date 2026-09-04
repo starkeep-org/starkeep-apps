@@ -15,15 +15,30 @@
  * straight back to the `content://` asset via the alias. The picture on screen
  * is the same picture; what changed is which question produced it.
  *
- * ## What a tile paints
+ * ## What a tile paints, and what it will not
  *
- * A rendition when one exists, and the record's own bytes when none does.
+ * **A rendition, or the ThumbHash. Never the original.** A tile with no resident
+ * rung paints its ~25-byte placeholder and waits.
  *
- * Falling back to the original is right on a phone in a way it is not in a
- * browser: the bytes are already on the device, because this node imported them
- * from its own camera roll, so there is no download to avoid — only a decode.
- * What the rendition buys here is the decode, and 40 megapixels decoded into a
- * 180 px tile is a real cost even with the file sitting locally.
+ * The list used to fall back to the record's own bytes, on the argument that the
+ * original is already on the device so there is no download to avoid — only a
+ * decode. The argument was sound about *cost of access* and wrong about *cost*:
+ * the decode is the whole expense on this surface. A justified row is thirty
+ * boxes a couple of hundred points wide, and filling one from a 12-megapixel
+ * camera-roll JPEG is the work the entire ladder exists to make unnecessary. A
+ * grid doing it thirty times a screen, again on every scroll, is the app's
+ * largest self-inflicted cost, and it was invisible precisely because it looked
+ * correct — every tile painted a picture.
+ *
+ * It also hid the real defect. A record with no rungs is a record nothing has
+ * derived, and painting the original made that state indistinguishable from a
+ * derived library. The placeholder makes it visible, and
+ * `deriveForRecord` is what answers it — see `photos/derive-ladder.ts`.
+ *
+ * **The viewer keeps the fallback**, and the asymmetry is deliberate rather than
+ * an omission: there is one of it, somebody is looking at it, and it is the one
+ * surface where the original's pixels are worth their decode. See
+ * {@link resolveForViewer}.
  *
  * Which rendition is Photos' question, answered above the platform in
  * `photos/renditions.ts`. Nothing in this file names a size class.
@@ -80,17 +95,23 @@ export interface LibraryDeps {
 export interface LibraryItem {
   readonly record: DataRecord;
   /**
-   * A URI an `<Image>` can render, or null when this device holds no bytes to
-   * render from.
+   * A URI an `<Image>` can render, or null when no rendition's bytes are here.
    *
-   * Null is a real and expected state, not an error: it means the record's blob
-   * is elided or still owed and no rendition stands in for it. A grid that
-   * treated that as a failure would report the working case of a budgeted phone
-   * as broken.
+   * **On the list this names a rendition and nothing else**, so null is the
+   * ordinary state of a record nothing has derived yet, as well as of one whose
+   * rungs are elided or still owed. A grid that treated it as a failure would
+   * report the working case of a phone that has just imported its camera roll as
+   * broken; what it actually calls for is the ThumbHash and a derivation. See
+   * this file's header.
    *
-   * A video is not one of the null cases. `expo-image` paints a video's first
-   * frame, so a clip whose bytes are here has a picture like any still — see the
-   * settled note beside the assignment below.
+   * {@link resolveForViewer} widens it to the record's own bytes, which is why
+   * this is `string | null` on one shape serving two surfaces.
+   *
+   * A video is a null case on the list like any other record, and more often
+   * than most: its poster is a `sharp` node's rung and this device derives no
+   * video renditions at all, so a clip on a phone-only library paints its
+   * placeholder until one arrives. The alternative was decoding a frame out of
+   * the original per tile per scroll, which is the cost this surface refuses.
    */
   readonly uri: string | null;
   /**
@@ -356,24 +377,26 @@ export async function resolveLibraryItems(
     // The rendition when its bytes are actually here — which is what `paint`
     // means, and why nothing here re-checks residency. A record whose ideal
     // rung is known but not yet fetched paints the largest resident rung below
-    // it, and if there is none it paints its own original when that is here
-    // and its ThumbHash when it is not.
+    // it, and if there is none it paints its ThumbHash.
     const renditionUri = resolved?.paint
       ? (deps.objectStorage.localFileUriFor?.(resolved.paint.objectStorageKey) ?? null)
       : null;
     const ownUri = uriFor(deps.objectStorage, record);
-    // A video falls back to its own bytes exactly like a still does, because
-    // `expo-image` paints a video's first frame.
+    // A video is treated exactly like a still here, which since the list
+    // stopped painting originals means it paints a rung or a placeholder.
     //
-    // **Settled on a handset, 2026-09-02.** This line used to null the URI
-    // for every video, on the claim that handing one to an `<Image>` paints
-    // nothing. The claim was false, and `ui/MediaGrid.tsx` was the standing
-    // counter-example the whole time: the device grid hands exactly such a
-    // URI to the same `expo-image` and has always drawn frames. Under
-    // Android, `expo-image` is Glide, and Glide decodes a frame from a local
-    // video through `MediaMetadataRetriever` — it sniffs the source rather
-    // than trusting a file extension, which is what makes an extensionless
-    // synced blob work as well as a camera-roll `content://` asset.
+    // **This is a real loss and it is taken knowingly.** `expo-image` does paint
+    // a video's first frame — settled on a handset 2026-09-02, and
+    // `ui/MediaGrid.tsx` is the standing demonstration — so a clip whose bytes
+    // are here *could* show a picture. It is not free: under Android that frame
+    // comes out of `MediaMetadataRetriever`, which is a decode of the original
+    // and the most expensive one on the surface. And unlike a still, nothing on
+    // this device will ever replace it, because the poster rungs are a `sharp`
+    // node's work and `derive-ladder.ts` makes stills only.
+    //
+    // So a phone-only library's clips paint their ThumbHash until a poster
+    // arrives by sync. Exempting videos is one `isVideo ? ownUri : null` away if
+    // that reads worse than the cost it avoids.
     const isVideo = typeCategory(record.type) === "video";
     const row = metadataFor(record);
     const duration = row?.["duration_ms"];
@@ -381,17 +404,20 @@ export async function resolveLibraryItems(
     const dims = dimensionsOf(record);
     return {
       record,
-      // **The original is deliberately still in this list, and it is the one
-      // step the plan's paint rule does not have.** The rule says: the ideal
-      // rung, else the largest resident rung below it, else the ThumbHash. On
-      // a phone there is a fourth thing, and it is better than both fallbacks:
-      // the full-size file, sitting in the camera roll this node imported it
-      // from. There is no download to avoid — only a decode — so painting it
-      // beats painting a placeholder for a picture the device already holds.
+      // **The rungs, or nothing.** The rule is the plan's, unextended: the ideal
+      // rung, else the largest resident rung below it, else the ThumbHash.
       //
-      // It is last, after both rungs, because the decode is what the rungs
-      // exist to avoid.
-      uri: renditionUri ?? ownUri,
+      // This used to end `?? ownUri`, painting the camera-roll original when no
+      // rung was resident. That is the decode the ladder exists to remove, and
+      // on a grid it is paid per tile per scroll — see this file's header. A
+      // record with no resident rung now paints its placeholder, which is both
+      // cheaper and more honest: it says the rungs are not here yet, which is a
+      // state something can act on.
+      //
+      // `ownUri` is still computed, because {@link LibraryItem.bytesHere} and
+      // {@link LibraryItem.playbackUri} are different questions with different
+      // answers, and both still need it.
+      uri: renditionUri,
       bytesHere: ownUri !== null,
       // The record's own bytes, never the rendition's: a poster is a still and
       // a player handed one plays nothing. `localFileUriFor` already covers
@@ -509,14 +535,18 @@ export async function resolveForViewer(
 
   return {
     ...item,
-    // The same order the tile uses, and the rungs still come before the
-    // original — which is the one thing that might look backwards here, since
-    // the original is the better picture. It is not what the viewer is choosing
-    // between: `image-medium` and above are visually indistinguishable at this
-    // size and cost a fraction of the decode, and a 40-megapixel original
-    // decoded on a phone is seconds of blank screen. The original stays as the
-    // answer when no rung is resident, which on this device's own camera roll is
-    // most of the time.
+    // **The one surface that still falls back to the original**, and the
+    // asymmetry with the list is the point rather than an inconsistency. The
+    // list refuses this decode because it pays it thirty times a screen and
+    // again on every scroll; the viewer pays it once, for a photograph somebody
+    // has deliberately opened, and a blurred placeholder there is a worse answer
+    // than a slow one.
+    //
+    // The rungs still come first, which is the part that might look backwards
+    // since the original is the better picture. It is not what the viewer is
+    // choosing between: `image-medium` and above are visually indistinguishable
+    // at this size and cost a fraction of the decode, and a 40-megapixel
+    // original decoded on a phone is seconds of blank screen.
     uri: renditionUri ?? ownUri,
     bytesHere: ownUri !== null,
     playbackUri: typeCategory(record.type) === "video" ? ownUri : null,

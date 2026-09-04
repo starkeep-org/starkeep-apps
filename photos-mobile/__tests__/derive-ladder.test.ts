@@ -46,6 +46,7 @@ import {
   type ScanCursorStore,
 } from "../src/work/scan-cursor";
 import {
+  deriveForRecord,
   derivePage,
   deriveRenditions,
   DERIVE_PAGE_LIMIT,
@@ -565,5 +566,126 @@ describe("what a failure costs", () => {
     // Both, including the one that threw. A bitmap of up to the ceiling on a
     // side left for the garbage collector is a phone holding several at once.
     expect(released).toBe(2);
+  });
+});
+
+/**
+ * Deriving one named record, because a surface is showing it.
+ *
+ * The sweep's counterpart, and the reason it exists is that the sweep walks
+ * `object_storage_key` — a content hash — so the records it reaches bear no
+ * relation to the ones on screen. Everything about *which* rungs get made is
+ * shared with the sweep and asserted above; what is worth asserting here is the
+ * set of things this refuses, because it is reachable per tile and every refusal
+ * bounds what a scroll can cost or corrupt.
+ */
+describe("deriving one record on demand", () => {
+  it("makes every rung the record is missing", async () => {
+    const parent = await importOriginal();
+    const encoder = fakeEncoder();
+
+    const written = await deriveForRecord(deps(encoder.encode), parent);
+
+    expect(written).toBe(3);
+    expect([...(await rungsOf(parent)).keys()].sort()).toEqual([
+      "image-medium",
+      "image-thumb",
+      "image-xsmall",
+    ]);
+  });
+
+  it("decodes nothing for a record whose rungs already exist", async () => {
+    const parent = await importOriginal();
+    await derivePage(deps(fakeEncoder().encode), { limit: 10 });
+
+    const encoder = fakeEncoder();
+    const written = await deriveForRecord(deps(encoder.encode), parent);
+
+    // Zero and not null: there is nothing to do, which is different from there
+    // being nothing this device could ever do. The caller reads the first as
+    // "fetch instead" and the second as "stop asking".
+    expect(written).toBe(0);
+    expect(encoder.decoded).toEqual([]);
+  });
+
+  it("refuses a record this device did not import", async () => {
+    // **The rule that keeps derivation ownership where the sweep puts it.** A
+    // record that arrived by sync has no alias, so its bytes are not this
+    // device's to decode even when a fetch has landed them — the node holding
+    // the original pays. Reachable per tile, so stated as a refusal rather than
+    // left to the walk that would never have offered it.
+    const parent = await importOriginal();
+    aliases.remove(parent.objectStorageKey!);
+
+    const encoder = fakeEncoder();
+    const written = await deriveForRecord(deps(encoder.encode), parent);
+
+    expect(written).toBeNull();
+    expect(encoder.decoded).toEqual([]);
+  });
+
+  it("refuses a rung that already has a record, rather than minting a second", async () => {
+    // **The expensive mistake this branch could make.** A rung derived on
+    // another node and synced down as a row has bytes to *fetch*; re-encoding it
+    // here produces different bytes, a different content hash and therefore a
+    // second record for the same rung of the same photograph. The bytes being
+    // absent locally is exactly the state that makes it tempting.
+    const parent = await importOriginal();
+    await derivePage(deps(fakeEncoder().encode), { limit: 10 });
+    const rungs = await rungsOf(parent);
+    for (const rung of rungs.values()) await objectStorage.delete(rung.objectStorageKey!);
+
+    const encoder = fakeEncoder();
+    const written = await deriveForRecord(deps(encoder.encode), parent);
+
+    expect(written).toBe(0);
+    expect(encoder.decoded).toEqual([]);
+    expect((await rungsOf(parent)).size).toBe(3);
+  });
+
+  it("refuses a video, whose poster is a frame extraction rather than an encode", async () => {
+    const clip = await importOriginal({ type: "video/mp4" });
+
+    const encoder = fakeEncoder();
+
+    expect(await deriveForRecord(deps(encoder.encode), clip)).toBeNull();
+    expect(encoder.decoded).toEqual([]);
+  });
+
+  it("refuses a record with no stored dimensions rather than guessing them", async () => {
+    // No applicable set can be computed without a source long edge, and a guess
+    // would derive the wrong rungs for every panorama and every screenshot.
+    // The population shrinks on its own: the EXIF backfill writes them.
+    const parent = await importOriginal({ dimensions: false });
+
+    const encoder = fakeEncoder();
+
+    expect(await deriveForRecord(deps(encoder.encode), parent)).toBeNull();
+    expect(encoder.decoded).toEqual([]);
+  });
+
+  it("answers null for a photograph this device cannot decode", async () => {
+    const parent = await importOriginal();
+    const alias = aliases.ofRecord(parent.id)[0]!;
+    const encoder = fakeEncoder({ undecodable: new Set([alias.contentUri]) });
+
+    expect(await deriveForRecord(deps(encoder.encode), parent)).toBeNull();
+    expect((await rungsOf(parent)).size).toBe(0);
+  });
+
+  it("charges the rungs it makes to the budget, exactly as the sweep does", async () => {
+    // The one thing a second producer of local bytes can silently get wrong.
+    // Uncharged bytes are `reclaimSpace`'s `unknownKeys`, whose expected count
+    // is zero, and a count that climbs with the rungs a device made is this call
+    // having been skipped on one of the two paths.
+    const parent = await importOriginal();
+    const charged: string[] = [];
+
+    await deriveForRecord(
+      deps(fakeEncoder().encode, { noteDerived: async (r) => void charged.push(r.id) }),
+      parent,
+    );
+
+    expect(charged).toHaveLength(3);
   });
 });

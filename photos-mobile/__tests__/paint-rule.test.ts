@@ -227,21 +227,31 @@ describe("what a tile paints", () => {
 
     expect(item.paintedRendition).not.toBe(medium.id);
     expect(item.paintedRendition).not.toBe(screen.id);
-    // Nothing below the ideal is resident either, so the tile falls through to
-    // the original — which is here, and is the right answer on a phone.
+    // Nothing below the ideal is resident either, so the tile paints its
+    // placeholder — and notably *not* the original, which is right here. The
+    // list refuses that decode; see `library.ts`'s header.
     expect(item.paintedRendition).toBeNull();
-    expect(item.uri).toBe(uriOf(parent));
+    expect(item.uri).toBeNull();
+    expect(item.bytesHere).toBe(true);
     expect(item.missingRendition).toBe(thumb.id);
   });
 
-  it("falls through to the original when no rung is resident", async () => {
+  it("paints no picture when no rung is resident, even holding the original", async () => {
+    // **The case the list's rule is entirely about.** The original is on this
+    // device and the tile still refuses it: filling a 200 pt box from a
+    // 12-megapixel camera-roll JPEG is the decode the ladder exists to remove,
+    // and a grid pays it per tile per scroll.
+    //
+    // `bytesHere` stays true, because "can this device show the full-size file"
+    // and "what does this tile paint" are different questions — the viewer and
+    // the fetch control both read the first one.
     const parent = await seedParent({ bytesHere: true });
     await seedRendition(parent, 640, { resident: false });
 
     const item = await tile();
 
     expect(item.paintedRendition).toBeNull();
-    expect(item.uri).toBe(uriOf(parent));
+    expect(item.uri).toBeNull();
     expect(item.bytesHere).toBe(true);
   });
 
@@ -261,21 +271,32 @@ describe("what a tile paints", () => {
 
   it("asks for nothing when the ideal rung has never been derived", async () => {
     // No rendition records at all — this device's own camera roll before
-    // anything has derived a ladder. There is nothing to fetch, because the
+    // anything has derived a ladder. There is nothing to *fetch*, because a
     // fetch moves bytes and does not commission work.
+    //
+    // This exact shape — nothing painted, nothing missing, the bytes here — is
+    // what `use-library`'s page effect reads as "derive this one now", and it
+    // is the state that made the grid decode originals for as long as nothing
+    // acted on it. See `deriveForRecord`.
     const parent = await seedParent({ bytesHere: true });
 
     const item = await tile();
 
     expect(item.missingRendition).toBeNull();
     expect(item.paintedRendition).toBeNull();
-    expect(item.uri).toBe(uriOf(parent));
+    expect(item.uri).toBeNull();
+    expect(item.bytesHere).toBe(true);
   });
 
   it("resolves nothing at all when no grid geometry is given", async () => {
-    // What a caller asking for the full-size original passes. Resolving against
-    // an unmeasured container would pin every record on the page to the bottom
-    // rung.
+    // Resolving against an unmeasured container would pin every record on the
+    // page to the bottom rung, so a caller with no geometry gets no resolution.
+    //
+    // It now also gets no picture, which is the honest consequence rather than a
+    // regression: a caller that has not said how big its boxes are cannot be
+    // handed the original as a consolation, because the original is precisely
+    // what this surface refuses. Every production caller passes a geometry —
+    // `gridGeometry()` reads the window, which is never zero.
     const parent = await seedParent({ bytesHere: true });
     await seedRendition(parent, 640, { resident: true });
 
@@ -283,7 +304,8 @@ describe("what a tile paints", () => {
 
     expect(page.items[0]!.paintedRendition).toBeNull();
     expect(page.items[0]!.missingRendition).toBeNull();
-    expect(page.items[0]!.uri).toBe(uriOf(parent));
+    expect(page.items[0]!.uri).toBeNull();
+    expect(page.items[0]!.bytesHere).toBe(true);
   });
 });
 

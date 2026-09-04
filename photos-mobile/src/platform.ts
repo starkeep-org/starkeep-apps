@@ -53,7 +53,9 @@ import {
 import type { ThumbHashEncoder } from "./media/thumb-hash";
 import StarkeepAvif from "../modules/starkeep-avif";
 import {
+  deriveForRecord,
   deriveRenditions,
+  type DeriveLadderDeps,
   type DeriveLadderOutcome,
   type ImageEncoder,
 } from "./photos/derive-ladder";
@@ -743,25 +745,61 @@ export function deriveRenditionsFor(
     readonly signal?: { readonly aborted: boolean };
   } = {},
 ): Promise<DeriveLadderOutcome | null> {
-  if (!node.mediaAliases || !node.derivationCursor || avifEncoder === null) {
-    return Promise.resolve(null);
-  }
+  if (!node.derivationCursor) return Promise.resolve(null);
+  const deps = deriveDepsFor(node, clock);
+  if (deps === null) return Promise.resolve(null);
   return deriveRenditions(
-    {
-      aliases: node.mediaAliases,
-      database: node.databaseAdapter,
-      objectStorage: node.objectStorage,
-      cursor: node.derivationCursor,
-      clock,
-      hash: sha256Bytes,
-      encode: avifEncoder,
-      noteDerived: (record) => node.noteDerived(record),
-    },
+    { ...deps, cursor: node.derivationCursor },
     {
       ...(options.maxRecords !== undefined ? { maxRecords: options.maxRecords } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     },
   );
+}
+
+/**
+ * Make the rungs one record is missing, because a surface is showing it.
+ *
+ * The targeted counterpart to {@link deriveRenditionsFor}, and the same null
+ * contract: a device with no camera roll or no encoder in the binary answers
+ * null and the caller stops asking. See `deriveForRecord` for the three things
+ * it refuses and why re-encoding an existing rung is the one that would do
+ * damage.
+ *
+ * Deliberately takes no signal. One record is one decode and at most three
+ * encodes, on a foreground surface, with somebody waiting for exactly this
+ * picture — there is no window to give back.
+ */
+export function deriveRecordFor(
+  node: MobileNode,
+  clock: HLCClock,
+  record: DataRecord,
+): Promise<number | null> {
+  const deps = deriveDepsFor(node, clock);
+  if (deps === null) return Promise.resolve(null);
+  return deriveForRecord(deps, record);
+}
+
+/**
+ * What both derivation entry points need, or null on a device that cannot.
+ *
+ * One place rather than two, because the pair differ only in which records they
+ * walk: everything below — the encoder, the hash, where the bytes land, which
+ * budget they are charged to — is the same wiring, and two copies of it is how
+ * a rung derived by one path ends up uncharged or unlabelled relative to the
+ * other.
+ */
+function deriveDepsFor(node: MobileNode, clock: HLCClock): DeriveLadderDeps | null {
+  if (!node.mediaAliases || avifEncoder === null) return null;
+  return {
+    aliases: node.mediaAliases,
+    database: node.databaseAdapter,
+    objectStorage: node.objectStorage,
+    clock,
+    hash: sha256Bytes,
+    encode: avifEncoder,
+    noteDerived: (record) => node.noteDerived(record),
+  };
 }
 
 /**

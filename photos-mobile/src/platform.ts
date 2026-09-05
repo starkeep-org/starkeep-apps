@@ -769,15 +769,23 @@ export function deriveRenditionsFor(
  * Deliberately takes no signal. One record is one decode and at most three
  * encodes, on a foreground surface, with somebody waiting for exactly this
  * picture — there is no window to give back.
+ *
+ * `ceilingLongEdge` is the largest rung to make, and omitting it keeps the
+ * sweep's default. The viewer passes the rung its stage actually needs, which is
+ * how a phone comes to make `image-screen` for the one photograph on screen
+ * without volunteering to make it for sixty thousand others.
  */
 export function deriveRecordFor(
   node: MobileNode,
   clock: HLCClock,
   record: DataRecord,
+  ceilingLongEdge?: number,
 ): Promise<number | null> {
   const deps = deriveDepsFor(node, clock);
   if (deps === null) return Promise.resolve(null);
-  return deriveForRecord(deps, record);
+  return ceilingLongEdge === undefined
+    ? deriveForRecord(deps, record)
+    : deriveForRecord(deps, record, ceilingLongEdge);
 }
 
 /**

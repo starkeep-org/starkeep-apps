@@ -13,13 +13,28 @@
  *
  * ## What it will not do
  *
- * **Nothing above `image-medium`.** See {@link MOBILE_DERIVE_CEILING_LONG_EDGE}.
+ * **Nothing above `image-medium` in the sweep.** See
+ * {@link MOBILE_DERIVE_CEILING_LONG_EDGE}. The ceiling is now an argument rather
+ * than a constant this file reads, because it bounds a *budget* and a sweep and
+ * an open have different ones — {@link deriveForRecord} is where that is argued.
  *
- * **Nothing to the archive gate.** A record whose original exceeds the ceiling
- * still has missing rungs, so `ladderIsComplete` stays false and the original
- * stays out of deep archive until a node running `sharp` finishes the ladder.
- * That safety falls out of the existing rule rather than being asserted here,
- * and this pass deliberately adds no assertion of its own.
+ * **Nothing to the archive gate.** This pass never asserts it — the gate is
+ * asserted by a node running Photos' web derivation, against the rungs a record
+ * actually has. A ladder this device completes is a ladder that is complete, so
+ * there is nothing here for the gate to be told and nothing about it to guard.
+ *
+ * Raising the ceiling does mean a phone can now complete a ladder a `sharp` node
+ * used to have to finish. That changes which node does the work and not what the
+ * gate is told: both encoders are libavif over aom at the same quality and the
+ * same 4:2:0 chroma, so a rung is a rung whoever made it.
+ *
+ * **Nothing derived from a rendition.** The source is always an original whose
+ * bytes are on this device, reached through the media alias — which is also what
+ * keeps this pass to one rule about where bytes come from rather than two. The
+ * case a rendition source would serve barely exists: the ladder is a contiguous
+ * prefix, so a device holding a rung *above* the one it wants has almost always
+ * had the one it wants derived alongside it. See
+ * `renditions-duplicate-rungs-2026-09-05.md`.
  *
  * **Nothing to a video.** A poster is a frame extraction and a skim is a
  * transcode; neither is an AVIF encode of a decoded still, so neither belongs in
@@ -82,12 +97,21 @@ import type { ScanCursorStore } from "../work/scan-cursor";
 import { PHOTOS_APP_ID, PHOTOS_RENDITION_KEY } from "./renditions";
 
 /**
- * The largest rung this device will produce.
+ * The largest rung a background sweep will produce.
  *
  * `image-medium` — the rung on-device models read, the viewer's first stage, and
  * the share and export default. Above it are 2560 and 4272, which are a real CPU
  * cost for pixels a phone screen cannot show, and they remain the work of a node
- * running `sharp`.
+ * running `sharp` *for a sweep*.
+ *
+ * ## Why this is a default and not a limit
+ *
+ * The number bounds a decode, and a decode's cost has to be weighed against what
+ * it is for. Decoding an original at 2560 holds roughly 20 MB of bitmap in
+ * native memory while the encode runs. That is unaffordable four records at a
+ * time in a background window over a whole camera roll, and affordable once for
+ * the photograph somebody is looking at. So the two callers pass different
+ * values, and {@link deriveForRecord} takes it as an argument.
  *
  * Expressed as a long edge read off the ladder rather than as a literal or a
  * list of class names, so respecifying the ladder carries the ceiling with it.
@@ -396,13 +420,28 @@ export async function derivePage(
     // them inline. Or it already has every rung this device makes.
     const missing =
       record && sourceLongEdge > 0
-        ? missingClasses(sourceLongEdge, existing.get(record.id) ?? [])
+        ? missingClasses(
+            sourceLongEdge,
+            existing.get(record.id) ?? [],
+            // The sweep keeps the standing ceiling. It runs over a whole camera
+            // roll on a background window's budget, which is the case the
+            // ceiling was written for — see `deriveForRecord` for the one
+            // caller that raises it.
+            MOBILE_DERIVE_CEILING_LONG_EDGE,
+          )
         : [];
 
     if (record && missing.length > 0) {
       scanned += 1;
       try {
-        const rungs = await deriveOne(deps, record, alias.contentUri, sourceLongEdge, missing);
+        const rungs = await deriveOne(
+          deps,
+          record,
+          alias.contentUri,
+          sourceLongEdge,
+          missing,
+          MOBILE_DERIVE_CEILING_LONG_EDGE,
+        );
         // Null is a photograph this device could not read at all, and it is
         // counted with the throws rather than with the successes: both are a
         // record that paid its turn and produced nothing, and a pass reporting
@@ -463,6 +502,23 @@ export async function derivePage(
  * a **second record for the same rung of the same photograph**. An evicted rung
  * is the same case. Both want `fetchBlob`, not this.
  *
+ * It is also what makes this pass unable to cycle with the fetch it defers to.
+ * Counting records means an evicted rung and a duplicated rung both read as
+ * present, so no amount of eviction pressure can make this device derive a class
+ * it has already derived once — there is no derive/fetch/evict/derive loop to
+ * fall into.
+ *
+ * ## The ceiling is the caller's, and this is the caller that raises it
+ *
+ * `ceilingLongEdge` defaults to {@link MOBILE_DERIVE_CEILING_LONG_EDGE}, which is
+ * the sweep's budget. The viewer passes the rung it actually needs instead.
+ *
+ * The distinction the argument draws is between a background pass over a whole
+ * camera roll and one record somebody has deliberately opened. The first cannot
+ * afford a 20 MB bitmap four times a window; the second pays it once, for a
+ * photograph that is on screen, and the alternative is a fetch over the network
+ * for pixels that are already in the camera roll.
+ *
  * **Nothing for a video, and nothing without stored dimensions.** The first
  * because a poster is a frame extraction rather than an encode of a decoded
  * still; the second because there is no applicable set to compute, which is
@@ -486,6 +542,7 @@ export async function derivePage(
 export async function deriveForRecord(
   deps: DeriveLadderDeps,
   record: DataRecord,
+  ceilingLongEdge: number = MOBILE_DERIVE_CEILING_LONG_EDGE,
 ): Promise<number | null> {
   if (typeCategory(record.type) !== "image") return null;
 
@@ -502,10 +559,14 @@ export async function deriveForRecord(
   if (sourceLongEdge <= 0) return null;
 
   const existing = await loadVariantCandidatesForPage(deps.database, [record], RENDITION_LABEL);
-  const missing = missingClasses(sourceLongEdge, existing.get(record.id) ?? []);
+  const missing = missingClasses(
+    sourceLongEdge,
+    existing.get(record.id) ?? [],
+    ceilingLongEdge,
+  );
   if (missing.length === 0) return 0;
 
-  return deriveOne(deps, record, alias.contentUri, sourceLongEdge, missing);
+  return deriveOne(deps, record, alias.contentUri, sourceLongEdge, missing, ceilingLongEdge);
 }
 
 /**
@@ -522,6 +583,7 @@ export async function deriveForRecord(
 function missingClasses(
   sourceLongEdge: number,
   candidates: readonly { labelValue: string; width: number | null; height: number | null }[],
+  ceilingLongEdge: number,
 ): StillClassSpec[] {
   const have = new Set(
     candidates
@@ -529,7 +591,7 @@ function missingClasses(
       .map((c) => c.labelValue),
   );
   return applicableStillClasses(sourceLongEdge)
-    .filter((spec) => spec.maxLongEdge <= MOBILE_DERIVE_CEILING_LONG_EDGE)
+    .filter((spec) => spec.maxLongEdge <= ceilingLongEdge)
     .filter((spec) => !have.has(spec.sizeClass));
 }
 
@@ -548,8 +610,9 @@ async function deriveOne(
   uri: string,
   sourceLongEdge: number,
   missing: readonly StillClassSpec[],
+  ceilingLongEdge: number,
 ): Promise<number | null> {
-  const decoded = await deps.encode(uri, MOBILE_DERIVE_CEILING_LONG_EDGE);
+  const decoded = await deps.encode(uri, ceilingLongEdge);
   if (decoded === null) return null;
 
   let written = 0;

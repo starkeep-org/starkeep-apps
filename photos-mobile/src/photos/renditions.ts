@@ -193,16 +193,30 @@ export async function resolveLibraryRenditions(
     const paintId = painted?.available ? painted.id : undefined;
     const key = paintId ? keyById.get(paintId) : undefined;
 
+    // **The question is whether the ideal rung is here, not whether one
+    // particular record is.** Two nodes encoding one class produce different
+    // bytes — `avif-coder` against `sharp` — so a class can hold two records,
+    // and a node holding the copy the tiebreak does not prefer holds the pixels
+    // all the same. Testing residency of `known.ideal.id` would send this
+    // device to the network for a rung it can already paint.
+    //
+    // Long edges compared rather than `here.ideal.available` alone. For a record
+    // with stored dimensions the two are equivalent, because both passes compute
+    // the ideal from the applicable ladder rather than from the candidates they
+    // were handed. A record *without* them takes `resolveWithoutDimensions`,
+    // which picks its ideal out of the candidate set — so the resident pass can
+    // return a genuinely smaller rung marked available, and the comparison is
+    // what keeps that fetch alive.
+    const idealIsHere =
+      here.ideal.available && here.ideal.longEdge >= known.ideal.longEdge;
     // The ideal from the *known* pass, because that is the one that can name a
     // record the resident pass has never seen. An ideal with no id is a rung
     // nothing has derived yet, and there is nothing to fetch until something
     // does — the fetch this drives moves bytes, it does not commission work.
     const missingIdeal =
-      !known.ideal.available || !known.ideal.id
+      idealIsHere || !known.ideal.available || !known.ideal.id
         ? null
-        : options.isResident(keyById.get(known.ideal.id) ?? "")
-          ? null
-          : (known.ideal.id as StarkeepId);
+        : (known.ideal.id as StarkeepId);
 
     out.set(record.id, {
       paint: paintId && key ? { id: paintId as StarkeepId, objectStorageKey: key } : null,

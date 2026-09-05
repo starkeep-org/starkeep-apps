@@ -38,6 +38,7 @@ import {
 } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, type ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { listLibrary, resolveForViewer, type LibraryDeps } from "../src/library";
+import { viewerStageBox } from "../src/photos/render-target";
 
 const clock = createHLCClock({ nodeId: "phone" });
 
@@ -64,7 +65,18 @@ const SOURCE = { width: 4272, height: 2848 };
 // more honest fixture — these cases assert that *this* geometry lands on *that*
 // rung, and one that moved with the theme would assert nothing.
 const GRID = { targetRowHeight: 120, containerWidth: 350, devicePixelRatio: 3 };
-const SCREEN = { width: 390, height: 844 };
+const WINDOW = { width: 390, height: 844 };
+/** A gesture bar and a status bar, as `useSafeAreaInsets` would report them. */
+const INSETS = { top: 24, bottom: 34, left: 0, right: 0 };
+/**
+ * The box the viewer gives the photograph, through the real arithmetic.
+ *
+ * Computed rather than restated, because the whole point of `viewerStageBox` is
+ * that the layout and the rendition request read one number — a fixture that
+ * restated it would be a third copy, and would go on passing after the two that
+ * matter had drifted apart.
+ */
+const STAGE = viewerStageBox(WINDOW, INSETS);
 
 let database: MockDatabaseAdapter;
 let held: Set<string>;
@@ -317,7 +329,7 @@ describe("the viewer wants a bigger rung than the tile", () => {
 
     const item = await tile();
     const opened = await resolveForViewer(deps(), item, {
-      screen: SCREEN,
+      stage: STAGE,
       devicePixelRatio: 3,
     });
 
@@ -327,10 +339,10 @@ describe("the viewer wants a bigger rung than the tile", () => {
     // showed a 640-pixel rendition.
     //
     // 1280 rather than the top of the ladder, and the arithmetic is worth
-    // stating because it is the plan's own table: a 390x844 screen less 160
-    // points of chrome is 684 points of height, a 3:2 photograph fits that on
-    // its width at 390 points, and 390 at 3x is 1170 physical pixels — which
-    // snaps up to 1280.
+    // stating: a 390x844 window less 58 points of system insets less the
+    // footer's stated 240 leaves a 390x546 stage, a landscape photograph fits
+    // that on its width at 390 points, and 390 at 3x is 1170 physical pixels —
+    // which snaps up to 1280.
     expect(item.paintedRendition).toBe(thumb.id);
     expect(opened.paintedRendition).toBe(medium.id);
     expect(opened.uri).toBe(uriOf(medium));
@@ -348,7 +360,7 @@ describe("the viewer wants a bigger rung than the tile", () => {
     const screen = await seedRendition(portrait, 2560, { resident: true });
 
     const opened = await resolveForViewer(deps(), await tile(), {
-      screen: SCREEN,
+      stage: STAGE,
       devicePixelRatio: 3,
     });
 
@@ -365,7 +377,7 @@ describe("the viewer wants a bigger rung than the tile", () => {
 
     const item = await tile();
     const opened = await resolveForViewer(deps(), item, {
-      screen: SCREEN,
+      stage: STAGE,
       devicePixelRatio: 3,
     });
 
@@ -384,7 +396,7 @@ describe("the viewer wants a bigger rung than the tile", () => {
     await seedRendition(parent, 1280, { resident: true });
 
     const opened = await resolveForViewer(deps(), await tile(), {
-      screen: SCREEN,
+      stage: STAGE,
       devicePixelRatio: 3,
     });
 
@@ -423,5 +435,98 @@ describe("orientation", () => {
     const item = await tile();
 
     expect(item.aspect).toBeCloseTo(SOURCE.height / SOURCE.width, 6);
+  });
+});
+
+/**
+ * A rung with two records, and what this device asks the network for.
+ *
+ * Two nodes encoding one class produce different bytes — `avif-coder` against
+ * `sharp` — so a class can hold two records under two content-addressed ids.
+ * Both are legal: the uniqueness key carries the content hash. Resolution
+ * prefers the lower id, and a device holding only the *other* copy holds the
+ * pixels all the same.
+ *
+ * The rule under test is that `missingRendition` asks whether the ideal **rung**
+ * is here, not whether one particular record is. Asking the narrower question
+ * sends the phone to the network for a picture it can already paint — once per
+ * viewer open, because the viewer fetches unconditionally by design.
+ *
+ * See `renditions-duplicate-rungs-2026-09-05.md`.
+ */
+describe("a rung that two nodes derived", () => {
+  it("asks for nothing when the copy on this device is the one not preferred", async () => {
+    const parent = await seedParent({ bytesHere: true });
+    // Both at the viewer's ideal rung, neither resident yet. Ids are hashes, so
+    // which one resolution prefers is not predictable from seed order — and the
+    // case worth testing is the specific one where the *preferred* copy is the
+    // absent one, so the resident copy is chosen after the fact.
+    const a = await seedRendition(parent, 1280, { resident: false });
+    const b = await seedRendition(parent, 1280, { resident: false });
+    const preferred = a.id < b.id ? a : b;
+    const other = a.id < b.id ? b : a;
+    held.add(other.objectStorageKey!);
+
+    const opened = await resolveForViewer(deps(), await tile(), {
+      stage: STAGE,
+      devicePixelRatio: 3,
+    });
+
+    // The pixels are here. Asking whether *`preferred`'s* bytes are resident —
+    // which is the narrower question this replaced — would send the phone to the
+    // network for a picture it is already painting.
+    expect(opened.missingRendition).toBeNull();
+    expect(opened.paintedRendition).toBe(other.id);
+    expect(opened.uri).toBe(uriOf(other));
+    expect(preferred.id).not.toBe(other.id);
+  });
+
+  it("prefers the lower id when both copies are on this device", async () => {
+    const parent = await seedParent({ bytesHere: true });
+    const a = await seedRendition(parent, 1280, { resident: true });
+    const b = await seedRendition(parent, 1280, { resident: true });
+    const lower = a.id < b.id ? a : b;
+
+    const opened = await resolveForViewer(deps(), await tile(), {
+      stage: STAGE,
+      devicePixelRatio: 3,
+    });
+
+    // Stability is what this buys, and it is what the viewer's layered upgrade
+    // needs: a pick that moved with row order would re-key the `<Image>` and
+    // re-decode for no change in resolution.
+    expect(opened.paintedRendition).toBe(lower.id);
+    expect(opened.missingRendition).toBeNull();
+  });
+
+  it("still asks when neither copy's bytes are here", async () => {
+    // The suppression is about holding the pixels, not about holding two rows.
+    const parent = await seedParent({ bytesHere: false });
+    await seedRendition(parent, 1280, { resident: false });
+    await seedRendition(parent, 1280, { resident: false });
+
+    const opened = await resolveForViewer(deps(), await tile(), {
+      stage: STAGE,
+      devicePixelRatio: 3,
+    });
+
+    expect(opened.missingRendition).not.toBeNull();
+  });
+
+  it("still asks when what is resident is a smaller rung than the ideal", async () => {
+    // The guard against over-suppressing. A resident rung *below* the ideal is a
+    // fallback to paint meanwhile, never a reason to stop asking — which is the
+    // regression a bare "is anything resident" test would introduce.
+    const parent = await seedParent({ bytesHere: false });
+    const thumb = await seedRendition(parent, 640, { resident: true });
+    const medium = await seedRendition(parent, 1280, { resident: false });
+
+    const opened = await resolveForViewer(deps(), await tile(), {
+      stage: STAGE,
+      devicePixelRatio: 3,
+    });
+
+    expect(opened.paintedRendition).toBe(thumb.id);
+    expect(opened.missingRendition).toBe(medium.id);
   });
 });

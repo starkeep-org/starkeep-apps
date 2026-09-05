@@ -163,16 +163,60 @@ export function gridTileTarget(
 }
 
 /**
- * Vertical room the viewer's chrome takes out of the screen, in layout points.
+ * The height the viewer's footer is given, in layout points.
  *
- * The phone's counterpart to `photo-viewer.tsx`'s `CHROME_ALLOWANCE_PX`, and a
- * different number for a different chrome: this viewer draws a caption block and
- * a row of controls under the photograph rather than a browser's toolbar over
- * it. Wrong here is wrong twice — the photograph is laid out too large and sized
- * too large — which is why correcting the constant is the fix rather than
- * measuring around it.
+ * ## Why a stated height rather than a measurement
+ *
+ * This replaces `VIEWER_CHROME_ALLOWANCE`, which was a guess at what the footer
+ * would render as — 160 points against a footer that actually drew at roughly
+ * 200 to 250. Wrong there was wrong twice: the photograph was laid out too large
+ * *and* sized too large, because the layout and the rendition request read the
+ * same number.
+ *
+ * Measuring the footer instead would fix the second and make the first worse. A
+ * footer whose height is whatever its controls happen to need changes height
+ * when a control appears, and the motion control appears a second after the
+ * viewer opens — so the stage would resize under a picture already on screen,
+ * and `expo-image` reissues its whole load whenever the view it draws into
+ * changes size. One late control would cost a second full-screen decode.
+ *
+ * So the height is decided here instead. The footer is given exactly this much,
+ * every control it can show is laid out inside it, and a control that is absent
+ * leaves its space empty rather than collapsing it. Nothing below the stage can
+ * then change the stage.
+ *
+ * The number wants checking on a handset against a record offering motion, a
+ * fetch and a pin note at once, and at a large font scale. See the plan's list
+ * of what it does not settle.
  */
-export const VIEWER_CHROME_ALLOWANCE = 160;
+export const VIEWER_FOOTER_HEIGHT = 240;
+
+/**
+ * The box the viewer gives the photograph, in layout points.
+ *
+ * One computation, read by both the style sheet and {@link viewerTarget}, which
+ * is the whole point of it being a function: the layout and the request have to
+ * agree about how much room the photograph gets, and the old arrangement had one
+ * of them measuring and the other guessing.
+ *
+ * The insets are the system's — the status bar, the gesture bar, a cutout — and
+ * come from `useSafeAreaInsets()`, which is a real measurement this code should
+ * be reading rather than folding into a constant. The footer is this app's own
+ * content and nothing can measure it in advance, so {@link VIEWER_FOOTER_HEIGHT}
+ * decides it.
+ *
+ * A rotation changes the window and therefore this, which is the only thing that
+ * should resize the stage.
+ */
+export function viewerStageBox(
+  window: Dimensions,
+  insets: { readonly top: number; readonly bottom: number; readonly left: number; readonly right: number },
+): Dimensions {
+  return {
+    width: Math.max(0, window.width - insets.left - insets.right),
+    height: Math.max(0, window.height - insets.top - insets.bottom - VIEWER_FOOTER_HEIGHT),
+  };
+}
 
 /**
  * The pixel long edge the full-screen viewer wants, or null.
@@ -188,23 +232,24 @@ export const VIEWER_CHROME_ALLOWANCE = 160;
  *
  * ## The stage
  *
- * The screen less {@link VIEWER_CHROME_ALLOWANCE}, then bounded by the
- * photograph's own shape — `min(availableWidth, availableHeight × aspect)`, with
- * the height falling out of the aspect. That is `stageBox` in `photo-viewer.tsx`
- * restated for this screen, and it has to match what the viewer's style sheet
- * does, or the layout and the request disagree about how much room the photo
- * gets.
+ * Handed in rather than computed, and that is the change that makes this
+ * honest: {@link viewerStageBox} is the one arithmetic, and the style sheet
+ * lays the stage out from the same call. The constant that used to stand in for
+ * the chrome was a guess the layout never had to agree with.
+ *
+ * Within that box the photograph is bounded by its own shape —
+ * `min(stage.width, stage.height × aspect)`, with the height falling out of the
+ * aspect. That is `stageBox` in `photo-viewer.tsx` restated for this screen.
  */
 export function viewerTarget(
-  screen: Dimensions,
+  stage: Dimensions,
   source: Dimensions | null,
   orientation: number | null,
   devicePixelRatio: number,
 ): number | null {
-  const availableHeight = screen.height - VIEWER_CHROME_ALLOWANCE;
-  if (availableHeight <= 0 || screen.width <= 0) return null;
+  if (stage.height <= 0 || stage.width <= 0) return null;
   const aspect = displayedAspect(source, orientation);
-  const width = Math.min(screen.width, availableHeight * aspect);
+  const width = Math.min(stage.width, stage.height * aspect);
   return snap(
     measuredPhysicalLongEdge({
       source,

@@ -51,7 +51,7 @@ import {
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
 import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth } from "./theme";
-import { viewerTarget, type GridGeometry } from "../photos/render-target";
+import { type Dimensions as Box, type GridGeometry } from "../photos/render-target";
 import {
   createInFlight,
   RENDITION_DERIVE_CONCURRENCY,
@@ -533,7 +533,18 @@ export interface LibraryState {
    * Deduplicated per record and capped, on its own pool rather than the fetch
    * pool — a decode and three encodes must not be able to starve a download.
    */
-  deriveNow: (item: LibraryItem) => Promise<boolean>;
+  deriveNow: (
+    item: LibraryItem,
+    surface: RenditionSurface,
+    /**
+     * The largest rung to make, defaulting to the sweep's ceiling.
+     *
+     * The viewer passes what its stage needs, which is how one photograph comes
+     * to get an `image-screen` a background pass would never spend the memory
+     * on. See `MOBILE_DERIVE_CEILING_LONG_EDGE`.
+     */
+    ceilingLongEdge?: number,
+  ) => Promise<boolean>;
   /**
    * The item as the viewer should paint it, resolved at the viewer's own size.
    *
@@ -542,7 +553,7 @@ export interface LibraryState {
    * the item it was opened with, and nothing else would tell it otherwise. See
    * `resolveForViewer`.
    */
-  openForViewer: (item: LibraryItem) => Promise<LibraryItem>;
+  openForViewer: (item: LibraryItem, stage: Box) => Promise<LibraryItem>;
   /**
    * Run an eviction pass, because a viewing burst just ended.
    *
@@ -1164,25 +1175,39 @@ export function useLibrary(node: NodeState): LibraryState {
   const derivations = useRef(createInFlight({ limit: RENDITION_DERIVE_CONCURRENCY }));
 
   const deriveNow = useCallback(
-    async (item: LibraryItem): Promise<boolean> => {
+    async (
+      item: LibraryItem,
+      surface: RenditionSurface,
+      ceilingLongEdge?: number,
+    ): Promise<boolean> => {
       if (!ready) return false;
       const node = ready.node;
       const clock = ready.clock;
-      // Nothing to make. The tile is already painting a rung, so the work is at
-      // worst a marginal improvement and at best none — and this is the most
-      // expensive call in the app to make for a marginal improvement.
-      if (item.paintedRendition !== null) return false;
+      // **The tile's rule, and the only difference between the two surfaces.**
+      // A tile already painting a rung is showing a picture, and the step up to
+      // the ideal is not worth the most expensive call in the app during a
+      // scroll. The viewer asks anyway: there is one of it, somebody opened it
+      // deliberately, and the rung it wants is usually one the sweep's ceiling
+      // forbids — so refusing here is what used to leave a full screen painting
+      // a 640 px tile rung with a 12-megapixel original sitting in the camera
+      // roll, waiting on a network round trip for pixels already on the device.
+      if (surface === "tile" && item.paintedRendition !== null) return false;
       // A rung exists somewhere and its bytes do not. That is a fetch, and
       // deriving here would mint a second record for the same rung — see
-      // `deriveForRecord`.
+      // `deriveForRecord`. True for both surfaces: the viewer may raise the
+      // ceiling, and may not re-encode a class that already has a record.
       if (item.missingRendition !== null) return false;
       // Nothing on this device to decode. Checked here as well as inside
       // `deriveForRecord` so the ordinary synced record costs no query at all.
       if (!item.bytesHere) return false;
 
       try {
-        return await derivations.current.run(item.record.id, async () => {
-          const written = await deriveRecordFor(node, clock, item.record);
+        // Keyed on the ceiling as well as the record. The two surfaces ask for
+        // genuinely different work on one photograph — the sweep's rungs and the
+        // stage's — and collapsing them onto one key would make the viewer's
+        // request resolve to whatever the grid had already queued.
+        return await derivations.current.run(`${item.record.id}:${ceilingLongEdge ?? ""}`, async () => {
+          const written = await deriveRecordFor(node, clock, item.record, ceilingLongEdge);
           if (written === null || written === 0) return false;
           // The one record, through the same code a page is built from. A
           // reload here would re-resolve every loaded tile to change this one,
@@ -1212,12 +1237,16 @@ export function useLibrary(node: NodeState): LibraryState {
    * just tapped.
    */
   const openForViewer = useCallback(
-    async (item: LibraryItem): Promise<LibraryItem> => {
+    async (item: LibraryItem, stage: Box): Promise<LibraryItem> => {
       if (!ready) return item;
-      const screen = Dimensions.get("window");
       try {
         return await resolveForViewer(depsFor(ready), item, {
-          screen: { width: screen.width, height: screen.height },
+          // The viewer's own box, handed in by the surface that lays it out.
+          // Read from `Dimensions.get("window")` here until the stage became a
+          // stated number, which meant this asked about a screen while the
+          // style sheet laid out a stage and the two disagreed by the height of
+          // the footer.
+          stage,
           devicePixelRatio: PixelRatio.get(),
         });
       } catch (err) {
@@ -1308,7 +1337,7 @@ export function useLibrary(node: NodeState): LibraryState {
         if (item.missingRendition === null) {
           if (attempted.current.has(item.record.id)) continue;
           attempted.current.add(item.record.id);
-          await deriveNow(item);
+          await deriveNow(item, "tile");
           continue;
         }
 

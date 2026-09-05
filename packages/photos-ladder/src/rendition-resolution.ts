@@ -148,7 +148,23 @@ export function resolveRendition(
   if (idealIndex === -1) idealIndex = applicable.length - 1;
   const idealEdge = edges[idealIndex]!;
 
-  const byEdge = [...options.candidates].sort((a, b) => a.longEdge - b.longEdge);
+  // Sorted by long edge, then by id — the same rule and the same reason as
+  // `resolveVariant` in `@starkeep/protocol-primitives`, which this file
+  // otherwise leaves to state it. Two candidates can share a long edge two
+  // ways: a clamped ladder, where a class stopped at the source's own edge, and
+  // a duplicated rung, where two nodes encoded one class and their encoders
+  // disagreed about the bytes. The second is the ordinary case rather than the
+  // exotic one — a phone runs `avif-coder` and a machine runs `sharp`, so the
+  // same rung of the same photograph content-addresses to two records.
+  //
+  // Ids are content-addressed, so the lowest is the same value on every node.
+  // What that buys is a *stable* pick rather than a uniform one: a surface
+  // holding both copies paints the same one on every render, which is what the
+  // viewer's layered upgrade needs, and it is the record a cleanup pass keeping
+  // the lowest id would keep.
+  const byEdge = [...options.candidates].sort(
+    (a, b) => a.longEdge - b.longEdge || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
   const idealChild = byEdge.find((c) => c.longEdge === idealEdge);
   if (idealChild) return { ideal: availableEntry(idealChild) };
 
@@ -158,11 +174,14 @@ export function resolveRendition(
     state: options.unavailableState ?? "pending",
   };
 
-  // Strictly below, and the largest such. Ties on long edge cannot happen
-  // between two *applicable* rungs above the bottom, but a clamped ladder can
-  // produce them, and taking the last of a sorted run is a defined choice.
+  // Strictly below, and the largest such — then the lowest id within it, which
+  // is the same tiebreak the ideal takes above. Reading the last element of the
+  // sorted run would take the *highest* id instead, so the fallback and the
+  // ideal would disagree about which duplicate they prefer.
   const below = byEdge.filter((c) => c.longEdge < idealEdge);
-  const fallback = below[below.length - 1];
+  const fallbackEdge = below.length > 0 ? below[below.length - 1]!.longEdge : null;
+  const fallback =
+    fallbackEdge === null ? undefined : below.find((c) => c.longEdge === fallbackEdge);
   return fallback ? { ideal, fallback: availableEntry(fallback) } : { ideal };
 }
 
@@ -199,7 +218,10 @@ export function resolveWithoutDimensions(
   candidates: readonly DerivedChild[],
   unavailableState: RenditionState = "pending",
 ): Record<string, RenditionChoice> {
-  const byEdge = [...candidates].sort((a, b) => a.longEdge - b.longEdge);
+  // The same (longEdge, id) order the measured path uses, for the same reason.
+  const byEdge = [...candidates].sort(
+    (a, b) => a.longEdge - b.longEdge || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
   const out: Record<string, RenditionChoice> = {};
   if (byEdge.length === 0) {
     for (const target of targets) {

@@ -14,13 +14,18 @@ import { describe, it, expect } from "vitest";
 import {
   gridTileTarget,
   tileBox,
-  VIEWER_CHROME_ALLOWANCE,
+  VIEWER_FOOTER_HEIGHT,
+  viewerStageBox,
   viewerTarget,
 } from "../src/photos/render-target";
 
 /** A 390-point phone at 3x, less the content padding `theme.ts` owns. */
 const GRID = { targetRowHeight: 120, containerWidth: 350, devicePixelRatio: 3 };
-const SCREEN = { width: 390, height: 844 };
+const WINDOW = { width: 390, height: 844 };
+/** A gesture bar and a status bar, as `useSafeAreaInsets` would report them. */
+const INSETS = { top: 24, bottom: 34, left: 0, right: 0 };
+/** The box the photograph gets, through the arithmetic the style sheet uses. */
+const STAGE = viewerStageBox(WINDOW, INSETS);
 
 const LANDSCAPE = { width: 4272, height: 2848 };
 const PORTRAIT = { width: 2848, height: 4272 };
@@ -96,37 +101,66 @@ describe("what a tile asks for", () => {
   });
 });
 
+describe("the box the viewer lays the photograph out in", () => {
+  it("takes the system insets and the footer out of the window", () => {
+    // The arithmetic itself, because it is the one number the style sheet and
+    // the rendition request both read. A constant standing in for both halves
+    // is what it replaced, and that constant was wrong by 40 to 90 points.
+    expect(STAGE).toEqual({
+      width: 390,
+      height: 844 - 24 - 34 - VIEWER_FOOTER_HEIGHT,
+    });
+  });
+
+  it("floors at zero rather than going negative", () => {
+    // A window shorter than its own chrome is not a real device, but a stage of
+    // negative height would resolve a target from a nonsense box rather than
+    // refusing. `viewerTarget` reads zero as "no room", which is the honest
+    // answer.
+    const tiny = viewerStageBox({ width: 390, height: 100 }, INSETS);
+    expect(tiny.height).toBe(0);
+    expect(viewerTarget(tiny, LANDSCAPE, null, 3)).toBeNull();
+  });
+
+  it("gives a landscape window a wider, shorter stage", () => {
+    // A rotation is the one event that should resize the stage, and this is what
+    // it does to it.
+    const rotated = viewerStageBox({ width: 844, height: 390 }, INSETS);
+    expect(rotated.width).toBeGreaterThan(rotated.height);
+  });
+});
+
 describe("what the viewer asks for", () => {
   it("asks for more than the tile does for the same photograph", () => {
     const tile = gridTileTarget(LANDSCAPE, null, GRID);
-    const stage = viewerTarget(SCREEN, LANDSCAPE, null, 3);
+    const stage = viewerTarget(STAGE, LANDSCAPE, null, 3);
 
     // The assertion the plan names: the viewer's target exceeds the tile's for
     // the same record on the same device. It used to request nothing at all.
     expect(stage).toBeGreaterThan(tile!);
-    // 844 less 160 of chrome is 684 points of height; a 3:2 photograph fits that
-    // on its width at 390 points, and 390 at 3x is 1170 pixels — the 1280 rung.
+    // A 390x546 stage; a 3:2 photograph fits it on its width at 390 points, and
+    // 390 at 3x is 1170 pixels — the 1280 rung.
     expect(stage).toBe(1280);
   });
 
-  it("asks for a rung more for a portrait, which fills the screen's height", () => {
+  it("asks for a rung more for a portrait, which fills the stage's height", () => {
     // The reason the viewer's target is per record and not per screen. A
     // portrait photograph is drawn nearly twice as large on a phone as a
     // landscape one.
-    expect(viewerTarget(SCREEN, PORTRAIT, null, 3)).toBe(2560);
+    expect(viewerTarget(STAGE, PORTRAIT, null, 3)).toBe(2560);
   });
 
   it("follows the orientation rather than the stored pair", () => {
     // The same bytes as LANDSCAPE, shown upright. It must ask what a portrait
     // asks, not what a landscape asks.
-    expect(viewerTarget(SCREEN, LANDSCAPE, 6, 3)).toBe(
-      viewerTarget(SCREEN, PORTRAIT, null, 3),
+    expect(viewerTarget(STAGE, LANDSCAPE, 6, 3)).toBe(
+      viewerTarget(STAGE, PORTRAIT, null, 3),
     );
   });
 
-  it("resolves nothing on a screen the chrome would leave no room in", () => {
-    expect(viewerTarget({ width: 390, height: VIEWER_CHROME_ALLOWANCE }, LANDSCAPE, null, 3))
-      .toBeNull();
+  it("resolves nothing for a stage with no room in it", () => {
+    expect(viewerTarget({ width: 390, height: 0 }, LANDSCAPE, null, 3)).toBeNull();
+    expect(viewerTarget({ width: 0, height: 546 }, LANDSCAPE, null, 3)).toBeNull();
   });
 
   it("still answers for a photograph nobody has measured", () => {
@@ -134,6 +168,6 @@ describe("what the viewer asks for", () => {
     // shape gives a target rather than nothing, which is what keeps the fetch
     // from being skipped for exactly the records that have had least done to
     // them.
-    expect(viewerTarget(SCREEN, null, null, 3)).not.toBeNull();
+    expect(viewerTarget(STAGE, null, null, 3)).not.toBeNull();
   });
 });

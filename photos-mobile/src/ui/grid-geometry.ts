@@ -18,8 +18,30 @@
  * records a page should hold; `LibraryGrid` turns the row height into rows.
  */
 
-/** The padding the library list carries on each side, in layout points. */
+/**
+ * The padding the list's text carries on each side, in layout points.
+ *
+ * The header, the footer and the empty message, not the grid: the rows run the
+ * full width of the screen. See {@link libraryGridWidth}.
+ */
 export const CONTENT_PADDING = 20;
+
+/**
+ * The width the library rows fill: the whole window.
+ *
+ * The list used to inset the grid by `CONTENT_PADDING` on each side, which cost
+ * 40 points of a 393-point handset — a tenth of the screen spent on a margin,
+ * paid for out of the photographs. The text around the grid still carries that
+ * inset, because a line of prose that starts at the edge is harder to read; a
+ * photograph that reaches the edge is not.
+ *
+ * A function rather than the bare window width at each call site, so the rule
+ * has one place to live and the rendition sizing in `use-library.ts` measures
+ * against the same width the rows are laid out in.
+ */
+export function libraryGridWidth(windowWidth: number): number {
+  return windowWidth;
+}
 
 /** The gap between tiles, in both axes, in layout points. */
 export const GRID_GAP = 2;

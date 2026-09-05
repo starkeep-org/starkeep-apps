@@ -31,6 +31,7 @@ export {
   GRID_COLUMNS,
   GRID_GAP,
   LIBRARY_ROW_HEIGHT,
+  libraryGridWidth,
   TILE_WIDTH_FRACTION,
 } from "./grid-geometry";
 
@@ -89,13 +90,23 @@ export const styles = StyleSheet.create({
    */
   gridRow: { flexDirection: "row", gap: GRID_GAP, marginBottom: GRID_GAP },
   /**
-   * The list's own padding, without `content`'s gap.
+   * The list's own padding, without `content`'s gap and without side padding.
    *
    * `content` separates the screen's sections by 20; applied to a list it would
    * separate every grid row by 20 as well. The sections keep their spacing by
    * carrying it on the header and footer instead.
+   *
+   * Vertical only, because the grid runs the full width of the screen. What
+   * needs the side inset is the text around the grid, which takes it from
+   * `listGutter`.
    */
-  listContent: { padding: CONTENT_PADDING },
+  listContent: { paddingVertical: CONTENT_PADDING },
+  /**
+   * The side inset the list's text carries, now that the list itself does not.
+   *
+   * The header, the footer and the empty message; never a grid row.
+   */
+  listGutter: { paddingHorizontal: CONTENT_PADDING },
   tile: {
     width: `${TILE_WIDTH_FRACTION * 100}%`,
     aspectRatio: 1,

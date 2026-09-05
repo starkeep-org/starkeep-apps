@@ -709,7 +709,9 @@ export function HomeScreen({
    * it — on every scroll frame. An element is reconciled like any other child.
    */
   const header = (
-    <View style={{ gap: 20, marginBottom: 20 }}>
+    // The gutter rides on the header rather than on the list, so the grid below
+    // it runs to both edges of the screen and only the text is inset.
+    <View style={[styles.listGutter, { gap: 20, marginBottom: 20 }]}>
       <View style={{ gap: 4 }}>
         <Text style={styles.title}>Starkeep Photos</Text>
         <Text style={styles.subtitle}>{sessionLabel(session, sessionKnown)}</Text>
@@ -721,7 +723,7 @@ export function HomeScreen({
 
   /** What the grid says when the node holds nothing. */
   const empty = (
-    <Text style={styles.muted}>
+    <Text style={[styles.muted, styles.listGutter]}>
       {library.loading
         ? "Reading this node's library…"
         : "Nothing has been added to this node yet. The photos on this device are still just on this device."}
@@ -730,7 +732,7 @@ export function HomeScreen({
 
   /** Everything below the grid, header's argument applying equally. */
   const footer = (
-    <View style={{ gap: 20, marginTop: 20 }}>
+    <View style={[styles.listGutter, { gap: 20, marginTop: 20 }]}>
       <View style={{ gap: 8 }}>
         {library.loadingMore ? (
           <Text style={styles.muted}>Loading more…</Text>

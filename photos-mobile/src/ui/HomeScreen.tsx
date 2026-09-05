@@ -648,6 +648,7 @@ export function HomeScreen({
   const viewer = useLibraryViewer({
     onFetch: library.fetchBlob,
     onFetchRendition: library.fetchRendition,
+    onDeriveNow: library.deriveNow,
     onOpenForViewer: library.openForViewer,
     onSetPinned: library.setPinned,
     isPinned: library.isPinned,

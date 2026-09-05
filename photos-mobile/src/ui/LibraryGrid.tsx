@@ -53,8 +53,15 @@
  * afterwards. See `media/motion-photo-playback.ts` for why nothing is kept.
  */
 
-import { memo, useCallback, useRef, useState } from "react";
-import { InteractionManager, Pressable, Text, View } from "react-native";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
+import {
+  InteractionManager,
+  Pressable,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 // **`expo-image`, not React Native's `<Image>`, and the reason is a decode.**
 // RN's image pipeline is Fresco, whose AVIF path defers to the platform
 // decoder — and a Pixel 5 on API 34 fails every AVIF still the ladder produces,
@@ -67,7 +74,12 @@ import { InteractionManager, Pressable, Text, View } from "react-native";
 import { Image } from "expo-image";
 import type { LibraryItem } from "../library";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
-import { layOutRows, type JustifiedRow } from "../photos/render-target";
+import {
+  layOutRows,
+  viewerStageBox,
+  type Dimensions as Box,
+  type JustifiedRow,
+} from "../photos/render-target";
 import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth, styles } from "./theme";
 import { MotionBadge } from "./MotionBadge";
 import { VideoBadge } from "./VideoBadge";
@@ -99,14 +111,32 @@ export interface ViewerHost {
     surface: "tile" | "viewer",
   ) => Promise<boolean>;
   /**
+   * Make this record's missing rungs, because a surface cannot paint one.
+   *
+   * The viewer's counterpart to {@link onFetchRendition}, and the distinction is
+   * which node owns the original: a rung that exists somewhere wants bytes
+   * moved, and one nothing has derived wants work commissioned. The ceiling is
+   * the rung this surface needs, which for a full screen is above what a
+   * background sweep will spend the memory on.
+   */
+  readonly onDeriveNow: (
+    item: LibraryItem,
+    surface: "tile" | "viewer",
+    ceilingLongEdge?: number,
+  ) => Promise<boolean>;
+  /**
    * The item as this surface should paint it, resolved for a full screen.
    *
    * The tile's fields were computed against a box a couple of hundred pixels
    * wide, and this screen is five or ten times that. Called again after a fetch
    * lands, which is what stops the open item from going stale. See
    * `resolveForViewer`.
+   *
+   * The stage is passed rather than looked up, because the box the photograph
+   * gets is the viewer's own arithmetic and the request has to be measured
+   * against exactly the box the style sheet lays out. See `viewerStageBox`.
    */
-  readonly onOpenForViewer: (item: LibraryItem) => Promise<LibraryItem>;
+  readonly onOpenForViewer: (item: LibraryItem, stage: Box) => Promise<LibraryItem>;
   /**
    * Keep this record on this device regardless of budget, or stop.
    *
@@ -351,6 +381,7 @@ export function useLibraryViewer(
   {
     onFetch,
     onFetchRendition,
+    onDeriveNow,
     onOpenForViewer,
     onSetPinned,
     isPinned,
@@ -360,6 +391,30 @@ export function useLibraryViewer(
   }: ViewerHost,
   items: readonly LibraryItem[],
 ): { open: (item: LibraryItem) => void; element: React.ReactElement } {
+  /**
+   * The box the photograph gets, computed once and read by two things that must
+   * not disagree: the style sheet that lays the stage out, and the rendition
+   * request measured against it.
+   *
+   * `useWindowDimensions` rather than `Dimensions.get` because a rotation has to
+   * re-render — it is the one event that should resize the stage, and the only
+   * one. The insets are the system's own measurement, which the viewer's
+   * arithmetic used to fold into a constant along with the footer.
+   */
+  const window = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const stage = useMemo(
+    () => viewerStageBox({ width: window.width, height: window.height }, insets),
+    [window.width, window.height, insets],
+  );
+  /**
+   * The stage, readable from a callback that does not rebuild when it changes.
+   *
+   * {@link show} closes over it, and `show` is what a row's `onPress` holds — so
+   * a dependency would re-render every tile in the grid on a rotation.
+   */
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
   const [item, setItem] = useState<LibraryItem | null>(null);
   /** The key currently being fetched, so the control can say so. */
   const [fetching, setFetching] = useState<string | null>(null);
@@ -388,26 +443,42 @@ export function useLibraryViewer(
   const show = useCallback(
     (opened: LibraryItem) => {
       perf("show:enter");
-      onOpened(opened.record.id);
-      // **The rendition too, not only the parent.** Eviction is an LRU over
-      // `last_opened_at_ms`, so a rung painted from disk that nothing ever
-      // records as opened sorts with the never-opened rows — and the pass evicts
-      // the very rendition the grid is drawing from. See
-      // `LibraryItem.paintedRendition`.
-      if (opened.paintedRendition) onOpened(opened.paintedRendition);
-      perf("show:noted");
-      setPinned(isPinned(opened.record.id));
-      perf("show:pinned");
       showing.current = opened.record.id;
-      // Opened on the tile's answer first, and improved a moment later. The
-      // resolve is a database round trip, and a viewer that waited for one would
-      // show a black screen for the length of it — where the tile's picture is
-      // already decoded and already correct, just smaller than it could be.
+      // **The picture first, and the bookkeeping after it.** Opened on the
+      // tile's answer, which is already decoded and already correct — just
+      // smaller than it could be — and improved a moment later. The resolve is a
+      // database round trip, and a viewer that waited for one would show a black
+      // screen for the length of it.
       setItem(opened);
+      // Reset synchronously so the previous record's star does not survive into
+      // this one's frame. The real answer arrives with the deferred lookup
+      // below; `false` for one frame is the same state the modal's fade used to
+      // cover.
+      setPinned(false);
       perf("show:setItem");
 
+      // **Three database writes and a lookup that used to run in front of the
+      // first paint.** None has a reader in the frame it was blocking: the two
+      // `onOpened` calls feed an eviction order, and `isPinned` fills in a
+      // control nobody is looking at yet. So they go after the interaction,
+      // which is where the close path already puts its eviction pass.
+      InteractionManager.runAfterInteractions(() => {
+        if (showing.current !== opened.record.id) return;
+        onOpened(opened.record.id);
+        // **The rendition too, not only the parent.** Eviction is an LRU over
+        // `last_opened_at_ms`, so a rung painted from disk that nothing ever
+        // records as opened sorts with the never-opened rows — and the pass
+        // evicts the very rendition the grid is drawing from. See
+        // `LibraryItem.paintedRendition`.
+        if (opened.paintedRendition) onOpened(opened.paintedRendition);
+        perf("show:noted");
+        setPinned(isPinned(opened.record.id));
+        perf("show:pinned");
+      });
+
       void (async () => {
-        const resolved = await onOpenForViewer(opened);
+        const stage = stageRef.current;
+        const resolved = await onOpenForViewer(opened, stage);
         perf("show:resolved");
         if (showing.current !== opened.record.id) return;
         // **Only when it resolved to a different picture.** A record whose best
@@ -417,22 +488,37 @@ export function useLibraryViewer(
         // full-screen decode, and a second full-screen ThumbHash under it, for
         // no change on screen.
         if (!samePicture(resolved, opened)) setItem(resolved);
-        // The rung this screen actually wants, which is usually not the one the
-        // tile resolved. Not awaited by anything on screen: the viewer paints
-        // what it has and improves when the bytes land.
-        const arrived = await onFetchRendition(resolved, "viewer");
-        perf(`show:renditionFetch arrived=${arrived}`);
-        if (!arrived || showing.current !== opened.record.id) return;
-        // **And this is what stops the open item going stale.** The fetch
-        // changed what the store holds, and nothing else would tell the viewer:
-        // it would go on painting the smaller rung and go on saying the bytes
-        // are absent.
-        const fetched = await onOpenForViewer(resolved);
+
+        // **Two ways to get the rung this screen wants, and a record is only
+        // ever in one of them.** `missingRendition` is non-null exactly when the
+        // rung's record exists and its bytes do not, which is a transfer.
+        // Null with the ideal unpainted is the opposite state — nothing has
+        // derived it anywhere — and on a phone showing its own camera roll that
+        // is the ordinary case, because the sweep's ceiling stops at
+        // `image-medium` and this stage wants more.
+        //
+        // The derivation is what removes the network from the second case. The
+        // original is in the camera roll; asking the cloud for a rung made out
+        // of bytes already on the device was never the cheaper answer, and on a
+        // phone with no session it was not an answer at all.
+        const improved =
+          resolved.missingRendition !== null
+            ? // Not awaited by anything on screen: the viewer paints what it has
+              // and improves when the bytes land.
+              await onFetchRendition(resolved, "viewer")
+            : await onDeriveNow(resolved, "viewer", resolved.renditionTarget ?? undefined);
+        perf(`show:improve arrived=${improved}`);
+        if (!improved || showing.current !== opened.record.id) return;
+        // **And this is what stops the open item going stale.** The fetch or the
+        // encode changed what the store holds, and nothing else would tell the
+        // viewer: it would go on painting the smaller rung and go on saying the
+        // bytes are absent.
+        const better = await onOpenForViewer(resolved, stage);
         if (showing.current !== opened.record.id) return;
-        if (!samePicture(fetched, resolved)) setItem(fetched);
+        if (!samePicture(better, resolved)) setItem(better);
       })();
     },
-    [onOpened, isPinned, onOpenForViewer, onFetchRendition],
+    [onOpened, isPinned, onOpenForViewer, onFetchRendition, onDeriveNow],
   );
 
   /** Where the open record sits in the page, or -1 once a reload has dropped it. */
@@ -472,6 +558,7 @@ export function useLibraryViewer(
   const element = (
     <LibraryViewer
       item={item}
+      stage={stage}
       busy={item !== null && fetching === item.record.id}
       pinned={pinned}
       hasPrevious={index > 0}

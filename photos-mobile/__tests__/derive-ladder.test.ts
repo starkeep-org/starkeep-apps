@@ -89,8 +89,22 @@ let seq = 0;
  * would mint one record for the whole ladder and every case below would pass for
  * the wrong reason.
  */
-function fakeEncoder(options: { readonly undecodable?: ReadonlySet<string> } = {}) {
+function fakeEncoder(
+  options: {
+    readonly undecodable?: ReadonlySet<string>;
+    /**
+     * The decode cap this encoder expects to be handed.
+     *
+     * Defaults to the sweep's, which is what every case that does not raise it
+     * asserts. `deriveForRecord` takes the ceiling as an argument now, so a case
+     * that raises it says so here and the assertion moves with it rather than
+     * being switched off.
+     */
+    readonly ceiling?: number;
+  } = {},
+) {
   const decoded: string[] = [];
+  const decodedAt: number[] = [];
   const encodes: { uri: string; maxLongEdge: number; quality: number }[] = [];
   let released = 0;
   let live = 0;
@@ -98,6 +112,7 @@ function fakeEncoder(options: { readonly undecodable?: ReadonlySet<string> } = {
 
   const encode: ImageEncoder = async (uri, ceiling) => {
     decoded.push(uri);
+    decodedAt.push(ceiling);
     if (options.undecodable?.has(uri)) return null;
     live += 1;
     maxLive = Math.max(maxLive, live);
@@ -120,13 +135,14 @@ function fakeEncoder(options: { readonly undecodable?: ReadonlySet<string> } = {
       },
     };
     // The ceiling the pass decodes at, asserted here rather than in every case.
-    expect(ceiling).toBe(MOBILE_DERIVE_CEILING_LONG_EDGE);
+    expect(ceiling).toBe(options.ceiling ?? MOBILE_DERIVE_CEILING_LONG_EDGE);
     return source;
   };
 
   return {
     encode,
     decoded,
+    decodedAt,
     encodes,
     get released(): number {
       return released;
@@ -671,6 +687,70 @@ describe("deriving one record on demand", () => {
 
     expect(await deriveForRecord(deps(encoder.encode), parent)).toBeNull();
     expect((await rungsOf(parent)).size).toBe(0);
+  });
+
+  /**
+   * The ceiling as an argument, which is the whole of change 2.
+   *
+   * A sweep and an open bound the same decode for different reasons: one runs
+   * over a camera roll four records to a background window, and the other runs
+   * once for the photograph on screen. So the number belongs to the caller.
+   * Nothing here says anything about where the *source* comes from — it is still
+   * an original this device imported, and re-encoding a rung out of a lossy
+   * intermediate remains something this pass will not do.
+   */
+  describe("the ceiling the caller passes", () => {
+    it("stops at image-medium when nothing is passed, as the sweep does", async () => {
+      const parent = await importOriginal({ width: 4000, height: 3000 });
+      const encoder = fakeEncoder();
+
+      await deriveForRecord(deps(encoder.encode), parent);
+
+      // Not `image-screen`, though a 4000 px original has one. That rung is a
+      // 20 MB bitmap held through an encode, which is what the sweep cannot
+      // afford over a whole library.
+      expect([...(await rungsOf(parent)).keys()]).not.toContain("image-screen");
+    });
+
+    it("makes the rung a full screen wants when the viewer raises it", async () => {
+      const parent = await importOriginal({ width: 4000, height: 3000 });
+      const encoder = fakeEncoder({ ceiling: 2560 });
+
+      // 2560 is `image-screen`'s maximum, which is what `viewerTarget` snaps a
+      // portrait's measured need up to. The viewer passes it because that is the
+      // rung its stage resolved to.
+      const written = await deriveForRecord(deps(encoder.encode), parent, 2560);
+
+      expect(written).toBe(4);
+      expect([...(await rungsOf(parent)).keys()]).toContain("image-screen");
+    });
+
+    it("decodes at the ceiling it was given, not at the sweep's", async () => {
+      // The cap rides through to the decode, which is where the memory is spent.
+      // A raised ceiling that still decoded at 1280 would encode an
+      // `image-screen` upsampled from `image-medium` pixels — the generation
+      // loss this pass refuses, arrived at by accident.
+      const parent = await importOriginal({ width: 4000, height: 3000 });
+      const encoder = fakeEncoder({ ceiling: 2560 });
+
+      await deriveForRecord(deps(encoder.encode), parent, 2560);
+
+      expect(encoder.decodedAt).toEqual([2560]);
+    });
+
+    it("still refuses a rung that already has a record, however high the ceiling", async () => {
+      // The rule the raised ceiling must not reach past. A rung with a record
+      // wants its bytes fetched; re-encoding it here would mint a second record
+      // for the same rung of the same photograph.
+      const parent = await importOriginal({ width: 4000, height: 3000 });
+      await deriveForRecord(deps(fakeEncoder({ ceiling: 2560 }).encode), parent, 2560);
+
+      const encoder = fakeEncoder({ ceiling: 2560 });
+      const written = await deriveForRecord(deps(encoder.encode), parent, 2560);
+
+      expect(written).toBe(0);
+      expect(encoder.decoded).toEqual([]);
+    });
   });
 
   it("charges the rungs it makes to the budget, exactly as the sweep does", async () => {

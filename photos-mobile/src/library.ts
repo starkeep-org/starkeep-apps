@@ -201,6 +201,19 @@ export interface LibraryItem {
    * so the tile paints the full-size file and no rendition is involved.
    */
   readonly paintedRendition: StarkeepId | null;
+  /**
+   * The pixel long edge the surface that resolved this item asked for, or null.
+   *
+   * Already snapped to a rung boundary — `canonicalMeasuredTarget` rounds a
+   * measured need up to a class maximum — so it is a *class* expressed as a
+   * number rather than a raw pixel count, which is what makes it usable as a
+   * derivation ceiling without the caller re-deriving the ladder.
+   *
+   * The viewer is what needs it: a full screen wants a rung above what a
+   * background sweep will spend the memory on, and `deriveNow` has to be told
+   * how high to go. See `MOBILE_DERIVE_CEILING_LONG_EDGE`.
+   */
+  readonly renditionTarget: number | null;
 }
 
 export interface LibraryPage {
@@ -439,6 +452,7 @@ export async function resolveLibraryItems(
       // tile fell through to the original — so nothing was painted from a
       // rendition and nothing about one should be recorded.
       paintedRendition: renditionUri ? (resolved?.paint?.id ?? null) : null,
+      renditionTarget: grid ? targetFor(record) : null,
     };
   });
 }
@@ -508,7 +522,11 @@ export async function refreshLibraryItem(
 export async function resolveForViewer(
   deps: LibraryDeps,
   item: LibraryItem,
-  geometry: { readonly screen: Dimensions; readonly devicePixelRatio: number },
+  geometry: {
+    /** The box the viewer gives the photograph — `viewerStageBox`, not the window. */
+    readonly stage: Dimensions;
+    readonly devicePixelRatio: number;
+  },
 ): Promise<LibraryItem> {
   const record = item.record;
   const category = typeCategory(record.type) === "video" ? "video" : "image";
@@ -520,10 +538,15 @@ export async function resolveForViewer(
     dims && dims.width && dims.height ? { width: dims.width, height: dims.height } : null;
 
   const isResident = (key: string) => (deps.objectStorage.localFileUriFor?.(key) ?? null) !== null;
+  // Named rather than inlined, because it leaves on the item: `deriveNow` reads
+  // it as the ceiling for the rung this screen needs, and computing it twice is
+  // how the request and the derivation come to disagree about which rung that
+  // is.
+  const target = viewerTarget(geometry.stage, source, orientation, geometry.devicePixelRatio);
   const resolved = await resolveRecordRenditions(
     deps.database,
     record,
-    viewerTarget(geometry.screen, source, orientation, geometry.devicePixelRatio),
+    target,
     isResident,
     dims,
   );
@@ -552,6 +575,7 @@ export async function resolveForViewer(
     playbackUri: typeCategory(record.type) === "video" ? ownUri : null,
     paintedRendition: renditionUri ? (resolved?.paint?.id ?? null) : null,
     missingRendition: resolved?.missingIdeal ?? null,
+    renditionTarget: target,
   };
 }
 

@@ -187,3 +187,77 @@ describe("a record with no stored dimensions", () => {
     });
   });
 });
+
+/**
+ * Two records for one rung, which is what heterogeneous encoders produce.
+ *
+ * A phone runs `avif-coder` and a machine node runs `sharp`. Neither the quality
+ * scale nor the encoder settings agree, so two nodes deriving one class of one
+ * photograph produce different bytes — and since a record's id is a hash of
+ * `(parent, filename, content hash)`, that is two records for one rung. The
+ * uniqueness key carries the content hash too, so both rows are legal and
+ * neither sync nor registration rejects either.
+ *
+ * The rule this asserts is not that duplicates converge. It is that the choice
+ * among them is a *function of the data* rather than of row order, which is what
+ * makes a surface paint the same picture on every render — and what makes the
+ * pick agree with a cleanup pass keeping the lowest id.
+ *
+ * See `renditions-duplicate-rungs-2026-09-05.md`.
+ */
+describe("two records for the same rung", () => {
+  /** The same rung, twice, differing only in id — which is what differing bytes give. */
+  function duplicate(longEdge: number, id: string): DerivedChild {
+    return { ...child(longEdge), id };
+  }
+
+  const edges = ladderEdges(BIG);
+  const idealEdge = edges[edges.length - 1]!;
+
+  it("takes the lowest id, whichever order the candidates arrive in", () => {
+    const low = duplicate(idealEdge, "Zaaa");
+    const high = duplicate(idealEdge, "Zzzz");
+
+    for (const candidates of [[low, high], [high, low]]) {
+      const resolved = resolveRendition(idealEdge, { sourceLongEdge: BIG, candidates });
+      expect(resolved.ideal.available).toBe(true);
+      expect(resolved.ideal.id).toBe("Zaaa");
+    }
+  });
+
+  it("takes the lowest id for a fallback too, so the two agree", () => {
+    // A fallback that preferred the *highest* id would mean a record whose ideal
+    // is missing paints one duplicate and, once the ideal arrives, a rung chosen
+    // by the opposite rule — two different records selected on one screen by two
+    // halves of one function.
+    const belowEdge = edges[edges.length - 2]!;
+    const resolved = resolveRendition(idealEdge, {
+      sourceLongEdge: BIG,
+      candidates: [duplicate(belowEdge, "Zzzz"), duplicate(belowEdge, "Zaaa")],
+    });
+    expect(resolved.ideal.available).toBe(false);
+    expect(resolved.fallback?.id).toBe("Zaaa");
+  });
+
+  it("still takes the largest rung below the ideal before it breaks a tie", () => {
+    // The tiebreak is the *second* key. A duplicate low on the ladder must not
+    // win a fallback over a single rung above it just by sorting earlier.
+    const belowEdge = edges[edges.length - 2]!;
+    const wayBelow = edges[0]!;
+    const resolved = resolveRendition(idealEdge, {
+      sourceLongEdge: BIG,
+      candidates: [duplicate(wayBelow, "Z000"), duplicate(belowEdge, "Zzzz")],
+    });
+    expect(resolved.fallback?.longEdge).toBe(belowEdge);
+  });
+
+  it("orders a dimensionless record's candidates the same way", () => {
+    // `resolveWithoutDimensions` picks its ideal out of the candidate set rather
+    // than off the ladder, so it needs the tiebreak for its own reasons.
+    const resolved = resolveWithoutDimensions(
+      [idealEdge],
+      [duplicate(idealEdge, "Zzzz"), duplicate(idealEdge, "Zaaa")],
+    );
+    expect(resolved[String(idealEdge)]!.ideal.id).toBe("Zaaa");
+  });
+});

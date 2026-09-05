@@ -50,7 +50,7 @@ import {
 } from "../platform";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
-import { CONTENT_PADDING, GRID_GAP, LIBRARY_ROW_HEIGHT } from "./theme";
+import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth } from "./theme";
 import { viewerTarget, type GridGeometry } from "../photos/render-target";
 import {
   createInFlight,
@@ -126,7 +126,7 @@ export function libraryPageSize(): number {
  * are not a fixed length, so there is no ragged trailing row to avoid.
  */
 function nominalItemsPerRow(windowWidth: number): number {
-  const gridWidth = windowWidth - CONTENT_PADDING * 2;
+  const gridWidth = libraryGridWidth(windowWidth);
   const nominalTileWidth = LIBRARY_ROW_HEIGHT * UNKNOWN_ASPECT_ESTIMATE + GRID_GAP;
   return Math.max(1, gridWidth / nominalTileWidth);
 }
@@ -186,7 +186,7 @@ export const MAX_RELOADED_PAGES = 10;
 function gridGeometry(): GridGeometry {
   return {
     targetRowHeight: LIBRARY_ROW_HEIGHT,
-    containerWidth: Dimensions.get("window").width - CONTENT_PADDING * 2,
+    containerWidth: libraryGridWidth(Dimensions.get("window").width),
     devicePixelRatio: PixelRatio.get(),
   };
 }

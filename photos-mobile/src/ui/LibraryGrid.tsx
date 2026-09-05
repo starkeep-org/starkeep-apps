@@ -68,7 +68,7 @@ import { Image } from "expo-image";
 import type { LibraryItem } from "../library";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { layOutRows, type JustifiedRow } from "../photos/render-target";
-import { CONTENT_PADDING, GRID_GAP, LIBRARY_ROW_HEIGHT, styles } from "./theme";
+import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth, styles } from "./theme";
 import { MotionBadge } from "./MotionBadge";
 import { VideoBadge } from "./VideoBadge";
 import { LibraryViewer, type ViewerStep } from "./LibraryViewer";
@@ -139,11 +139,6 @@ export interface ViewerHost {
    * just spent budget on whatever it fetched to show. See `reclaimAfterViewing`.
    */
   readonly onClosed: () => void;
-}
-
-/** The width the rows fill: the window less the list's own padding. */
-export function libraryGridWidth(windowWidth: number): number {
-  return windowWidth - CONTENT_PADDING * 2;
 }
 
 /**

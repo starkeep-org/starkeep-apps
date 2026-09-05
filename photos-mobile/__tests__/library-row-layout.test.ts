@@ -13,15 +13,16 @@
  * importable here because it is defined in a file that pulls in no React Native.
  *
  * The container width is a real handset's, and stated rather than derived. A
- * Pixel 5 is 1080 physical pixels at 2.75, so 393 layout points, less the 20
- * points of padding the list carries on each side.
+ * Pixel 5 is 1080 physical pixels at 2.75, so 393 layout points — the whole
+ * window, because the grid runs edge to edge and only the text around it is
+ * inset. See `libraryGridWidth`.
  */
 import { describe, it, expect } from "vitest";
-import { CONTENT_PADDING, GRID_GAP, LIBRARY_ROW_HEIGHT } from "../src/ui/grid-geometry";
+import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth } from "../src/ui/grid-geometry";
 import { layOutRows } from "../src/photos/render-target";
 
 const PIXEL_5_WIDTH = 393;
-const CONTAINER = PIXEL_5_WIDTH - CONTENT_PADDING * 2;
+const CONTAINER = libraryGridWidth(PIXEL_5_WIDTH);
 
 const PORTRAIT = 3 / 4;
 const LANDSCAPE = 3 / 2;
@@ -78,12 +79,16 @@ describe("what a row asks the tile to draw", () => {
     // carries is narrower than the photograph's own width at that height —
     // `contain` would refuse that crop and letterbox the picture vertically
     // instead, which is what made the gap between rows look uneven.
-    const cropped = rowsOf(PORTRAIT, 12).filter((row) => row.cropScale < 1);
+    //
+    // Landscapes rather than portraits, because which shape overflows depends
+    // on the width: across the whole window a row of three portraits comes up
+    // short and grows, while a row of two 3:2 landscapes overruns and crops.
+    const cropped = rowsOf(LANDSCAPE, 12).filter((row) => row.cropScale < 1);
 
     expect(cropped.length).toBeGreaterThan(0);
     for (const row of cropped) {
       for (const placement of row.placements) {
-        expect(placement.width).toBeLessThan(row.height * PORTRAIT);
+        expect(placement.width).toBeLessThan(row.height * LANDSCAPE);
       }
     }
   });

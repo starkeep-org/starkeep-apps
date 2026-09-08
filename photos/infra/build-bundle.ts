@@ -10,10 +10,10 @@
  *            STARKEEP_BUNDLE_OUT    = <abs path>      (where to write dist.zip)
  *   out:     writes dist.zip to STARKEEP_BUNDLE_OUT
  *
- * Builds the Next.js app with OpenNext, bundles the resize handler, installs
- * sharp for the Lambda runtime, and zips everything. Knowledge of OpenNext,
- * the static-asset wrapper, sharp, and resize-handler lives here in the app —
- * the platform only sees a dist.zip.
+ * Builds the Next.js app with OpenNext, generates the Lambda entry around the
+ * platform's web adapter, bundles the resize handler, installs sharp for the
+ * Lambda runtime, and zips everything. Knowledge of OpenNext, sharp, and
+ * resize-handler lives here in the app — the platform only sees a dist.zip.
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -33,6 +33,21 @@ import { build } from "esbuild";
 
 const INFRA_DIR = dirname(fileURLToPath(import.meta.url)); // .../photos/infra
 const PHOTOS_DIR = resolve(INFRA_DIR, ".."); // .../photos
+
+/**
+ * The manifest is the single declaration of which public paths the bundle
+ * answers from disk. Reading it here rather than repeating the list in the
+ * generated entry is what lets `@starkeep/admin-manifest` check the list
+ * against `publicPaths` — a hand-written copy is checkable only by a test that
+ * greps this file, which is what the platform schema replaced.
+ */
+const manifest = JSON.parse(
+  readFileSync(join(PHOTOS_DIR, "starkeep.manifest.json"), "utf8"),
+) as {
+  infraRequirements: {
+    compute: { handlers: Array<{ name: string; staticAssetPaths?: string[] }> };
+  };
+};
 
 const APP_BASE_PATH = process.env.STARKEEP_APP_BASE_PATH;
 if (!APP_BASE_PATH) {
@@ -219,14 +234,12 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
       console.log(`Copied ${copied} instrumentation dependencies OpenNext omitted.`);
     }
 
-    // 2b. Bundle Next.js static assets into the Lambda zip and overwrite
-    //     the OpenNext entry with a wrapper that serves /_next/* and
-    //     BUILD_ID from local disk before delegating to OpenNext. OpenNext
-    //     normally expects these to live on a CDN/S3 origin (see
-    //     open-next.output.json `behaviors`), but this installer ships the
-    //     server function as the only origin — so without this wrapper every
-    //     /apps/photos/_next/static/* request 404s and the page renders
-    //     blank (CSR bailout with no chunks).
+    // 2b. Bundle Next.js static assets into the Lambda zip. OpenNext expects
+    //     these to live on a CDN/S3 origin (see open-next.output.json
+    //     `behaviors`), but this installer ships the server function as the
+    //     only origin — so without a local copy every
+    //     /apps/photos/_next/static/* request 404s and the page renders blank
+    //     (CSR bailout with no chunks). Step 2e is what answers them from here.
     const assetsSrc = resolve(PHOTOS_DIR, ".open-next", "assets");
     if (!existsSync(assetsSrc)) {
       console.error(`OpenNext assets dir not found at ${assetsSrc}.`);
@@ -280,122 +293,90 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
       rmSync(join(stagingDir, dead), { recursive: true, force: true });
     }
 
-    const wrapper = `import { readFile, stat } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, join, normalize } from "node:path";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ASSETS_DIR = join(__dirname, "assets");
-const BASE_PATH = ${JSON.stringify(appBasePath)};
-
-const MIME = {
-  ".js": "application/javascript; charset=utf-8",
-  ".mjs": "application/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".otf": "font/otf",
-  ".txt": "text/plain; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-};
-
-const TEXT_EXT = new Set([".js", ".mjs", ".css", ".json", ".map", ".svg", ".txt", ".html"]);
-
-function contentTypeFor(path) {
-  const dot = path.lastIndexOf(".");
-  if (dot < 0) return "application/octet-stream";
-  return MIME[path.slice(dot).toLowerCase()] ?? "application/octet-stream";
-}
-
-function isStaticAssetPath(rest) {
-  // Only _next/static/* and BUILD_ID live on disk in .open-next/assets.
-  // _next/data/* and _next/image* are handled by the OpenNext server.
-  //
-  // This runs BEFORE the OpenNext handler, so it runs before the origin
-  // middleware — anything answered here is answered without a gate. That makes
-  // this list an enforcement bypass by construction, and it may only ever name
-  // paths the manifest declares public. Both entries below are in photos'
-  // publicPaths, and adding one that is not is how the anonymous surface grows
-  // back without anyone declaring it.
-  return rest === "BUILD_ID" || rest.startsWith("_next/static/");
-}
-
-// Top-level await, so the OpenNext module graph loads during Lambda's INIT
-// phase rather than inside the first request.
-//
-// It is a lot of graph — ~350 CommonJS modules and ~820 require() calls before
-// a request is even routed, because OpenNext does not bundle the server, it
-// ships Next's trace output and lets Next require it at startup. That work is
-// unavoidable; where it happens is not. Loading it lazily on first use put
-// several seconds inside a handler with a ten-second timeout, so a cold
-// document render both billed for it and occasionally died of it, while
-// Init Duration read ~180 ms and made the function look healthy.
-//
-// Init has its own budget, is not billed, and is where Lambda provisions extra
-// CPU. Nothing regresses for static assets: they are answered below without
-// touching this module, and a request could never arrive before init finished
-// anyway.
-const upstreamHandler = (await import("./photos/index.mjs")).handler;
-
-export async function handler(event, context) {
-  const rawPath = event?.rawPath ?? "";
-  if (rawPath.startsWith(BASE_PATH + "/")) {
-    const rest = rawPath.slice(BASE_PATH.length + 1);
-    if (isStaticAssetPath(rest)) {
-      // normalize() collapses any "../" segments before we touch the FS;
-      // we then explicitly reject anything that still escapes ASSETS_DIR.
-      const safeRest = normalize(rest);
-      const filePath = join(ASSETS_DIR, safeRest);
-      if (!filePath.startsWith(ASSETS_DIR + "/") && filePath !== ASSETS_DIR) {
-        return { statusCode: 400, headers: { "content-type": "text/plain" }, body: "Bad path" };
-      }
-      try {
-        const s = await stat(filePath);
-        if (s.isFile()) {
-          const ct = contentTypeFor(filePath);
-          const ext = filePath.slice(filePath.lastIndexOf("."));
-          const isImmutable = rest.startsWith("_next/static/");
-          const cacheControl = isImmutable
-            ? "public, max-age=31536000, immutable"
-            : "public, max-age=0, must-revalidate";
-          if (TEXT_EXT.has(ext.toLowerCase())) {
-            const body = await readFile(filePath, "utf8");
-            return {
-              statusCode: 200,
-              headers: { "content-type": ct, "cache-control": cacheControl },
-              body,
-            };
-          }
-          const buf = await readFile(filePath);
-          return {
-            statusCode: 200,
-            headers: { "content-type": ct, "cache-control": cacheControl },
-            body: buf.toString("base64"),
-            isBase64Encoded: true,
-          };
-        }
-      } catch (e) {
-        if (e?.code !== "ENOENT") {
-          console.error("Static asset read error:", e);
-        }
-        // fall through to upstream on miss
-      }
+    // 2e. The browser-facing Lambda entry.
+    //
+    //     OpenNext expects its static assets on a CDN/S3 origin (see
+    //     open-next.output.json `behaviors`), but this installer ships the
+    //     server function as the only origin — so something has to answer
+    //     /_next/static/* and BUILD_ID from disk before delegating, or every
+    //     chunk request 404s and the page renders blank.
+    //
+    //     That "something" is the platform's, not Photos'. Photos used to
+    //     generate its own copy of base-path stripping, MIME mapping, path
+    //     containment and cache-control here; Memo and Probe generated theirs.
+    //     The copies diverged, and a fix to one never reached the others. What
+    //     stays here is the app-shaped configuration: which directory holds the
+    //     assets, and which paths the manifest says live in it.
+    //
+    //     Top-level `await` on the upstream import is the whole point of
+    //     `createWebAppHandler` returning a promise: the OpenNext module graph
+    //     loads during Lambda's INIT phase, which runs at elevated CPU, is not
+    //     billed, and has its own budget — rather than inside a billed,
+    //     timeout-bounded first request.
+    const staticHandler = manifest.infraRequirements.compute.handlers.find(
+      (h) => h.name === "static",
+    );
+    if (!staticHandler) {
+      console.error("photos manifest has no `static` compute handler.");
+      process.exit(1);
     }
-  }
-  return upstreamHandler(event, context);
-}
+    // The static branch runs ahead of the origin middleware, so anything it
+    // answers is answered without a gate. Taking the list from the manifest
+    // rather than hand-writing it here is what makes that checkable: the
+    // schema refuses a `staticAssetPaths` entry that `publicPaths` does not
+    // already declare public. An empty list is refused here instead of shipped,
+    // because a bundle that serves no chunks renders a blank page and reports
+    // nothing.
+    const staticPaths = staticHandler.staticAssetPaths ?? [];
+    if (staticPaths.length === 0) {
+      console.error(
+        "photos manifest declares no `staticAssetPaths` on the `static` handler, so the " +
+          "bundle would answer no /_next/static/* request and every page would render " +
+          "blank; refusing to build that bundle.",
+      );
+      process.exit(1);
+    }
+
+    // The OpenNext entry, a sibling file in the zip. The generated entry
+    // imports it by this path and esbuild is told to leave it alone, so the
+    // specifier survives into the output verbatim and resolves at runtime
+    // relative to index.mjs at the staging root.
+    const UPSTREAM_ENTRY = `./${PACKAGE_PATH}/index.mjs`;
+
+    const entrySource = `import { createWebAppHandler } from "@starkeep/app-client/web";
+
+export const handler = await createWebAppHandler({
+  basePath: ${JSON.stringify(appBasePath)},
+  assetsDir: new URL("./assets/", import.meta.url),
+  staticPaths: ${JSON.stringify(staticPaths)},
+  // A promise, never a thunk — the graph necessarily loads during INIT.
+  // Left external below, so it resolves inside the zip at runtime.
+  upstream: import(${JSON.stringify(UPSTREAM_ENTRY)}),
+});
 `;
-    writeFileSync(join(stagingDir, "index.mjs"), wrapper, "utf8");
+
+    // Written inside infra/ rather than the staging dir so esbuild resolves
+    // `@starkeep/app-client/web` through the app's own node_modules, then
+    // bundled into the zip — the Lambda has no install step of its own.
+    console.log("\nBundling the Lambda entry with esbuild…");
+    const entrySrcPath = join(INFRA_DIR, ".lambda-entry.mjs");
+    writeFileSync(entrySrcPath, entrySource, "utf8");
+    try {
+      await build({
+        entryPoints: [entrySrcPath],
+        bundle: true,
+        platform: "node",
+        target: "node22",
+        format: "esm",
+        outfile: join(stagingDir, "index.mjs"),
+        // esbuild emits `import` for these under ESM; Node resolves them
+        // natively. The OpenNext entry is external because it is a sibling
+        // file in the zip, not a dependency to inline.
+        external: ["node:*", UPSTREAM_ENTRY],
+      });
+    } finally {
+      rmSync(entrySrcPath, { force: true });
+    }
 
     // 3. Bundle the backend Lambda handler with esbuild. sharp is external —
     //    it needs native binaries installed for the Lambda (linux) platform.

@@ -36,8 +36,8 @@ export default createAuthGateMiddleware({
   basePath: process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH ?? "",
 });
 
-// `_next/static` is excluded here because the bundle wrapper serves those from
-// disk before the OpenNext handler runs, so the matcher would be describing a
-// reach the middleware does not have. It is declared public in the manifest
+// `_next/static` is excluded here because the platform's web adapter serves
+// those from disk before the OpenNext handler runs, so the matcher would be
+// describing a reach the middleware does not have. It is declared public in the manifest
 // either way — static chunks are application code, not user data.
 export const config = { matcher: "/((?!_next/static).*)" };

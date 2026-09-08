@@ -42,7 +42,7 @@ describe("middleware public paths", () => {
   it("declares exactly the paths an anonymous visitor needs and no more", () => {
     // Growing this list is a security decision, so it is spelled out here
     // rather than asserted by shape. The first three are the platform
-    // defaults plus the build id the bundle wrapper serves; the last two are
+    // defaults plus the build id the web adapter serves; the last two are
     // what makes signing in possible at all.
     expect(staticHandler.publicPaths).toEqual([
       "/",
@@ -70,22 +70,6 @@ describe("middleware public paths", () => {
     // anonymous caller reaching it would be asking the app to hand a
     // credential to a process on the user's machine.
     expect(staticHandler.publicPaths).not.toContain("/api/local-sync-handoff");
-  });
-
-  it("declares every path the bundle wrapper serves from disk", () => {
-    // The wrapper answers these before the OpenNext handler runs, so before
-    // the middleware — it is an enforcement bypass by construction. A path it
-    // serves but the manifest does not declare is an anonymous route nobody
-    // wrote down, and once publicPaths become real gateway routes it is also a
-    // path the gateway refuses while the wrapper stands ready to serve it.
-    const wrapper = readFileSync(resolve(PKG_DIR, "infra", "build-bundle.ts"), "utf-8");
-    for (const rest of ["_next/static/", "BUILD_ID"]) {
-      expect(wrapper, `wrapper should serve ${rest}`).toContain(rest);
-      const declared = (staticHandler.publicPaths ?? []).some(
-        (p) => p === `/${rest}` || (p.endsWith("/*") && `/${rest}`.startsWith(p.slice(0, -1))),
-      );
-      expect(declared, `/${rest} is served from disk but not declared public`).toBe(true);
-    }
   });
 
   it("points the gate at a sign-in route the app actually serves", () => {

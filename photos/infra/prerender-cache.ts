@@ -59,8 +59,8 @@ const CACHE_DIR = join(ROOT, "cache");
 /**
  * Keys come from Next's own route paths, but this reads from disk, so treat
  * them as untrusted and refuse anything that escapes the cache directory
- * rather than relying on that. Same reasoning as the static-asset wrapper in
- * `build-bundle.ts`, and the same shape of check.
+ * rather than relying on that. Same reasoning as the asset branch of
+ * `@starkeep/app-client/web`, and the same shape of check.
  */
 function cacheFilePath(key: string): string | null {
   const file = join(CACHE_DIR, `${normalize(key)}.cache`);

@@ -33,7 +33,9 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Respons
   const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
   const { id } = await ctx.params;
-  const q = new URLSearchParams({ record_id: id });
+  // Filters live under `where` as JSON. One row is expected, so the page is
+  // asked for explicitly rather than left to the server's default.
+  const q = new URLSearchParams({ where: JSON.stringify({ record_id: id }), limit: "1" });
   const upstream = await signedFetch(creds, `/app-data/db/image_enriched?${q.toString()}`);
   if (!upstream.ok) {
     return NextResponse.json({ caption: null }, { status: upstream.status });

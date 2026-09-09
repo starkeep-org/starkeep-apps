@@ -34,7 +34,7 @@ async function fetchAssembledImage(
 
   let enriched: ImageEnriched | null = null;
   if (record.parent_id === null) {
-    const q = new URLSearchParams({ record_id: id });
+    const q = new URLSearchParams({ where: JSON.stringify({ record_id: id }), limit: "1" });
     const umRes = await signedFetch(creds, `/app-data/db/image_enriched?${q.toString()}`);
     if (umRes.ok) {
       const { rows } = (await umRes.json()) as { rows?: ImageEnriched[] };

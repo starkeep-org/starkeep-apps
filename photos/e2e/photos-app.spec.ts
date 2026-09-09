@@ -275,9 +275,8 @@ test("captions live in the app-private image_enriched table, not in shared data"
 
   // The app sees its row via /app-data…
   const row = await eventually(async () => {
-    const res = await photosApp.fetch(
-      `/app-data/db/image_enriched?record_id=${encodeURIComponent(pngRecordId)}`,
-    );
+    const where = encodeURIComponent(JSON.stringify({ record_id: pngRecordId }));
+    const res = await photosApp.fetch(`/app-data/db/image_enriched?where=${where}&limit=1`);
     if (!res.ok) throw new Error(`app-data → ${res.status}`);
     const { rows } = (await res.json()) as { rows?: Array<Record<string, unknown>> };
     if (!rows?.[0]) throw new Error("image_enriched row not written yet");

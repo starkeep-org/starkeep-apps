@@ -43,6 +43,7 @@ import {
   type SizeClass,
 } from "../ladder";
 import { extractExif } from "../metadata/exif-reader";
+import { exifColumnFacts } from "../metadata/exif-generator";
 import { UndecodableError } from "./decode-errors";
 import {
   computePerceptualHash,
@@ -125,6 +126,8 @@ interface ParentMetadata {
   width?: number | null;
   height?: number | null;
   thumb_hash?: string | null;
+  /** Null when no reader has looked at this file's header yet. */
+  exif_present?: boolean | null;
 }
 
 export async function deriveAndPublish(
@@ -295,23 +298,20 @@ async function writeParentFacts(
 
   // Read from the *original* bytes, not from the decoded working image: the
   // working image is raw pixels and carries no EXIF at all.
-  if (!existing?.width) {
-    const exif = await extractExif(sourceBytes);
-    const mapped: Record<string, unknown> = {
-      captured_at: exif.dateTakenRaw,
-      camera_make: exif.cameraMake,
-      camera_model: exif.cameraModel,
-      f_number: exif.fNumber,
-      exposure_time: exif.exposureTime,
-      iso: exif.iso,
-      lens_model: exif.lensModel,
-      gps_lat: exif.gpsLat,
-      gps_lon: exif.gpsLon,
-      orientation: exif.orientation,
-    };
-    for (const [key, value] of Object.entries(mapped)) {
-      if (value !== null && value !== undefined) facts[key] = value;
-    }
+  //
+  // The gate is `exif_present`, not `width`. It used to be width, on the
+  // reasoning that a record with dimensions had already been through this
+  // function — and that is false for every record photos-mobile imports, because
+  // the phone writes width and height itself at import time. Derivation
+  // therefore skipped the header for all 87 phone-imported originals in the
+  // library and no record anywhere carried a camera make or model. See
+  // `investigation-photos-exif-extraction-2026-09-10.md`.
+  //
+  // Null means nobody has read this header. False means somebody read it and it
+  // carries nothing, which is a real answer and the reason the column exists:
+  // without it this re-reads every screenshot on every pass, forever.
+  if (existing?.exif_present == null) {
+    Object.assign(facts, exifColumnFacts(await extractExif(sourceBytes)));
   }
 
   if (Object.keys(facts).length > 0) {

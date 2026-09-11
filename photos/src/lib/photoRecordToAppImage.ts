@@ -72,6 +72,7 @@ export function photoRecordToAppImage(
       gpsLat: metadata?.gps_lat ?? null,
       gpsLon: metadata?.gps_lon ?? null,
       orientation: metadata?.orientation ?? null,
+      present: metadata?.exif_present ?? null,
     },
     originalFilename: record.original_filename ?? record.id,
     effectiveDateTaken: overrideDate ?? capturedAt ?? record.created_at,

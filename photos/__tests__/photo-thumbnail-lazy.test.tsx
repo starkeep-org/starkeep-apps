@@ -64,6 +64,7 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
       lensModel: null,
       gpsLat: null,
       gpsLon: null,
+      present: null,
       orientation: null,
     },
     originalFilename: "photo.jpg",

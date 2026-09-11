@@ -326,7 +326,7 @@ export async function existingRenditionClasses(
   options: { requireDimensions?: boolean } = {},
 ): Promise<string[]> {
   const res = await signedFetch(
-    `/data/records?parentId=${encodeURIComponent(parentId)}` +
+    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
       `&label=${RENDITION_LABEL_REF}` +
       `&include=${options.requireDimensions ? "labels,metadata" : "labels"}&limit=50`,
   );

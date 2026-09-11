@@ -247,7 +247,7 @@ describe("cloud data path (client → proxy → data server)", () => {
     expect(received).toHaveLength(1);
     const upstream = received[0]!;
     const params = new URLSearchParams(upstream.path.split("?")[1]);
-    expect(params.get("ids")).toBe("rec-visible");
+    expect(JSON.parse(params.get("where")!)).toEqual({ id: { in: ["rec-visible"] } });
     expect(params.get("include")).toBe("metadata");
     expect(params.get("variant")).toBe("photos/rendition");
     expect(upstream.headers.appId).toBe("photos");

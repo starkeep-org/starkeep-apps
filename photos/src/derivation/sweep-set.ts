@@ -178,7 +178,7 @@ export async function fetchSweepPage(
     `notLabel=${encodeURIComponent(renditionLabelRef)}`,
     `variant=${encodeURIComponent(renditionLabelRef)}`,
   ];
-  if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+  if (cursor) params.push(`page_token=${encodeURIComponent(cursor)}`);
   const res = await fetchRecords(`/data/records?${params.join("&")}`);
   if (!res.ok) throw new Error(`list records failed: ${res.status} ${await res.text()}`);
   const body = (await res.json()) as {

@@ -145,11 +145,14 @@ function handler(
     }
 
     if (path === "/data/records" && method === "GET") {
-      // `?parentId=…&label=…` is the existence query one derivation runs to
-      // learn which rungs it can skip. Honouring it is not optional detail: a
-      // fake that ignored it would report every record as underived and the
-      // sweep would look like it worked while re-deriving everything.
-      const parentId = url.searchParams.get("parentId");
+      // `?where={"parent_id":…}&label=…` is the existence query one derivation
+      // runs to learn which rungs it can skip. Honouring it is not optional
+      // detail: a fake that ignored it would report every record as underived
+      // and the sweep would look like it worked while re-deriving everything.
+      const where = url.searchParams.get("where");
+      const parentId = where === null
+        ? null
+        : ((JSON.parse(where) as { parent_id?: string }).parent_id ?? null);
       if (parentId !== null) {
         json(res, {
           records: childrenOf(parentId).map((c) => ({

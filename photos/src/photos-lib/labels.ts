@@ -206,7 +206,7 @@ export async function precheckThumbnail(
   // lookup rather than a scan. A crop of the same parent does not match, which
   // is the bug `parent_id` alone used to have.
   const existingRes = await fetchPath(
-    `/data/records?parentId=${encodeURIComponent(targetId)}` +
+    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: targetId }))}` +
       `&label=${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}` +
       `&labelValue=${THUMBNAIL_SIZE_CLASS}&limit=1`,
   );

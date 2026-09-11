@@ -65,7 +65,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const updatedAfter = url.searchParams.get("updated_after");
   if (updatedAfter) params.push(`updated_after=${encodeURIComponent(updatedAfter)}`);
   const cursor = url.searchParams.get("cursor");
-  if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+  if (cursor) params.push(`page_token=${encodeURIComponent(cursor)}`);
 
   const upstreamStartedAt = Date.now();
   const upstream = await authorized.fetch(`/data/records?${params.join("&")}`);

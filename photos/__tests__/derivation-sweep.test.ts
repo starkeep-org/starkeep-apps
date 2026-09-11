@@ -271,7 +271,7 @@ describe("paging the library", () => {
     expect(page.nextCursor).toBeNull();
   });
 
-  it("carries the cursor when resuming", async () => {
+  it("carries the page token when resuming", async () => {
     let asked = "";
     await fetchSweepPage(
       async (path) => {
@@ -281,6 +281,6 @@ describe("paging the library", () => {
       "photos/rendition",
       "cursor-abc",
     );
-    expect(new URLSearchParams(asked.split("?")[1]).get("cursor")).toBe("cursor-abc");
+    expect(new URLSearchParams(asked.split("?")[1]).get("page_token")).toBe("cursor-abc");
   });
 });

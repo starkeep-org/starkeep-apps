@@ -119,7 +119,7 @@ async function renditionChildren(
   parentId: string,
 ): Promise<RungRecord[]> {
   const res = await app.fetch(
-    `/data/records?parentId=${encodeURIComponent(parentId)}` +
+    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
       `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
       `&include=labels,metadata&limit=50`,
   );
@@ -368,7 +368,7 @@ function photosSteps(ctx: JourneyContext): void {
           const sync = await drive.fetch("/sync/now", { method: "POST" });
           expect(sync.status).toBe(200);
           const res = await cloudPhotos.fetch(
-            `/data/records?parentId=${encodeURIComponent(ladderRecordId)}` +
+            `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: ladderRecordId }))}` +
               `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
               `&include=labels,metadata&limit=50`,
           );
@@ -440,8 +440,8 @@ function photosSteps(ctx: JourneyContext): void {
     // an empty list that reads as "nothing derived yet". This is also the exact
     // query the Photos client issues to paint a tile.
     const resolvedRes = await cloudPhotos.fetch(
-      `/data/records?ids=${encodeURIComponent(ladderRecordId)}` +
-        `&include=metadata&variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+      `/data/records?where=${encodeURIComponent(JSON.stringify({ id: { in: [ladderRecordId] } }))}` +
+        `&limit=1&include=metadata&variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
     );
     expect(resolvedRes.status).toBe(200);
     const { records: parents } = (await resolvedRes.json()) as {

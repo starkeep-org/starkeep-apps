@@ -97,7 +97,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const recordIds = [...new Set(parsed.requests.map((request) => request.recordId))].sort();
   const params = [
-    `ids=${encodeURIComponent(recordIds.join(","))}`,
+    // A bounded id list, as the grammar's `in` over the primary key. The whole
+    // answer by construction, so the page carries no cursor.
+    `where=${encodeURIComponent(JSON.stringify({ id: { in: recordIds } }))}`,
     "include=metadata",
     `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
   ];

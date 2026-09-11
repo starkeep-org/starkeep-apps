@@ -55,7 +55,7 @@ describe("POST /api/photos/renditions", () => {
     expect(upstreamFetch).toHaveBeenCalledTimes(1);
     const path = upstreamFetch.mock.calls[0]![0] as string;
     const params = new URLSearchParams(path.split("?")[1]);
-    expect(params.get("ids")).toBe("rec-1");
+    expect(JSON.parse(params.get("where")!)).toEqual({ id: { in: ["rec-1"] } });
     expect(params.get("include")).toBe("metadata");
     expect(params.get("variant")).toBe("photos/rendition");
     const body = await response.json();

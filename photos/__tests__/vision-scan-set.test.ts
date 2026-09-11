@@ -95,8 +95,8 @@ describe("listOriginals", () => {
     ]);
     expect(await listOriginals(fetchRecords, 200)).toEqual(["a", "b", "c"]);
     expect(requested).toHaveLength(3);
-    expect(requested[1]).toContain("cursor=cur-1");
-    expect(requested[2]).toContain("cursor=cur-2");
+    expect(requested[1]).toContain("page_token=cur-1");
+    expect(requested[2]).toContain("page_token=cur-2");
   });
 
   it("terminates when the server omits nextCursor entirely", async () => {
@@ -108,20 +108,20 @@ describe("listOriginals", () => {
     expect(await listOriginals(fetchRecords)).toEqual(["a"]);
   });
 
-  it("sends no cursor on the first request", async () => {
+  it("sends no page token on the first request", async () => {
     const { fetchRecords, requested } = pagingServer([{ records: [], nextCursor: null }]);
     await listOriginals(fetchRecords);
-    expect(requested[0]).not.toContain("cursor=");
+    expect(requested[0]).not.toContain("page_token=");
     expect(requested[0]).toContain("include=labels");
   });
 
-  it("percent-encodes a cursor that needs it", async () => {
+  it("percent-encodes a page token that needs it", async () => {
     const { fetchRecords, requested } = pagingServer([
       { records: [], nextCursor: "a b/c+d" },
       { records: [], nextCursor: null },
     ]);
     await listOriginals(fetchRecords);
-    expect(requested[1]).toContain(`cursor=${encodeURIComponent("a b/c+d")}`);
+    expect(requested[1]).toContain(`page_token=${encodeURIComponent("a b/c+d")}`);
   });
 
   it("honours the page size it is given", async () => {

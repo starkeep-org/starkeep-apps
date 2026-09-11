@@ -70,7 +70,7 @@ export async function listOriginals(
   do {
     const res = await fetchRecords(
       `/data/records?include=labels&limit=${pageSize}${
-        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+        cursor ? `&page_token=${encodeURIComponent(cursor)}` : ""
       }`,
     );
     if (!res.ok) throw new Error(`list records failed: ${res.status} ${await res.text()}`);

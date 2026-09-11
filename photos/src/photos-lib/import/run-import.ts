@@ -11,10 +11,11 @@
  * file, and makes the authoritative check the one the library actually
  * enforces rather than a second implementation that can disagree with it.
  *
- * Tiers 2 and 3 need a comparison the server has no index for, so their
- * candidate set is fetched **once per run** rather than once per file. On a
- * 60k-item library that is one page-through at the start instead of 60k
- * scans — still linear in library size, but paid once.
+ * Tiers 2 and 3 ask the library about one candidate at a time, through
+ * `ImportDeps.findCandidates`. The loop used to hold every record's
+ * fingerprints in memory for the length of the run and compare against the
+ * array; it now names the fingerprint it is looking for and lets the metadata
+ * table's index answer. See `library-lookup.ts` for what each tier costs.
  *
  * ## Every file ends in a recorded state
  *
@@ -32,7 +33,12 @@ import { pipeline } from "node:stream/promises";
 import type { ImportItem, ImportPacing } from "./import-run";
 import { DEFAULT_PACING, shouldAttempt } from "./import-run";
 import type { ImportStore } from "./import-store";
-import { findDuplicate, type DuplicateFinding, type LibraryEntry } from "./duplicate-tiers";
+import {
+  findDuplicate,
+  type DuplicateFinding,
+  type ImportCandidate,
+  type LibraryEntry,
+} from "./duplicate-tiers";
 import { isNoDecoderError } from "../image-processing/decode-errors";
 import { findLivePhotoPairs, toCandidate, type PairCandidate } from "./live-photo";
 import { PHOTOS_LABEL_KEYS } from "../labels";
@@ -105,13 +111,19 @@ export interface ImportDeps {
     path: string,
   ) => Promise<{ contentIdentifier?: string | null; durationMs?: number | null }>;
   /**
-   * The library's fingerprints, fetched once per run for tiers 2 and 3.
+   * Which records are worth comparing this one candidate against, for tiers 2
+   * and 3.
    *
-   * Empty is a valid answer and simply means those tiers report nothing — a
+   * Called once per still, after the file is already imported. Empty is a valid
+   * answer and simply means those tiers report nothing about this file — a
    * library with no extracted metadata cannot be compared against, and
    * pretending otherwise would produce findings from missing data.
+   *
+   * `library-lookup.ts` is the implementation against a data server: an indexed
+   * metadata query for the capture fingerprint, plus a lazily-loaded index of
+   * perceptual hashes that no predicate can replace.
    */
-  readonly loadLibraryIndex: () => Promise<LibraryEntry[]>;
+  readonly findCandidates: (candidate: ImportCandidate) => Promise<readonly LibraryEntry[]>;
   readonly perceptualDistance: (a: string, b: string) => number;
   /**
    * Fingerprints for one candidate file, for tiers 2 and 3.
@@ -120,10 +132,7 @@ export interface ImportDeps {
    * and decoding a clip to invent one would cost the most expensive operation
    * in the loop to produce a number nothing compares against.
    */
-  readonly fingerprint: (
-    path: string,
-    contentHash: string,
-  ) => Promise<Omit<LibraryEntry, "recordId">>;
+  readonly fingerprint: (path: string) => Promise<ImportCandidate>;
   /** Called after a successful registration so the ladder gets derived. */
   readonly onImported?: (recordId: string, path: string) => Promise<void>;
 }
@@ -168,8 +177,6 @@ export async function runImport(
   deps: ImportDeps,
   pacing: ImportPacing = DEFAULT_PACING,
 ): Promise<ImportProgress> {
-  // Once per run, not once per file — see the note at the top.
-  const library = await deps.loadLibraryIndex();
   const findings: (DuplicateFinding & { sourcePath: string })[] = [];
   let processed = 0;
   let stoppedEarly = false;
@@ -249,13 +256,30 @@ export async function runImport(
       // Stills only: a perceptual hash of a video is not defined here, and
       // decoding a clip to invent one would be the most expensive operation in
       // the loop, producing a number nothing compares against.
-      if (library.length > 0 && !isVideoPath(path)) {
-        // Spread first, then pin the hash: the fingerprint provider has no
-        // business overriding the identity of the file it was handed.
-        const candidate = { ...(await deps.fingerprint(path, contentHash)), contentHash };
-        const finding = findDuplicate(candidate, library, deps.perceptualDistance);
-        if (finding && finding.action === "report") {
-          findings.push({ ...finding, sourcePath: path });
+      if (!isVideoPath(path)) {
+        // Its own try, because "advisory" has to be true of the failure too.
+        // The record exists by this line; letting a fingerprint decode or a
+        // metadata query throw out to the handler below would mark an imported
+        // file `failed`, skip `onImported` so its ladder never derives, and
+        // leave the next run to rediscover it as a duplicate. A report that is
+        // missing one line is the right price for a lookup that could not
+        // answer.
+        try {
+          // Read the file's own fingerprint first, then ask the library which
+          // records share it. The order is forced: the lookup's predicate *is*
+          // the fingerprint, so there is nothing to ask until it exists.
+          const candidate = await deps.fingerprint(path);
+          const finding = findDuplicate(
+            candidate,
+            await deps.findCandidates(candidate),
+            deps.perceptualDistance,
+          );
+          if (finding) findings.push({ ...finding, sourcePath: path });
+        } catch (err) {
+          console.warn(
+            `[import] duplicate lookup failed for ${path} (${(err as Error).message}) — ` +
+              `the file is imported and carries no finding`,
+          );
         }
       }
 

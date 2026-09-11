@@ -6,6 +6,12 @@
  * arrives, and nobody notices until they go looking for it years later. So the
  * adversarial cases below — a burst, a panorama, a screenshot — are the point
  * of the file, not an afterthought.
+ *
+ * Tier 1 is not covered here and has no cases left to lose: byte-identity is
+ * the data server's answer, read off `deduped` at registration, and
+ * `import-loop.test.ts` covers the loop reading it. A second implementation
+ * over a table that holds no content hash is exactly what this module stopped
+ * carrying.
  */
 import { describe, it, expect } from "vitest";
 import {
@@ -15,6 +21,7 @@ import {
   type ImportCandidate,
   type LibraryEntry,
 } from "../src/photos-lib/import/duplicate-tiers";
+import { sameCaptureWhere } from "../src/photos-lib/import/library-lookup";
 import {
   shouldAttempt,
   summarize,
@@ -24,38 +31,20 @@ import {
 import { perceptualDistance } from "../src/photos-lib/image-processing/derive-ladder";
 
 const HASH_A = "a".repeat(64);
-const HASH_B = "b".repeat(64);
 
-const candidate = (over: Partial<ImportCandidate> = {}): ImportCandidate => ({
-  contentHash: HASH_A,
-  ...over,
-});
+const candidate = (over: Partial<ImportCandidate> = {}): ImportCandidate => ({ ...over });
 
 const entry = (over: Partial<LibraryEntry> = {}): LibraryEntry => ({
   recordId: "rec-1",
-  contentHash: HASH_B,
   ...over,
 });
 
 const find = (c: ImportCandidate, lib: LibraryEntry[]) =>
   findDuplicate(c, lib, perceptualDistance);
 
-describe("tier 1 — byte-identical", () => {
-  // The only tier that acts, and the only one with no threshold to get wrong.
-  it("skips a file whose bytes are already in the library", () => {
-    const result = find(candidate(), [entry({ contentHash: HASH_A })]);
-    expect(result).toMatchObject({ tier: "identical", action: "skip" });
-  });
-
-  it("does not match a different file", () => {
-    expect(find(candidate(), [entry()])).toBeNull();
-  });
-});
-
 describe("tier 2 — same capture, per the camera", () => {
   const shot = {
-    capturedAt: "2026-01-01T12:00:00Z",
-    imageUniqueId: "UID-1",
+    capturedAt: "2026-01-01T12:00:00.000Z",
     cameraMake: "Canon",
     cameraModel: "R5",
     width: 8192,
@@ -70,34 +59,59 @@ describe("tier 2 — same capture, per the camera", () => {
   // The whole reason this tier reports rather than acts. Ten frames shot in one
   // second share a capture second, a camera, and dimensions — and every one is
   // a photo somebody chose to keep.
+  //
+  // EXIF's `ImageUniqueId` is what separates a burst from a duplicate, and
+  // `IMAGE_METADATA_COLUMNS` has no column for it, so no library record can
+  // carry one. The tier is stuck at this strength until that registry change
+  // lands — which is why it may not act.
   it("only reports, never skips, because a burst looks exactly like this", () => {
-    const burstFrame = { ...shot, imageUniqueId: null };
-    const result = find(candidate(burstFrame), [entry({ ...burstFrame, recordId: "frame-1" })]);
+    const result = find(candidate(shot), [entry({ ...shot, recordId: "frame-1" })]);
     expect(result).toMatchObject({ tier: "same-capture", action: "report" });
-    expect(result!.action).not.toBe("skip");
   });
 
   // Screenshots, exports, and anything through a messaging app have no EXIF.
   // A partial fingerprint would match every one of them against every other.
   it("produces no fingerprint when there is not enough metadata to say anything", () => {
     expect(captureFingerprint(candidate())).toBeNull();
-    expect(captureFingerprint(candidate({ capturedAt: "2026-01-01T12:00:00Z" }))).toBeNull();
+    expect(captureFingerprint(candidate({ capturedAt: "2026-01-01T12:00:00.000Z" }))).toBeNull();
   });
 
   it("does not match two screenshots against each other", () => {
     const screenshot = candidate({ width: 1170, height: 2532 });
-    const other = entry({ contentHash: HASH_B, width: 1170, height: 2532 });
+    const other = entry({ width: 1170, height: 2532 });
     expect(find(screenshot, [other])).toBeNull();
   });
 
-  // A camera-written UID is the strong form; make/model + dimensions is the
-  // fallback, and the difference is why one is trustworthy and the other is not.
-  it("prefers a unique id over make/model when the camera writes one", () => {
-    const withUid = captureFingerprint(candidate(shot))!;
-    const withoutUid = captureFingerprint(candidate({ ...shot, imageUniqueId: null }))!;
-    expect(withUid).not.toBe(withoutUid);
-    expect(withUid).toContain("uid:");
-    expect(withoutUid).toContain("cam:");
+  // The fingerprint is also the lookup's predicate, so the two have to agree
+  // exactly about when there is a question to ask at all.
+  it("asks the library exactly when a fingerprint exists", () => {
+    expect(sameCaptureWhere(candidate(shot))).toEqual({
+      captured_at: shot.capturedAt,
+      camera_make: "Canon",
+      camera_model: "R5",
+      width: 8192,
+      height: 5464,
+    });
+    expect(sameCaptureWhere(candidate())).toBeNull();
+    expect(sameCaptureWhere(candidate({ ...shot, cameraMake: null, cameraModel: null }))).toBeNull();
+  });
+
+  // The column is declared `timestamp` and the grammar takes one spelling of
+  // it, so a value from anywhere but `toISOString()` has to be refused here —
+  // sending it would be a 400 on a route that is only ever asked advisory
+  // questions.
+  it("declines to ask about a non-canonical capture time", () => {
+    expect(sameCaptureWhere(candidate({ ...shot, capturedAt: "2026-01-01T12:00:00Z" }))).toBeNull();
+  });
+
+  // A camera that names no make still names a model, and the predicate has to
+  // say `IS NULL` for the missing half rather than leaving the column out —
+  // omitting it would match every camera instead of the absence of one.
+  it("pins a missing make as null rather than dropping the column", () => {
+    expect(sameCaptureWhere(candidate({ ...shot, cameraMake: null }))).toMatchObject({
+      camera_make: null,
+      camera_model: "R5",
+    });
   });
 });
 
@@ -135,17 +149,19 @@ describe("tier 3 — perceptually similar", () => {
 });
 
 describe("reporting the strongest match only", () => {
-  // A file byte-identical to something is not also interestingly "similar" to
-  // it; reporting both would bury the one that matters.
-  it("prefers identical over the weaker tiers", () => {
+  // A file the camera says is the same exposure is not also interestingly
+  // "similar" to it; reporting both would bury the one that matters.
+  it("prefers same-capture over similarity", () => {
     const shared = {
-      contentHash: HASH_A,
-      capturedAt: "2026-01-01T12:00:00Z",
-      imageUniqueId: "UID-1",
+      capturedAt: "2026-01-01T12:00:00.000Z",
+      cameraMake: "Canon",
+      cameraModel: "R5",
+      width: 8192,
+      height: 5464,
       perceptualHash: "ffffffffffffffff",
     };
     const result = find(candidate(shared), [entry({ ...shared, recordId: "rec-x" })]);
-    expect(result!.tier).toBe("identical");
+    expect(result!.tier).toBe("same-capture");
   });
 });
 

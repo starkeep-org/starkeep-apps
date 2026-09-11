@@ -93,11 +93,15 @@ describe("backfillImageMetadata", () => {
     expect(posted).toHaveLength(1);
     expect(posted[0].body).toMatchObject({
       typeId: "image",
-      metadata: { camera_make: "Acme", camera_model: "Snapper X" },
+      metadata: { camera_make: "Acme", camera_model: "Snapper X", exif_present: true },
     });
   });
 
-  it("returns false and writes nothing when the bytes yield no metadata", async () => {
+  // The point of `exif_present`. A file that carries no EXIF is the ordinary
+  // case for a screenshot or a re-encode, and it used to be indistinguishable
+  // from a file nobody had read — so the viewer fetched the same bytes again on
+  // every open. Recording the answer is what ends that.
+  it("records that it looked when the bytes yield no metadata", async () => {
     const { posted } = installFetchRouter({
       recordId: "REC2",
       blobUrl: "http://blob/REC2",
@@ -106,8 +110,12 @@ describe("backfillImageMetadata", () => {
 
     const wrote = await backfillImageMetadata("REC2", "image/jpeg");
 
-    expect(wrote).toBe(false);
-    expect(posted).toHaveLength(0);
+    expect(wrote).toBe(true);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].body).toMatchObject({
+      typeId: "image",
+      metadata: { exif_present: false },
+    });
   });
 
   it("returns false and writes nothing when the bytes can't be fetched", async () => {

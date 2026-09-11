@@ -247,6 +247,40 @@ describe("a record that is already fully derived", () => {
   }, 60_000);
 });
 
+/**
+ * The gate on the EXIF read is `exif_present`, not `width`.
+ *
+ * It was `width` until 2026-09-10, on the reasoning that a record with
+ * dimensions had already been through this function. photos-mobile writes width
+ * and height itself at import, so that reasoning held for no phone-imported
+ * record — derivation skipped the header for all 87 of them and the library
+ * carried no camera make or model anywhere. See
+ * `investigation-photos-exif-extraction-2026-09-10.md`.
+ */
+describe("a record whose dimensions arrived from somewhere else", () => {
+  it("still reads the header when nobody has read it", async () => {
+    plane.metadata = { width: 4000, height: 3000 };
+
+    await run();
+
+    expect(plane.metadata.camera_make).toBe("TestMake");
+    expect(new Date(plane.metadata.captured_at as string).getFullYear()).toBe(2019);
+    expect(plane.metadata.exif_present).toBe(true);
+  }, 60_000);
+
+  it("does not read it again once a reader has answered", async () => {
+    plane.metadata = { width: 4000, height: 3000, exif_present: false };
+
+    await run();
+
+    // False is an answer — the file carries nothing — and re-reading it on every
+    // pass is what the column exists to stop.
+    expect(plane.metadata.captured_at).toBeUndefined();
+    expect(plane.metadata.camera_make).toBeUndefined();
+    expect(plane.metadata.exif_present).toBe(false);
+  }, 60_000);
+});
+
 describe("asking for one size rather than the whole ladder", () => {
   it("derives the rung that answers it plus the ones the decode makes free", async () => {
     const result = await run({ targetLongEdge: STILL_LADDER[1]!.maxLongEdge });

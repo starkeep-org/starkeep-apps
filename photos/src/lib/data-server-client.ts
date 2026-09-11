@@ -2,6 +2,7 @@ import { fetchWithSession, resolveDataSource } from "./data-client";
 import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
+import { exifColumnFacts } from "../photos-lib/metadata/exif-generator";
 import { RENDITION_LABEL_REF } from "../photos-lib/image-processing/publish-renditions";
 import type { RenditionChoice } from "../photos-lib/rendition-resolution";
 import type { RenditionPolicies } from "../photos-lib/rendition-policy";
@@ -111,6 +112,11 @@ export interface PhotoMetadataRow {
   gps_lat?: number | null;
   gps_lon?: number | null;
   orientation?: number | null;
+  /**
+   * Whether this file's header carries any EXIF. Null means nobody has looked;
+   * false means a full reader looked and found none.
+   */
+  exif_present?: boolean | null;
   /** Base64 ThumbHash — the inline, zero-request placeholder. */
   thumb_hash?: string | null;
 }
@@ -321,22 +327,7 @@ async function extractImageMetadata(
     /* leave width/height unset */
   }
 
-  const exif = await extractExif(fileBytes);
-  const exifMap: Record<string, unknown> = {
-    captured_at: exif.dateTakenRaw,
-    camera_make: exif.cameraMake,
-    camera_model: exif.cameraModel,
-    f_number: exif.fNumber,
-    exposure_time: exif.exposureTime,
-    iso: exif.iso,
-    lens_model: exif.lensModel,
-    gps_lat: exif.gpsLat,
-    gps_lon: exif.gpsLon,
-    orientation: exif.orientation,
-  };
-  for (const [k, v] of Object.entries(exifMap)) {
-    if (v !== null && v !== undefined) out[k] = v;
-  }
+  Object.assign(out, exifColumnFacts(await extractExif(fileBytes)));
   return out;
 }
 
@@ -437,12 +428,17 @@ export async function getPhotoFileUrls(ids: readonly string[]): Promise<Map<stri
 }
 
 /**
- * Backfill the shared image metadata for a record that has none. Records can
- * enter the system through paths that don't extract metadata (notably the LDS
- * folder watcher, by design), so their width/height/EXIF are absent. This
- * decodes the stored bytes, runs the same extraction as upload, and writes the
- * row. Best-effort: any failure is swallowed by the caller. Returns true if a
- * non-empty metadata row was written.
+ * Backfill the shared image metadata for a record whose header nobody has read.
+ *
+ * Records enter the system through paths that read part of the header or none
+ * of it — the folder watcher extracts nothing by design, and photos-mobile
+ * extracts a capture time and an orientation and stops there. This decodes the
+ * stored bytes, runs the same extraction as upload, and writes the row.
+ *
+ * Always writes, because `exif_present` is a fact worth persisting even when it
+ * is false: that is what stops the next viewer opening the same screenshot and
+ * fetching its bytes again. Best-effort — any failure is swallowed by the
+ * caller. Returns true when a row was written.
  */
 export async function backfillImageMetadata(id: string, mimeType: string): Promise<boolean> {
   const source = await resolveDataSource();
@@ -451,7 +447,6 @@ export async function backfillImageMetadata(id: string, mimeType: string): Promi
   if (!res.ok) return false;
   const bytes = new Uint8Array(await res.arrayBuffer());
   const metadata = await extractImageMetadata(bytes, mimeType || "image/jpeg");
-  if (Object.keys(metadata).length === 0) return false;
   await request(`/data/records/${id}/metadata`, source, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

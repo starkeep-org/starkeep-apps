@@ -51,6 +51,7 @@ function appImage(over: Partial<AppImage> & { orientation?: number | null } = {}
       lensModel: null,
       gpsLat: null,
       gpsLon: null,
+      present: null,
       orientation: orientation ?? null,
       ...exif,
     },

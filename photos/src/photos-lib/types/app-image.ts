@@ -12,6 +12,14 @@ export interface AppImageExif {
   gpsLon: number | null;
   /** EXIF tag 274 (1–8); used to correct display rotation */
   orientation: number | null;
+  /**
+   * Whether a reader that maps every field above has looked at this file's
+   * header, and what it found. Null means nobody has looked yet, which is what
+   * the viewer's backfill keys on — the fields above cannot answer that,
+   * because a file legitimately carrying no EXIF looks identical to one nobody
+   * has read.
+   */
+  present: boolean | null;
 }
 
 /**

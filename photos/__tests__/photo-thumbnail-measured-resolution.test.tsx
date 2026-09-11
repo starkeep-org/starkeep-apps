@@ -49,6 +49,7 @@ function image(id: string, width = 4000, height = 3000): AppImage {
       lensModel: null,
       gpsLat: null,
       gpsLon: null,
+      present: null,
       orientation: null,
     },
     originalFilename: `${id}.jpg`,

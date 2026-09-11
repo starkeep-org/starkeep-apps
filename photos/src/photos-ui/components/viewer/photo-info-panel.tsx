@@ -76,13 +76,21 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
     };
   }, [image.id]);
 
-  // If the stored metadata resolved with no dimensions, the record was added by
-  // a path that doesn't extract metadata (e.g. the LDS folder watcher). Extract
-  // and persist it in the background, then re-load so the panel reflects the
-  // now-stored dimensions + EXIF. Runs in parallel with the open above.
-  const storedWidth = details?.width ?? image.width;
+  // If nobody has read this file's header, read it now, persist it in the
+  // background, and re-load so the panel reflects the stored dimensions + EXIF.
+  // Runs in parallel with the open above.
+  //
+  // The gate is `exif.present`, not the dimensions. Dimensions were the wrong
+  // proxy: photos-mobile writes width and height at import and reads two EXIF
+  // tags, so every phone-imported record looked repaired and never was — no
+  // record in the library carried a camera make or model. See
+  // `investigation-photos-exif-extraction-2026-09-10.md`.
+  //
+  // False is a real answer and stops here, which is what keeps opening a
+  // screenshot from fetching its bytes on every view.
+  const exifRead = (details ?? image).exif.present != null;
   useEffect(() => {
-    if (!detailsLoaded || storedWidth > 0) return;
+    if (!detailsLoaded || exifRead) return;
     let cancelled = false;
     backfillImageMetadata(image.id, (details ?? image).mimeType)
       .then((wrote) => (wrote && !cancelled ? fetchDetails(image.id) : null))
@@ -96,9 +104,9 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
       cancelled = true;
     };
     // details is intentionally excluded: this should fire once per record, keyed
-    // on the resolved-but-empty state, not on every details update.
+    // on the resolved-but-unread state, not on every details update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [image.id, detailsLoaded, storedWidth]);
+  }, [image.id, detailsLoaded, exifRead]);
 
   async function saveCaption(): Promise<void> {
     if (caption === savedCaption) return;

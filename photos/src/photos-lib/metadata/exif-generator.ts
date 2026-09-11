@@ -43,3 +43,36 @@ export function formatExposureTime(seconds: number): string {
   const reciprocal = Math.round(1 / seconds);
   return `1/${reciprocal}s`;
 }
+
+/**
+ * One `ExifFields` mapped onto the `image` metadata columns.
+ *
+ * Two callers write these facts — derivation and the viewer's backfill — and
+ * both must agree on the column names and on `exif_present`, so the mapping
+ * lives here rather than in either of them.
+ *
+ * Null fields are omitted, because the metadata write is a column-wise upsert
+ * and sending a null would overwrite a value somebody may have corrected.
+ * `exif_present` is always sent: it is the record of having looked, and a file
+ * that carries nothing is exactly the case it exists to remember.
+ */
+export function exifColumnFacts(exif: ExifFields): Record<string, unknown> {
+  const mapped: Record<string, unknown> = {
+    captured_at: exif.dateTakenRaw,
+    camera_make: exif.cameraMake,
+    camera_model: exif.cameraModel,
+    f_number: exif.fNumber,
+    exposure_time: exif.exposureTime,
+    iso: exif.iso,
+    lens_model: exif.lensModel,
+    gps_lat: exif.gpsLat,
+    gps_lon: exif.gpsLon,
+    orientation: exif.orientation,
+  };
+  const facts: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(mapped)) {
+    if (value !== null && value !== undefined) facts[key] = value;
+  }
+  facts.exif_present = Object.keys(facts).length > 0;
+  return facts;
+}

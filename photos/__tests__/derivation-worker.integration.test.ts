@@ -129,6 +129,7 @@ function handler(
         contentType: string;
         sizeBytes: number;
         labels: Array<{ key: string; value: string }>;
+        metadata?: Record<string, unknown>;
       };
       const id = `child-${records.size}`;
       records.set(id, {
@@ -137,7 +138,15 @@ function handler(
         original_filename: body.fileName,
         parent_id: body.parentId,
         size_bytes: body.sizeBytes,
-        metadata: {},
+        // `metadata` rides the registration, and a fake that drops it is not a
+        // dumber server but a *different* one. `publishRendition` sends each
+        // rung's dimensions inline precisely so the record is never visible to
+        // sync without them, and both real servers write them before the record
+        // exists. Dropping them here left every child with no dimensions, so the
+        // sweep's `variant_candidates` came back empty, every record read as
+        // underived, and the second pass rebuilt the whole ladder — which is the
+        // behaviour this file's second case exists to catch.
+        metadata: { ...(body.metadata ?? {}) },
         renditionClass: body.labels[0]?.value ?? null,
       });
       json(res, { record: { id } });
@@ -174,6 +183,10 @@ function handler(
           variant_candidates: childrenOf(r.id)
             .filter((c) => typeof c.metadata.width === "number")
             .map((c) => ({
+              // `label_value` is what names the rung. The sweep reads it to
+              // decide which classes this node can already serve, so a
+              // candidate without one is a rung the worker cannot recognise.
+              label_value: c.renditionClass,
               long_edge: Math.max(c.metadata.width as number, c.metadata.height as number),
               available_here: true,
             })),

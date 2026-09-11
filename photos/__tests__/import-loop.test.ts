@@ -27,9 +27,9 @@ function deps(over: Partial<Parameters<typeof runImport>[2]> = {}) {
       registered.push(name);
       return { recordId: `rec-${registered.length}`, deduped: false };
     },
-    loadLibraryIndex: async (): Promise<LibraryEntry[]> => [],
+    findCandidates: async (): Promise<LibraryEntry[]> => [],
     perceptualDistance,
-    fingerprint: async () => ({ contentHash: "" }),
+    fingerprint: async () => ({}),
     ...over,
   } as Parameters<typeof runImport>[2];
 }
@@ -380,13 +380,10 @@ describe("advisory findings", () => {
       dir,
       store,
       deps({
-        loadLibraryIndex: async () => [
-          { recordId: "existing", contentHash: "z".repeat(64), perceptualHash: "ffffffffffffffff" },
+        findCandidates: async () => [
+          { recordId: "existing", perceptualHash: "ffffffffffffffff" },
         ],
-        fingerprint: async () => ({
-          contentHash: "",
-          perceptualHash: "ffffffffffffffff",
-        }),
+        fingerprint: async () => ({ perceptualHash: "ffffffffffffffff" }),
       }),
       { delayMs: 0, maxItemsPerRun: null },
     );
@@ -404,12 +401,12 @@ describe("advisory findings", () => {
       dir,
       store,
       deps({
-        loadLibraryIndex: async () => [
-          { recordId: "existing", contentHash: "z".repeat(64), perceptualHash: "ffffffffffffffff" },
+        findCandidates: async () => [
+          { recordId: "existing", perceptualHash: "ffffffffffffffff" },
         ],
         fingerprint: async () => {
           fingerprinted += 1;
-          return { contentHash: "" };
+          return {};
         },
       }),
       { delayMs: 0, maxItemsPerRun: null },
@@ -420,9 +417,30 @@ describe("advisory findings", () => {
 
   // A library with no extracted metadata cannot be compared against, and
   // pretending otherwise would produce findings out of missing data.
-  it("reports nothing when the library index is empty", async () => {
+  it("reports nothing when the lookup proposes no candidate", async () => {
     await seed({ "a.jpg": "one" });
     const result = await runImport(dir, store, deps(), { delayMs: 0, maxItemsPerRun: null });
+    expect(result.findings).toEqual([]);
+  });
+
+  // "Advisory" has to hold for the failure too. The record exists by the time
+  // the lookup runs, so a query that throws must cost a line of the report and
+  // not the import — otherwise an imported file is recorded `failed`, its
+  // ladder never derives, and the next run rediscovers it as a duplicate.
+  it("keeps a file imported when the lookup fails", async () => {
+    await seed({ "a.jpg": "one" });
+    const result = await runImport(
+      dir,
+      store,
+      deps({
+        findCandidates: async () => {
+          throw new Error("data server unreachable");
+        },
+      }),
+      { delayMs: 0, maxItemsPerRun: null },
+    );
+    expect(store.summary().imported).toBe(1);
+    expect(store.summary().failed).toBe(0);
     expect(result.findings).toEqual([]);
   });
 });

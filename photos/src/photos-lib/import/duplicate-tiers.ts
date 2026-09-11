@@ -1,5 +1,6 @@
 /**
- * Three-tier duplicate resolution for imports.
+ * Duplicate resolution for imports: the tiers, and what each may do about a
+ * match.
  *
  * ## Skip and log, never delete
  *
@@ -8,17 +9,33 @@
  * outcome. Deleting an existing record on a match would make a false positive
  * permanent, and a false positive here is somebody's photo.
  *
+ * ## Tier 1 is not in this file
+ *
+ * Byte-identity is decided by the data server, on the index it already keeps
+ * for exactly that lookup: registration collapses a byte-identical record and
+ * answers `deduped`. `run-import.ts` reads that answer. This file holds the two
+ * tiers that compare *facts about the picture* rather than about the bytes, and
+ * it compares them against the handful of records a per-candidate metadata
+ * lookup returned — never against the library, which it is not handed and could
+ * not afford to be.
+ *
+ * That split is also why `LibraryEntry` carries no content hash. The lookup
+ * reads `shared.record_image_metadata`, and a content hash is a column of
+ * `shared.records`; a second byte-identity check built from a table that cannot
+ * answer it would be a second implementation of the one check the library
+ * actually enforces.
+ *
  * ## Tiers 2 and 3 ship report-only
  *
- * Only tier 1 acts. The other two produce findings for a human, because their
- * thresholds are **unvalidated in the false-positive direction** and the things
- * that decide those thresholds — bursts, panoramas, screenshots, Storage Saver
- * re-encodes — are precisely what a real photo library is full of.
+ * Neither acts. Their thresholds are **unvalidated in the false-positive
+ * direction** and the things that decide those thresholds — bursts, panoramas,
+ * screenshots, Storage Saver re-encodes — are precisely what a real photo
+ * library is full of.
  *
  * A burst of ten frames shot in one second shares a capture second, a camera
  * model, and dimensions, and looks near-identical to a perceptual hash. Every
  * one of those frames is a photo the user chose to keep. Calibrating against a
- * real export is the prerequisite for letting tiers 2 and 3 act, and until then
+ * real export is the prerequisite for letting either tier act, and until then
  * "report-only" is not timidity — it is the difference between a useful tool
  * and one that silently eats a burst.
  */
@@ -27,15 +44,22 @@
 export type DuplicateTier =
   /**
    * Byte-identical: the content hashes match. The same file, definitionally —
-   * there is no interpretation involved and no threshold to get wrong.
+   * there is no interpretation involved and no threshold to get wrong. The
+   * only tier that skips a file, and the only one this module does not decide:
+   * registration answers it server-side.
    */
   | "identical"
   /**
-   * The camera says these are the same exposure: same capture timestamp and
-   * same image UID, or failing a UID, same make/model and native dimensions.
+   * The camera says these are the same exposure: same capture timestamp, same
+   * make and model, same native dimensions.
    *
-   * Strong but not conclusive. Two frames of a burst share everything here
-   * except the UID, and not every camera writes one.
+   * Strong but not conclusive, and weaker than it could be. EXIF's
+   * `ImageUniqueId` would separate two frames of a burst from two copies of one
+   * exposure, and `IMAGE_METADATA_COLUMNS` has no column for it — so no record
+   * in the library can carry one and the stronger form is unreachable. Adding
+   * the column is a registry change and its own decision; until it lands this
+   * tier cannot distinguish a burst from a duplicate, which is exactly why it
+   * reports rather than acts.
    */
   | "same-capture"
   /**
@@ -48,10 +72,16 @@ export type DuplicateTier =
    */
   | "similar";
 
+/**
+ * The facts about one picture the two comparing tiers read.
+ *
+ * Every field is optional because every one of them is genuinely absent from
+ * real files: a screenshot has no camera, an image a messaging app re-encoded
+ * has no EXIF at all, and a record awaiting derivation has no perceptual hash
+ * yet.
+ */
 export interface ImportCandidate {
-  readonly contentHash: string;
   readonly capturedAt?: string | null;
-  readonly imageUniqueId?: string | null;
   readonly cameraMake?: string | null;
   readonly cameraModel?: string | null;
   readonly width?: number | null;
@@ -59,18 +89,26 @@ export interface ImportCandidate {
   readonly perceptualHash?: string | null;
 }
 
+/** One record the library offered as worth comparing against. */
 export interface LibraryEntry extends ImportCandidate {
   readonly recordId: string;
+  /**
+   * For the report, when a caller can supply it.
+   *
+   * Left unset by the metadata-table lookup, which holds dimensions and EXIF
+   * and no filename. A finding then names the record id, which is less
+   * friendly and still unambiguous.
+   */
   readonly originalFilename?: string | null;
 }
 
 export interface DuplicateFinding {
-  readonly tier: DuplicateTier;
+  readonly tier: "same-capture" | "similar";
   readonly existingRecordId: string;
   /** Human-readable reason, for the import report. Never parsed. */
   readonly reason: string;
-  /** Only `identical` acts; the rest are reported for a person to judge. */
-  readonly action: "skip" | "report";
+  /** Always `report`: neither tier here is calibrated to act. See the header. */
+  readonly action: "report";
 }
 
 /**
@@ -91,54 +129,47 @@ export const PERCEPTUAL_DISTANCE_THRESHOLD = 6;
  * messaging app. Returning null rather than a partial fingerprint is what stops
  * "two files with no EXIF" reading as "the same photo", which would match
  * essentially every screenshot in a library against every other.
+ *
+ * The fingerprint is also the tier-2 lookup's `where` clause, one column at a
+ * time — see `library-lookup.ts`, which derives that clause from this function
+ * rather than restating its preconditions.
  */
 export function captureFingerprint(candidate: ImportCandidate): string | null {
   if (!candidate.capturedAt) return null;
-  if (candidate.imageUniqueId) {
-    return `uid:${candidate.capturedAt}:${candidate.imageUniqueId}`;
-  }
-  // No UID — fall back to make/model plus native dimensions. Weaker, and the
-  // reason this tier reports rather than acts: a burst shares all of it.
+  // Make/model plus native dimensions is the whole fingerprint, and the reason
+  // this tier reports rather than acts: a burst shares all of it. The stronger
+  // `ImageUniqueId` form is unreachable — see the `same-capture` tier above.
   if (!candidate.cameraMake && !candidate.cameraModel) return null;
   if (!candidate.width || !candidate.height) return null;
   return `cam:${candidate.capturedAt}:${candidate.cameraMake ?? ""}:${candidate.cameraModel ?? ""}:${candidate.width}x${candidate.height}`;
 }
 
 /**
- * Compare one incoming file against the library.
+ * Compare one incoming file against the records a lookup proposed for it.
  *
- * Returns the **strongest** finding only. A file that is byte-identical to
+ * `candidates` is a per-candidate answer, not a library: the same-capture rows
+ * an indexed metadata query returned, plus whatever the perceptual index holds.
+ * Passing the whole library still works and is what the tests do, because the
+ * comparison is the same either way — what changed is who pays for the scan.
+ *
+ * Returns the **strongest** finding only. A file that is the same exposure as
  * something is not also interestingly "similar" to it, and reporting both would
  * bury the one that matters.
  */
 export function findDuplicate(
   candidate: ImportCandidate,
-  library: readonly LibraryEntry[],
+  candidates: readonly LibraryEntry[],
   perceptualDistance: (a: string, b: string) => number,
 ): DuplicateFinding | null {
-  // Tier 1 — byte-identical. The only tier that acts.
-  for (const entry of library) {
-    if (entry.contentHash === candidate.contentHash) {
-      return {
-        tier: "identical",
-        existingRecordId: entry.recordId,
-        reason: "byte-identical to an existing record",
-        action: "skip",
-      };
-    }
-  }
-
   // Tier 2 — same capture, per the camera.
   const fingerprint = captureFingerprint(candidate);
   if (fingerprint) {
-    for (const entry of library) {
+    for (const entry of candidates) {
       if (captureFingerprint(entry) === fingerprint) {
         return {
           tier: "same-capture",
           existingRecordId: entry.recordId,
           reason: `same capture fingerprint as ${entry.originalFilename ?? entry.recordId}`,
-          // Reported, not skipped. A burst shares this fingerprint, and every
-          // frame of it is a photo somebody chose to keep.
           action: "report",
         };
       }
@@ -147,7 +178,7 @@ export function findDuplicate(
 
   // Tier 3 — perceptually similar.
   if (candidate.perceptualHash) {
-    for (const entry of library) {
+    for (const entry of candidates) {
       if (!entry.perceptualHash) continue;
       const distance = perceptualDistance(candidate.perceptualHash, entry.perceptualHash);
       if (distance <= PERCEPTUAL_DISTANCE_THRESHOLD) {

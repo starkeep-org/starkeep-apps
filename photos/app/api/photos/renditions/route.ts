@@ -100,6 +100,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     // A bounded id list, as the grammar's `in` over the primary key. The whole
     // answer by construction, so the page carries no cursor.
     `where=${encodeURIComponent(JSON.stringify({ id: { in: recordIds } }))}`,
+    // The page has to hold the whole batch. `ids=` used to size the page from
+    // the list itself; a `where` clause does not, so an unnamed `limit` would
+    // take the route's default — 50 in the cloud — and silently answer half of
+    // a 100-record batch as though the rest had no renditions.
+    `limit=${recordIds.length}`,
     "include=metadata",
     `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
   ];

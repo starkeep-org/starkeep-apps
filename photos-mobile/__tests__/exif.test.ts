@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readImageExif, parseExifDate } from "../src/media/exif";
+import { ASSUMED_UTC_OFFSET_MINUTES, readImageExif, parseExifDate } from "../src/media/exif";
 import { jpegWithExif } from "./helpers/jpeg-exif";
 
 describe("readImageExif", () => {
@@ -18,7 +18,7 @@ describe("readImageExif", () => {
     const exif = readImageExif(
       jpegWithExif({ dateTimeOriginal: "2026:07:06 14:53:56", orientation: 6 }),
     );
-    expect(exif.capturedAt).toBe("2026-07-06T14:53:56");
+    expect(exif.capturedAt).toBe("2026-07-06T18:53:56.000Z");
     expect(exif.orientation).toBe(6);
   });
 
@@ -29,7 +29,7 @@ describe("readImageExif", () => {
     const exif = readImageExif(
       jpegWithExif({ dateTimeOriginal: "2026:01:02 03:04:05", orientation: 8, bigEndian: true }),
     );
-    expect(exif.capturedAt).toBe("2026-01-02T03:04:05");
+    expect(exif.capturedAt).toBe("2026-01-02T07:04:05.000Z");
     expect(exif.orientation).toBe(8);
   });
 
@@ -40,7 +40,7 @@ describe("readImageExif", () => {
     const exif = readImageExif(
       jpegWithExif({ dateTimeOriginal: "2026:03:04 05:06:07", orientation: 1, xmpFirst: true }),
     );
-    expect(exif.capturedAt).toBe("2026-03-04T05:06:07");
+    expect(exif.capturedAt).toBe("2026-03-04T09:06:07.000Z");
     expect(exif.orientation).toBe(1);
   });
 
@@ -94,30 +94,67 @@ describe("readImageExif", () => {
   });
 });
 
+describe("the zone a capture time is read in", () => {
+  it("applies the file's own OffsetTimeOriginal", () => {
+    const exif = readImageExif(
+      jpegWithExif({ dateTimeOriginal: "2026:04:04 10:29:21", offsetTimeOriginal: "-06:00" }),
+    );
+    expect(exif.capturedAt).toBe("2026-04-04T16:29:21.000Z");
+  });
+
+  it("falls back to the assumed offset when the header names none", () => {
+    expect(ASSUMED_UTC_OFFSET_MINUTES).toBe(-240);
+    const exif = readImageExif(jpegWithExif({ dateTimeOriginal: "2019:09:01 20:10:30" }));
+    expect(exif.capturedAt).toBe("2019-09-02T00:10:30.000Z");
+  });
+
+  it("reads the same instant whatever zone the handset is in", () => {
+    // The property `captured_at` rests on: a derived column is a fact anyone
+    // re-deriving from the same bytes reproduces. A phone crossing a time zone
+    // must not change the answer for a photograph it already imported.
+    const bytes = jpegWithExif({ dateTimeOriginal: "2026:07:06 14:53:56" });
+    const original = process.env.TZ;
+    const seen: string[] = [];
+    for (const zone of ["UTC", "America/Detroit", "Asia/Tokyo"]) {
+      process.env.TZ = zone;
+      seen.push(String(readImageExif(bytes).capturedAt));
+    }
+    process.env.TZ = original;
+    expect(seen).toEqual([
+      "2026-07-06T18:53:56.000Z",
+      "2026-07-06T18:53:56.000Z",
+      "2026-07-06T18:53:56.000Z",
+    ]);
+  });
+});
+
 describe("parseExifDate", () => {
-  it("rewrites EXIF's own spelling as ISO 8601", () => {
+  it("rewrites EXIF's own spelling as a canonical ISO-8601 instant", () => {
     // The same output shape the cloud importer's `parseExifDate` produces.
     // `captured_at` is one column that both writers fill, and two spellings of a
     // timestamp in it cannot be ordered against each other.
-    expect(parseExifDate("2026:07:06 14:53:56")).toBe("2026-07-06T14:53:56");
+    expect(parseExifDate("2026:07:06 14:53:56", -240)).toBe("2026-07-06T18:53:56.000Z");
   });
 
-  it("carries no timezone, because the file states none", () => {
-    // EXIF records local time with no offset. A `Z` would assert something the
-    // photograph does not say.
-    expect(parseExifDate("2026:07:06 14:53:56")).not.toMatch(/Z$/);
+  it("applies the offset it is given rather than any ambient one", () => {
+    expect(parseExifDate("2026:07:06 14:53:56", 0)).toBe("2026-07-06T14:53:56.000Z");
+    expect(parseExifDate("2026:07:06 14:53:56", 330)).toBe("2026-07-06T09:23:56.000Z");
+  });
+
+  it("crosses the day boundary rather than clamping", () => {
+    expect(parseExifDate("2019:09:01 20:10:30", -240)).toBe("2019-09-02T00:10:30.000Z");
   });
 
   it("rejects a clock that was never set", () => {
     // All zeroes parses structurally and describes no moment. Sorted into a
     // library it would claim to be the oldest photograph ever taken.
-    expect(parseExifDate("0000:00:00 00:00:00")).toBeNull();
-    expect(parseExifDate("2026:00:00 00:00:00")).toBeNull();
+    expect(parseExifDate("0000:00:00 00:00:00", 0)).toBeNull();
+    expect(parseExifDate("2026:00:00 00:00:00", 0)).toBeNull();
   });
 
   it("rejects anything that is not the EXIF shape", () => {
-    expect(parseExifDate("2026-07-06T14:53:56")).toBeNull();
-    expect(parseExifDate("")).toBeNull();
-    expect(parseExifDate("not a date")).toBeNull();
+    expect(parseExifDate("2026-07-06T14:53:56", 0)).toBeNull();
+    expect(parseExifDate("", 0)).toBeNull();
+    expect(parseExifDate("not a date", 0)).toBeNull();
   });
 });

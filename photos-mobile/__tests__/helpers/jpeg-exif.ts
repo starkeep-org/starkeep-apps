@@ -11,6 +11,8 @@
 interface ExifFixture {
   /** `DateTimeOriginal`, in EXIF's own `YYYY:MM:DD HH:MM:SS` spelling. */
   readonly dateTimeOriginal?: string;
+  /** `OffsetTimeOriginal`, as `±HH:MM`. Omitted unless given. */
+  readonly offsetTimeOriginal?: string;
   readonly orientation?: number;
   readonly pixelWidth?: number;
   readonly pixelHeight?: number;
@@ -29,6 +31,7 @@ interface ExifFixture {
 const TAG_ORIENTATION = 0x0112;
 const TAG_EXIF_POINTER = 0x8769;
 const TAG_DATE_TIME_ORIGINAL = 0x9003;
+const TAG_OFFSET_TIME_ORIGINAL = 0x9011;
 const TAG_PIXEL_X = 0xa002;
 const TAG_PIXEL_Y = 0xa003;
 
@@ -67,6 +70,17 @@ export function jpegWithExif(fixture: ExifFixture = {}): Uint8Array {
     const bytes = asciiValue(fixture.dateTimeOriginal);
     exifIfd.push({
       tag: TAG_DATE_TIME_ORIGINAL,
+      type: TYPE_ASCII,
+      count: bytes.length,
+      bytes,
+    });
+  }
+  // After the date and before the dimensions: IFD entries run in ascending tag
+  // order, and 0x9011 sits between 0x9003 and 0xa002.
+  if (fixture.offsetTimeOriginal !== undefined) {
+    const bytes = asciiValue(fixture.offsetTimeOriginal);
+    exifIfd.push({
+      tag: TAG_OFFSET_TIME_ORIGINAL,
       type: TYPE_ASCII,
       count: bytes.length,
       bytes,

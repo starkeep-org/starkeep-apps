@@ -1,5 +1,12 @@
 import exifr from "exifr";
-import { emptyExif, formatExposureTime, parseExifDate, type ExifFields } from "./exif-generator";
+import {
+  ASSUMED_UTC_OFFSET_MINUTES,
+  emptyExif,
+  formatExposureTime,
+  parseExifDate,
+  parseExifOffsetMinutes,
+  type ExifFields,
+} from "./exif-generator";
 
 /**
  * Extract EXIF + GPS fields from a JPEG/HEIC/TIFF image's bytes. Any
@@ -9,14 +16,28 @@ import { emptyExif, formatExposureTime, parseExifDate, type ExifFields } from ".
  */
 export async function extractExif(bytes: Uint8Array | Buffer): Promise<ExifFields> {
   try {
-    const parsed = await exifr.parse(bytes as Uint8Array);
+    // `reviveValues: false` is load-bearing, not a micro-optimization. Left on,
+    // exifr turns every date tag into a `Date` by handing the naive EXIF string
+    // to `new Date(...)`, which reads it in the *process* zone — and it does so
+    // whether or not the file carries an `OffsetTime*` tag, so the offset the
+    // camera recorded is discarded and the deriving machine's zone is applied
+    // in its place. Probed on a stored Pixel frame: `2026:04:04 10:29:21` with
+    // `OffsetTimeOriginal = "-06:00"` revives as `14:29:21Z` under
+    // America/Detroit and `10:29:21Z` under UTC, and the instant the file
+    // actually describes is `16:29:21Z`.
+    //
+    // Off, the date tags arrive as their raw strings and the zone becomes this
+    // module's decision rather than the runtime's. It changes nothing else this
+    // reader uses — make, model, f-number, exposure, ISO, lens and the computed
+    // latitude/longitude are byte-identical either way.
+    const parsed = await exifr.parse(bytes as Uint8Array, { reviveValues: false });
     if (!parsed) return emptyExif();
 
     const dateTakenRaw =
       parsed.DateTimeOriginal
-        ? parseExifDate(parsed.DateTimeOriginal)
+        ? parseExifDate(parsed.DateTimeOriginal, offsetFor(parsed, "OffsetTimeOriginal"))
         : parsed.CreateDate
-          ? parseExifDate(parsed.CreateDate)
+          ? parseExifDate(parsed.CreateDate, offsetFor(parsed, "OffsetTimeDigitized"))
           : null;
 
     const exposureTime =
@@ -52,6 +73,32 @@ export async function extractExif(bytes: Uint8Array | Buffer): Promise<ExifField
   } catch {
     return emptyExif();
   }
+}
+
+/**
+ * The offset tag EXIF 2.31 pairs with one date tag, or the best stand-in.
+ *
+ * The paired tag is asked for first because that is the one the specification
+ * says describes this date. The other two follow because a writer that records
+ * a zone at all almost always records the same zone in all three, and a sibling
+ * tag is a fact the file states — which
+ * {@link ASSUMED_UTC_OFFSET_MINUTES} is not.
+ *
+ * GPS is deliberately not consulted. A coordinate plus a date does determine a
+ * zone, but only through a boundary database that changes under us, and a
+ * derived column may not depend on which version of that database a node
+ * carries.
+ */
+function offsetFor(
+  parsed: Record<string, unknown>,
+  preferred: "OffsetTimeOriginal" | "OffsetTimeDigitized",
+): number {
+  const candidates = [preferred, "OffsetTimeOriginal", "OffsetTime", "OffsetTimeDigitized"];
+  for (const tag of candidates) {
+    const minutes = parseExifOffsetMinutes(parsed[tag]);
+    if (minutes !== null) return minutes;
+  }
+  return ASSUMED_UTC_OFFSET_MINUTES;
 }
 
 function stringOrNull(value: unknown): string | null {

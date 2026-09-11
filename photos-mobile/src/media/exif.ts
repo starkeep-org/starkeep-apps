@@ -45,21 +45,32 @@
  * none of them is written. Each is a column that starts syncing to every other
  * node the moment it is populated, and that deserves its own decision rather
  * than arriving as a side effect of wanting a capture time.
+ *
+ * The `OffsetTime*` tags are the exception, and they are not a third fact: they
+ * are what turns `DateTimeOriginal` from a wall clock into an instant. They are
+ * read and applied, never stored.
  */
 
 /** What one photograph's header says, as far as this reader looks. */
 export interface ImageExif {
   /**
-   * `DateTimeOriginal`, normalized to ISO 8601, or null when absent.
+   * `DateTimeOriginal`, as a canonical ISO-8601 instant in UTC, or null when
+   * absent.
    *
-   * ISO because that is what `captured_at` already holds everywhere else — the
-   * cloud importer writes `parseExifDate`'s output, and two spellings of a
-   * timestamp in one column cannot be ordered against each other.
+   * Canonical because that is what `captured_at` holds everywhere else — the
+   * column is declared `timestamp`, which promises that lexical comparison is
+   * time comparison, and that holds only while every value is canonical UTC.
+   * Two spellings of a timestamp in one column cannot be ordered against each
+   * other.
    *
-   * **No timezone suffix**, matching the cloud. EXIF's `DateTimeOriginal` is
-   * local time with no offset recorded, so appending `Z` would assert something
-   * the file does not say. The values are compared against each other and never
-   * against an instant, so a consistent absence beats an invented offset.
+   * **This reader used to emit a zoneless `YYYY-MM-DDTHH:MM:SS` instead**, on
+   * the argument that EXIF states no offset and appending `Z` would assert
+   * something the file does not say. The argument is sound about the file and
+   * wrong about the column: every reader downstream hands the value to
+   * `new Date`, which reads a zoneless string in its *own* zone, so the offset
+   * was not absent — it was whichever machine happened to read the row. See
+   * {@link ASSUMED_UTC_OFFSET_MINUTES} for what stands in when the file names
+   * no offset, and why it has to be a constant.
    */
   readonly capturedAt: string | null;
   /**
@@ -89,6 +100,11 @@ const TAG_ORIENTATION = 0x0112;
 const TAG_EXIF_IFD_POINTER = 0x8769;
 const TAG_DATE_TIME_ORIGINAL = 0x9003;
 const TAG_CREATE_DATE = 0x9004;
+// EXIF 2.31 (2016) added these three. They are the only place a file ever
+// states the zone its wall clocks are written in.
+const TAG_OFFSET_TIME = 0x9010;
+const TAG_OFFSET_TIME_ORIGINAL = 0x9011;
+const TAG_OFFSET_TIME_DIGITIZED = 0x9012;
 const TAG_PIXEL_X = 0xa002;
 const TAG_PIXEL_Y = 0xa003;
 
@@ -193,9 +209,15 @@ function readTiff(bytes: Uint8Array, tiffStart: number): ImageExif {
 
   // `DateTimeOriginal` first, `CreateDate` second — the same precedence the
   // cloud importer's `extractExif` uses, so the two writers cannot disagree
-  // about which tag a capture time comes from.
-  const rawDate = sub.get(TAG_DATE_TIME_ORIGINAL) ?? sub.get(TAG_CREATE_DATE);
-  const capturedAt = typeof rawDate === "string" ? parseExifDate(rawDate) : null;
+  // about which tag a capture time comes from. The offset tag EXIF pairs with
+  // the chosen date leads, for the same reason.
+  const original = sub.get(TAG_DATE_TIME_ORIGINAL);
+  const rawDate = original ?? sub.get(TAG_CREATE_DATE);
+  const offset = offsetMinutes(
+    sub,
+    original !== undefined ? TAG_OFFSET_TIME_ORIGINAL : TAG_OFFSET_TIME_DIGITIZED,
+  );
+  const capturedAt = typeof rawDate === "string" ? parseExifDate(rawDate, offset) : null;
 
   const width = positive(sub.get(TAG_PIXEL_X));
   const height = positive(sub.get(TAG_PIXEL_Y));
@@ -274,21 +296,83 @@ function readIfd(
 }
 
 /**
- * EXIF's `YYYY:MM:DD HH:MM:SS` as ISO 8601.
+ * The UTC offset a capture time is read in when the file names none.
+ *
+ * Deliberately the same constant, and the same argument, as
+ * `ASSUMED_UTC_OFFSET_MINUTES` in `starkeep-apps/photos`. `captured_at` is one
+ * column that both importers write, and the value has to be a *fact about the
+ * file* — something anyone re-deriving from the same bytes reproduces — because
+ * that is what lets a metadata row ride the sync wire as a clockless passenger
+ * on its record. Two importers assuming two different offsets would put two
+ * conflicting instants in one column for the same photograph.
+ *
+ * It is US Eastern daylight time, it belongs in configuration rather than in a
+ * constant, and the day it moves there both importers have to move together.
+ *
+ * Duplicated rather than imported because this app shares no package with the
+ * web one — the same reason this file reads the header itself rather than
+ * reaching for `exifr`. See the note at the top.
+ */
+export const ASSUMED_UTC_OFFSET_MINUTES = -4 * 60;
+
+/**
+ * The offset one of the `OffsetTime*` tags states, in minutes east of UTC, or
+ * {@link ASSUMED_UTC_OFFSET_MINUTES} when the header states none.
+ *
+ * The tag paired with the chosen date leads; the other two follow, because a
+ * writer that records a zone at all almost always records the same zone in all
+ * three, and a sibling tag is still a fact the file states.
+ *
+ * GPS is deliberately not consulted. A coordinate and a date do determine a
+ * zone, but only through a boundary database that changes under us, and a
+ * derived column may not depend on which version of it a node carries.
+ */
+function offsetMinutes(sub: Map<number, number | string>, preferred: number): number {
+  for (const tag of [preferred, TAG_OFFSET_TIME_ORIGINAL, TAG_OFFSET_TIME, TAG_OFFSET_TIME_DIGITIZED]) {
+    const raw = sub.get(tag);
+    if (typeof raw !== "string") continue;
+    const match = /^([+-])(\d{2}):(\d{2})$/.exec(raw.trim());
+    if (!match) continue;
+    if (Number(match[3]) > 59) continue;
+    const minutes = Number(match[2]) * 60 + Number(match[3]);
+    return match[1] === "-" ? -minutes : minutes;
+  }
+  return ASSUMED_UTC_OFFSET_MINUTES;
+}
+
+/**
+ * EXIF's `YYYY:MM:DD HH:MM:SS` plus a UTC offset, as a canonical ISO-8601
+ * instant.
  *
  * The same transformation `parseExifDate` performs in `starkeep-apps/photos`,
  * and deliberately the same output shape: `captured_at` is one column that both
  * importers write and two spellings of a timestamp in it cannot be ordered
  * against each other.
  *
+ * The arithmetic goes through `Date.UTC`, which takes the components as UTC and
+ * consults no zone, rather than through `new Date(string)`, which would read the
+ * wall clock in the handset's own zone and make the stored instant depend on
+ * where the phone happened to be.
+ *
  * A camera that has never had its clock set writes all zeroes, which parses
  * structurally and describes no moment. Rejected, because sorted into a library
  * it would claim to be the oldest photograph ever taken.
  */
-export function parseExifDate(value: string): string | null {
+export function parseExifDate(value: string, offsetMinutesEast: number): string | null {
   const match = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(value.trim());
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   if (year === "0000" || month === "00" || day === "00") return null;
-  return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  const millis =
+    Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+    ) -
+    offsetMinutesEast * 60_000;
+  if (!Number.isFinite(millis)) return null;
+  return new Date(millis).toISOString();
 }

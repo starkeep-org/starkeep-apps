@@ -63,3 +63,9 @@ export {
   isVideoRecord,
   type DisplaySource,
 } from "./variant-src";
+
+export {
+  captureKey,
+  compareCaptureOrder,
+  LIBRARY_ORDER,
+} from "./capture-order";

@@ -27,8 +27,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAppCredentialsCache, createNextProxyHandler } from "@starkeep/app-client";
 import { GET as libraryRoute } from "../app/api/photos/library/route";
+import { LIBRARY_ORDER } from "../src/photos-lib/capture-order";
 import { POST as renditionsRoute } from "../app/api/photos/renditions/route";
-import { listPhotos, requestOwnApi } from "../src/lib/data-server-client";
+import { listPhotos, listPhotosSince, requestOwnApi } from "../src/lib/data-server-client";
 import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 
 const HMAC_SECRET = "integration-test-secret";
@@ -158,6 +159,10 @@ describe("cloud data path (client → proxy → data server)", () => {
     // does not make the integration brittle.
     const params = new URLSearchParams(dataReq!.path.split("?")[1]);
     expect(params.get("include")).toBe("metadata,labels");
+    // Capture order, which is what makes a page of the library a slice of it
+    // rather than whichever records sort first by content-addressed id. The
+    // grid mirrors this key — see `photos-lib/capture-order.ts`.
+    expect(params.get("order")).toBe(LIBRARY_ORDER);
     // Renditions are excluded server-side — a page mixing them with originals
     // is a page the client cannot page through.
     expect(params.get("notLabel")).toBe("photos/rendition");
@@ -168,6 +173,19 @@ describe("cloud data path (client → proxy → data server)", () => {
     expect(dataReq!.headers.appId).toBe("photos");
     expect(dataReq!.headers.sig).toBeTruthy();
     expect(Number.isFinite(Number(dataReq!.headers.ts))).toBe(true);
+  });
+
+  // A delta is walked by sync time and the library by capture time, so the two
+  // requests cannot share an ordering. A delta cut in capture order would hand
+  // back the most recently photographed of the changes and leave the rest below
+  // a watermark the client advances past.
+  it("does not put the library's ordering on an incremental delta", async () => {
+    await listPhotosSince("2026-09-01T00:00:00.000Z");
+    const delta = received.filter((r) => r.path.includes("updated_after")).at(-1);
+    expect(delta, "no delta request reached the data server").toBeTruthy();
+    const params = new URLSearchParams(delta!.path.split("?")[1]);
+    expect(params.get("updated_after")).toBe("2026-09-01T00:00:00.000Z");
+    expect(params.get("order")).toBeNull();
   });
 
   it("the fake server proves an unsigned request would 401 (regression canary)", async () => {

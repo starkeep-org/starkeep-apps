@@ -22,6 +22,7 @@ import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
 import { useListLayoutPreferences } from "./src/lib/list-layout-preferences";
 import { useNarrowViewport, usePrefersReducedMotion } from "./src/lib/use-narrow-viewport";
 import { useHideOnScrollDown } from "./src/lib/use-hide-on-scroll-down";
+import { compareCaptureOrder } from "@/photos-lib/client";
 
 
 function useFullSizeUrlCache() {
@@ -101,18 +102,17 @@ function PhotosAppInner() {
   // library.
   const originals = state.images.filter((img) => img.parentId === null);
 
-  // Sort client-side so display order is deterministic and identical across the
-  // local and cloud backends, independent of each server's query order and of
-  // the incremental-merge append drift in UPSERT_IMAGES. Newest first by
-  // effectiveDateTaken (the same field the grid groups days by), with id as a
-  // stable tiebreak. effectiveDateTaken is an ISO-8601 string, so lexical
-  // comparison is chronological.
-  const displayImages = [...originals].sort((a, b) => {
-    if (a.effectiveDateTaken !== b.effectiveDateTaken) {
-      return a.effectiveDateTaken < b.effectiveDateTaken ? 1 : -1;
-    }
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  // Sorted client-side by the key the *server* cut the page on, rather than by
+  // one of this component's choosing. `/api/photos/library` asks for
+  // `order=captured_at.desc,created_at.desc`, so a page is a prefix of the
+  // library in that order; sorting here by anything else would show a page
+  // ordered one way and continued another once the library outgrows one page.
+  //
+  // The sort still has to happen, for two reasons the server cannot cover:
+  // UPSERT_IMAGES appends merged records to the end of the list, and
+  // `dateTakenOverride` lives in Photos' own syncable table where the records
+  // query cannot reach it. See `photos-lib/capture-order.ts`.
+  const displayImages = [...originals].sort(compareCaptureOrder);
 
   // The grid displays originals, so the clicked tile already *is* the record
   // the viewer wants. There is no thumbnail-to-parent hop to make.

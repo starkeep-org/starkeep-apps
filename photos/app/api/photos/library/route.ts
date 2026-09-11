@@ -11,6 +11,7 @@ import {
 import { MAX_VARIANT_TARGETS } from "@/photos-lib/rendition-targets";
 import { VIDEO_LADDER } from "@/photos-lib/ladder";
 import { currentRenditionPolicies } from "@/photos-lib/rendition-policy";
+import { LIBRARY_ORDER } from "@/photos-lib/capture-order";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +54,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const url = new URL(req.url);
 
+  const updatedAfter = url.searchParams.get("updated_after");
   const params = [
     `limit=${clampLimit(url.searchParams.get("limit"))}`,
     "include=metadata,labels",
@@ -62,8 +64,38 @@ export async function GET(req: NextRequest): Promise<Response> {
     // reading.
     `notLabel=${encodeURIComponent(RENDITION_LABEL_REF)}`,
   ];
-  const updatedAfter = url.searchParams.get("updated_after");
-  if (updatedAfter) params.push(`updated_after=${encodeURIComponent(updatedAfter)}`);
+  if (updatedAfter) {
+    // The delta keeps the route's default ordering, and deliberately does not
+    // take the library's.
+    //
+    // `updated_after` selects what has changed, and a page of that set has to
+    // be cut in an order the *caller* is walking — which is sync time, not
+    // capture time. A delta ordered by capture time whose page filled would
+    // hand back the most recently photographed of the changes and leave the
+    // rest below a watermark the client then advances past. That the default
+    // `id asc` has the same shape is a defect this work found rather than
+    // introduced, recorded in the Phase F status document; what this branch
+    // avoids is making it worse by ordering the delta on a key that has nothing
+    // to do with when a record changed.
+    params.push(`updated_after=${encodeURIComponent(updatedAfter)}`);
+  } else {
+    // Capture order, which is what makes a page of this library a *slice* of it
+    // rather than an arbitrary sample. Without it the route answered `id asc`,
+    // so a page carried scattered capture dates and the grid grouped whatever
+    // arrived; with a library past the page size, the records a viewer saw were
+    // whichever ones sorted first by content-addressed id.
+    //
+    // `created_at` is the second key rather than a fallback folded into the
+    // first: the platform refuses to coalesce the two because an ISO-8601
+    // capture time and a serialized HLC sort against each other for lexical
+    // reasons that have nothing to do with time. Named as a second key it gives
+    // the records with no capture time a trailing block ordered by import time.
+    //
+    // `photos-lib/capture-order.ts` holds the same order for the client, and a
+    // test pins the two together — the grid has to sort by the key the page was
+    // cut on or a continued page arrives out of order.
+    params.push(`order=${LIBRARY_ORDER}`);
+  }
   const cursor = url.searchParams.get("cursor");
   if (cursor) params.push(`page_token=${encodeURIComponent(cursor)}`);
 

@@ -116,7 +116,7 @@ describe("backfillImageExif over real SQLite rows", () => {
     expect(outcome.written).toBe(1);
     const row = await adapter.getMetadata("image", record.id);
     expect(row).toMatchObject({
-      captured_at: "2026-08-30T15:17:37",
+      captured_at: "2026-08-30T19:17:37.000Z",
       orientation: 6,
       width: 4032,
       height: 3024,
@@ -195,7 +195,7 @@ describe("backfillImageExif over real SQLite rows", () => {
 
     expect(outcome.written).toBe(1);
     expect((await adapter.getMetadata("image", record.id))?.["captured_at"]).toBe(
-      "2026-05-05T05:05:05",
+      "2026-05-05T09:05:05.000Z",
     );
   });
 });

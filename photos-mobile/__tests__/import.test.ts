@@ -1146,7 +1146,9 @@ describe("what the header adds to a record", () => {
     const outcome = await importDeviceMedia(deps(), { limit: 10 });
 
     const row = await database.getMetadata("image", outcome.records[0]!.id);
-    expect(row).toMatchObject({ captured_at: "2026-07-06T14:53:56", orientation: 6 });
+    // The header states no offset, so the capture time reads in the assumed one
+    // — a constant, never the handset's own zone. See `ASSUMED_UTC_OFFSET_MINUTES`.
+    expect(row).toMatchObject({ captured_at: "2026-07-06T18:53:56.000Z", orientation: 6 });
   });
 
   it("writes an orientation beside the dimensions, which is what makes them readable", async () => {
@@ -1265,7 +1267,7 @@ describe("backfillImageExif", () => {
     for (const id of ids) {
       const metadata = await database.getMetadata("image", id);
       expect(metadata?.["orientation"]).toBe(6);
-      expect(metadata?.["captured_at"]).toMatch(/^2026-0\d-01T12:00:00$/);
+      expect(metadata?.["captured_at"]).toMatch(/^2026-0\d-01T16:00:00\.000Z$/);
     }
   });
 

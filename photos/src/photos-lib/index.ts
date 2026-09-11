@@ -1,6 +1,14 @@
 // Types
 export type { AppImage, AppImageExif, DerivedKind } from "./types/app-image";
 
+// The one order a photo library is read in, shared by the route that sends it
+// and the grid that displays it.
+export {
+  captureKey,
+  compareCaptureOrder,
+  LIBRARY_ORDER,
+} from "./capture-order";
+
 // Cross-app labels Photos writes, and the questions it asks of them
 export {
   PHOTOS_APP_ID,
@@ -87,6 +95,11 @@ export {
   type ImportCandidate,
   type LibraryEntry,
 } from "./import/duplicate-tiers";
+export {
+  createLibraryLookup,
+  sameCaptureWhere,
+  type LibraryLookup,
+} from "./import/library-lookup";
 export { openImportStore, importDir, type ImportStore } from "./import/import-store";
 export {
   runImport,

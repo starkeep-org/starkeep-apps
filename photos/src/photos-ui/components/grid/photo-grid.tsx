@@ -58,13 +58,27 @@ export function PhotoGrid({
     return () => observer.disconnect();
   }, [hasMore, loading, onLoadMore]);
 
-  // Group by date descending
-  const grouped: Record<string, AppImage[]> = {};
+  // Sectioned in arrival order rather than by sorting the day keys.
+  //
+  // `images` arrives in the order the library was paged in — capture time
+  // descending, then import time, then id — so the order it arrives in *is* the
+  // order to show. Re-deriving one here is what made a paged library group
+  // "whatever arrived": the days of one page were sorted among themselves, so a
+  // later page could open a section that belonged above one already on screen.
+  //
+  // A day can legitimately open twice. `effectiveDateTaken` falls back to the
+  // import time for a record with no capture time, and those records form a
+  // trailing block — so a photo taken on the day an untagged file was imported
+  // puts the same heading at the top and at the bottom. That is the truth about
+  // what is known, and the section key carries the index so React still sees
+  // two distinct sections.
+  const sections: { day: string; images: AppImage[] }[] = [];
   for (const img of images) {
     const day = img.effectiveDateTaken.slice(0, 10);
-    (grouped[day] ??= []).push(img);
+    const open = sections[sections.length - 1];
+    if (open && open.day === day) open.images.push(img);
+    else sections.push({ day, images: [img] });
   }
-  const sortedDays = Object.keys(grouped).sort().reverse();
 
   if (images.length === 0 && !loading) {
     return (
@@ -88,11 +102,11 @@ export function PhotoGrid({
       <div style={{ padding: edgeToEdge ? 0 : "0 16px" }}>
         <div ref={measureRef}>
           {groupByDate ? (
-            sortedDays.map((day) => (
+            sections.map((section, index) => (
               <DateSection
-                key={day}
-                dateKey={day}
-                images={grouped[day]}
+                key={`${section.day}#${index}`}
+                dateKey={section.day}
+                images={section.images}
                 containerWidth={containerWidth}
                 rowHeight={rowHeight}
                 edgeToEdge={edgeToEdge}

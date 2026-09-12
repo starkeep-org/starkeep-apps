@@ -88,11 +88,21 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
   //
   // False is a real answer and stops here, which is what keeps opening a
   // screenshot from fetching its bytes on every view.
-  const exifRead = (details ?? image).exif.present != null;
+  //
+  // **Stills only, and the video case is not symmetric.** `exif_present` is a
+  // column of the image metadata table and not of the video one, so a clip
+  // reads `present: null` on every open, forever — the one state this gate
+  // treats as "go and look". Left ungated, opening a video downloaded the whole
+  // clip to run `createImageBitmap` and `exifr` over bytes holding neither, then
+  // posted `typeId: "image"` against a video record and took a 500. A clip's
+  // container facts come from ffprobe during derivation (`video/probe.ts`), so
+  // "has anyone read this header" is not a question this panel asks about one.
+  const detailed = details ?? image;
+  const exifRead = !detailed.mimeType.startsWith("image/") || detailed.exif.present != null;
   useEffect(() => {
     if (!detailsLoaded || exifRead) return;
     let cancelled = false;
-    backfillImageMetadata(image.id, (details ?? image).mimeType)
+    backfillImageMetadata(image.id, detailed.mimeType)
       .then((wrote) => (wrote && !cancelled ? fetchDetails(image.id) : null))
       .then((img) => {
         if (!cancelled && img) setDetails(img);

@@ -176,16 +176,19 @@ describe("cloud data path (client → proxy → data server)", () => {
   });
 
   // A delta is walked by sync time and the library by capture time, so the two
-  // requests cannot share an ordering. A delta cut in capture order would hand
-  // back the most recently photographed of the changes and leave the rest below
-  // a watermark the client advances past.
-  it("does not put the library's ordering on an incremental delta", async () => {
+  // requests cannot share an ordering. The delta's own key is `updated_at`
+  // ascending, which is what makes a page a prefix of the changed set and the
+  // maximum `updated_at` in it a safe watermark. Capture order would hand back
+  // the most recently photographed of the changes; the route's old default,
+  // `id asc`, had the same defect in a different key.
+  it("cuts an incremental delta in updated_at order, not the library's", async () => {
     await listPhotosSince("2026-09-01T00:00:00.000Z");
     const delta = received.filter((r) => r.path.includes("updated_after")).at(-1);
     expect(delta, "no delta request reached the data server").toBeTruthy();
     const params = new URLSearchParams(delta!.path.split("?")[1]);
     expect(params.get("updated_after")).toBe("2026-09-01T00:00:00.000Z");
-    expect(params.get("order")).toBeNull();
+    expect(params.get("order")).toBe("updated_at.asc");
+    expect(params.get("order")).not.toBe(LIBRARY_ORDER);
   });
 
   it("the fake server proves an unsigned request would 401 (regression canary)", async () => {

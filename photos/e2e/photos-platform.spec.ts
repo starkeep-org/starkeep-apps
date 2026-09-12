@@ -34,12 +34,31 @@ const adminDataDir = () => process.env.E2E_ADMIN_DATA_DIR!;
 
 const CAPTION = "Sunset over the bay";
 
-/** The photos card on the admin Dashboard (Local section). */
+/**
+ * The photos card on the admin Dashboard (Local section).
+ *
+ * Keyed on `data-slot="card"`, the attribute every dashboard entry carries
+ * through admin-web's shared `AppCard`. Naming the card's utility classes is
+ * what broke this spec when core restyled the dashboard.
+ */
 function photosCard(page: Page): Locator {
   return page
-    .locator("div.rounded-md.border")
+    .locator('[data-slot="card"]')
     .filter({ has: page.getByText("Photos", { exact: true }) })
     .first();
+}
+
+/**
+ * Run one of a card's secondary actions.
+ *
+ * Stop and Uninstall used to be buttons on the card face. Core's dashboard
+ * redesign gave every card a single primary button and moved the rest behind an
+ * overflow menu, so they are `menuitem`s now — and the menu renders in a
+ * portal, outside the card, which is why the item is looked up on the page.
+ */
+async function cardMenuAction(page: Page, card: Locator, label: string): Promise<void> {
+  await card.getByRole("button", { name: /^More actions for / }).click();
+  await page.getByRole("menuitem", { name: label, exact: true }).click();
 }
 
 async function openPhotosViewerCaption(page: Page): Promise<Locator> {
@@ -75,7 +94,7 @@ test("install photos through the admin consent flow", async ({ page }) => {
   const card = photosCard(page);
   await expect(card).toBeVisible();
 
-  await card.getByRole("button", { name: "Install", exact: true }).click();
+  await card.getByRole("button", { name: /^Install / }).click();
 
   // The consent dialog must surface the manifest's requested grants before
   // anything is written. (The card lists the grants too, so scope to the
@@ -103,7 +122,7 @@ test("start photos from the admin UI and open it on its allocated port", async (
   await page.goto(adminUrl());
   const card = photosCard(page);
 
-  await card.getByRole("button", { name: "Start" }).click();
+  await card.getByRole("button", { name: /^Start / }).click();
   const badge = card.getByText(/Running :\d+/);
   await expect(badge).toBeVisible({ timeout: 60_000 });
 
@@ -180,15 +199,15 @@ test("uninstall: app data is gone, shared records survive in Drive", async ({
   // Stop, then uninstall through the UI (native confirm dialog).
   await page.goto(adminUrl());
   const card = photosCard(page);
-  await card.getByRole("button", { name: "Stop" }).click();
-  await expect(card.getByRole("button", { name: "Start" })).toBeVisible({
+  await cardMenuAction(page, card, "Stop");
+  await expect(card.getByRole("button", { name: /^Start / })).toBeVisible({
     timeout: 60_000,
   });
 
   page.on("dialog", (dialog) => void dialog.accept());
-  await card.getByRole("button", { name: "Uninstall" }).click();
+  await cardMenuAction(page, card, "Uninstall");
   await expect(
-    card.getByRole("button", { name: "Install", exact: true }),
+    card.getByRole("button", { name: /^Install / }),
   ).toBeVisible({
     timeout: 60_000,
   });
@@ -205,7 +224,7 @@ test("reinstall re-exposes the shared photos; captions are gone", async ({
 }) => {
   await page.goto(adminUrl());
   const card = photosCard(page);
-  await card.getByRole("button", { name: "Install", exact: true }).click();
+  await card.getByRole("button", { name: /^Install / }).click();
   await page.getByRole("button", { name: "Approve & Install" }).click();
   await expect(card.getByText("Installed")).toBeVisible({ timeout: 60_000 });
 

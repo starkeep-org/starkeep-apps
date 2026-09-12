@@ -2,7 +2,7 @@
  * The import loop: walk a folder, and turn each file into a record or a
  * recorded reason why not.
  *
- * ## Tier 1 is the server's job, not this loop's
+ * ## Duplicates are byte-identical duplicates, and the server decides them
  *
  * Registration already collapses a byte-identical record server-side, using an
  * index built for exactly that lookup. So this loop does not scan the library
@@ -11,11 +11,15 @@
  * file, and makes the authoritative check the one the library actually
  * enforces rather than a second implementation that can disagree with it.
  *
- * Tiers 2 and 3 ask the library about one candidate at a time, through
- * `ImportDeps.findCandidates`. The loop used to hold every record's
- * fingerprints in memory for the length of the run and compare against the
- * array; it now names the fingerprint it is looking for and lets the metadata
- * table's index answer. See `library-lookup.ts` for what each tier costs.
+ * **There is no other kind of duplicate here, deliberately.** The loop used to
+ * carry two further tiers that compared facts about the picture rather than
+ * about the bytes: one on a capture fingerprint of EXIF timestamp, camera and
+ * dimensions, and one on a perceptual hash. Both reported and neither acted.
+ * They existed to recognise the same photograph arriving in different bytes — a
+ * messaging-app re-encode, a Storage Saver copy, a re-export — and recognising
+ * that is not a goal of this project. Both were removed on 2026-09-11 along
+ * with the per-candidate metadata lookup that fed them. See
+ * `photos-cleanup-2026-09-11.md`.
  *
  * ## Every file ends in a recorded state
  *
@@ -33,12 +37,6 @@ import { pipeline } from "node:stream/promises";
 import type { ImportItem, ImportPacing } from "./import-run";
 import { DEFAULT_PACING, shouldAttempt } from "./import-run";
 import type { ImportStore } from "./import-store";
-import {
-  findDuplicate,
-  type DuplicateFinding,
-  type ImportCandidate,
-  type LibraryEntry,
-} from "./duplicate-tiers";
 import { isNoDecoderError } from "../image-processing/decode-errors";
 import { findLivePhotoPairs, toCandidate, type PairCandidate } from "./live-photo";
 import { PHOTOS_LABEL_KEYS } from "../labels";
@@ -81,8 +79,8 @@ export interface ImportDeps {
    * hash is now computed by streaming, and the uploader reads from disk on its
    * own terms — so no whole file is ever resident here.
    *
-   * `deduped` is the server's answer to tier 1 — authoritative, because it is
-   * the same check the library enforces on every write.
+   * `deduped` is the server's byte-identity answer — authoritative, because it
+   * is the same check the library enforces on every write.
    */
   readonly registerFile: (
     path: string,
@@ -110,36 +108,12 @@ export interface ImportDeps {
   readonly pairingFacts?: (
     path: string,
   ) => Promise<{ contentIdentifier?: string | null; durationMs?: number | null }>;
-  /**
-   * Which records are worth comparing this one candidate against, for tiers 2
-   * and 3.
-   *
-   * Called once per still, after the file is already imported. Empty is a valid
-   * answer and simply means those tiers report nothing about this file — a
-   * library with no extracted metadata cannot be compared against, and
-   * pretending otherwise would produce findings from missing data.
-   *
-   * `library-lookup.ts` is the implementation against a data server: an indexed
-   * metadata query for the capture fingerprint, plus a lazily-loaded index of
-   * perceptual hashes that no predicate can replace.
-   */
-  readonly findCandidates: (candidate: ImportCandidate) => Promise<readonly LibraryEntry[]>;
-  readonly perceptualDistance: (a: string, b: string) => number;
-  /**
-   * Fingerprints for one candidate file, for tiers 2 and 3.
-   *
-   * Only called for stills. A perceptual hash of a video is not defined here,
-   * and decoding a clip to invent one would cost the most expensive operation
-   * in the loop to produce a number nothing compares against.
-   */
-  readonly fingerprint: (path: string) => Promise<ImportCandidate>;
   /** Called after a successful registration so the ladder gets derived. */
   readonly onImported?: (recordId: string, path: string) => Promise<void>;
 }
 
 export interface ImportProgress {
   readonly processed: number;
-  readonly findings: readonly (DuplicateFinding & { sourcePath: string })[];
   /** True when the run stopped because it hit `maxItemsPerRun`, not because it finished. */
   readonly stoppedEarly: boolean;
   /** How many motion clips were attached to a still as a Live Photo. */
@@ -177,7 +151,6 @@ export async function runImport(
   deps: ImportDeps,
   pacing: ImportPacing = DEFAULT_PACING,
 ): Promise<ImportProgress> {
-  const findings: (DuplicateFinding & { sourcePath: string })[] = [];
   let processed = 0;
   let stoppedEarly = false;
 
@@ -237,7 +210,7 @@ export async function runImport(
       );
 
       if (deduped) {
-        // Tier 1, decided by the server against its own index.
+        // Byte-identity, decided by the server against its own index.
         store.put(
           item(contentHash, path, sizeBytes, "skipped", {
             recordId,
@@ -248,39 +221,6 @@ export async function runImport(
         processed += 1;
         await pause(pacing.delayMs);
         continue;
-      }
-
-      // Tiers 2 and 3 are advisory. They run *after* the import, not instead of
-      // it: the file is already in the library, and the finding is a note for a
-      // human to review — never a reason to have withheld it.
-      // Stills only: a perceptual hash of a video is not defined here, and
-      // decoding a clip to invent one would be the most expensive operation in
-      // the loop, producing a number nothing compares against.
-      if (!isVideoPath(path)) {
-        // Its own try, because "advisory" has to be true of the failure too.
-        // The record exists by this line; letting a fingerprint decode or a
-        // metadata query throw out to the handler below would mark an imported
-        // file `failed`, skip `onImported` so its ladder never derives, and
-        // leave the next run to rediscover it as a duplicate. A report that is
-        // missing one line is the right price for a lookup that could not
-        // answer.
-        try {
-          // Read the file's own fingerprint first, then ask the library which
-          // records share it. The order is forced: the lookup's predicate *is*
-          // the fingerprint, so there is nothing to ask until it exists.
-          const candidate = await deps.fingerprint(path);
-          const finding = findDuplicate(
-            candidate,
-            await deps.findCandidates(candidate),
-            deps.perceptualDistance,
-          );
-          if (finding) findings.push({ ...finding, sourcePath: path });
-        } catch (err) {
-          console.warn(
-            `[import] duplicate lookup failed for ${path} (${(err as Error).message}) — ` +
-              `the file is imported and carries no finding`,
-          );
-        }
       }
 
       store.put(item(contentHash, path, sizeBytes, "imported", { recordId }));
@@ -354,7 +294,7 @@ export async function runImport(
     await pause(pacing.delayMs);
   }
 
-  return { processed, findings, stoppedEarly, livePhotosPaired: paired };
+  return { processed, stoppedEarly, livePhotosPaired: paired };
 }
 
 function item(

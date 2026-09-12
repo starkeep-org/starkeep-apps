@@ -116,7 +116,7 @@ async function seedParent(options: {
   await database.put(record);
   const dimensions = options.dimensions === undefined ? SOURCE : options.dimensions;
   if (dimensions) {
-    await database.putMetadata("image", {
+    await database.putMetadata(record.type, {
       recordId: record.id,
       width: dimensions.width,
       height: dimensions.height,
@@ -153,7 +153,7 @@ async function seedRendition(
     clock,
   );
   await database.put(record);
-  await database.putMetadata("image", {
+  await database.putMetadata(record.type, {
     recordId: record.id,
     width: longEdge,
     height: Math.round((longEdge * SOURCE.height) / SOURCE.width),
@@ -430,7 +430,7 @@ describe("orientation", () => {
     // is why `media/exif.ts` reads the header. A grid that used the stored pair
     // would give a portrait photograph a landscape box.
     const parent = await seedParent({ bytesHere: true });
-    await database.putMetadata("image", { recordId: parent.id as StarkeepId, orientation: 6 });
+    await database.putMetadata(parent.type, { recordId: parent.id as StarkeepId, orientation: 6 });
 
     const item = await tile();
 

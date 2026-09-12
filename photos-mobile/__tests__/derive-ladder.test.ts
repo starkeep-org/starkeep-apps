@@ -195,7 +195,7 @@ async function importOriginal(
   );
   await database.put(record);
   if (options.dimensions !== false) {
-    await database.putMetadata(type.startsWith("video") ? "video" : "image", {
+    await database.putMetadata(type, {
       recordId: record.id,
       width,
       height,
@@ -424,7 +424,7 @@ describe("what it does not do twice", () => {
     const thumb = (await rungsOf(parent)).get("image-thumb")!;
     // The state an interrupted publish leaves: a record and a label, and no
     // dimensions — so variant resolution cannot order it and drops it.
-    await database.putMetadata("image", { recordId: thumb.id, width: null, height: null });
+    await database.putMetadata(thumb.type, { recordId: thumb.id, width: null, height: null });
 
     const encoder = fakeEncoder();
     const outcome = await derivePage(deps(encoder.encode), { limit: 10 });

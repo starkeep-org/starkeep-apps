@@ -692,7 +692,7 @@ async function publishRendition(
     deps.clock,
   );
 
-  await deps.database.putMetadata("image", {
+  await deps.database.putMetadata(record.type, {
     recordId: record.id,
     width: encoded.width,
     height: encoded.height,

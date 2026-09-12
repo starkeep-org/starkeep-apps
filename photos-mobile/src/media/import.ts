@@ -918,7 +918,7 @@ export async function backfillVideoDurations(
   // Alias, then record, then the metadata row — three local lookups, gathered
   // before anything is written so the metadata read is one query for the batch
   // rather than one per clip.
-  const candidates: Array<{ recordId: StarkeepId; durationMs: number }> = [];
+  const candidates: Array<{ recordId: StarkeepId; type: string; durationMs: number }> = [];
   for (const item of items) {
     if (typeof item.durationMs !== "number" || item.durationMs <= 0) continue;
     const alias = deps.aliases.byAssetId(item.id);
@@ -928,7 +928,10 @@ export async function backfillVideoDurations(
     // An asset the store calls video whose extension made an image record would
     // otherwise put a row in a table no reader of that record looks in.
     if (!record || typeCategory(record.type) !== "video") continue;
-    candidates.push({ recordId: record.id, durationMs: item.durationMs });
+    // Carried rather than re-read: the write below is labelled with the
+    // record's own type, which is the discriminant every read of the row gates
+    // on, and this loop is the only place that already holds the record.
+    candidates.push({ recordId: record.id, type: record.type, durationMs: item.durationMs });
   }
 
   let written = 0;
@@ -941,7 +944,7 @@ export async function backfillVideoDurations(
       // Already answered, by import or by a previous pass over the one-second
       // overlap this walk re-offers on every boundary.
       if (typeof existing.get(candidate.recordId)?.["duration_ms"] === "number") continue;
-      await deps.database.putMetadata("video", {
+      await deps.database.putMetadata(candidate.type, {
         recordId: candidate.recordId,
         duration_ms: candidate.durationMs,
       });
@@ -1060,19 +1063,26 @@ export async function backfillImageExif(
     filters: [{ field: "id", operator: "in", value: ids }],
     limit: ids.length,
   });
-  const stills = new Set(
-    found.records.filter((record) => typeCategory(record.type) === "image").map((r) => r.id),
+  // Keyed by id and carrying the type, because the repair below writes a
+  // metadata row and that write is labelled with the record's own type — the
+  // discriminant every read of the row gates on, which a bare category has
+  // already lost.
+  const stills = new Map(
+    found.records
+      .filter((record) => typeCategory(record.type) === "image")
+      .map((r) => [r.id, r.type] as const),
   );
 
   // One metadata read for the batch, before any file is opened, so the
   // expensive step runs only for records that actually need it.
-  const existing = await deps.database.getMetadataByIds("image", [...stills]);
+  const existing = await deps.database.getMetadataByIds("image", [...stills.keys()]);
 
   let written = 0;
   let scanned = 0;
   for (const alias of page) {
     const recordId = alias.recordId as StarkeepId;
-    if (!stills.has(recordId)) continue;
+    const stillType = stills.get(recordId);
+    if (!stillType) continue;
     const row = existing.get(recordId);
     // **`== null`, not `!== undefined`, and the difference is the whole bug this
     // replaced.** A record with no capture time has that column as SQL `NULL`,
@@ -1101,7 +1111,7 @@ export async function backfillImageExif(
     // every reader treat it as present-but-empty — the same argument
     // `writeMediaMetadata` makes about its own row.
     if (Object.keys(update).length === 1) continue;
-    await deps.database.putMetadata("image", update);
+    await deps.database.putMetadata(stillType, update);
     written += 1;
   }
 
@@ -1188,10 +1198,18 @@ export async function backfillThumbHashes(
     filters: [{ field: "id", operator: "in", value: ids }],
     limit: ids.length,
   });
+  // The category routes the read (one table per category); the type labels the
+  // write, because `putMetadata` stamps the record's own type into the
+  // discriminant column every read of that row gates on. Both are kept because
+  // they answer different questions about the same record.
   const categoryOf = new Map<StarkeepId, "image" | "video">();
+  const typeOf = new Map<StarkeepId, string>();
   for (const record of found.records) {
     const category = typeCategory(record.type);
-    if (category === "image" || category === "video") categoryOf.set(record.id, category);
+    if (category === "image" || category === "video") {
+      categoryOf.set(record.id, category);
+      typeOf.set(record.id, record.type);
+    }
   }
 
   // Two metadata reads for the batch — one per table — before any file is
@@ -1220,7 +1238,7 @@ export async function backfillThumbHashes(
     scanned += 1;
     const hash = await safeThumbHash(deps.encode, alias.contentUri);
     if (!hash) continue;
-    await deps.database.putMetadata(category, { recordId, thumb_hash: hash });
+    await deps.database.putMetadata(typeOf.get(recordId)!, { recordId, thumb_hash: hash });
     written += 1;
   }
 
@@ -1307,11 +1325,12 @@ async function writeMediaMetadata(
   item: DeviceMediaItem,
   bytes: Uint8Array,
 ): Promise<void> {
-  // The category, not the type. `SqliteDatabaseAdapter` happens to normalize a
-  // `<category>/<format>` id to its table, but `MockDatabaseAdapter` keys on
-  // the argument verbatim — so passing `image/jpeg` here would store a row that
-  // `getMetadataByIds("image", …)` never finds. Naming the category is what
-  // both adapters agree on, and it is what every reader already asks for.
+  // The category decides what is worth measuring below; the write itself is
+  // labelled with the record's own type. Every adapter now routes a
+  // `<category>/<format>` id to the same table a bare category reaches — the
+  // mock included — and `putMetadata` stamps the type into the discriminant
+  // column that gates every read of the row, so a category is no longer enough
+  // to write with.
   const category = typeCategory(type);
   // `other` has no metadata table — see `sqliteMetadataTableName`. Anything the
   // extension did not identify lands there, and writing would target a table
@@ -1378,7 +1397,7 @@ async function writeMediaMetadata(
   // Nothing but the key means the store measured nothing, and a row holding one
   // column is a row every reader has to treat as present-but-empty.
   if (Object.keys(row).length === 1) return;
-  await deps.database.putMetadata(category, row);
+  await deps.database.putMetadata(type, row);
 }
 
 /**

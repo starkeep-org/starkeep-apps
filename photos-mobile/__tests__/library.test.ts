@@ -214,7 +214,7 @@ describe("hasMotion", () => {
 describe("durationMs", () => {
   it("carries the video table's duration onto the item", async () => {
     const record = await seed("video/mp4");
-    await database.putMetadata("video", { recordId: record.id, duration_ms: 42_000 });
+    await database.putMetadata(record.type, { recordId: record.id, duration_ms: 42_000 });
 
     const page = await listLibrary(deps(), { limit: 10 });
 
@@ -293,7 +293,7 @@ describe("durationMs", () => {
 describe("the order the library is read in", () => {
   /** Give a record a capture time, the way import now does from the header. */
   async function captured(record: DataRecord, at: string): Promise<void> {
-    await database.putMetadata("image", { recordId: record.id, captured_at: at });
+    await database.putMetadata(record.type, { recordId: record.id, captured_at: at });
   }
 
   it("orders by when the picture was taken, not by when it was imported", async () => {

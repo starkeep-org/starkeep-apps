@@ -83,7 +83,7 @@ async function importedStill(index: number, exif: Parameters<typeof jpegWithExif
   // Dimensions and nothing else, which is the row the phone wrote before it
   // read headers — and the row whose `captured_at` is SQL NULL rather than
   // absent.
-  await adapter.putMetadata("image", { recordId: record.id, width: 4032, height: 3024 });
+  await adapter.putMetadata(record.type, { recordId: record.id, width: 4032, height: 3024 });
   await adapter.put(record);
   aliases.add({
     objectStorageKey: record.objectStorageKey!,
@@ -125,7 +125,7 @@ describe("backfillImageExif over real SQLite rows", () => {
 
   it("skips a record whose columns are genuinely filled", async () => {
     const record = await importedStill(2, { dateTimeOriginal: "2026:01:01 00:00:00" });
-    await adapter.putMetadata("image", {
+    await adapter.putMetadata(record.type, {
       recordId: record.id,
       captured_at: "1999-01-01T00:00:00",
       orientation: 1,

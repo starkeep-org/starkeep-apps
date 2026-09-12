@@ -1234,7 +1234,7 @@ describe("backfillImageExif", () => {
     for (const record of outcome.records) {
       await database.deleteMetadata("image", record.id);
       // The state `1ca50ea` left records in: dimensions, and nothing else.
-      await database.putMetadata("image", { recordId: record.id, width: 4032, height: 3024 });
+      await database.putMetadata(record.type, { recordId: record.id, width: 4032, height: 3024 });
     }
     return outcome.records.map((record) => record.id);
   }
@@ -1298,7 +1298,8 @@ describe("backfillImageExif", () => {
 
   it("leaves a record that already has both columns alone", async () => {
     const [id] = await importedWithoutExif(1);
-    await database.putMetadata("image", {
+    const still = (await database.get(id!))!;
+    await database.putMetadata(still.type, {
       recordId: id!,
       captured_at: "1999-01-01T00:00:00",
       orientation: 1,
@@ -1330,7 +1331,11 @@ describe("backfillImageExif", () => {
     putAsset(uri, jpegWithExif({}));
     const outcome = await importDeviceMedia(deps([asset({ id: uri })]), { limit: 1 });
     await database.deleteMetadata("image", outcome.records[0]!.id);
-    await database.putMetadata("image", { recordId: outcome.records[0]!.id, width: 1, height: 1 });
+    await database.putMetadata(outcome.records[0]!.type, {
+      recordId: outcome.records[0]!.id,
+      width: 1,
+      height: 1,
+    });
 
     const pass = await backfillImageExif(backfillDeps(), { limit: 24 });
 
@@ -1495,7 +1500,8 @@ describe("backfillThumbHashes", () => {
 
   it("skips a record that already has one, without decoding it", async () => {
     const ids = await importedWithoutThumbHashes(3);
-    await database.putMetadata("image", { recordId: ids[0]!, thumb_hash: "already-here" });
+    const already = (await database.get(ids[0]!))!;
+    await database.putMetadata(already.type, { recordId: ids[0]!, thumb_hash: "already-here" });
     const { encode, seen } = encoder();
 
     const outcome = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });

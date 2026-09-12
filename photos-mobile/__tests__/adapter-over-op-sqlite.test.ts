@@ -133,7 +133,11 @@ describe("the adapter runs unchanged on a second driver", () => {
   it("writes and reads per-type metadata", async () => {
     const written = record();
     await adapter.put(written);
-    await adapter.putMetadata("image", { recordId: written.id, width: 4032, height: 3024 } as never);
+    await adapter.putMetadata(written.type, {
+      recordId: written.id,
+      width: 4032,
+      height: 3024,
+    } as never);
     const meta = await adapter.getMetadata("image", written.id as never);
     expect(meta).toMatchObject({ width: 4032, height: 3024 });
   });

@@ -48,8 +48,6 @@ export {
   decodeForDerivation,
   readSourceDimensions,
   computeThumbHash,
-  computePerceptualHash,
-  perceptualDistance,
   missingRenditionClasses,
   ladderIsComplete,
   cloudCanDecode,
@@ -86,20 +84,6 @@ export {
   type AttemptOutcome,
   type DerivationAttempt,
 } from "./image-processing/derivation-attempts";
-export {
-  findDuplicate,
-  captureFingerprint,
-  PERCEPTUAL_DISTANCE_THRESHOLD,
-  type DuplicateTier,
-  type DuplicateFinding,
-  type ImportCandidate,
-  type LibraryEntry,
-} from "./import/duplicate-tiers";
-export {
-  createLibraryLookup,
-  sameCaptureWhere,
-  type LibraryLookup,
-} from "./import/library-lookup";
 export { openImportStore, importDir, type ImportStore } from "./import/import-store";
 export {
   runImport,

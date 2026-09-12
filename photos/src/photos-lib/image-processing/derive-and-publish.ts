@@ -46,7 +46,6 @@ import { extractExif } from "../metadata/exif-reader";
 import { exifColumnFacts } from "../metadata/exif-generator";
 import { UndecodableError } from "./decode-errors";
 import {
-  computePerceptualHash,
   computeThumbHash,
   decodeForDerivation,
   deriveStillLadderStream,
@@ -329,12 +328,7 @@ async function writeParentFacts(
   }
 
   if (!existing?.thumb_hash) {
-    await publishThumbHash(
-      signedFetch,
-      parentId,
-      await computeThumbHash(decoded),
-      await computePerceptualHash(decoded),
-    );
+    await publishThumbHash(signedFetch, parentId, await computeThumbHash(decoded));
   }
 }
 

@@ -13,8 +13,6 @@ import { join } from "node:path";
 import { runImport, walkImportable } from "../src/photos-lib/import/run-import";
 import { openImportStore } from "../src/photos-lib/import/import-store";
 import type { ImportStore } from "../src/photos-lib/import/import-store";
-import { perceptualDistance } from "../src/photos-lib/image-processing/derive-ladder";
-import type { LibraryEntry } from "../src/photos-lib/import/duplicate-tiers";
 
 let dir: string;
 let starkeep: string;
@@ -27,9 +25,6 @@ function deps(over: Partial<Parameters<typeof runImport>[2]> = {}) {
       registered.push(name);
       return { recordId: `rec-${registered.length}`, deduped: false };
     },
-    findCandidates: async (): Promise<LibraryEntry[]> => [],
-    perceptualDistance,
-    fingerprint: async () => ({}),
     ...over,
   } as Parameters<typeof runImport>[2];
 }
@@ -367,80 +362,5 @@ describe("pacing", () => {
     const second = await runImport(dir, store, deps(), { delayMs: 0, maxItemsPerRun: 2 });
     expect(second.stoppedEarly).toBe(false);
     expect(store.summary().imported).toBe(3);
-  });
-});
-
-describe("advisory findings", () => {
-  // Tiers 2 and 3 run *after* the import, never instead of it: the file is
-  // already in the library and the finding is a note for a human, not a reason
-  // to have withheld somebody's photo.
-  it("imports the file and reports the similarity, rather than skipping", async () => {
-    await seed({ "a.jpg": "one" });
-    const result = await runImport(
-      dir,
-      store,
-      deps({
-        findCandidates: async () => [
-          { recordId: "existing", perceptualHash: "ffffffffffffffff" },
-        ],
-        fingerprint: async () => ({ perceptualHash: "ffffffffffffffff" }),
-      }),
-      { delayMs: 0, maxItemsPerRun: null },
-    );
-    expect(store.summary().imported).toBe(1);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]!.tier).toBe("similar");
-  });
-
-  // Decoding a clip to invent a perceptual hash would be the most expensive
-  // operation in the loop, producing a number nothing compares against.
-  it("does not fingerprint video", async () => {
-    await seed({ "clip.mov": "footage" });
-    let fingerprinted = 0;
-    await runImport(
-      dir,
-      store,
-      deps({
-        findCandidates: async () => [
-          { recordId: "existing", perceptualHash: "ffffffffffffffff" },
-        ],
-        fingerprint: async () => {
-          fingerprinted += 1;
-          return {};
-        },
-      }),
-      { delayMs: 0, maxItemsPerRun: null },
-    );
-    expect(store.summary().imported).toBe(1);
-    expect(fingerprinted, "decoded a video to compute a perceptual hash").toBe(0);
-  });
-
-  // A library with no extracted metadata cannot be compared against, and
-  // pretending otherwise would produce findings out of missing data.
-  it("reports nothing when the lookup proposes no candidate", async () => {
-    await seed({ "a.jpg": "one" });
-    const result = await runImport(dir, store, deps(), { delayMs: 0, maxItemsPerRun: null });
-    expect(result.findings).toEqual([]);
-  });
-
-  // "Advisory" has to hold for the failure too. The record exists by the time
-  // the lookup runs, so a query that throws must cost a line of the report and
-  // not the import — otherwise an imported file is recorded `failed`, its
-  // ladder never derives, and the next run rediscovers it as a duplicate.
-  it("keeps a file imported when the lookup fails", async () => {
-    await seed({ "a.jpg": "one" });
-    const result = await runImport(
-      dir,
-      store,
-      deps({
-        findCandidates: async () => {
-          throw new Error("data server unreachable");
-        },
-      }),
-      { delayMs: 0, maxItemsPerRun: null },
-    );
-    expect(store.summary().imported).toBe(1);
-    expect(store.summary().failed).toBe(0);
-    expect(result.findings).toEqual([]);
   });
 });

@@ -1,18 +1,17 @@
 /**
- * The single decode every rung and every hash reads.
+ * The single decode every rung and the ThumbHash read.
  *
  * "One decode, every rung" was written at the top of `derive-ladder.ts` long
  * before it was true — each rung called `sharp(source)` again, and so did the
- * ThumbHash, the perceptual hash and two separate dimension reads, for nine
- * full decodes of the same buffer per photo. These assert the properties that
- * make the claim checkable rather than aspirational.
+ * ThumbHash and two separate dimension reads, for eight full decodes of the
+ * same buffer per photo. These assert the properties that make the claim
+ * checkable rather than aspirational.
  */
 import { describe, it, expect } from "vitest";
 import sharp from "sharp";
 import {
   decodeForDerivation,
   deriveStillLadder,
-  computePerceptualHash,
   computeThumbHash,
 } from "../src/photos-lib/image-processing/derive-ladder";
 import { STILL_LADDER } from "../src/photos-lib/ladder";
@@ -55,15 +54,14 @@ describe("the working image", () => {
   }, 60_000);
 });
 
-describe("hashes do not depend on which rungs a node happened to want", () => {
+describe("the ThumbHash does not depend on which rungs a node happened to want", () => {
   // The cloud derives the cheap rungs only and a laptop derives all of them.
   // If the working image tracked the request rather than the ladder, the two
-  // would compute different perceptual hashes for the same photo and cross-node
-  // duplicate detection would quietly stop agreeing with itself.
+  // would compute different placeholders for the same photo and one record
+  // would paint differently on two devices.
   it("agrees between a decode passed in and one done from bytes", async () => {
     const bytes = await noisyJpeg(TOP + 600, 900);
     const decoded = await decodeForDerivation(bytes);
-    expect(await computePerceptualHash(decoded)).toBe(await computePerceptualHash(bytes));
     expect(await computeThumbHash(decoded)).toBe(await computeThumbHash(bytes));
   }, 60_000);
 });

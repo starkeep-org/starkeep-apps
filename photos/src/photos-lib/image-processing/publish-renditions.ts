@@ -248,20 +248,19 @@ export async function publishThumbHash(
   signedFetch: SignedFetch,
   parentId: string,
   thumbHash: string,
-  perceptualHash?: string,
 ): Promise<void> {
-  // Written together because they are the same kind of thing — both derived
-  // deterministically from the bytes during one decode — and because two
-  // metadata writes for one record is two round trips for no reason.
+  // This used to write `perceptual_hash` alongside, computed from the same
+  // decode. Nothing reads that column any more: near-duplicate detection was
+  // removed on 2026-09-11, and a derived fact with no reader is work every
+  // derivation pays for nobody. The column stays declared in the registry, and
+  // whether to retire it is a separate decision — see
+  // `photos-cleanup-2026-09-11.md`.
   const res = await signedFetch(`/data/records/${parentId}/metadata`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       typeId: "image",
-      metadata: {
-        thumb_hash: thumbHash,
-        ...(perceptualHash ? { perceptual_hash: perceptualHash } : {}),
-      },
+      metadata: { thumb_hash: thumbHash },
     }),
   });
   if (!res.ok) {

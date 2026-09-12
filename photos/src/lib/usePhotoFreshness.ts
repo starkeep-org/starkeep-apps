@@ -10,6 +10,15 @@ import { createRefreshCoalescer } from "./refresh-coalescer";
 
 const POLL_INTERVAL_MS = 30_000;
 const RESUME_FETCH_THRESHOLD_MS = 30_000;
+/**
+ * How many delta pages one tick will walk before giving up.
+ *
+ * The loop terminates on its own — each page's watermark is strictly above the
+ * bound the request carried, so the set shrinks — but a server that reported
+ * `hasMore` without advancing the watermark would spin. The cap turns that into
+ * a bounded tick and one more page next time.
+ */
+const MAX_DELTA_PAGES = 20;
 
 interface UsePhotoFreshnessOptions {
   onInitialLoad: (images: AppImage[]) => void;
@@ -101,25 +110,39 @@ export function usePhotoFreshness({
   }, []);
 
   const fetchSince = useCallback(async () => {
-    const cursor = cursorRef.current;
     // A tile waiting on a better rung cannot be served by the cursor: the rung
     // arrives as a child record the page excludes, and it does not move the
     // parent's `updated_at`. So while anything is waiting, refresh the whole
     // page — one request per tick, and it stops as soon as nothing is waiting.
     refreshActiveResolutions?.();
-    if (!cursor) {
+    if (!cursorRef.current) {
       await fetchAll();
       return;
     }
     try {
-      const records = await listPhotosSince(cursor);
-      const policies = getLatestLibraryPolicies();
-      if (policies) onPolicies?.(policies);
-      if (records.length > 0) {
+      // Drained rather than taken one page per tick.
+      //
+      // The route cuts the delta in `updated_at` order, so a page is a prefix
+      // of the changed set and the maximum `updated_at` in it is a correct
+      // watermark. What the ordering does not do on its own is deliver the
+      // remainder promptly: without this loop a backlog of more than one page
+      // arrives at one page per poll interval, thirty seconds apart. Each pass
+      // advances the cursor first, so the next request asks for what is left.
+      for (let page = 0; page < MAX_DELTA_PAGES; page++) {
+        const cursor = cursorRef.current;
+        if (!cursor) break;
+        const { records, hasMore } = await listPhotosSince(cursor);
+        const policies = getLatestLibraryPolicies();
+        if (policies) onPolicies?.(policies);
+        if (records.length === 0) break;
         const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
         const newCursor = computeCursor(images);
-        if (newCursor && newCursor > cursor) cursorRef.current = newCursor;
         onMerge(images);
+        // A page that does not move the watermark cannot be followed: the next
+        // request would carry the same bound and return the same rows.
+        if (!newCursor || newCursor <= cursor) break;
+        cursorRef.current = newCursor;
+        if (!hasMore) break;
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to poll for updates");

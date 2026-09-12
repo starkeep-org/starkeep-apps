@@ -367,12 +367,26 @@ export async function listPhotos(): Promise<PhotoRecord[]> {
   return result.records;
 }
 
-export async function listPhotosSince(updatedAfter: string): Promise<PhotoRecord[]> {
-  const result = await requestOwnApi<{ records: PhotoRecord[]; policies: RenditionPolicies }>(
-    libraryQuery(`updated_after=${encodeURIComponent(updatedAfter)}`),
-  );
+/**
+ * One page of the delta, with the server's own "there is more" answer.
+ *
+ * `hasMore` is returned rather than dropped because the caller's watermark is
+ * the maximum `updated_at` of what it received. The route cuts this page in
+ * `updated_at` order so that maximum is a correct watermark, and the remainder
+ * sorts above it — but only a caller that keeps asking collects the remainder
+ * inside one tick instead of one page per poll interval. See `fetchSince` in
+ * `usePhotoFreshness.ts`.
+ */
+export async function listPhotosSince(
+  updatedAfter: string,
+): Promise<{ records: PhotoRecord[]; hasMore: boolean }> {
+  const result = await requestOwnApi<{
+    records: PhotoRecord[];
+    hasMore?: boolean;
+    policies: RenditionPolicies;
+  }>(libraryQuery(`updated_after=${encodeURIComponent(updatedAfter)}`));
   latestLibraryPolicies = result.policies;
-  return result.records;
+  return { records: result.records, hasMore: result.hasMore === true };
 }
 
 /**

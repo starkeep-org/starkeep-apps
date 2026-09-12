@@ -65,19 +65,27 @@ export async function GET(req: NextRequest): Promise<Response> {
     `notLabel=${encodeURIComponent(RENDITION_LABEL_REF)}`,
   ];
   if (updatedAfter) {
-    // The delta keeps the route's default ordering, and deliberately does not
-    // take the library's.
+    // The delta is cut in the order the caller is walking, which is sync time.
     //
-    // `updated_after` selects what has changed, and a page of that set has to
-    // be cut in an order the *caller* is walking — which is sync time, not
-    // capture time. A delta ordered by capture time whose page filled would
-    // hand back the most recently photographed of the changes and leave the
-    // rest below a watermark the client then advances past. That the default
-    // `id asc` has the same shape is a defect this work found rather than
-    // introduced, recorded in the Phase F status document; what this branch
-    // avoids is making it worse by ordering the delta on a key that has nothing
-    // to do with when a record changed.
+    // `updated_after` selects what has changed, and the client's watermark is
+    // the maximum `updated_at` of what came back. That is only a safe watermark
+    // when the page is a genuine *prefix* of the set being walked: order by
+    // anything else and a full page hands back an arbitrary slice, the client
+    // advances past everything it did not receive, and `updated_after` being a
+    // strict lower bound means no later round ever offers the remainder. The
+    // records are silently lost from the grid until a full reload.
+    //
+    // The route's old default, `id asc`, had exactly that shape. Capture order
+    // — what the full list below takes — would be worse again, cutting the page
+    // at the most recently *photographed* of the changes, which has nothing to
+    // do with when a record changed.
+    //
+    // With `updated_at.asc` the maximum of a page is a correct watermark: every
+    // record not returned sorts above it, and the next tick asks for it. The
+    // client drains `hasMore` rather than waiting a tick per page — see
+    // `fetchSince` in `src/lib/usePhotoFreshness.ts`.
     params.push(`updated_after=${encodeURIComponent(updatedAfter)}`);
+    params.push("order=updated_at.asc");
   } else {
     // Capture order, which is what makes a page of this library a *slice* of it
     // rather than an arbitrary sample. Without it the route answered `id asc`,

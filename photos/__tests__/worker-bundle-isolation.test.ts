@@ -6,11 +6,18 @@ import { fileURLToPath } from "node:url";
 /**
  * The guard on the cloud bundle.
  *
- * open-next traces the Next server's import graph to decide what to ship, and
- * the `static` handler is traced today. So a single static import of a worker
- * engine from anything under `app/` drags that engine — and whatever native
- * module it exists to isolate — into a Lambda that serves HTML. Nothing about
- * that fails loudly; the bundle just gets enormous.
+ * esbuild bundles `src/static-handler.ts` into the browser-facing Lambda, and
+ * it inlines eagerly. So a single import of a worker engine from anything that
+ * entry reaches drags that engine — and whatever native module it exists to
+ * isolate — into a Lambda that serves HTML.
+ *
+ * This used to be a precaution. Under OpenNext a tracer decided what to ship
+ * and `serverExternalPackages` named the two natives, so an accidental import
+ * produced a large bundle rather than a broken one. esbuild has no such list to
+ * consult, which makes this the load-bearing guard: `onnxruntime-node` is ~270
+ * MB unpacked and Lambda's hard ceiling is 250 MB, so the failure it prevents
+ * is a deploy that cannot happen with the cause reported by AWS rather than
+ * here.
  *
  * Two engines are held behind this rule, for the same reason and by the same
  * mechanism: each is reached only from its own worker entry point, which its
@@ -23,6 +30,15 @@ import { fileURLToPath } from "node:url";
  *
  * Neither is expressible to a type checker, so both are asserted here: walk the
  * real import graph from every route and prove it never arrives.
+ *
+ * **What the walk starts from moved with the framework.** The route set used to
+ * be a directory tree, and this test walked `app/`. It is a module graph now,
+ * rooted at `src/server-app.ts`, so the entries below are the files under
+ * `src/routes/` plus the three module entries around them. The directory walk
+ * would have found nothing after the migration and passed vacuously, which is
+ * worse than absent — hence `describe("the traversal itself")`, which fails
+ * when the entry set is empty or has lost a route it should contain, and the
+ * reachability check that every route file is actually mounted.
  */
 
 const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,7 +47,7 @@ const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx"];
 interface IsolatedEngine {
   /** What the failure message calls it. */
   name: string;
-  /** Directory nothing under `app/` may reach. */
+  /** Directory no route may reach. */
   dir: string;
   /** The controller that must hold its worker as a path and not an import. */
   controller: string;
@@ -128,15 +144,54 @@ function pathToEngine(entry: string, engineDir: string): string[] | null {
 
 const rel = (file: string) => relative(PHOTOS_DIR, file);
 
-const routes = walk(join(PHOTOS_DIR, "app"));
+/** Every file the browser-facing Lambda's entry can reach. */
+function graphFrom(entry: string): Set<string> {
+  const seen = new Set<string>([entry]);
+  const queue = [entry];
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    for (const specifier of specifiersIn(file)) {
+      const resolved = resolveLocal(file, specifier);
+      if (resolved && !seen.has(resolved)) {
+        seen.add(resolved);
+        queue.push(resolved);
+      }
+    }
+  }
+  return seen;
+}
+
+const SERVER_APP = join(PHOTOS_DIR, "src", "server-app.ts");
+const STATIC_HANDLER = join(PHOTOS_DIR, "src", "static-handler.ts");
+const SERVE = join(PHOTOS_DIR, "src", "serve.ts");
+
+/**
+ * The dispatch table: every route module, plus the three entries that mount
+ * them. `src/serve.ts` is in the set even though it never enters the Lambda,
+ * because it is the local surface's entry and the same rule applies — the
+ * engines are started by absolute path from both.
+ */
+const routes = [...walk(join(PHOTOS_DIR, "src", "routes")), SERVER_APP, STATIC_HANDLER, SERVE];
 
 describe("the traversal itself", () => {
   it("finds the routes it is meant to be checking", () => {
     // A traversal bug that found nothing would make every assertion below pass
-    // vacuously — which is exactly the shape of failure this guard must not have.
-    expect(routes.length).toBeGreaterThan(5);
-    expect(routes.map(rel)).toContain("app/api/vision/scan/route.ts");
-    expect(routes.map(rel)).toContain("app/api/derive/sweep/route.ts");
+    // vacuously — which is exactly the shape of failure this guard must not
+    // have, and exactly what the old `app/` walk would have done here.
+    expect(routes.length).toBeGreaterThan(20);
+    expect(routes.map(rel)).toContain("src/routes/vision/scan.ts");
+    expect(routes.map(rel)).toContain("src/routes/derive/sweep.ts");
+  });
+
+  it("checks a set the server actually mounts", () => {
+    // The complement: a route file the Hono app never imports is dead code this
+    // guard would be protecting for nothing, and a route that answers requests
+    // without appearing here is unguarded. Both are the same drift.
+    const mounted = graphFrom(SERVER_APP);
+    const unmounted = walk(join(PHOTOS_DIR, "src", "routes"))
+      .filter((f) => !mounted.has(f))
+      .map(rel);
+    expect(unmounted).toEqual([]);
   });
 });
 
@@ -156,8 +211,11 @@ describe.each(ENGINES.map((engine) => [engine.name, engine] as const))(
       },
     );
 
-    it("the app root component does not reach it either", () => {
-      // app.tsx is not under app/ but is the client entry the page renders.
+    it("the browser entry does not reach it either", () => {
+      // `src/main.tsx` is what `index.html` loads, and `app.tsx` is the tree it
+      // mounts. A worker engine in the browser bundle is not a size problem —
+      // it is a build failure on a native module, a long way from its cause.
+      expect(pathToEngine(join(PHOTOS_DIR, "src", "main.tsx"), engine.dir)).toBeNull();
       expect(pathToEngine(join(PHOTOS_DIR, "app.tsx"), engine.dir)).toBeNull();
     });
 

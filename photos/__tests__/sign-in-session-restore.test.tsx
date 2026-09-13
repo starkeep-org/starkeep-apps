@@ -22,10 +22,10 @@ interface Loaded {
 
 async function loadPage(opts: { cloud: boolean }): Promise<Loaded> {
   vi.resetModules();
-  vi.stubEnv("NEXT_PUBLIC_FORCE_REMOTE", opts.cloud ? "true" : "");
-  vi.stubEnv("NEXT_PUBLIC_STARKEEP_APP_BASE_PATH", opts.cloud ? "/apps/photos" : "");
-  const mod = (await import("../app/sign-in/page")) as { default: () => React.ReactElement };
-  return { SignInPage: mod.default };
+  vi.stubEnv("STARKEEP_FORCE_REMOTE", opts.cloud ? "true" : "");
+  vi.stubEnv("STARKEEP_APP_BASE_PATH", opts.cloud ? "/apps/photos" : "");
+  const mod = await import("../src/SignInPage");
+  return { SignInPage: mod.SignInPage };
 }
 
 /** The navigation the page performs on a successful restore. */

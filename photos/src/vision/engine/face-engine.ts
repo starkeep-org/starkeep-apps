@@ -1,12 +1,13 @@
 /**
  * The face engine: image bytes → boxes, landmarks, and 512-d identity vectors.
  *
- * ⚠ **This module and everything it imports must never be reachable from
- * `app/`.** It is the only place `onnxruntime-node` is loaded, and open-next's
- * dependency tracer walks the route graph — one static import from a route and
- * 270 MB of ORT lands in the cloud `static` Lambda bundle. It is reached only
- * from the worker entry, which the scan controller starts by absolute path, and
- * `__tests__/vision-bundle-isolation.test.ts` fails if that ever stops being
+ * ⚠ **This module and everything it imports must never be reachable from a
+ * route.** It is the only place `onnxruntime-node` is loaded, and esbuild
+ * bundles the cloud `static` Lambda from the route graph — one static import
+ * from a route and 270 MB of ORT lands in a function that serves HTML, over
+ * Lambda's own 250 MB unzipped ceiling. It is reached only from the worker
+ * entry, which the scan controller starts by absolute path, and
+ * `__tests__/worker-bundle-isolation.test.ts` fails if that ever stops being
  * true.
  *
  * It also takes decoded bytes rather than reaching for storage itself, which is

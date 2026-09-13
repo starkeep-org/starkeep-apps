@@ -1,16 +1,22 @@
 # Photos
 
-Photos is a photo management app built on Starkeep. It demonstrates the thin-client pattern: the Next.js server talks to the data-server over HTTP rather than embedding the SDK directly.
+Photos is a photo management app built on Starkeep. It demonstrates the thin-client pattern: the app's own server talks to the data-server over HTTP rather than embedding the SDK directly.
 
 ## Running
 
 Requires the data-server to be running first.
 
 ```bash
-pnpm --filter photos-web dev
+pnpm --filter photos-web start --port 3000
 ```
 
-Opens on port 3000. Run only one of photos-web or admin-web at a time (they share the same port).
+`start` builds both worker bundles, builds the browser half if `dist/` is
+missing, and serves that build — the same bytes the cloud bundle ships. The port
+is required: admin-web allocates one and passes it through the manifest's
+`localRun` block, and there is no default to fall back on.
+
+`pnpm --filter photos-web dev --port 3000` is the opt-in development mode, with
+Vite serving the module graph instead of a build.
 
 ## What It Does
 
@@ -27,8 +33,8 @@ is sent anywhere, and none of the derived state syncs.
 
 Open the **Faces** button in the toolbar. It offers the one-time ~278 MB model
 download — accepting the non-commercial-research licence in the process — and
-shows its progress; then turn detection on and press *Scan now*. `pnpm dev`
-builds the scan worker automatically.
+shows its progress; then turn detection on and press *Scan now*. Both `pnpm
+start` and `pnpm dev` build the scan worker first.
 
 For a headless or scripted install, the same download from a shell:
 
@@ -113,11 +119,11 @@ Every `/api/vision/*` route answers **501** when Photos is serving against a
 remote data server. The feature is on-device, and a cloud deployment has neither
 the photos nor the models locally. The engine is loaded only by the scan worker,
 by absolute path, so `onnxruntime-node` never enters the Lambda bundle —
-`__tests__/vision-bundle-isolation.test.ts` fails if that stops being true.
+`__tests__/worker-bundle-isolation.test.ts` fails if that stops being true.
 
 ## Architecture
 
-Photos-web is a thin client. The Next.js server makes authenticated requests to the data-server (running on port 9820 locally) for all data operations — listing records, fetching files, and uploading new photos. The data-server applies access control and returns results.
+Photos-web is a thin client. The app's server half — a Hono app, run by `src/serve.ts` locally and by `src/static-handler.ts` in a Lambda — makes authenticated requests to the data-server (running on port 9820 locally) for all data operations — listing records, fetching files, and uploading new photos. The data-server applies access control and returns results.
 
 This means the SDK, type registry, and storage all live in the data-server process, not in photos-web. Photos-web is purely a presentation layer.
 

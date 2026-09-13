@@ -2,11 +2,12 @@
  * The derivation worker: one `worker_threads` thread that sweeps the library
  * and publishes the renditions each record is missing.
  *
- * ⚠ **Never import this from `app/`.** It is the entry point that pulls in
- * sharp. The controller starts it by absolute path
+ * ⚠ **Never import this from a route.** It is the entry point that pulls in
+ * sharp and the whole library sweep. The controller starts it by absolute path
  * (`.derivation/derive-worker.mjs`, produced by `pnpm derive:build-worker`),
- * which is what keeps a native module out of open-next's dependency trace for
- * every route.
+ * which is what keeps both out of the browser-facing Lambda's esbuild bundle.
+ * `__tests__/worker-bundle-isolation.test.ts` walks the real import graph from
+ * `src/server-app.ts` and fails if that stops being true.
  *
  * ## Why a worker and not a request
  *
@@ -16,7 +17,7 @@
  * of originals with no renditions and no queued work — until somebody opened
  * the app, at which point the grid became a producer and the user waited.
  *
- * The Next server, on the other hand, is already a long-lived supervised
+ * The local app server, on the other hand, is already a long-lived supervised
  * process: admin-web spawns it detached from the manifest's `localRun` block,
  * records its pid, and it runs until explicitly stopped. Its lifetime is the
  * operator's session on the machine, not the tab's. So there is no new process

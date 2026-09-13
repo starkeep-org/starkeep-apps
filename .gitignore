@@ -1,9 +1,6 @@
 node_modules/
 .sst/
-.next/
-.open-next/
 .turbo/
-out/
 dist/
 *.tsbuildinfo
 .DS_Store
@@ -11,8 +8,8 @@ test-results/
 
 # Built by `pnpm vision:build-worker` — the scan worker's JS entry point.
 # Deliberately a build artefact: worker_threads needs JavaScript, and keeping
-# the engine behind one generated file is what keeps onnxruntime-node off
-# open-next's dependency trace.
+# the engine behind one generated file is what keeps onnxruntime-node out of
+# the browser-facing Lambda's esbuild bundle.
 */.vision/
 
 # Built by `pnpm derive:build-worker` — the derivation worker's JS entry point.
@@ -40,3 +37,7 @@ pnpm-lock.yaml
 # STARKEEP_REQUIRE_DNG=1 turns that skip into a failure where it matters.
 *.DNG
 *.dng
+
+# The one-server-per-checkout claim photos' AWS journey makes while it drives
+# a local Photos server. See e2e-aws/photos-journey.test.ts.
+*/.e2e-photos.lock

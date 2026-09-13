@@ -3,7 +3,7 @@
  *
  * The important constraint is what this file must *not* do: it never imports
  * the worker. It holds the worker bundle's path as a string and hands it to
- * `new Worker(...)`, so open-next's dependency tracer walking in from a route
+ * `new Worker(...)`, so the esbuild pass walking in from a route
  * stops here and never reaches sharp. Exactly the shape
  * `vision/scan-controller.ts` uses, for exactly the same reason.
  *

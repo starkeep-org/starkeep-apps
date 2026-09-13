@@ -14,7 +14,7 @@ import { modelDownloadState, startModelDownload } from "@/vision/model-download"
 import { FACE_DETECTOR_MODEL, FACE_EMBEDDER_MODEL, faceModelStatus } from "@/vision/models";
 import { modelsDir } from "@/vision/paths";
 
-import { POST as modelsPost } from "../app/api/vision/models/route";
+import { POST as modelsPost } from "../src/routes/vision/models";
 
 /**
  * The in-app model download.
@@ -64,7 +64,7 @@ beforeEach(() => {
   previousDir = process.env.STARKEEP_DIR;
   process.env.STARKEEP_DIR = root;
   delete process.env.STARKEEP_APP_CLIENT_MODE;
-  delete process.env.NEXT_PUBLIC_FORCE_REMOTE;
+  delete process.env.STARKEEP_FORCE_REMOTE;
   resetDownloader();
 });
 
@@ -194,7 +194,7 @@ describe("POST /api/vision/models", () => {
   });
 
   it("answers 501 against a remote data server, without touching disk", async () => {
-    process.env.NEXT_PUBLIC_FORCE_REMOTE = "true";
+    process.env.STARKEEP_FORCE_REMOTE = "true";
     const res = await post({ action: "download", acceptLicence: true });
     expect(res.status).toBe(501);
     expect(modelDownloadState().running).toBe(false);

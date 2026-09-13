@@ -1,4 +1,3 @@
-import { NextResponse, type NextRequest } from "next/server";
 import {
   loadAppCredentials,
   signedFetch,
@@ -11,9 +10,16 @@ export type AuthorizedPhotosFetch = {
   refreshedCookie?: string;
 };
 
-/** Authenticate the browser before loading Photos' signing credential. */
+/**
+ * Authenticate the browser before loading Photos' signing credential.
+ *
+ * A plain `Request`, not a framework request type. The platform's session
+ * helpers read a method, a URL and headers, which is what every server half
+ * Photos now has hands them: Hono's `c.req.raw` in the cloud and
+ * `@hono/node-server`'s request locally are both the same `Request`.
+ */
 export async function authorizePhotosRoute(
-  req: NextRequest,
+  req: Request,
 ): Promise<AuthorizedPhotosFetch | Response> {
   const cloud = process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
   let userToken: string | undefined;
@@ -21,7 +27,7 @@ export async function authorizePhotosRoute(
   if (cloud) {
     const { requireSession, mintIdToken } = await import("@starkeep/app-client/auth");
     if ((await requireSession(req)) === null) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+      return Response.json({ error: "Not authenticated" }, { status: 401 });
     }
     const minted = await mintIdToken(req, "photos");
     if (minted) {
@@ -32,7 +38,7 @@ export async function authorizePhotosRoute(
 
   const creds = await loadAppCredentials("photos");
   if (!creds) {
-    return NextResponse.json(
+    return Response.json(
       { error: "photos has not been installed locally — run install from admin-web first" },
       { status: 503 },
     );
@@ -51,7 +57,7 @@ export async function authorizePhotosRoute(
   };
 }
 
-export function withRefreshedSession(response: NextResponse, cookie?: string): NextResponse {
+export function withRefreshedSession(response: Response, cookie?: string): Response {
   if (cookie) response.headers.append("Set-Cookie", cookie);
   return response;
 }

@@ -2,11 +2,11 @@
  * The scan worker: one `worker_threads` thread that walks the library, runs the
  * enabled vision tasks, and writes sidecars.
  *
- * ⚠ **Never import this from `app/`.** It is the entry point that pulls in
+ * ⚠ **Never import this from a route.** It is the entry point that pulls in
  * `face-engine.ts` and therefore `onnxruntime-node`. The scan controller starts
  * it by absolute path (`.vision/scan-worker.mjs`, produced by
- * `pnpm vision:build-worker`), which is what keeps 270 MB of ORT out of
- * open-next's dependency trace.
+ * `pnpm vision:build-worker`), which is what keeps 270 MB of ORT out of the
+ * browser-facing Lambda's esbuild bundle.
  *
  * A worker rather than the request thread because a first pass over ~10k photos
  * is 45–60 minutes of CPU: even with ORT's off-thread `run()`, the decode,

@@ -13,7 +13,7 @@ export interface RuntimeConfig {
   photosApiGatewayUrl?: string;
   /**
    * The account's Lambda invocation ceiling. See
-   * `app/starkeep-runtime-config/route.ts` for why Photos carries it and most
+   * `src/routes/runtime-config.ts` for why Photos carries it and most
    * apps do not.
    */
   lambdaConcurrency?: number;

@@ -1,11 +1,13 @@
 /**
- * Owns the scan worker's lifecycle from inside the Next server.
+ * Owns the scan worker's lifecycle from inside the app server.
  *
  * The important constraint is what this file must *not* do: it never imports the
  * engine. It holds the worker bundle's path as a string and hands it to
- * `new Worker(...)`, so open-next's dependency tracer walking in from a route
- * stops here and never reaches `onnxruntime-node`. See
- * `__tests__/vision-bundle-isolation.test.ts`.
+ * `new Worker(...)`, so the route graph stops here and never reaches
+ * `onnxruntime-node`. esbuild bundles the browser-facing Lambda entry from that
+ * graph and inlines eagerly, so a single import here would put 270 MB of ORT in
+ * a Lambda that serves HTML — over Lambda's own 250 MB ceiling. See
+ * `__tests__/worker-bundle-isolation.test.ts`.
  *
  * Liveness lives here, not in `scan-state.json`. A process killed mid-pass
  * leaves `running: true` on disk forever; the controller knows whether it

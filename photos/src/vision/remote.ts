@@ -13,14 +13,14 @@
  *   - `STARKEEP_APP_CLIENT_MODE=cloud` is what @starkeep/app-client itself uses
  *     to decide it is signing for a remote data server — the literal condition
  *     the plan names;
- *   - `NEXT_PUBLIC_FORCE_REMOTE` is baked in by `infra/build-bundle.ts`, so a
+ *   - `STARKEEP_FORCE_REMOTE` is baked in by `infra/build-bundle.ts`, so a
  *     cloud *build* refuses even if its runtime env is misconfigured.
  */
 
 export function isRemoteDataTarget(): boolean {
   return (
     process.env.STARKEEP_APP_CLIENT_MODE === "cloud" ||
-    process.env.NEXT_PUBLIC_FORCE_REMOTE === "true"
+    process.env.STARKEEP_FORCE_REMOTE === "true"
   );
 }
 

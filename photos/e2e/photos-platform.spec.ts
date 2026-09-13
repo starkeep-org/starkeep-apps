@@ -113,7 +113,14 @@ test("install photos through the admin consent flow", async ({ page }) => {
   await expect(imageGrant.getByText("metadata: read + write")).toBeVisible();
 
   await page.getByRole("button", { name: "Approve & Install" }).click();
-  await expect(card.getByText("Installed")).toBeVisible({ timeout: 60_000 });
+  // `exact`, and that is load-bearing rather than tidy: Playwright's string
+  // matching is a case-insensitive substring, so a bare "Installed" also
+  // matches the "Not installed" badge that is on the card *before* the install
+  // — the assertion passed instantly and the next line raced the install it was
+  // meant to wait for. The install route stops the app daemon on its way out
+  // (so a restart picks up a rotated HMAC secret), so a start issued into that
+  // window is killed milliseconds after it spawns.
+  await expect(card.getByText("Installed", { exact: true })).toBeVisible({ timeout: 60_000 });
 });
 
 test("start photos from the admin UI and open it on its allocated port", async ({
@@ -127,10 +134,12 @@ test("start photos from the admin UI and open it on its allocated port", async (
   await expect(badge).toBeVisible({ timeout: 60_000 });
 
   const port = (await badge.textContent())!.match(/:(\d+)/)![1];
-  // localhost, not 127.0.0.1 — see startNextDev in the harness.
+  // localhost, not 127.0.0.1 — see startWebServer in the harness. Both
+  // surfaces hand a spec the same origin, so a cookie set under one is
+  // readable under the other.
   photosUrl = `http://localhost:${port}`;
 
-  // The admin status badge is a TCP-level probe; next dev binds its port
+  // The admin status badge is a TCP-level probe, and the server binds its port
   // before it can answer HTTP. Wait for a real response before navigating.
   await eventually(
     async () => {
@@ -226,7 +235,7 @@ test("reinstall re-exposes the shared photos; captions are gone", async ({
   const card = photosCard(page);
   await card.getByRole("button", { name: /^Install / }).click();
   await page.getByRole("button", { name: "Approve & Install" }).click();
-  await expect(card.getByText("Installed")).toBeVisible({ timeout: 60_000 });
+  await expect(card.getByText("Installed", { exact: true })).toBeVisible({ timeout: 60_000 });
 
   const { url } = await startAppDaemonViaAdmin(adminUrl(), "photos");
   photosUrl = url;
@@ -267,14 +276,13 @@ test("a corrupted HMAC secret turns into 401s and a visible error state", async 
   // which is the failure this test exists to catch.
   //
   // Scoped to the app's own error banner rather than to text anywhere on the
-  // page. Under `next dev` the same thrown string also reaches the Next.js
-  // error overlay, so a bare text match can pass on a dev-only artifact while
-  // the app itself renders nothing.
-  //
-  // Filtered as well as scoped: a bare role=alert also matches Next's route
-  // announcer, which is always in the dev DOM (the same gotcha core's
-  // daemon-start-failure spec documents). The announcer is empty, so requiring
-  // the status code picks out the banner.
+  // page, and filtered on the status code. Both narrowings were added against
+  // the previous framework's development artifacts — an error overlay carrying
+  // the same thrown string, and a route announcer that matched a bare
+  // role=alert — and neither exists now that the local surface serves a build.
+  // They are kept because the assertion they leave is the sharper one: it says
+  // the app's own banner reported the status, not that the text appears
+  // somewhere on the page.
   //
   // Asserted on the status rather than the wording, which is what went stale
   // here: this looked for "Data server GET … → 401" until the library moved

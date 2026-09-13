@@ -7,7 +7,7 @@
  * processed-marker, and the per-task progress counters are identical. Keeping
  * that seam here is what makes them additive instead of a second scan pass.
  *
- * ⚠ Engine-side: not reachable from `app/`. See `face-engine.ts`.
+ * ⚠ Engine-side: not reachable from a route. See `face-engine.ts`.
  */
 
 import type { FaceEngine } from "./face-engine";

@@ -37,23 +37,23 @@ import { readAllFaceSidecars, writeFaceSidecar } from "@/vision/sidecars";
 import { FACE_SIDECAR_VERSION, type DetectedFace } from "@/vision/types";
 import { assignUnclusteredFaces } from "@/vision/clustering";
 
-import { GET as statusGet } from "../app/api/vision/status/route";
-import { GET as configGet, PUT as configPut } from "../app/api/vision/config/route";
-import { GET as facesGet } from "../app/api/vision/faces/[id]/route";
-import { GET as peopleGet, PUT as peoplePut } from "../app/api/vision/people/route";
-import { POST as scanPost } from "../app/api/vision/scan/route";
-import { GET as faceCropGet } from "../app/api/vision/face-crop/[id]/route";
+import { GET as statusGet } from "../src/routes/vision/status";
+import { GET as configGet, PUT as configPut } from "../src/routes/vision/config";
+import { GET as facesGet } from "../src/routes/vision/faces";
+import { GET as peopleGet, PUT as peoplePut } from "../src/routes/vision/people";
+import { POST as scanPost } from "../src/routes/vision/scan";
+import { GET as faceCropGet } from "../src/routes/vision/face-crop";
 
 let root: string;
 const savedEnv: Record<string, string | undefined> = {};
-const ENV_KEYS = ["STARKEEP_DIR", "STARKEEP_APP_CLIENT_MODE", "NEXT_PUBLIC_FORCE_REMOTE"] as const;
+const ENV_KEYS = ["STARKEEP_DIR", "STARKEEP_APP_CLIENT_MODE", "STARKEEP_FORCE_REMOTE"] as const;
 
 beforeEach(() => {
   for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
   root = mkdtempSync(join(tmpdir(), "starkeep-routes-"));
   process.env.STARKEEP_DIR = root;
   delete process.env.STARKEEP_APP_CLIENT_MODE;
-  delete process.env.NEXT_PUBLIC_FORCE_REMOTE;
+  delete process.env.STARKEEP_FORCE_REMOTE;
   signedFetch.mockReset();
   loadAppCredentials.mockReset();
   loadAppCredentials.mockResolvedValue({
@@ -103,7 +103,9 @@ function seed(recordId: string, angles: number[], dims = { w: 640, h: 480 }): vo
   });
 }
 
-const params = (id: string) => ({ params: Promise.resolve({ id }) });
+// The record id is an argument now, not a framework params promise; the
+// helper stays so the call sites below read the same.
+const params = (id: string) => id;
 const jsonRequest = (body: unknown) =>
   new Request("http://localhost/api/vision/x", {
     method: "PUT",
@@ -519,10 +521,10 @@ describe("POST /api/vision/scan", () => {
 });
 
 describe("GET /api/vision/face-crop/[id]", () => {
+  // A real `Request`, not a `nextUrl` stand-in: the route reads the query off
+  // `req.url` now, which is what Hono hands it on both surfaces.
   const request = (faceIndex: string) =>
-    ({
-      nextUrl: new URL(`http://localhost/api/vision/face-crop/a?face=${faceIndex}`),
-    }) as never;
+    new Request(`http://localhost/api/vision/face-crop/a?face=${faceIndex}`);
 
   it("rejects a non-integer face index", async () => {
     seed("a", [0]);
@@ -566,7 +568,7 @@ describe("GET /api/vision/face-crop/[id]", () => {
 
 describe("route module isolation", () => {
   it("importing every route did not load onnxruntime", () => {
-    // `vision-bundle-isolation.test.ts` proves this statically, over the import
+    // `worker-bundle-isolation.test.ts` proves this statically, over the import
     // graph. This proves it dynamically and from the other side: all six
     // handlers are imported at the top of this file and have been executed, and
     // the native runtime is still not in the module load list.

@@ -2,7 +2,7 @@
  * The messages the Next server and the derivation worker exchange.
  *
  * Its own module, with no sharp and no `worker_threads` import, because both
- * sides need these types and only one of them may be reachable from `app/`.
+ * sides need these types and only one of them may be reachable from a route.
  */
 
 import type { SweepState } from "./types";

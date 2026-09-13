@@ -2,7 +2,7 @@
  * The messages the Next server and the scan worker exchange.
  *
  * Its own module, with no ONNX and no `worker_threads` import, because both
- * sides need these types and only one of them may be reachable from `app/`.
+ * sides need these types and only one of them may be reachable from a route.
  */
 
 import type { ScanState, VisionConfig } from "./types";

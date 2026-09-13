@@ -8,7 +8,7 @@
  * for the second of those — a route may not import from `scripts/`.
  *
  * Nothing here touches the engine or onnxruntime, so it is safe in the Next
- * server graph (see `__tests__/vision-bundle-isolation.test.ts`).
+ * server graph (see `__tests__/worker-bundle-isolation.test.ts`).
  *
  * The invariant: **a failed verification leaves nothing behind.** Model presence
  * is later judged by file size (re-hashing 278 MB on every status poll would

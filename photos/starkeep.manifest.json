@@ -11,7 +11,7 @@
   "localRun": {
     "command": "pnpm",
     "args": [
-      "dev"
+      "start"
     ],
     "portFlag": "-p"
   },
@@ -74,7 +74,7 @@
       },
       {
         "key": "live-photo",
-        "description": "This record is the motion half of its parent's Live Photo \u2014 a short clip belonging to the still it is a child of, not an item in its own right. The value says how the pairing was decided: 'identifier' when both files carried Apple's shared content identifier (authoritative), 'filename' when it was inferred from matching names in the same folder (circumstantial). Other apps should render the parent still and treat this child as a detail of it; a grid that listed it separately would show every Live Photo twice."
+        "description": "This record is the motion half of its parent's Live Photo — a short clip belonging to the still it is a child of, not an item in its own right. The value says how the pairing was decided: 'identifier' when both files carried Apple's shared content identifier (authoritative), 'filename' when it was inferred from matching names in the same folder (circumstantial). Other apps should render the parent still and treat this child as a detail of it; a grid that listed it separately would show every Live Photo twice."
       },
       {
         "key": "face-count",
@@ -133,15 +133,15 @@
           "auth": "session",
           "publicPaths": [
             "/",
-            "/_next/static/*",
-            "/BUILD_ID",
-            "/starkeep-runtime-config",
             "/sign-in",
+            "/_immutable/*",
+            "/starkeep-runtime-config",
             "/api/session/*"
           ],
           "staticAssetPaths": [
-            "/_next/static/*",
-            "/BUILD_ID"
+            "/",
+            "/sign-in",
+            "/_immutable/*"
           ],
           "env": {
             "STARKEEP_API_GATEWAY_URL": "",

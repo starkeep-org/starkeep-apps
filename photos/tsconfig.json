@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    "target": "ES2022",
     "lib": [
       "dom",
       "dom.iterable",
@@ -17,10 +17,8 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
+    "types": [
+      "node"
     ],
     "paths": {
       "@/*": [
@@ -29,11 +27,8 @@
     }
   },
   "include": [
-    "next-env.d.ts",
     "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    "**/*.tsx"
   ],
   // `infra` is deliberately NOT excluded: it holds the resize Lambda, which is
   // real deployed code. While it was excluded, three identifiers were called
@@ -42,6 +37,7 @@
   // that only a live invocation could surface.
   "exclude": [
     "node_modules",
+    "dist",
     "e2e"
   ]
 }

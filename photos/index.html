@@ -1,0 +1,25 @@
+<!doctype html>
+<!--
+  Photos' shell: one file on disk, served for both client routes on both
+  surfaces. What it carries is what `app/layout.tsx`'s `metadata` and
+  `viewport` exports used to declare.
+
+  The `viewport` meta is stated rather than inherited from a framework default,
+  because the app lays itself out differently at phone width and that only
+  means anything if the phone reports its real width instead of pretending to
+  be a desktop.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Photos</title>
+    <style>
+      body { margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

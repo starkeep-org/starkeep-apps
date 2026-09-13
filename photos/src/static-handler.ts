@@ -60,9 +60,10 @@ export const handler = await createWebAppHandler({
   assetsDir: new URL("./assets/", import.meta.url),
   staticPaths,
   shellPaths: [...clientRoutes],
-  // Stated rather than defaulted. The adapter's default still carries
-  // `/_next/static/*` for the length of the migration, and Photos emits nothing
-  // under that prefix any more.
+  // `/_immutable/*` is the platform's reserved prefix for content-addressed
+  // output, and `vite.config.ts` sets `assetsDir` to match. The adapter has no
+  // default: a path cached forever by accident is unrecoverable at the edge
+  // until its TTL expires, so the app names the prefix it hashes into.
   immutablePaths: ["/_immutable/*"],
   // The staged assets are the whole truth for the paths above: `vite build`
   // emits them and nothing in the Hono app claims a sibling path under the same

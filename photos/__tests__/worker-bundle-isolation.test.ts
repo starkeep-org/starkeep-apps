@@ -11,10 +11,10 @@ import { fileURLToPath } from "node:url";
  * entry reaches drags that engine — and whatever native module it exists to
  * isolate — into a Lambda that serves HTML.
  *
- * This used to be a precaution. Under OpenNext a tracer decided what to ship
- * and `serverExternalPackages` named the two natives, so an accidental import
- * produced a large bundle rather than a broken one. esbuild has no such list to
- * consult, which makes this the load-bearing guard: `onnxruntime-node` is ~270
+ * This used to be a precaution. The previous bundler traced an import graph and
+ * consulted a declared list of externals, so an accidental import produced a
+ * large bundle rather than a broken one. esbuild has no such list to consult,
+ * which makes this the load-bearing guard: `onnxruntime-node` is ~270
  * MB unpacked and Lambda's hard ceiling is 250 MB, so the failure it prevents
  * is a deploy that cannot happen with the cause reported by AWS rather than
  * here.

@@ -158,8 +158,8 @@ describe("the origin gate on the local surface", () => {
 describe("what the manifest declares public", () => {
   it("is exactly the client routes, the served files, and what sign-in needs", () => {
     // Growing this list is a security decision, so it is spelled out here
-    // rather than asserted by shape. `/_next/static/*` and `/BUILD_ID` left
-    // with the framework; `/_immutable/*` is what the build emits now.
+    // rather than asserted by shape. `/_immutable/*` is the one prefix the
+    // build emits into, and the one entry here that is a glob.
     expect(publicPaths).toEqual([
       ...CLIENT_ROUTES,
       "/_immutable/*",

@@ -6,8 +6,8 @@
  * `worker_threads` needs JavaScript and this app is TypeScript, so something
  * has to bridge that. Bundling is the option that also buys the property worth
  * having: the worker has exactly one entry point, reachable only by absolute
- * path, so open-next's dependency tracer walking in from a route can never
- * arrive at sharp.
+ * path, so nothing the browser-facing Lambda imports can ever reach sharp.
+ * `__tests__/worker-bundle-isolation.test.ts` is the guard.
  *
  * `pnpm dev` and `pnpm start` run this first, so it is not a step anyone has to
  * remember. It is cheap and needs sharp only at runtime, loaded from

@@ -146,7 +146,7 @@ agree in both directions.
 | `vision-routes` | 46 | the six handlers |
 | `vision-clustering` | 27 | assignment, merge, split, rebuild, the embedding codec |
 | `vision-client` | 26 | the browser client, including the basePath case |
-| `vision-bundle-isolation` | 22 | the import-graph guard |
+| `worker-bundle-isolation` | 58 | the import-graph guard, over both engines |
 | `vision-label-publish` | 19 | the publisher and its row chunking |
 | `vision-engine.integration` | 17 | the real engine — skipped without models + fixtures |
 | `vision-store` | 15 | sidecars, config, scan state |

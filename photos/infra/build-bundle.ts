@@ -2,34 +2,44 @@
 /**
  * Build the Photos Lambda bundle (dist.zip) for cloud install.
  *
- * This is the app-owned half of the install contract. The platform installer
- * (@starkeep/admin-installer cli:install-app) invokes this via `pnpm bundle`
- * in the app's source dir and consumes the resulting dist.zip:
+ * App-owned half of the install contract. The platform installer
+ * (@starkeep/admin-installer cli:install-app) invokes this via `pnpm bundle` in
+ * the app's source dir and consumes the resulting zip:
  *
- *   env in:  STARKEEP_APP_BASE_PATH = /apps/<appId>   (platform routing convention)
- *            STARKEEP_BUNDLE_OUT    = <abs path>      (where to write dist.zip)
- *   out:     writes dist.zip to STARKEEP_BUNDLE_OUT
+ *   env in:  STARKEEP_APP_BASE_PATH = /apps/photos   (route prefix to bake in)
+ *            STARKEEP_BUNDLE_OUT    = <abs path>     (where to write dist.zip)
+ *   out:     dist.zip at STARKEEP_BUNDLE_OUT
  *
- * Builds the Next.js app with OpenNext, generates the Lambda entry around the
- * platform's web adapter, bundles the resize handler, installs sharp for the
- * Lambda runtime, and zips everything. Knowledge of OpenNext, sharp, and
- * resize-handler lives here in the app — the platform only sees a dist.zip.
+ * Four steps: build the browser half with Vite straight into the staging
+ * directory, bundle the two Lambda entries with esbuild, install sharp for the
+ * Lambda's platform, and zip.
+ *
+ * What that replaced was a framework repair kit. An OpenNext server function
+ * staged by hand with `verbatimSymlinks` for pnpm's virtual store; forty lines
+ * of `.nft.json` trace-copying because the bundler never traced the
+ * instrumentation hook's chunks, whose absence answered every request —
+ * including the sign-in page — with `{"message":"Server failed to respond."}`;
+ * a prerender cache shipped because the deployment provisions no bucket for
+ * one; a null tag cache to switch off a backend the install never creates; and
+ * a sweep of 3.3 MB of build inputs the recursive copy had dragged in. None of
+ * it has a counterpart here, because the shell is a file and the server is one
+ * Hono app.
+ *
+ * **esbuild bundles where the tracer copied**, and that is the one thing this
+ * script is now stricter about than its predecessor. The tracer walked a graph
+ * and copied what it found; esbuild inlines eagerly, so a single import of the
+ * vision engine from a route would pull `onnxruntime-node` — 270 MB unpacked —
+ * into a Lambda that serves HTML. `__tests__/worker-bundle-isolation.test.ts`
+ * is the guard, and the size check at the end of this file is the backstop.
  */
 
-import { execSync, spawnSync } from "node:child_process";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build as esbuild } from "esbuild";
 
 const INFRA_DIR = dirname(fileURLToPath(import.meta.url)); // .../photos/infra
 const PHOTOS_DIR = resolve(INFRA_DIR, ".."); // .../photos
@@ -37,9 +47,9 @@ const PHOTOS_DIR = resolve(INFRA_DIR, ".."); // .../photos
 /**
  * The manifest is the single declaration of which public paths the bundle
  * answers from disk. Reading it here rather than repeating the list in the
- * generated entry is what lets `@starkeep/admin-manifest` check the list
- * against `publicPaths` — a hand-written copy is checkable only by a test that
- * greps this file, which is what the platform schema replaced.
+ * entry is what lets `@starkeep/admin-manifest` check the list against
+ * `publicPaths` — a hand-written copy is checkable only by a test that greps
+ * this file.
  */
 const manifest = JSON.parse(
   readFileSync(join(PHOTOS_DIR, "starkeep.manifest.json"), "utf8"),
@@ -59,6 +69,36 @@ if (!BUNDLE_OUT) {
   console.error("Error: STARKEEP_BUNDLE_OUT env var is required (abs path to write dist.zip).");
   process.exit(1);
 }
+
+// The static branch runs ahead of the app's own gate, so anything it answers is
+// answered without one. An empty list is refused rather than shipped, because a
+// bundle that serves no shell and no chunks renders a blank page and reports
+// nothing.
+const staticHandler = manifest.infraRequirements.compute.handlers.find((h) => h.name === "static");
+if (!staticHandler) {
+  console.error("photos manifest has no `static` compute handler.");
+  process.exit(1);
+}
+if ((staticHandler.staticAssetPaths ?? []).length === 0) {
+  console.error(
+    "photos manifest declares no `staticAssetPaths` on the `static` handler, so the bundle " +
+      "would answer neither the shell nor any asset and every page would render blank; " +
+      "refusing to build that bundle.",
+  );
+  process.exit(1);
+}
+
+/**
+ * What the browser-facing Lambda must never contain, in bytes.
+ *
+ * `onnxruntime-node` alone is ~270 MB unpacked and Lambda's own hard ceiling is
+ * 250 MB unzipped, so a bundle that swallowed it could not deploy at all — but
+ * it would fail at the deploy with an AWS error rather than here with a reason.
+ * The threshold is set well above what the entry legitimately weighs (Hono plus
+ * `@starkeep/app-client`, under a megabyte) and well below anything that could
+ * be an accident.
+ */
+const MAX_STATIC_ENTRY_BYTES = 8 * 1024 * 1024;
 
 /** [major, minor, patch] of a version string, for ordering comparisons. */
 function versionParts(version: string): [number, number, number] {
@@ -145,249 +185,89 @@ function resolveSharpVersion(): string {
 }
 
 async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<void> {
-  const stagingDir = join(tmpdir(), `starkeep-photos-bundle-${Date.now()}`);
+  const staging = join(tmpdir(), `starkeep-photos-bundle-${Date.now()}`);
 
   try {
-    mkdirSync(stagingDir, { recursive: true });
+    mkdirSync(staging, { recursive: true });
 
-    // 1. Build with OpenNext (runs `open-next build` via pnpm build script).
-    //    STARKEEP_APP_BASE_PATH bakes Next's basePath into the build so all
-    //    asset URLs and routes are emitted under /apps/<appId>, matching how
-    //    the shared API Gateway forwards requests.
-    console.log("\nBuilding photos app with OpenNext…");
-    const buildResult = spawnSync("pnpm", ["build"], {
+    // 1. The browser half, built straight into `assets/` — which is where
+    //    `src/static-handler.ts` points `createWebAppHandler`. The installer
+    //    deploys the Lambda as the only origin, with no S3 asset bucket, so the
+    //    shell and every chunk are answered from inside the zip.
+    //
+    //    `STARKEEP_APP_BASE_PATH` sets Vite's `base`, so every asset URL the
+    //    build emits already carries the mount, and it is defined into the
+    //    bundle for the URLs no bundler sees — see vite.config.ts.
+    //
+    //    **Not into `dist/`.** `dist/` is what the local server serves, and a
+    //    cloud build left there is an app whose every asset URL is prefixed
+    //    `/apps/photos` on a surface that has no such prefix: the shell loads,
+    //    the bundle 404s and the page stays blank. That is a failure the local
+    //    surface reports long after the command that caused it.
+    const assets = join(staging, "assets");
+    console.log("\nBuilding photos' browser half with Vite…");
+    execSync(`pnpm build --outDir "${assets}" --emptyOutDir`, {
       cwd: PHOTOS_DIR,
       stdio: "inherit",
       env: {
         ...process.env,
-        NEXT_PUBLIC_FORCE_REMOTE: "true",
-        NODE_ENV: "production",
         STARKEEP_APP_BASE_PATH: appBasePath,
-        // basePath isn't exposed to client JS by Next.js; mirror it as a
-        // NEXT_PUBLIC_* var so client fetch() calls can prepend it.
-        NEXT_PUBLIC_STARKEEP_APP_BASE_PATH: appBasePath,
+        STARKEEP_FORCE_REMOTE: "true",
+        NODE_ENV: "production",
       },
     });
-    if (buildResult.status !== 0) {
-      console.error("photos OpenNext build failed.");
-      process.exit(buildResult.status ?? 1);
-    }
-
-    // 2. Copy the OpenNext server function output to the staging root.
-    //    The server function is the Next.js Lambda handler (index.handler).
-    const serverFnDir = resolve(PHOTOS_DIR, ".open-next", "server-functions", "default");
-    if (!existsSync(serverFnDir)) {
-      console.error(`OpenNext server-function dir not found at ${serverFnDir}.`);
+    if (!existsSync(join(assets, "index.html"))) {
+      console.error(`Vite produced no shell at ${join(assets, "index.html")}.`);
       process.exit(1);
     }
-    console.log("\nCopying OpenNext server function…");
-    // verbatimSymlinks preserves the original relative symlink targets.
-    // OpenNext's output relies on pnpm-style relative links (e.g.
-    // photos/node_modules/next -> ../../node_modules/.pnpm/...); without this
-    // flag Node rewrites them to absolute paths pointing at the local dev
-    // machine, which obviously don't resolve inside the Lambda sandbox.
-    cpSync(serverFnDir, stagingDir, { recursive: true, verbatimSymlinks: true });
 
-    // 2a. Copy the instrumentation hook's dependency closure, which OpenNext
-    //     omits. OpenNext copies every *file* at the root of `.next/server`
-    //     (so `instrumentation.js` lands in the bundle) but populates
-    //     `.next/server/chunks` only from the `.nft.json` traces of the routes
-    //     it knows about, and 3.1.3 has no knowledge of instrumentation at all
-    //     — `instrumentation.js.nft.json` is never read. The hook therefore
-    //     ships as an entry file whose turbopack chunks are absent.
+    // 2. The browser-facing Lambda entry, bundled. The Lambda has no install
+    //    step of its own, so `@starkeep/app-client` and Hono are inlined here;
+    //    `node:*` stays external because the runtime provides it, and the two
+    //    native modules stay external because they must never be reached from
+    //    this entry at all — see the size check below, and
+    //    `__tests__/worker-bundle-isolation.test.ts`, which is what keeps that
+    //    true rather than merely hoped for.
     //
-    //     That is not a degraded background job, it is a dead server. Next
-    //     loads the instrumentation module during `prepare()`, before it
-    //     serves anything, so the missing chunk throws
-    //     "An error occurred while loading the instrumentation hook" and every
-    //     request — including the sign-in page — comes back as OpenNext's
-    //     `{"message":"Server failed to respond."}` with the real cause only
-    //     in CloudWatch.
-    //
-    //     Paths in the trace are relative to `.next/server` and are resolved
-    //     against the real build output rather than `.next/standalone`,
-    //     because entries outside `.next` (the derive and scan workers) exist
-    //     only in the source tree.
-    const PACKAGE_PATH = "photos";
-    const stagedServerDir = join(stagingDir, PACKAGE_PATH, ".next", "server");
-    const buildServerDir = join(PHOTOS_DIR, ".next", "server");
-    const instrumentationTrace = join(buildServerDir, "instrumentation.js.nft.json");
-    if (existsSync(join(stagedServerDir, "instrumentation.js"))) {
-      if (!existsSync(instrumentationTrace)) {
-        console.error(
-          `OpenNext staged instrumentation.js but ${instrumentationTrace} does not exist, ` +
-            `so its chunks cannot be resolved. The Lambda would fail every request at ` +
-            `server startup; refusing to build a bundle that cannot serve.`,
-        );
-        process.exit(1);
-      }
-      const traced: string[] = JSON.parse(readFileSync(instrumentationTrace, "utf8")).files ?? [];
-      let copied = 0;
-      for (const rel of traced) {
-        const from = resolve(buildServerDir, rel);
-        const to = resolve(stagedServerDir, rel);
-        if (!existsSync(from) || existsSync(to)) continue;
-        mkdirSync(dirname(to), { recursive: true });
-        cpSync(from, to, { recursive: true, verbatimSymlinks: true });
-        copied++;
-      }
-      console.log(`Copied ${copied} instrumentation dependencies OpenNext omitted.`);
-    }
+    //    ESM, emitted as `.mjs`: `src/static-handler.ts` awaits the app's
+    //    module graph at module scope so the graph loads during Lambda's INIT
+    //    phase — elevated CPU, unbilled, its own budget — and top-level await
+    //    does not exist in CommonJS. Lambda resolves the manifest's
+    //    `index.handler` against `.mjs` as readily as `.js`.
+    console.log("\nBundling the static Lambda entry with esbuild…");
+    await esbuild({
+      entryPoints: [join(PHOTOS_DIR, "src", "static-handler.ts")],
+      outfile: join(staging, "index.mjs"),
+      bundle: true,
+      platform: "node",
+      target: "node22",
+      format: "esm",
+      external: ["node:*", "sharp", "onnxruntime-node"],
+      banner: {
+        // The bundle pulls in CJS dependencies that expect `require`.
+        js: "import { createRequire as __cr } from 'node:module';\nconst require = __cr(import.meta.url);",
+      },
+    });
 
-    // 2b. Bundle Next.js static assets into the Lambda zip. OpenNext expects
-    //     these to live on a CDN/S3 origin (see open-next.output.json
-    //     `behaviors`), but this installer ships the server function as the
-    //     only origin — so without a local copy every
-    //     /apps/photos/_next/static/* request 404s and the page renders blank
-    //     (CSR bailout with no chunks). Step 2e is what answers them from here.
-    const assetsSrc = resolve(PHOTOS_DIR, ".open-next", "assets");
-    if (!existsSync(assetsSrc)) {
-      console.error(`OpenNext assets dir not found at ${assetsSrc}.`);
-      process.exit(1);
-    }
-    console.log("Copying OpenNext static assets…");
-    cpSync(assetsSrc, join(stagingDir, "assets"), { recursive: true });
-
-    // 2c. Ship the pages the build already rendered.
-    //
-    //     OpenNext emits prerendered HTML to `.open-next/cache/<BUILD_ID>/` and
-    //     expects a deployer to upload it to the bucket its incremental cache
-    //     reads. This installer has no such bucket, so without this step the
-    //     Lambda has no copy of its own output and re-renders `/` and
-    //     `/sign-in` — two static documents — on every request.
-    //
-    //     The build-id directory is dropped: one bundle ships exactly one
-    //     build, so keeping a level named after it only adds a lookup that can
-    //     disagree with itself. infra/prerender-cache.ts reads `cache/<key>.cache`.
-    const cacheRoot = resolve(PHOTOS_DIR, ".open-next", "cache");
-    const buildIdFile = join(PHOTOS_DIR, ".next", "BUILD_ID");
-    if (!existsSync(buildIdFile)) {
-      console.error(`No ${buildIdFile}; cannot locate the prerender cache.`);
-      process.exit(1);
-    }
-    const buildId = readFileSync(buildIdFile, "utf8").trim();
-    const cacheSrc = join(cacheRoot, buildId);
-    if (!existsSync(cacheSrc)) {
+    const entryBytes = readFileSync(join(staging, "index.mjs")).length;
+    if (entryBytes > MAX_STATIC_ENTRY_BYTES) {
       console.error(
-        `OpenNext prerender cache not found at ${cacheSrc}. Every prerendered ` +
-          `page would be re-rendered per request; refusing to build that bundle.`,
-      );
-      process.exit(1);
-    }
-    console.log("Copying prerendered pages…");
-    cpSync(cacheSrc, join(stagingDir, "cache"), { recursive: true });
-
-    // 2d. Drop build inputs the copy in step 2 swept in. None of it is
-    //     reachable at runtime: the tsbuildinfo files are incremental-compile
-    //     state, web-assets.json feeds the ASCII banner at build time, and
-    //     `out/` is the static export — a second copy of what already went to
-    //     `assets/` in 2b. Together they are ~3.3 MB of a 19.5 MB package,
-    //     which is download and unpack time on every cold container for bytes
-    //     nothing reads.
-    for (const dead of [
-      join(PACKAGE_PATH, "tsconfig.tsbuildinfo"),
-      join(PACKAGE_PATH, "tsconfig.e2e.tsbuildinfo"),
-      join(PACKAGE_PATH, "infra", "src", "web-assets.json"),
-      join(PACKAGE_PATH, "out"),
-    ]) {
-      rmSync(join(stagingDir, dead), { recursive: true, force: true });
-    }
-
-    // 2e. The browser-facing Lambda entry.
-    //
-    //     OpenNext expects its static assets on a CDN/S3 origin (see
-    //     open-next.output.json `behaviors`), but this installer ships the
-    //     server function as the only origin — so something has to answer
-    //     /_next/static/* and BUILD_ID from disk before delegating, or every
-    //     chunk request 404s and the page renders blank.
-    //
-    //     That "something" is the platform's, not Photos'. Photos used to
-    //     generate its own copy of base-path stripping, MIME mapping, path
-    //     containment and cache-control here; Memo and Probe generated theirs.
-    //     The copies diverged, and a fix to one never reached the others. What
-    //     stays here is the app-shaped configuration: which directory holds the
-    //     assets, and which paths the manifest says live in it.
-    //
-    //     Top-level `await` on the upstream import is the whole point of
-    //     `createWebAppHandler` returning a promise: the OpenNext module graph
-    //     loads during Lambda's INIT phase, which runs at elevated CPU, is not
-    //     billed, and has its own budget — rather than inside a billed,
-    //     timeout-bounded first request.
-    const staticHandler = manifest.infraRequirements.compute.handlers.find(
-      (h) => h.name === "static",
-    );
-    if (!staticHandler) {
-      console.error("photos manifest has no `static` compute handler.");
-      process.exit(1);
-    }
-    // The static branch runs ahead of the origin middleware, so anything it
-    // answers is answered without a gate. Taking the list from the manifest
-    // rather than hand-writing it here is what makes that checkable: the
-    // schema refuses a `staticAssetPaths` entry that `publicPaths` does not
-    // already declare public. An empty list is refused here instead of shipped,
-    // because a bundle that serves no chunks renders a blank page and reports
-    // nothing.
-    const staticPaths = staticHandler.staticAssetPaths ?? [];
-    if (staticPaths.length === 0) {
-      console.error(
-        "photos manifest declares no `staticAssetPaths` on the `static` handler, so the " +
-          "bundle would answer no /_next/static/* request and every page would render " +
-          "blank; refusing to build that bundle.",
+        `The static Lambda entry is ${(entryBytes / 1024 / 1024).toFixed(1)} MB, over the ` +
+          `${MAX_STATIC_ENTRY_BYTES / 1024 / 1024} MB ceiling. Something in the route graph now ` +
+          `reaches a worker engine or a native module; run \`pnpm test ` +
+          `worker-bundle-isolation\` for the import chain.`,
       );
       process.exit(1);
     }
 
-    // The OpenNext entry, a sibling file in the zip. The generated entry
-    // imports it by this path and esbuild is told to leave it alone, so the
-    // specifier survives into the output verbatim and resolves at runtime
-    // relative to index.mjs at the staging root.
-    const UPSTREAM_ENTRY = `./${PACKAGE_PATH}/index.mjs`;
-
-    const entrySource = `import { createWebAppHandler } from "@starkeep/app-client/web";
-
-export const handler = await createWebAppHandler({
-  basePath: ${JSON.stringify(appBasePath)},
-  assetsDir: new URL("./assets/", import.meta.url),
-  staticPaths: ${JSON.stringify(staticPaths)},
-  // A promise, never a thunk — the graph necessarily loads during INIT.
-  // Left external below, so it resolves inside the zip at runtime.
-  upstream: import(${JSON.stringify(UPSTREAM_ENTRY)}),
-});
-`;
-
-    // Written inside infra/ rather than the staging dir so esbuild resolves
-    // `@starkeep/app-client/web` through the app's own node_modules, then
-    // bundled into the zip — the Lambda has no install step of its own.
-    console.log("\nBundling the Lambda entry with esbuild…");
-    const entrySrcPath = join(INFRA_DIR, ".lambda-entry.mjs");
-    writeFileSync(entrySrcPath, entrySource, "utf8");
-    try {
-      await build({
-        entryPoints: [entrySrcPath],
-        bundle: true,
-        platform: "node",
-        target: "node22",
-        format: "esm",
-        outfile: join(stagingDir, "index.mjs"),
-        // esbuild emits `import` for these under ESM; Node resolves them
-        // natively. The OpenNext entry is external because it is a sibling
-        // file in the zip, not a dependency to inline.
-        external: ["node:*", UPSTREAM_ENTRY],
-      });
-    } finally {
-      rmSync(entrySrcPath, { force: true });
-    }
-
-    // 3. Bundle the backend Lambda handler with esbuild. sharp is external —
-    //    it needs native binaries installed for the Lambda (linux) platform.
+    // 3. The resize Lambda, unchanged by this migration. sharp is external —
+    //    it needs native binaries installed for the Lambda (linux) platform,
+    //    which step 4 does.
     console.log("\nBundling resize-handler with esbuild…");
-    const handlersDir = join(stagingDir, "infra", "src");
+    const handlersDir = join(staging, "infra", "src");
     mkdirSync(handlersDir, { recursive: true });
-
-    await build({
-      entryPoints: [
-        join(INFRA_DIR, "src", "resize-handler.ts"),
-      ],
+    await esbuild({
+      entryPoints: [join(INFRA_DIR, "src", "resize-handler.ts")],
       bundle: true,
       platform: "node",
       target: "node22",
@@ -398,36 +278,35 @@ export const handler = await createWebAppHandler({
     });
 
     // 4. Install sharp for the Lambda (linux x64 glibc) platform. --libc=glibc
-    //    is required when installing from a non-glibc host (e.g. macOS): without
-    //    it npm's libc filter silently drops @img/sharp-linux-x64 and
+    //    is required when installing from a non-glibc host (e.g. macOS):
+    //    without it npm's libc filter silently drops @img/sharp-linux-x64 and
     //    @img/sharp-libvips-linux-x64, leaving the bundle with sharp's JS but
     //    no native binary, and the Lambda fails at require("sharp") with
     //    "Could not load the sharp module using the linux-x64 runtime".
     //
-    //    The version is pinned to whatever the photos workspace resolved from
-    //    pnpm-lock.yaml — an unpinned `npm install sharp` here would ship npm's
-    //    current latest, so the deployed Lambda would not be reproducible from
-    //    the repo and could differ from the sharp the app is developed against.
-    //    sharp pins its own @img/sharp-* native packages to exact versions, so
-    //    pinning sharp pins the binaries too.
+    //    The version is pinned to whatever the photos workspace resolved — an
+    //    unpinned `npm install sharp` here would ship npm's current latest, so
+    //    the deployed Lambda would not be reproducible from the repo and could
+    //    differ from the sharp the app is developed against. sharp pins its own
+    //    @img/sharp-* native packages to exact versions, so pinning sharp pins
+    //    the binaries too.
     const sharpVersion = resolveSharpVersion();
     console.log(`\nInstalling sharp@${sharpVersion} for linux/x64 (glibc)…`);
     execSync(
       `npm install --os=linux --cpu=x64 --libc=glibc --no-package-lock --no-save sharp@${sharpVersion}`,
-      { cwd: stagingDir, stdio: "inherit" },
+      { cwd: staging, stdio: "inherit" },
     );
 
-    // 5. Zip everything in staging dir.
+    // 5. Zip. `-r`, and no `-y`: the OpenNext output used pnpm's virtual-store
+    //    symlinks and had to keep them, but nothing staged here is a symlink
+    //    except what npm just installed, and `assets/` has to keep its shape
+    //    inside the zip because the adapter resolves paths under it.
     console.log("\nCreating dist.zip…");
-    // -y preserves symlinks: OpenNext's output uses pnpm's virtual-store layout
-    // (e.g. photos/node_modules/next -> ../../node_modules/.pnpm/next@.../...),
-    // and dereferencing them collapses next into a real copy that can no longer
-    // resolve peer deps like @swc/helpers through the .pnpm sibling tree.
     mkdirSync(dirname(distZip), { recursive: true });
     rmSync(distZip, { force: true });
-    execSync(`zip -ry "${distZip}" . -q`, { cwd: stagingDir, stdio: "inherit" });
+    execSync(`zip -ry "${distZip}" . -q`, { cwd: staging, stdio: "inherit" });
   } finally {
-    rmSync(stagingDir, { recursive: true, force: true });
+    rmSync(staging, { recursive: true, force: true });
   }
 }
 

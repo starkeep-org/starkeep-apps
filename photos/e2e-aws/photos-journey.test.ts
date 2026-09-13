@@ -22,7 +22,7 @@
  */
 
 import { it, expect, afterAll } from "vitest";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -39,9 +39,9 @@ import {
   createRecordWithBytes,
   eventually,
   solidPng,
-  startNextDev,
+  startWebServer,
   type LdsApp,
-  type NextDevServer,
+  type WebServer,
 } from "@starkeep/e2e";
 import { applicableStillClasses, STILL_LADDER } from "../src/photos-lib/ladder";
 import {
@@ -52,24 +52,30 @@ import {
 const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * Refuse to start when the operator is already running Photos.
+ * Refuse to start when the operator is already running Photos out of this
+ * checkout.
  *
- * Next 16 allows one dev server per app directory and holds the claim in
- * `.next/dev/lock`; a second one exits immediately with "Another next dev server
- * is already running". The ladder step boots Photos out of this very checkout,
- * so a dev server left running from ordinary development takes that step down —
- * fifteen minutes and one Pulumi-provisioned cloud stack into the run, which is
- * the most expensive possible moment to learn it.
+ * The previous framework enforced one dev server per app directory itself and
+ * held the claim in `.next/dev/lock`, which is what this used to read. A Node
+ * server has no such lock and would start happily — but the ladder step below
+ * boots Photos out of this very checkout and drives it, and a second server
+ * sharing the same `dist/`, the same `.derivation/` worker bundle and the same
+ * sweep state is a race whose failures land fifteen minutes and one
+ * Pulumi-provisioned cloud stack into the run.
  *
- * The lock outlives a crashed server, so the pid is probed rather than trusted:
- * signal 0 delivers nothing and only reports whether the process exists.
+ * So the claim is made on the build directory instead: `dist/` is what both
+ * servers would serve and what a running `pnpm dev` rewrites underneath them.
+ * A lock file of this suite's own, holding the pid, probed with signal 0 rather
+ * than trusted — signal 0 delivers nothing and only reports whether the process
+ * exists, so a lock left behind by a crash does not block a run.
  */
+const PHOTOS_LOCK = join(PHOTOS_DIR, ".e2e-photos.lock");
+
 function assertNoPhotosDevServer(): void {
-  const lockPath = join(PHOTOS_DIR, ".next", "dev", "lock");
-  if (!existsSync(lockPath)) return;
+  if (!existsSync(PHOTOS_LOCK)) return;
   let lock: { pid?: number; appUrl?: string };
   try {
-    lock = JSON.parse(readFileSync(lockPath, "utf-8")) as {
+    lock = JSON.parse(readFileSync(PHOTOS_LOCK, "utf-8")) as {
       pid?: number;
       appUrl?: string;
     };
@@ -83,11 +89,11 @@ function assertNoPhotosDevServer(): void {
     return; // Stale lock from a server that is gone.
   }
   throw new Error(
-    `A Photos dev server is already running (pid ${lock.pid}${
+    `A Photos server started by this suite is already running (pid ${lock.pid}${
       lock.appUrl ? `, ${lock.appUrl}` : ""
-    }). Next allows one per app directory, and this journey boots Photos out of ` +
-      `that same directory to derive a rendition ladder. Stop it (kill ${lock.pid}) ` +
-      "and re-run.",
+    }). This journey boots Photos out of that same directory to derive a ` +
+      `rendition ladder, and two servers sharing one dist/ race. Stop it ` +
+      `(kill ${lock.pid}) and re-run.`,
   );
 }
 
@@ -162,7 +168,7 @@ async function readRecordBytes(app: LdsApp, recordId: string): Promise<Buffer> {
  * ladder step and stopped as soon as its ladder has synced, so no later step
  * runs against a background sweeper.
  */
-let photosLocal: NextDevServer | undefined;
+let photosLocal: WebServer | undefined;
 /** The original whose ladder the rendition steps derive, sync and read back. */
 let ladderRecordId: string;
 let ladderSourceName: string;
@@ -174,17 +180,18 @@ let ladderOriginalKey: string;
 const syncedRungKeys = new Map<string, string>();
 
 function photosSteps(ctx: JourneyContext): void {
-  // The ladder-sync step stops the dev server on its way out, because
-  // everything after it reads a library that must stop changing. This is the
-  // net for every path that does not reach that line.
+  // The ladder-sync step stops the server on its way out, because everything
+  // after it reads a library that must stop changing. This is the net for every
+  // path that does not reach that line.
   //
-  // Without it a step failing between the boot and that stop leaves `next dev`
+  // Without it a step failing between the boot and that stop leaves a server
   // holding this app's directory, and the *next* run refuses to start —
   // correctly, but for a reason that has nothing to do with what it was asked
   // to test. That is not hypothetical: it happened, and cost a run.
   afterAll(async () => {
     await photosLocal?.stop();
     photosLocal = undefined;
+    rmSync(PHOTOS_LOCK, { force: true });
   });
 
   it("derives a full rendition ladder locally, through the real Photos app", async () => {
@@ -244,18 +251,29 @@ function photosSteps(ctx: JourneyContext): void {
     // sweep controller, running as they do on an operator's machine rather than
     // as a fixture. NODE_ENV is set explicitly because vitest sets it to `test`,
     // which Next warns about and overrides anyway.
-    photosLocal = await startNextDev({
+    photosLocal = await startWebServer({
       appDir: PHOTOS_DIR,
+      mode: "node",
+      command: "pnpm",
+      args: ["start"],
+      portFlag: "-p",
       env: {
         STARKEEP_DIR: ctx.dataDir(),
         STARKEEP_LOCAL_DATA_SERVER_URL: ctx.ldsUrl(),
-        NODE_ENV: "development",
       },
-      // A cold `next dev` compile of this app is the slowest thing in the step,
-      // and it is paid once per run on a machine that is also running a
-      // Pulumi-provisioned cloud stack.
+      // `pnpm start` builds both worker bundles and, if `dist/` is missing,
+      // the browser half — the same steps a fresh local install pays. No
+      // on-demand compilation any more, but the ladder step still boots this
+      // on a machine that is also running a Pulumi-provisioned cloud stack.
       startTimeoutMs: 5 * 60 * 1000,
     });
+    // The claim `assertNoPhotosDevServer` reads. Written here rather than by
+    // the harness, because it is this suite's rule: one server per checkout,
+    // for as long as this run is driving one.
+    writeFileSync(
+      PHOTOS_LOCK,
+      JSON.stringify({ pid: photosLocal.child.pid, appUrl: photosLocal.url }),
+    );
 
     const { record } = await createRecordWithBytes(photos, {
       bytes: solidPng(

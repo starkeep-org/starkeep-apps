@@ -10,7 +10,7 @@ import { isRemoteDataTarget, remoteNotImplemented } from "@/vision/remote";
  * answers, and only one of them means the user should wait.
  */
 
-const KEYS = ["STARKEEP_APP_CLIENT_MODE", "NEXT_PUBLIC_FORCE_REMOTE"] as const;
+const KEYS = ["STARKEEP_APP_CLIENT_MODE", "STARKEEP_FORCE_REMOTE"] as const;
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -41,13 +41,13 @@ describe("isRemoteDataTarget", () => {
   it("is true for a cloud build even if the runtime env is missing", () => {
     // Baked in by infra/build-bundle.ts. The second signal exists precisely so
     // a misconfigured Lambda still refuses.
-    process.env.NEXT_PUBLIC_FORCE_REMOTE = "true";
+    process.env.STARKEEP_FORCE_REMOTE = "true";
     expect(isRemoteDataTarget()).toBe(true);
   });
 
   it("is not fooled by a non-'cloud' client mode", () => {
     process.env.STARKEEP_APP_CLIENT_MODE = "local";
-    process.env.NEXT_PUBLIC_FORCE_REMOTE = "false";
+    process.env.STARKEEP_FORCE_REMOTE = "false";
     expect(isRemoteDataTarget()).toBe(false);
   });
 });

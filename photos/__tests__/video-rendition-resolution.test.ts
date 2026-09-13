@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveVideo } from "../app/api/photos/library/route";
+import { resolveVideo } from "../src/routes/photos/library";
 
 type Candidate = NonNullable<Parameters<typeof resolveVideo>[0]["variant_candidates"]>[number];
 

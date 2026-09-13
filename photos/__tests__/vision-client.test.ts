@@ -91,8 +91,8 @@ describe("path prefixing", () => {
     //
     // `BASE_PATH` is read at module load, so the modules are re-imported with
     // the env set rather than mutated in place.
-    const saved = process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
-    process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = "/apps/photos";
+    const saved = process.env.STARKEEP_APP_BASE_PATH;
+    process.env.STARKEEP_APP_BASE_PATH = "/apps/photos";
     vi.resetModules();
     try {
       const client = await import("@/lib/vision-client");
@@ -112,8 +112,8 @@ describe("path prefixing", () => {
         "/apps/photos/api/vision/face-crop/r?face=0",
       );
     } finally {
-      if (saved === undefined) delete process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
-      else process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = saved;
+      if (saved === undefined) delete process.env.STARKEEP_APP_BASE_PATH;
+      else process.env.STARKEEP_APP_BASE_PATH = saved;
       vi.resetModules();
     }
   });

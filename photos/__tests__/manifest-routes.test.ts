@@ -21,12 +21,25 @@
  * place without anyone noticing (postmortem 2026-08-23, timeline 2026-07-04).
  * The auth counterpart lives one tier up, in starkeep-core/e2e-aws's
  * "refuses an unauthenticated caller on every app data path", because only a
- * live deployment can answer it.
+ * live deployment can answer it, and in `__tests__/origin-gate.test.ts` for
+ * what the app itself refuses.
+ *
+ * **A third table arrived with the migration.** The browser's fetch sites and
+ * the manifest's gateway routes used to be the only two; the app's own Hono
+ * router is now a third, and the three must agree. A route the router mounts
+ * that the gateway does not admit is a 404 nobody sees until a cloud install;
+ * a route the gateway admits that the router does not mount is a path reaching
+ * the Lambda to be told it does not exist. The second half of this file walks
+ * the real dispatch table through `matchRoute` from `@starkeep/admin-manifest`,
+ * which is the installer's own matcher rather than a copy of it.
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { matchRoute, resolveHandlerRoutes, type AppComputeHandler } from "@starkeep/admin-manifest";
+import { app } from "@/server-app";
+import { CLIENT_ROUTES } from "@/client-routes";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,6 +105,63 @@ describe("manifest route coverage", () => {
         covered(method, "/api/local-data/data/records/rec1"),
         `${method} /api/local-data/* is not routed — the proxy catch-all must be ANY, not GET-only`,
       ).toBe(true);
+    }
+  });
+});
+
+/**
+ * The router's dispatch table, as (method, path) pairs the gateway can be asked
+ * about. Hono's `:id` parameters become a concrete sample value and its `*`
+ * becomes a path under the prefix, because a gateway route matches paths, not
+ * patterns.
+ */
+function dispatchTable(): Array<{ method: string; path: string }> {
+  return app.routes
+    .filter((r) => r.path !== "/*") // the origin gate, mounted with `app.use`
+    .map((r) => ({
+      method: r.method === "ALL" ? "GET" : r.method.toUpperCase(),
+      path: r.path.replace(/:[^/]+/g, "sample").replace(/\/\*$/, "/sample"),
+    }))
+    .filter((r, i, a) => a.findIndex((x) => x.method === r.method && x.path === r.path) === i);
+}
+
+const staticHandler = handlers.find((h) => h.name === "static") as unknown as AppComputeHandler;
+
+describe("the router and the manifest agree", () => {
+  it("walks a dispatch table that is not empty", () => {
+    // The assertions below are `every`-shaped, so an empty table would pass
+    // them all. The router mounts twenty-odd routes; five is a floor that
+    // cannot be reached by accident.
+    expect(dispatchTable().length).toBeGreaterThan(5);
+  });
+
+  it("declares a gateway route for every path the app mounts", () => {
+    const resolved = resolveHandlerRoutes(staticHandler);
+    const unreachable = dispatchTable().filter(
+      ({ method, path }) => matchRoute(resolved, method, path) === null,
+    );
+    expect(
+      unreachable,
+      `The gateway would 404 these before the app saw them: ${JSON.stringify(unreachable)}`,
+    ).toEqual([]);
+  });
+
+  it("mounts a handler for every path the manifest declares public", () => {
+    // The other direction, and the one that matters for the shell: a declared
+    // public path with nothing behind it is a 404 an anonymous caller reaches,
+    // which is how a sign-in page that cannot load its own config looks.
+    const publicPaths = (staticHandler.publicPaths ?? []).filter(
+      (p) => !p.startsWith("/_immutable"),
+    );
+    for (const path of publicPaths) {
+      const probe = path.endsWith("/*") ? `${path.slice(0, -2)}/probe` : path;
+      const mounted =
+        // A client route is answered from disk by the adapter, ahead of the app.
+        CLIENT_ROUTES.includes(probe as (typeof CLIENT_ROUTES)[number]) ||
+        app.routes.some(
+          (r) => r.path === probe || (r.path.endsWith("/*") && probe.startsWith(r.path.slice(0, -1))),
+        );
+      expect(mounted, `${path} is declared public but nothing answers it`).toBe(true);
     }
   });
 });

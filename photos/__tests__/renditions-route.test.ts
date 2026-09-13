@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { POST } from "../app/api/photos/renditions/route";
+import { POST } from "../src/routes/photos/renditions";
 import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 import { authorizePhotosRoute } from "../src/lib/photos-route-server";
 

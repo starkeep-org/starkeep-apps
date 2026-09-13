@@ -26,9 +26,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAppCredentialsCache, createNextProxyHandler } from "@starkeep/app-client";
-import { GET as libraryRoute } from "../app/api/photos/library/route";
+import { GET as libraryRoute } from "../src/routes/photos/library";
 import { LIBRARY_ORDER } from "../src/photos-lib/capture-order";
-import { POST as renditionsRoute } from "../app/api/photos/renditions/route";
+import { POST as renditionsRoute } from "../src/routes/photos/renditions";
 import { listPhotos, listPhotosSince, requestOwnApi } from "../src/lib/data-server-client";
 import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 

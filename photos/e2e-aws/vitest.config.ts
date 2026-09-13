@@ -7,8 +7,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
  * Photos' tier-3 runner. The journey is one ordered sequence against a real AWS
  * account, so the shape matches core's: serial, bail on the first failure, and
- * timeouts sized in tens of minutes because individual steps (Pulumi up, a cold
- * `next dev` compile) take that long.
+ * timeouts sized in tens of minutes because individual steps (Pulumi up, a
+ * cloud bundle, a local app build) take that long.
  */
 export default defineConfig({
   test: {

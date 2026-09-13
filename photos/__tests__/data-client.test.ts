@@ -40,13 +40,13 @@ async function freshDataClient() {
   return import("../src/lib/data-client");
 }
 
-const savedBasePath = process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
+const savedBasePath = process.env.STARKEEP_APP_BASE_PATH;
 
 beforeEach(() => {
   runtimeConfig.value = null;
   session.accessToken = null;
   session.fails = false;
-  delete process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
+  delete process.env.STARKEEP_APP_BASE_PATH;
   fetchMock = vi.fn(async (url: string) => {
     if (!String(url).includes("/api/session/token")) throw new Error(`unexpected fetch: ${url}`);
     if (session.fails) return new Response("nope", { status: 401 });
@@ -58,8 +58,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
-  if (savedBasePath === undefined) delete process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH;
-  else process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = savedBasePath;
+  if (savedBasePath === undefined) delete process.env.STARKEEP_APP_BASE_PATH;
+  else process.env.STARKEEP_APP_BASE_PATH = savedBasePath;
 });
 
 describe("resolveDataSource — always the signing proxy", () => {
@@ -89,7 +89,7 @@ describe("resolveDataSource — always the signing proxy", () => {
     // bypasses the app and the API Gateway answers `{"message":"Not Found"}` (404)
     // — the exact "nothing loads after sign-in" failure. resolveDataSource must
     // prepend the basePath via withBasePath.
-    process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = "/apps/photos";
+    process.env.STARKEEP_APP_BASE_PATH = "/apps/photos";
     const { resolveDataSource } = await freshDataClient();
     expect(await resolveDataSource()).toEqual({
       baseUrl: "/apps/photos/api/local-data",
@@ -138,7 +138,7 @@ describe("resolveAppApiSource — the app's own JWT-gated routes (e.g. /api/resi
   });
 
   it("carries the basePath on the token request, or it 404s under /apps/photos", async () => {
-    process.env.NEXT_PUBLIC_STARKEEP_APP_BASE_PATH = "/apps/photos";
+    process.env.STARKEEP_APP_BASE_PATH = "/apps/photos";
     runtimeConfig.value = { apiGatewayUrl: "https://api.example.com" };
     session.accessToken = "an-access-token";
     const { resolveAppApiSource } = await freshDataClient();

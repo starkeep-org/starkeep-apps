@@ -4,7 +4,7 @@
  * Split out of the worker because it is pure logic over listing rows and the
  * worker is not importable — that module pulls in `onnxruntime-node`, so a test
  * that reached for `isOriginal` would drag 270 MB of native runtime with it, and
- * would blur the one invariant `vision-bundle-isolation.test.ts` exists to
+ * would blur the one invariant `worker-bundle-isolation.test.ts` exists to
  * assert. Nothing here touches ONNX; the worker imports it.
  */
 

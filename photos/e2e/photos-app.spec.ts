@@ -108,7 +108,7 @@ test.beforeAll(async () => {
   await writeFile(jpgPath, await jpegWithExif({ make: "TestMake", model: "TestModel 3000" }));
 });
 
-test("install photos through the platform and start its dev server", async ({ page }) => {
+test("install photos through the platform and start its server", async ({ page }) => {
   await installAppViaAdmin(adminUrl(), "photos");
   ({ url: photosUrl } = await startAppDaemonViaAdmin(adminUrl(), "photos"));
 
@@ -121,6 +121,49 @@ test("install photos through the platform and start its dev server", async ({ pa
 
   await page.goto(photosUrl);
   await expect(page.getByRole("button", { name: "Add Photo" })).toBeVisible({ timeout: 120_000 });
+});
+
+test("the shell loads every chunk it asks for", async ({ page }) => {
+  // The browser-side statement of the migration's sharpest failure: the shell
+  // arrives, the bundle 404s, and the page renders blank behind a clean 200 in
+  // the access log. `__tests__/bundle-output.test.ts` reads the built shell and
+  // checks the files exist; this watches a real browser fetch them.
+  //
+  // Every same-origin response is recorded rather than only the failures,
+  // because a page that requested nothing would pass an assertion that only
+  // looks at 404s — which is the same vacuous shape the isolation guard was
+  // rewritten to avoid.
+  const requested: string[] = [];
+  const missing: string[] = [];
+  page.on("response", (res) => {
+    const url = new URL(res.url());
+    if (url.origin !== new URL(photosUrl).origin) return;
+    requested.push(`${res.status()} ${url.pathname}`);
+    if (res.status() === 404) missing.push(`${url.pathname}`);
+  });
+
+  await page.goto(photosUrl);
+  await expect(page.getByRole("button", { name: "Add Photo" })).toBeVisible({ timeout: 120_000 });
+
+  expect(requested.some((r) => r.includes("/_immutable/"))).toBe(true);
+  expect(missing, `the shell asked for files the build never emitted: ${missing.join(", ")}`).toEqual([]);
+});
+
+test("the sign-in route is served the same shell", async ({ page }) => {
+  // Photos' second client route. It is answered from disk ahead of the app's
+  // own gate on both surfaces, so a local server that 404'd it would be hiding
+  // a cloud path that works — and the reverse, which is worse.
+  const res = await page.goto(`${photosUrl}/sign-in`);
+  expect(res?.status()).toBe(200);
+  await expect(page.getByText("Sign in to Photos")).toBeVisible({ timeout: 30_000 });
+});
+
+test("an undeclared path 404s rather than falling back to the shell", async ({ page }) => {
+  // A development server's blanket SPA fallback would answer this, and the
+  // cloud would refuse it. Matching the cloud's answer locally is what makes an
+  // undeclared client route fail here rather than after a deploy.
+  const res = await page.goto(`${photosUrl}/albums`);
+  expect(res?.status()).toBe(404);
 });
 
 test("an uploaded photo appears in the grid as a shared record", async ({ page }) => {

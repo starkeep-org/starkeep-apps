@@ -3,7 +3,7 @@
  *
  * Shaped after `vision/types.ts` for the same reasons: the status route and the
  * worker both need these types, and only one of them may be reachable from
- * `app/` — so they live in a module that imports neither sharp nor
+ * a route — so they live in a module that imports neither sharp nor
  * `worker_threads`.
  */
 

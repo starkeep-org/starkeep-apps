@@ -100,6 +100,32 @@ function specifiersIn(file: string): string[] {
   return out;
 }
 
+/**
+ * The specifiers a *runtime* import graph has, which is `specifiersIn` minus
+ * the type-only ones. `import type { X } from "./y"` is erased by the bundler
+ * and pulls nothing, so counting it would report a module as shipped when it
+ * is not — `import/run-import.ts` names `ImportStore` that way and must stay
+ * clean under {@link LOCAL_ONLY_BUILTINS}.
+ *
+ * The engine guards above deliberately keep using `specifiersIn`: reaching an
+ * engine even for a type is a signal worth failing on, because the engine
+ * directory is meant to be unreachable from a route at all.
+ */
+function runtimeSpecifiersIn(file: string): string[] {
+  const source = readFileSync(file, "utf-8")
+    .replace(/\bimport\s+type\b[^;]*?from\s+["'][^"']+["']/g, "")
+    .replace(/\bexport\s+type\b[^;]*?from\s+["'][^"']+["']/g, "");
+  const out: string[] = [];
+  for (const pattern of [
+    /\bfrom\s+["']([^"']+)["']/g,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+  ]) {
+    for (const match of source.matchAll(pattern)) out.push(match[1]);
+  }
+  return out;
+}
+
 /** Resolve a specifier to a file in this package, or null if it leaves it. */
 function resolveLocal(fromFile: string, specifier: string): string | null {
   let base: string;
@@ -107,10 +133,20 @@ function resolveLocal(fromFile: string, specifier: string): string | null {
   else if (specifier.startsWith(".")) base = resolve(dirname(fromFile), specifier);
   else return null; // a package — not part of this graph
 
+  // A specifier may carry the emitted extension rather than the source one —
+  // `import("./server-app.js")` is how `src/static-handler.ts` reaches the Hono
+  // app, and TypeScript's ESM resolution expects exactly that spelling. Without
+  // stripping it the walk stops at the Lambda's own entry point and everything
+  // downstream passes for no reason, which is the vacuum this file exists to
+  // avoid.
+  const stripped = base.replace(/\.(js|mjs|cjs|jsx)$/, "");
+
   for (const candidate of [
     base,
     ...SOURCE_EXTENSIONS.map((ext) => base + ext),
     ...SOURCE_EXTENSIONS.map((ext) => join(base, `index${ext}`)),
+    ...SOURCE_EXTENSIONS.map((ext) => stripped + ext),
+    ...SOURCE_EXTENSIONS.map((ext) => join(stripped, `index${ext}`)),
   ]) {
     try {
       if (statSync(candidate).isFile()) return candidate;
@@ -232,3 +268,61 @@ describe.each(ENGINES.map((engine) => [engine.name, engine] as const))(
     });
   },
 );
+
+/**
+ * Node builtins that belong to the local surface and to nothing else.
+ *
+ * `node:sqlite` backs the import and backfill stores, which exist to hold a
+ * long-running local job's progress across restarts. The cloud Lambda has no
+ * such job and no disk to keep one on, so the only thing an import of it does
+ * there is load a native module during init and log Node's experimental
+ * warning on every cold start — at `ERROR` level, because Lambda labels
+ * anything on stderr that way.
+ *
+ * It reached the Lambda through `src/photos-lib/index.ts`, which re-exported
+ * `openImportStore` while the routes import that barrel. The same shape as the
+ * engine rule above and the same fix: the store's two callers name its own
+ * path.
+ */
+const LOCAL_ONLY_BUILTINS = ["node:sqlite"];
+
+/** The first chain from `entry` to a file importing `builtin`, or null. */
+function pathToBuiltin(entry: string, builtin: string): string[] | null {
+  const queue: string[][] = [[entry]];
+  const seen = new Set<string>([entry]);
+  while (queue.length > 0) {
+    const chain = queue.shift()!;
+    const file = chain[chain.length - 1];
+    const specifiers = runtimeSpecifiersIn(file);
+    if (specifiers.includes(builtin)) return chain;
+    for (const specifier of specifiers) {
+      const resolved = resolveLocal(file, specifier);
+      if (!resolved || seen.has(resolved)) continue;
+      seen.add(resolved);
+      queue.push([...chain, resolved]);
+    }
+  }
+  return null;
+}
+
+describe.each(LOCAL_ONLY_BUILTINS)("%s stays out of the cloud bundle", (builtin) => {
+  it.each([
+    ["src/static-handler.ts", STATIC_HANDLER],
+    ["src/server-app.ts", SERVER_APP],
+  ])(`%s does not reach ${builtin}`, (_entry, file) => {
+    const chain = pathToBuiltin(file, builtin);
+    expect(
+      chain === null,
+      chain
+        ? `import chain into ${builtin}:\n  ${chain.map(rel).join("\n→ ")}`
+        : undefined,
+    ).toBe(true);
+  });
+
+  it("the store that owns it still imports it", () => {
+    // The complement: the assertion above must fail because nothing routes to
+    // the store, not because the store stopped using SQLite.
+    const store = join(PHOTOS_DIR, "src", "photos-lib", "import", "import-store.ts");
+    expect(runtimeSpecifiersIn(store)).toContain(builtin);
+  });
+});

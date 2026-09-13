@@ -84,7 +84,13 @@ export {
   type AttemptOutcome,
   type DerivationAttempt,
 } from "./image-processing/derivation-attempts";
-export { openImportStore, importDir, type ImportStore } from "./import/import-store";
+// `openImportStore`, `importDir` and `ImportStore` are deliberately *not*
+// re-exported here. `import/import-store.ts` imports `node:sqlite` at module
+// scope, and this barrel is what the routes import — so a re-export put a
+// local-only durable store, and Node's experimental-SQLite warning on every
+// cold start, into the cloud Lambda that serves HTML. Its two callers reach it
+// by its own path. Same rule as the worker engines, enforced by
+// `__tests__/worker-bundle-isolation.test.ts`.
 export {
   runImport,
   walkImportable,

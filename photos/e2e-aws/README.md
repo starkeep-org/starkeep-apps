@@ -12,10 +12,14 @@ Inert without `STARKEEP_AWS_TESTS=1`, like core's. Needs the sibling
 (`pnpm exec playwright install chromium`), and AWS credentials in the ambient
 profile.
 
-**Stop any Photos dev server of your own first.** Next allows one dev server per
-app directory, so a `pnpm dev` left running here would take the ladder step
-down. The suite checks `.next/dev/lock` before its first AWS call and refuses to
-start, rather than failing fifteen minutes and one Pulumi stack later.
+**Stop any Photos server of your own first.** The ladder step boots Photos out
+of this checkout and drives it, and a second server sharing the same `dist/`,
+the same worker bundles and the same sweep state races it. The suite claims the
+build directory in `.e2e-photos.lock` and checks that claim before its first AWS
+call, rather than failing fifteen minutes and one Pulumi stack later. The lock
+records a pid and is probed with signal 0, so one left behind by a crash does
+not block a run — but it only knows about servers this suite started, so a
+`pnpm start` of your own is yours to stop.
 
 ## How the split works
 

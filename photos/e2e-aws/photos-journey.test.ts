@@ -56,8 +56,8 @@ const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * checkout.
  *
  * The previous framework enforced one dev server per app directory itself and
- * held the claim in `.next/dev/lock`, which is what this used to read. A Node
- * server has no such lock and would start happily — but the ladder step below
+ * held the claim in a lock file of its own, which is what this used to read. A
+ * Node server has no such lock and would start happily — but the ladder step below
  * boots Photos out of this very checkout and drives it, and a second server
  * sharing the same `dist/`, the same `.derivation/` worker bundle and the same
  * sweep state is a race whose failures land fifteen minutes and one
@@ -249,11 +249,9 @@ function photosSteps(ctx: JourneyContext): void {
     // Booting the real app is what starts `instrumentation.register`, and with
     // it the ingest watch and the boot sweep — the derivation worker and the
     // sweep controller, running as they do on an operator's machine rather than
-    // as a fixture. NODE_ENV is set explicitly because vitest sets it to `test`,
-    // which Next warns about and overrides anyway.
+    // as a fixture.
     photosLocal = await startWebServer({
       appDir: PHOTOS_DIR,
-      mode: "node",
       command: "pnpm",
       args: ["start"],
       portFlag: "-p",

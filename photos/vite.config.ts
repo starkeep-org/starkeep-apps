@@ -5,8 +5,8 @@ import react from "@vitejs/plugin-react";
 /**
  * Photos' browser half.
  *
- * Two build-time facts reach the bundle from here, and both were environment
- * variables the previous framework mirrored under a `NEXT_PUBLIC_` name:
+ * Two build-time facts reach the bundle from here, both read from the
+ * environment at build time:
  *
  *   - `STARKEEP_APP_BASE_PATH` is the mount the installer chooses,
  *     `/apps/photos` in the cloud and empty locally. It sets Vite's `base`, so

@@ -9,7 +9,7 @@
  * through `withBasePath`, and `__tests__/client-base-path.test.ts` is the scan
  * that keeps it that way.
  *
- * `STARKEEP_APP_BASE_PATH` under its own name, with no `NEXT_PUBLIC_` mirror:
+ * `STARKEEP_APP_BASE_PATH` under its own name, and one spelling everywhere:
  * `vite.config.ts` substitutes the literal into the browser bundle, and on the
  * server and under vitest the same expression reads the real environment.
  */

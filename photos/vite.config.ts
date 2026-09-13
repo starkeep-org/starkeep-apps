@@ -29,6 +29,13 @@ import react from "@vitejs/plugin-react";
  */
 const basePath = (process.env.STARKEEP_APP_BASE_PATH ?? "").replace(/\/+$/, "");
 
+/**
+ * The cloud build, which `infra/build-bundle.ts` marks by setting this. The
+ * local build leaves it empty. Read here for one reason only — see
+ * `build.sourcemap` below.
+ */
+const isCloudBuild = process.env.STARKEEP_FORCE_REMOTE === "true";
+
 // Above Vite's default browser baseline, and stated in all three places it is
 // asked for — `build.target` alone leaves dependency pre-bundling in
 // development on the default, which is a separate esbuild pass.
@@ -59,6 +66,11 @@ export default defineConfig({
     // Vite writes here is content-hashed, which is what earns it CloudFront's
     // CachingOptimized behavior while the rest of the app must revalidate.
     assetsDir: "_immutable",
-    sourcemap: true,
+    // Local only. `_immutable` is a public path, so a map shipped to the cloud
+    // is served to anyone who asks for it, and Photos' original sources go with
+    // it. It is also 1.4 MB of a 12.7 MB `dist.zip`, all of it to serve a
+    // debugger nobody attaches to a Lambda. Locally the cost is a larger `dist/`
+    // on the operator's own disk, which buys a readable stack trace.
+    sourcemap: !isCloudBuild,
   },
 });

@@ -272,3 +272,15 @@ describe("an unrouted path under /api", () => {
     expect(await res.json()).toEqual({ error: "Photos has no route for /api/not-a-route" });
   });
 });
+
+describe("the runtime config's caching", () => {
+  it("tells the browser how long it may reuse the answer", async () => {
+    // Every field is a deployment fact, identical for every caller, so refetching
+    // it on each navigation spends a Lambda invocation to learn nothing. The
+    // ceiling matters in the other direction too: a reinstall changes
+    // `apiGatewayUrl`, and an open tab serving a stale one points at a gateway
+    // that no longer answers.
+    const res = await send("GET", "/starkeep-runtime-config");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=60, must-revalidate");
+  });
+});

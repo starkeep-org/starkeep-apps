@@ -41,7 +41,7 @@ const DATA_SERVER = "http://data.test";
 
 /**
  * A real credential on disk, because the signing proxy loads one that the mock
- * above cannot reach. `createNextProxyHandler` lives inside
+ * above cannot reach. `createDataProxyHandler` lives inside
  * `@starkeep/app-client` and calls the package's *internal*
  * `loadAppCredentials`, so mocking the re-exported name intercepts Photos' own
  * routes and nothing the platform does behind them.

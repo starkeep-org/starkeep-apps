@@ -25,7 +25,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearAppCredentialsCache, createNextProxyHandler } from "@starkeep/app-client";
+import { clearAppCredentialsCache, createDataProxyHandler } from "@starkeep/app-client";
 import { GET as libraryRoute } from "../src/routes/photos/library";
 import { LIBRARY_ORDER } from "../src/photos-lib/capture-order";
 import { POST as renditionsRoute } from "../src/routes/photos/renditions";
@@ -44,7 +44,7 @@ const seededRecords: unknown[] = [{ id: "rec-1", type: "image/png", original_fil
 
 // Mirrors the app's own mount: local mode, no end-user gate. See the route at
 // app/api/local-data/[...path]/route.ts for why that answer is what it is.
-const proxyHandler = createNextProxyHandler({
+const proxyHandler = createDataProxyHandler({
   appId: "photos",
   endUserAuth: { auth: "anonymous", justification: "matches the app's current mount" },
 });

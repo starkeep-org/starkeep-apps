@@ -2,7 +2,7 @@
 
 First-party apps built on the public Starkeep SDK. 
 
-The shipping app today is `photos/` (Next.js, deployable both locally and to a per-user AWS account via OpenNext).
+The shipping app today is `photos/` (Vite + Hono, deployable both locally and to a per-user AWS account).
 
 Run `pnpm install` at the repo root before installing or starting any app from admin-web — locally installed apps run directly out of this checkout, so their dependencies must be present.
 

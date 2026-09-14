@@ -4,7 +4,7 @@
  * The catastrophic reinstall failure had two halves. This guards the second:
  * the app's `compute.handlers[].routes` must declare an API-Gateway route for
  * every same-origin (method, path) the browser actually issues. The old
- * manifest routed only `GET /{proxy+}` to the Next.js server, so every POST/PUT/
+ * manifest routed only `GET /{proxy+}` to the app's server, so every POST/PUT/
  * DELETE the browser made — the /api/local-data proxy uploads and metadata
  * writes, /api/share — silently 404'd at the gateway after a cloud reinstall,
  * even though every unit test passed.
@@ -97,7 +97,7 @@ describe("manifest route coverage", () => {
   });
 
   it("routes non-GET methods through the /api/local-data proxy (guards the GET-only regression)", () => {
-    // The signing proxy (createNextProxyHandler) is mounted for GET/POST/PUT/
+    // The signing proxy (createDataProxyHandler) is mounted for GET/POST/PUT/
     // PATCH/DELETE; a catch-all that only admits GET makes every write fail in
     // cloud. Assert each write verb reaches the proxy.
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {

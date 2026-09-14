@@ -5,7 +5,7 @@ import { withBasePath } from "./base-path";
  * Where this build runs. Decided once at boot from runtime config: if
  * apiGatewayUrl is set the build is cloud-served (SPA mounted under
  * /apps/photos on the API Gateway domain); otherwise it is served locally by
- * the Next.js dev/standalone server.
+ * the app's own Hono server.
  *
  * NOTE: this is NOT the data-plane target. Data-plane calls always route
  * through the same-origin /api/local-data proxy (see resolveDataSource) which
@@ -65,8 +65,8 @@ async function getAccessToken(): Promise<string | null> {
  * Data-plane source resolution for the Photos browser client.
  *
  * The browser NEVER talks to a data server directly. Every data-plane call is
- * routed through this app's same-origin Next.js proxy at `/api/local-data`
- * (app/api/local-data/[...path]/route.ts), which HMAC-signs the request
+ * routed through this app's same-origin signing proxy at `/api/local-data`
+ * (src/routes/local-data.ts), which HMAC-signs the request
  * server-side with the photos app credential and forwards it to the data
  * server. This holds in BOTH deployment modes, and the local-vs-cloud choice
  * is made entirely server-side by @starkeep/app-client's credential loader —
@@ -105,7 +105,7 @@ export async function resolveDataSource(): Promise<{
  *   - remote: base is the gateway URL under /apps/photos (the SPA is mounted
  *     there, but absolute-path fetches wouldn't carry the prefix), plus the
  *     Cognito bearer token.
- *   - local: same-origin, no auth — the Next.js server serves /api/* directly.
+ *   - local: same-origin, no auth — the app's own server serves /api/* directly.
  */
 export async function resolveAppApiSource(): Promise<{
   baseUrl: string;

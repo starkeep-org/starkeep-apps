@@ -1,4 +1,4 @@
-import { createNextProxyHandler, sessionAuth } from "@starkeep/app-client";
+import { createDataProxyHandler, sessionAuth } from "@starkeep/app-client";
 
 /**
  * Server-side proxy to the data server. The browser hits us at
@@ -14,7 +14,7 @@ import { createNextProxyHandler, sessionAuth } from "@starkeep/app-client";
  * This is the one route the manifest does not declare public, and the reason
  * the other declarations are enumerated rather than wildcarded.
  */
-export const proxy = createNextProxyHandler({
+export const proxy = createDataProxyHandler({
   appId: "photos",
   // The HMAC identifies Photos, not the person holding the browser, so this
   // mount would sign for whoever reached it. `sessionAuth()` is the platform's

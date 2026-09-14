@@ -23,7 +23,7 @@ import { LIBRARY_ORDER } from "@/photos-lib/capture-order";
  * mode. So the layer that should resolve the ladder was already sitting on
  * every request; what it lacked was a reason to look.
  *
- * That layer is `createNextProxyHandler`, and it is the platform's, shared by
+ * That layer is `createDataProxyHandler`, and it is the platform's, shared by
  * every app. Teaching it what a size class is would put an app concept one
  * level down for no gain. So the list path gets its own Photos-owned route and
  * everything else still falls through the generic proxy untouched.

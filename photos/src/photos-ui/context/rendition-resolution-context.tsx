@@ -1,5 +1,3 @@
-"use client";
-
 import React, { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { MediaPolicyKind, RenditionPolicies } from "@/photos-lib/rendition-policy";
 import { RenditionResolutionCache, resolutionKey } from "@/lib/rendition-resolution-client";

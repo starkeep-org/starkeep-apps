@@ -46,9 +46,9 @@ cloud journey is separate — see `e2e-aws/README.md`.
   `photos-platform.spec.ts` uninstalls first: it drives the consent dialog,
   which only appears for an app that is not installed. Neither suite should have
   to know which file Playwright reaches first.
-- Use `localhost`, never `127.0.0.1`, for browser URLs — Next's dev-origin
-  protection drops the HMR websocket for the bare IP and hydration stalls.
-- One `next dev` per app dir: a stale photos dev server from another session
+- Use `localhost`, never `127.0.0.1`, for browser URLs — Vite's dev-origin
+  protection drops the HMR websocket for the bare IP and the page stalls.
+- One dev server per app dir: a stale photos dev server from another session
   will collide with the daemon the admin route spawns.
 - App daemon logs are copied to `e2e/test-results/*.log` at teardown — first
   place to look when a flow fails silently (several photos routes swallow

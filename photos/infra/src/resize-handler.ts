@@ -98,11 +98,13 @@ export async function handler(event: APIGatewayEvent) {
     }
 
     // May this record be derived *from*? A rendition may not — that would
-    // recurse. A crop may: it is a user artifact that needs its own tile. This
-    // is one targeted query rather than a scan of the library, which is what it
-    // used to be — and which was also wrong above the page limit, since a
-    // record outside the first thousand read as "no thumbnail yet" and got one
-    // derived again.
+    // recurse. Any other child may: having a parent is not what makes a record
+    // a rendition, and reading `parent_id !== null` as "is a rendition" is the
+    // mistake `photos-lib/labels.ts` exists to stop repeating. This is one
+    // targeted query rather than a scan of the library, which is what it used
+    // to be — and which was also wrong above the page limit, since a record
+    // outside the first thousand read as "no thumbnail yet" and got one derived
+    // again.
     const precheck = await precheckThumbnail(targetId, (p) => call(p));
     if (precheck.alreadyThumbnail) {
       return clientErr("Record is already a rendition", 400);

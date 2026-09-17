@@ -4,7 +4,9 @@
  * `parent_id` says *which* record an image was derived from; these say *how*.
  * The column alone cannot express that, and reading `parentId !== null` as "is
  * a thumbnail" — which the grid and both resize paths used to do — mis-typed
- * every crop as its source's thumbnail.
+ * every other kind of child as its source's thumbnail. A Live Photo clip is
+ * the remaining child that is not a rendition, and it is user data rather than
+ * a derived size.
  *
  * This lives in `photos-lib` because three callers need the same answers and
  * two of them are separate deployments: the Next `/api/resize` route, the
@@ -21,10 +23,10 @@ export const PHOTOS_APP_ID = "photos";
 /**
  * The keys Photos declares in its manifest. Nothing else may be written.
  *
- * `thumbnail` and `crop` are **bare flags** — written once, at record creation,
- * with no value, which is stored as the empty string. That is why a plain label
- * write is right for them: a key is set-valued and a plain write adds rather
- * than replaces, so a key Photos ever *updated* would need the set-valued write
+ * A **bare flag** is a key written once, at record creation, with no value,
+ * which is stored as the empty string. A plain label write is right for one: a
+ * key is set-valued and a plain write adds rather than replaces, so a key
+ * Photos ever *updated* would need the set-valued write
  * (`POST /data/labels/values`) instead, or the old value would sit beside the
  * new one with nothing to say which is current.
  *
@@ -49,8 +51,6 @@ export const PHOTOS_LABEL_KEYS = {
    * resolution serve an archived original.
    */
   rendition: "rendition",
-  /** The child is a user-made crop of its parent. */
-  crop: "crop",
   /**
    * One value per *named* person in the photo. Multi-valued, which is what the
    * widened label primary key exists for — `?label=photos/faces&labelValue=Alice`
@@ -125,7 +125,7 @@ export interface LabelledRecord {
  * The parent-edge type, read off Photos' own labels.
  *
  * Scoped to `photos` deliberately: a hydrated list carries every app's labels,
- * and another app is free to declare a `crop` key meaning something else
+ * and another app is free to declare a `rendition` key meaning something else
  * entirely. Namespaces exist so that is not a collision.
  *
  * `null` covers two cases that behave the same everywhere they are used — an
@@ -138,7 +138,6 @@ export function derivedKindOf(record: LabelledRecord): DerivedKind | null {
   for (const label of record.labels ?? []) {
     if (label.app_id !== PHOTOS_APP_ID) continue;
     if (label.key === PHOTOS_LABEL_KEYS.rendition) return "thumbnail";
-    if (label.key === PHOTOS_LABEL_KEYS.crop) return "crop";
   }
   return null;
 }
@@ -203,8 +202,9 @@ export async function precheckThumbnail(
 
   // Q2: does a thumbnail child already exist? The label filter and the parent
   // filter combined — "a thumbnail *of this record*" — which is one indexed
-  // lookup rather than a scan. A crop of the same parent does not match, which
-  // is the bug `parent_id` alone used to have.
+  // lookup rather than a scan. Another rung of the same parent does not match,
+  // and nor does its Live Photo clip, which is the bug `parent_id` alone used
+  // to have.
   const existingRes = await fetchPath(
     `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: targetId }))}` +
       `&label=${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}` +

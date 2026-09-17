@@ -65,10 +65,6 @@
         "description": "Which rung of the derived size ladder this record is (image-thumb, image-medium, video-720p, ...). Single-valued and written through the set-valued endpoint, so a respec replaces the rung rather than leaving two. Its presence is what marks a record as derived rather than something the user added, so other image apps can filter renditions out of a library view; its value is an implementation detail of Photos' ladder and consumers should ask for a pixel size instead."
       },
       {
-        "key": "crop",
-        "description": "This image is a user-made crop of its parent record."
-      },
-      {
         "key": "faces",
         "description": "A person the user has named in this photo. Multi-valued: one row per named person, so ?label=photos/faces&labelValue=Alice finds every photo of Alice. Written only when on-device face recognition is enabled AND the user opts in to publishing; unnamed clusters are never published."
       },

@@ -175,7 +175,7 @@ export async function publishRendition(
       sizeBytes: rendition.data.byteLength,
       parentId: parent.id,
       // `parent_id` says *which* record this came from; the label says *how*,
-      // which the column alone cannot express — without it a crop is
+      // which the column alone cannot express — without it a Live Photo clip is
       // indistinguishable from a rendition. The `photos/` namespace comes from
       // the authenticated identity, so no prefix is sent.
       labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: rendition.sizeClass }],

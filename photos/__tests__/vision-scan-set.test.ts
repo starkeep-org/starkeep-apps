@@ -35,9 +35,18 @@ describe("isOriginal", () => {
     expect(isOriginal(original("a"))).toBe(true);
   });
 
-  it("rejects thumbnails and crops", () => {
-    expect(isOriginal(derived("t", "a", "thumbnail"))).toBe(false);
-    expect(isOriginal(derived("c", "a", "crop"))).toBe(false);
+  it("rejects a rendition and a Live Photo clip", () => {
+    expect(isOriginal(derived("t", "a", "rendition"))).toBe(false);
+    expect(isOriginal(derived("c", "a", "live-photo"))).toBe(false);
+  });
+
+  it("rejects a parentless record that carries the rendition label", () => {
+    // The label arm, which the parent check cannot reach. A rung whose parent
+    // edge went missing is still a downscaled re-encoding, and scanning it
+    // would duplicate the original's faces.
+    expect(
+      isOriginal({ id: "t", parent_id: null, labels: [{ app_id: "photos", key: "rendition", value: "image-thumb" }] }),
+    ).toBe(false);
   });
 
   it("rejects anything with a parent, even unlabelled", () => {
@@ -77,7 +86,12 @@ describe("listOriginals", () => {
   it("returns only the originals from a page", async () => {
     const { fetchRecords } = pagingServer([
       {
-        records: [original("a"), derived("t", "a", "thumbnail"), original("b"), derived("c", "b", "crop")],
+        records: [
+          original("a"),
+          derived("t", "a", "rendition"),
+          original("b"),
+          derived("c", "b", "live-photo"),
+        ],
         nextCursor: null,
       },
     ]);

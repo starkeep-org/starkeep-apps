@@ -29,10 +29,15 @@ export interface AppImageExif {
  * `parentId` says *which* record an image was derived from; this says *how*.
  * The column alone cannot express that, and reading `parentId !== null` as
  * "is a thumbnail" — which the grid used to do — silently mis-rendered every
- * crop as its source's thumbnail. The edge needed a type, not a different
- * home.
+ * other kind of child as its source's thumbnail. A Live Photo clip is the
+ * remaining child that is not a rendition, and it is user data with its own
+ * tile. The edge needed a type, not a different home.
+ *
+ * One member today. It stays a union rather than a boolean because the
+ * question it answers is "how", and a second answer is what the type exists to
+ * absorb.
  */
-export type DerivedKind = "thumbnail" | "crop";
+export type DerivedKind = "thumbnail";
 
 /**
  * App-layer aggregation built from a DataRecord plus the image's metadata row.

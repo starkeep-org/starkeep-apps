@@ -131,7 +131,6 @@ const ROUTES: ReadonlyArray<[string, string]> = [
   ["GET", "/api/session"],
   ["GET", "/api/photos/library"],
   ["POST", "/api/photos/renditions"],
-  ["POST", "/api/photos/crop"],
   ["GET", "/api/photos/cover"],
   ["PUT", "/api/photos/cover"],
   ["DELETE", "/api/photos/cover"],
@@ -194,9 +193,9 @@ describe("every declared route reaches a handler", () => {
 });
 
 describe("a static segment wins over the record-id parameter", () => {
-  // Only the segments that declare a GET. `renditions` and `crop` are POST-only
-  // and a GET on either is genuinely a record lookup — asserted below, because
-  // that is a decision rather than an accident.
+  // Only the segments that declare a GET. `renditions` is POST-only and a GET
+  // on it is genuinely a record lookup — asserted below, because that is a
+  // decision rather than an accident.
   it.each(["cover", "style-graphic", "library"])(
     "/api/photos/%s is not read as a record id",
     async (segment) => {
@@ -207,14 +206,20 @@ describe("a static segment wins over the record-id parameter", () => {
     },
   );
 
-  it("still reaches the POST-only routes on their own verb", async () => {
-    for (const segment of ["renditions", "crop"]) {
-      signedFetch.mockClear();
-      await send("POST", `/api/photos/${segment}`, { requests: [], sourceImageId: "x" });
-      expect(upstreamPaths(), `POST /api/photos/${segment} was read as a record id`).not.toContain(
-        `/data/records/${segment}`,
-      );
-    }
+  it("has no crop route left to reach", async () => {
+    // The half-built `POST /api/photos/crop` wrote a shared child carrying a
+    // `photos/crop` label and nothing ever called it. Its removal is what lets
+    // renditions become the only derived child Photos writes, so a route that
+    // came back would be a regression rather than a feature.
+    const res = await send("POST", "/api/photos/crop", { sourceImageId: "x" });
+    expect(await res.text()).toContain("Photos has no route for");
+  });
+
+  it("still reaches the POST-only route on its own verb", async () => {
+    await send("POST", "/api/photos/renditions", { requests: [] });
+    expect(upstreamPaths(), "POST /api/photos/renditions was read as a record id").not.toContain(
+      "/data/records/renditions",
+    );
   });
 
   it("still routes a real record id to the by-id handler", async () => {

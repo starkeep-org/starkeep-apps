@@ -94,10 +94,10 @@ export function processedRecordIds(): Set<string> {
  * whole store. Re-importing a library therefore doubles every person in it.
  *
  * `keep` is the scan set, not the record set — a record that stops being an
- * original (it gains a `photos/crop` label) is reaped too. That is deliberate:
- * its faces are its parent's faces at an offset, so they were never ours to
- * hold, and the alternative is a second listing pass to tell the two cases
- * apart for no behavioural difference.
+ * original (it gains a `photos/rendition` label) is reaped too. That is
+ * deliberate: its faces are already held against the original it was derived
+ * from, so they were never ours to hold twice, and the alternative is a second
+ * listing pass to tell the two cases apart for no behavioural difference.
  *
  * Callers must not pass an empty `keep` for a library that merely failed to
  * list — see the guard at the one call site in `engine/scan-worker.ts`.

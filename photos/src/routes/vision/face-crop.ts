@@ -10,11 +10,10 @@ const PADDING_RATIO = 0.35;
 /**
  * GET /api/vision/face-crop/[id]?face=N — a JPEG of one detected face.
  *
- * Deliberately **not** `/api/photos/crop`: that route creates a DataRecord, and
- * the People view needs one tile per face per cluster. Reusing it would put
- * hundreds of crop records in the user's library — visible in the grid, synced
- * to every device — to render a thumbnail. This returns transient bytes and
- * writes nothing.
+ * Deliberately writes nothing. The People view needs one tile per face per
+ * cluster, so a route that minted a DataRecord per tile would put hundreds of
+ * them in the user's library — visible in the grid, synced to every device —
+ * to render a thumbnail. This returns transient bytes instead.
  *
  * `.rotate()` first, because the sidecar's boxes are in display orientation.
  */

@@ -22,22 +22,19 @@ export interface ListedRecord {
 /**
  * The scan set: originals only.
  *
- * Thumbnails are excluded because they are downscaled re-encodings of images
- * already in the set; crops because a crop's faces are its parent's faces at an
- * offset.
- * Both would be work whose results duplicate an original's.
+ * Renditions are excluded because they are downscaled re-encodings of images
+ * already in the set, so scanning one is work whose result duplicates an
+ * original's.
  *
- * Read off Photos' **own labels**, not `parent_id` — a crop has a parent too,
- * and `parentId !== null` meaning "is a thumbnail" is the exact bug
+ * Read off Photos' **own labels**, not `parent_id` — a Live Photo clip has a
+ * parent too, and `parentId !== null` meaning "is a rendition" is the exact bug
  * `photos-lib/labels.ts` was extracted to stop repeating. Scoped to the `photos`
  * namespace for the same reason: another app is free to declare a `rendition`
  * key meaning something else, and namespaces exist so that is not a collision.
  */
 export function isOriginal(record: ListedRecord): boolean {
   if (record.parent_id !== null) return false;
-  return !(record.labels ?? []).some(
-    (l) => l.app_id === "photos" && (l.key === "rendition" || l.key === "crop"),
-  );
+  return !(record.labels ?? []).some((l) => l.app_id === "photos" && l.key === "rendition");
 }
 
 /**

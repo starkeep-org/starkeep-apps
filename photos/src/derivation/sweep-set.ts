@@ -157,10 +157,10 @@ export interface SweepPage {
 /**
  * One page of records the sweep may have work for.
  *
- * Renditions are excluded by label rather than by parent, because a crop has a
- * parent too and a crop is a user artifact that wants its own tile. Reading
- * `parent_id !== null` as "is a rendition" is the mistake `photos-lib/labels.ts`
- * exists to stop repeating.
+ * Renditions are excluded by label rather than by parent, because a Live Photo
+ * clip has a parent too and a clip is user data that wants its own tile.
+ * Reading `parent_id !== null` as "is a rendition" is the mistake
+ * `photos-lib/labels.ts` exists to stop repeating.
  *
  * `variant` with no pixel size asks for the unnarrowed candidate list, which is
  * the whole point: resolution would answer "which rung best fits 640 px" when

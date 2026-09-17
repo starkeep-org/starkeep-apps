@@ -554,8 +554,8 @@ describe("GET /api/vision/face-crop/[id]", () => {
   });
 
   it("writes no record — it is display-only", async () => {
-    // The reason this is not `/api/photos/crop`: that route creates a
-    // DataRecord, and the People view asks for one of these per face.
+    // The People view asks for one of these per face, so a route that wrote a
+    // DataRecord per tile would put hundreds of them in the user's library.
     seed("a", [0]);
     signedFetch.mockResolvedValue(new Response("gone", { status: 404 }));
     await faceCropGet(request("0"), params("a"));

@@ -3,8 +3,9 @@
  *
  * `/api/resize` (Next) and the cloud resize Lambda are line-for-line copies of
  * each other, and both used to answer these two questions inline from
- * `parent_id`. Both answers were wrong once crops existed, and neither copy had
- * a test — so the same bug had to be found and fixed twice. The rules now live
+ * `parent_id`. Both answers were wrong for any child that is not a rendition,
+ * and neither copy had a test — so the same bug had to be found and fixed
+ * twice. The rules now live
  * in photos-lib, and this is where they are pinned.
  */
 import { describe, it, expect } from "vitest";
@@ -26,16 +27,16 @@ const thumbnailOf = (id: string, parent: string): Row => ({
   parent_id: parent,
   labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.rendition }],
 });
-const cropOf = (id: string, parent: string): Row => ({
+const livePhotoOf = (id: string, parent: string): Row => ({
   id,
   parent_id: parent,
-  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.crop }],
+  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.livePhoto }],
 });
 
 describe("derivedKindOf", () => {
-  it("distinguishes a thumbnail from a crop — both have a parent", () => {
+  it("distinguishes a thumbnail from a Live Photo clip — both have a parent", () => {
     expect(derivedKindOf(thumbnailOf("T", "P"))).toBe("thumbnail");
-    expect(derivedKindOf(cropOf("C", "P"))).toBe("crop");
+    expect(derivedKindOf(livePhotoOf("C", "P"))).toBeNull();
   });
 
   it("is null for an original, for an unhydrated list, and for an unlabelled child", () => {
@@ -64,7 +65,7 @@ describe("derivedKindOf", () => {
 describe("isThumbnail", () => {
   it("is true only for Photos' thumbnail label", () => {
     expect(isThumbnail(thumbnailOf("T", "P"))).toBe(true);
-    expect(isThumbnail(cropOf("C", "P"))).toBe(false);
+    expect(isThumbnail(livePhotoOf("C", "P"))).toBe(false);
     expect(isThumbnail(original("P"))).toBe(false);
   });
 });

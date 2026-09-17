@@ -175,8 +175,8 @@ test("an uploaded photo appears in the grid as a shared record", async ({ page }
   pngRecordId = record.id;
   expect(record.type).toBe("image/png");
   // An uploaded original is general-interest shared data — nothing labels it.
-  // (Only derived images carry photos/rendition or photos/crop. The original is
-  // deliberately not a rung: it is what rungs are derived from.)
+  // (Only derived images carry photos/rendition. The original is deliberately
+  // not a rung: it is what rungs are derived from.)
   expect(record.labels).toEqual([]);
 
   // The live UI upload now extracts dimensions (createImageBitmap) + EXIF in

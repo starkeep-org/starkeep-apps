@@ -38,7 +38,6 @@ import { POST as localSyncHandoff } from "./routes/local-sync-handoff";
 import * as photoById from "./routes/photos/by-id";
 import * as captions from "./routes/photos/captions";
 import * as cover from "./routes/photos/cover";
-import * as crop from "./routes/photos/crop";
 import * as library from "./routes/photos/library";
 import * as renditions from "./routes/photos/renditions";
 import * as styleGraphic from "./routes/photos/style-graphic";
@@ -140,7 +139,6 @@ app.all("/api/local-data/*", (c) => {
 // endpoint each.
 app.get("/api/photos/library", (c) => library.GET(c.req.raw));
 app.post("/api/photos/renditions", (c) => renditions.POST(c.req.raw));
-app.post("/api/photos/crop", (c) => crop.POST(c.req.raw));
 
 app.get("/api/photos/cover", () => cover.GET());
 app.put("/api/photos/cover", (c) => cover.PUT(c.req.raw));

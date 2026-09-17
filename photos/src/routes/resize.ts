@@ -69,9 +69,9 @@ export async function POST(req: Request) {
   }
 
   // May this record be derived *from*? A rendition may not — that would
-  // recurse. A crop may: it is a user artifact that needs its own tile, and
-  // rejecting every record with a parent left crops with no thumbnail and
-  // therefore invisible.
+  // recurse. Any other child may: having a parent is not what makes a record a
+  // rendition, and rejecting every record with a parent left such children with
+  // no thumbnail and therefore invisible.
   const precheck = await precheckThumbnail(targetId, (p) => call(p));
   if (precheck.alreadyThumbnail) {
     return Response.json({ error: "Record is already a rendition" }, { status: 400 });

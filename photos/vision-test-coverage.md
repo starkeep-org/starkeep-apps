@@ -44,9 +44,9 @@ coverage gap pointed at, not a workaround for it.
 
 What is now pinned:
 
-- an original is `parent_id === null` **and** unlabelled by `photos/thumbnail`
-  or `photos/crop` — reading the typed edge, not `parent_id`, which is the same
-  bug `photos-labels.test.ts` exists to prevent;
+- an original is `parent_id === null` **and** unlabelled by `photos/rendition` —
+  reading the typed edge, not `parent_id`, which is the same bug
+  `photos-labels.test.ts` exists to prevent;
 - another app's `thumbnail` key does not disqualify a record (namespaces);
 - a short page is not the end — only an exhausted cursor is;
 - an **absent** `nextCursor` terminates the loop. A current data server sends

@@ -91,8 +91,8 @@ describe("photoRecordToAppImage", () => {
   describe("derivedKind, read off Photos' own labels", () => {
     // `parent_id` says WHICH record an image came from; the label says HOW.
     // Reading `parentId !== null` as "is a thumbnail" — which the grid used to
-    // do — rendered every crop as its source's thumbnail.
-    it("types a thumbnail and a crop from their labels", () => {
+    // do — rendered every other kind of child as its source's thumbnail.
+    it("types a thumbnail from its label, and leaves another child untyped", () => {
       const thumb = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
@@ -103,17 +103,21 @@ describe("photoRecordToAppImage", () => {
         null,
       );
       expect(thumb.derivedKind).toBe("thumbnail");
+      // The edge itself is unchanged — the label types it, it doesn't replace it.
+      expect(thumb.parentId).toBe("PARENT");
 
-      const crop = photoRecordToAppImage(
+      // A Live Photo clip is a child, and it is not a rendition.
+      const clip = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
-          labels: [{ app_id: "photos", key: "crop", value: "", label: "photos/crop" }],
+          labels: [
+            { app_id: "photos", key: "live-photo", value: "identifier", label: "photos/live-photo" },
+          ],
         }),
         null,
       );
-      expect(crop.derivedKind).toBe("crop");
-      // The edge itself is unchanged — the label types it, it doesn't replace it.
-      expect(crop.parentId).toBe("PARENT");
+      expect(clip.derivedKind).toBeNull();
+      expect(clip.parentId).toBe("PARENT");
     });
 
     it("is null for an original", () => {
@@ -136,12 +140,11 @@ describe("photoRecordToAppImage", () => {
 
     it("ignores another app's identically-named key", () => {
       // Hydration carries every app's labels. Namespaces exist so that a
-      // `crop` published by someone else is not a collision.
+      // `rendition` published by someone else is not a collision.
       const img = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "other-app", key: "crop", value: "", label: "other-app/crop" },
             { app_id: "other-app", key: "rendition", value: "image-thumb", label: "other-app/rendition" },
           ],
         }),

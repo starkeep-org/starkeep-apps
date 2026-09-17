@@ -593,8 +593,11 @@ const photosApp: JourneyApp = {
   appDir: PHOTOS_DIR,
   // Both keys Photos declares in its manifest. Deliberately not `rendition`,
   // the size-class key: setting it on the journey's record would make the app
-  // read that original as its own rendition.
-  labelKeys: { flag: "crop", valued: "faces" },
+  // read that original as its own rendition. `face-count` carries a value in
+  // production and is written valueless here, which is what the presence half
+  // of the reverse index needs; nothing in Photos reads it back, so the
+  // synthetic write changes no behaviour.
+  labelKeys: { flag: "face-count", valued: "faces" },
   appTable: {
     name: "image_enriched",
     row: (recordId) => ({ record_id: recordId, caption: "tier-3 caption" }),

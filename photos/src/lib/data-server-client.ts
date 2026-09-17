@@ -88,7 +88,7 @@ export interface VideoRenditionEntry {
 export interface PhotoLabel {
   app_id: string;
   key: string;
-  /** Never null: a bare flag (`thumbnail`, `crop`) is the empty string. */
+  /** Never null: a bare flag, carrying no value of its own, is the empty string. */
   value: string;
   /** Wire/UI rendering of `<app_id>/<key>`; storage has no such string. */
   label: string;

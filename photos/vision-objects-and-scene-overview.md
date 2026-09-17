@@ -75,8 +75,8 @@ feature sets.
 A scan walks the library once and, for each photo, runs whichever features are enabled
 and have not already processed that photo.
 
-What it walks is **originals only** — thumbnails and crops are skipped, since their
-content duplicates a photo already in the set.
+What it walks is **originals only** — renditions are skipped, since their content
+duplicates a photo already in the set.
 
 For each photo the scan fetches the image bytes once and hands the same bytes to every
 enabled feature. That is the point of running them together: three features over one

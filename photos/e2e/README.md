@@ -1,6 +1,6 @@
 # Photos e2e — and how to test an app on the Starkeep platform
 
-Two Playwright suites, both against a real local platform booted from the
+Three Playwright suites, all against a real local platform booted from the
 sibling `starkeep-core` checkout:
 
 - **`photos-app.spec.ts`** asserts **photos' own behavior**: metadata
@@ -13,6 +13,13 @@ sibling `starkeep-core` checkout:
   Core asserts the same properties against its own fixture app
   (`starkeep-core/test-apps/probe`), which is what keeps them covered in a
   deployment that has no Photos.
+- **`photos-removal.spec.ts`** asserts **what survives taking Photos off a
+  machine**: an uninstall keeps `image_enriched` and the app-private files, a
+  reinstall reads back the same row count, and a node-local removal takes both.
+  It is the repeatable form of verification steps 1 and 3 of
+  `starkeep/implementation-status-rendition-ownership-phase-1-2026-09-17.md` §5.
+  The halves that need a cloud live in core's Tier-1 over-the-wire suite and in
+  the Tier-3 journey, which runs against Photos' own `image_enriched` table.
 
 Keep that split when adding tests. The question to ask is not "is this claim
 about the platform?" but "does making it require Photos?" — if it does, it
@@ -42,10 +49,18 @@ cloud journey is separate — see `e2e-aws/README.md`.
 
 ## Gotchas
 
-- The two suites share one stack and both drive Photos' install state, so
-  `photos-platform.spec.ts` uninstalls first: it drives the consent dialog,
-  which only appears for an app that is not installed. Neither suite should have
-  to know which file Playwright reaches first.
+- The suites share one stack and all three drive Photos' install state, so each
+  one that needs a particular starting state establishes it in `beforeAll`
+  rather than inheriting it. `photos-platform.spec.ts` uninstalls first because
+  it drives the consent dialog, which only appears for an app that is not
+  installed; `photos-removal.spec.ts` uninstalls **with `deleteData`** and
+  reinstalls, because an uninstall keeps the app's tables now and its first
+  assertion is a row count. No suite should have to know which file Playwright
+  reaches first.
+- admin-web serves a **built** client. `pnpm test:e2e` in core builds it through
+  turbo; running Playwright directly from here does not, so a core UI change
+  that has not been rebuilt shows up as a dialog that never opens. Run
+  `pnpm --filter admin-web build` in the core checkout first.
 - Use `localhost`, never `127.0.0.1`, for browser URLs — Vite's dev-origin
   protection drops the HMR websocket for the bare IP and the page stalls.
 - One dev server per app dir: a stale photos dev server from another session

@@ -2,7 +2,9 @@
  * Platform flows with Photos as the fixture: install consent, daemon
  * lifecycle, cross-app visibility, dedup, data-survival semantics and the HMAC
  * contract, asserted against a real platform stack booted from the sibling
- * starkeep-core checkout.
+ * starkeep-core checkout. What an uninstall keeps rather than destroys is
+ * `photos-removal.spec.ts`'s subject; this file drives the destructive spelling
+ * of it as one step of the operator journey.
  *
  * The assertions are about platform surfaces rather than Photos' own features,
  * but every one of them is made through Photos' UI — so this suite lives here,
@@ -84,7 +86,7 @@ test.beforeAll(async () => {
   // rather than one it inherits: the app-functionality suite shares this stack
   // and leaves Photos installed, and which file Playwright reaches first is not
   // something either suite should have to know.
-  await uninstallAppViaAdmin(adminUrl(), "photos").catch(() => {
+  await uninstallAppViaAdmin(adminUrl(), "photos", { deleteData: true }).catch(() => {
     /* not installed, which is the state this suite wants */
   });
 });
@@ -205,7 +207,10 @@ test("re-uploading the same photo dedups at the platform layer", async ({
 test("uninstall: app data is gone, shared records survive in Drive", async ({
   page,
 }) => {
-  // Stop, then uninstall through the UI (native confirm dialog).
+  // Stop, then uninstall through the UI. The native confirm this used to accept
+  // is a removal dialog now, and the app's data goes only when the box in it is
+  // ticked — which is what this test's claim needs. `photos-removal.spec.ts`
+  // covers the dialog's own behaviour; here it is the route to the outcome.
   await page.goto(adminUrl());
   const card = photosCard(page);
   await cardMenuAction(page, card, "Stop");
@@ -213,8 +218,10 @@ test("uninstall: app data is gone, shared records survive in Drive", async ({
     timeout: 60_000,
   });
 
-  page.on("dialog", (dialog) => void dialog.accept());
   await cardMenuAction(page, card, "Uninstall");
+  const removal = page.getByRole("dialog");
+  await removal.getByRole("checkbox").check();
+  await removal.getByRole("button", { name: "Uninstall and delete data" }).click();
   await expect(
     card.getByRole("button", { name: /^Install / }),
   ).toBeVisible({

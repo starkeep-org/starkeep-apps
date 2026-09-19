@@ -25,7 +25,13 @@ import {
   type NodeRetentionPolicy,
 } from "@starkeep/sync-engine";
 import { createMobileNode, type MobileNode } from "../src/node";
-import { PHONE_RETENTION, PHOTOS_APP_ID, totalBudgetBytes } from "../src/retention";
+import {
+  PHONE_RETENTION,
+  PHOTOS_APP_ID,
+  PHOTOS_FALLBACK_SHARE,
+  PHOTOS_RUNG_SHARES,
+  totalBudgetBytes,
+} from "../src/retention";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
@@ -143,11 +149,7 @@ const tightPolicy: NodeRetentionPolicy = {
     budgetBytes: 25 * KB,
   },
   apps: {},
-  appFallback: {
-    rows: {},
-    fallback: { prefetch: true, share: 1 },
-    budgetBytes: 25 * KB,
-  },
+  appFallback: { budgetBytes: 25 * KB },
 };
 
 /**
@@ -179,11 +181,7 @@ const onDemandPolicy: NodeRetentionPolicy = {
     budgetBytes: 25 * KB,
   },
   apps: {},
-  appFallback: {
-    rows: {},
-    fallback: { prefetch: false, share: 1 },
-    budgetBytes: 25 * KB,
-  },
+  appFallback: { budgetBytes: 25 * KB },
 };
 
 /** Pull every record's bytes down on demand, the way opening each one would. */
@@ -221,7 +219,7 @@ describe("the phone's built-in policy", () => {
     // omitted independently of the budget any more — there is one budget, in
     // the namespace — but a share that is zero or unparseable is still a rung
     // this device silently holds none of.
-    for (const [rung, row] of Object.entries(PHONE_RETENTION.apps[PHOTOS_APP_ID]!.rows)) {
+    for (const [rung, row] of Object.entries(PHOTOS_RUNG_SHARES)) {
       expect(Number.isFinite(row.share), `${rung} has no finite share`).toBe(true);
       expect(row.share, `${rung} claims no share`).toBeGreaterThan(0);
     }
@@ -237,8 +235,25 @@ describe("the phone's built-in policy", () => {
    * rather than the numbers, because the numbers are the plan's to choose and
    * the identity is what stops them lying.
    */
-  it("divides each namespace's budget exactly, with nothing left over or double-counted", () => {
-    for (const namespace of [PHONE_RETENTION.platform, PHONE_RETENTION.apps[PHOTOS_APP_ID]!]) {
+  it("divides each budget exactly, with nothing left over or double-counted", () => {
+    // Two tables now, and the identity has to hold for both: the platform's
+    // rows divide the platform's budget, and Photos' rungs divide the one
+    // number the policy gives Photos. The second half is what the app's own
+    // acquisition pass will read, so a drift there is as expensive as a drift
+    // in the first ever was.
+    const namespaces = [
+      {
+        rows: PHONE_RETENTION.platform.rows,
+        fallback: PHONE_RETENTION.platform.fallback,
+        budgetBytes: PHONE_RETENTION.platform.budgetBytes,
+      },
+      {
+        rows: PHOTOS_RUNG_SHARES,
+        fallback: PHOTOS_FALLBACK_SHARE,
+        budgetBytes: PHONE_RETENTION.apps[PHOTOS_APP_ID]!.budgetBytes,
+      },
+    ];
+    for (const namespace of namespaces) {
       const shares = [namespace.fallback, ...Object.values(namespace.rows)].reduce(
         (sum, r) => sum + r.share,
         0,
@@ -248,8 +263,8 @@ describe("the phone's built-in policy", () => {
         (sum, r) => sum + Math.floor((namespace.budgetBytes * r.share) / shares),
         0,
       );
-      // Within rounding: `budgetBytesFor` floors each line, so the sum can fall
-      // a few bytes short of the total and can never exceed it.
+      // Within rounding: flooring each line lets the sum fall a few bytes short
+      // of the total and never exceed it.
       expect(allocated).toBeLessThanOrEqual(namespace.budgetBytes);
       expect(namespace.budgetBytes - allocated).toBeLessThan(
         Object.keys(namespace.rows).length + 1,
@@ -284,18 +299,18 @@ describe("the phone's built-in policy", () => {
       "image-thumb": 30_951,
     };
 
-    const app = PHONE_RETENTION.apps[PHOTOS_APP_ID]!;
-    const shares = [app.fallback, ...Object.values(app.rows)].reduce(
+    const budgetBytes = PHONE_RETENTION.apps[PHOTOS_APP_ID]!.budgetBytes;
+    const shares = [PHOTOS_FALLBACK_SHARE, ...Object.values(PHOTOS_RUNG_SHARES)].reduce(
       (sum, r) => sum + r.share,
       0,
     );
 
     for (const [rung, bytesEach] of Object.entries(measured)) {
-      const row = app.rows[rung]!;
+      const row = PHOTOS_RUNG_SHARES[rung]!;
       // Prefetched, or "covers the library" means nothing: the bytes would
       // arrive only for records someone had already opened.
       expect(row.prefetch, `${rung} is not prefetched`).toBe(true);
-      const allowed = Math.floor((app.budgetBytes * row.share) / shares);
+      const allowed = Math.floor((budgetBytes * row.share) / shares);
       expect(
         allowed,
         `${rung} holds ${(allowed / (bytesEach * LIBRARY)) * 100}% of a ${LIBRARY}-item library`,

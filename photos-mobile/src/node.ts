@@ -166,6 +166,14 @@ export interface MobileNodeOptions {
    * covers only its own bytes, so its own ladder is the only one it can see.
    */
   readonly sizeClassKeys?: Readonly<Record<string, string>>;
+  /**
+   * Classes the Storage screen should list whether or not they hold anything.
+   *
+   * An app's own rungs. The retention policy knows the platform's and no longer
+   * knows an app's, so a report built from the policy alone would show a rung
+   * only while it happened to have bytes.
+   */
+  readonly reportedClasses?: readonly string[];
   /** Replicas elsewhere required before this node may drop its only copy. */
   readonly minimumReplicas?: number;
   readonly wallClock?: () => number;
@@ -825,9 +833,12 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       // and a report built only from the policy would hide it.
       const named = [
         ...Object.keys(policy.platform.rows).map((rung) => `${PLATFORM_NAMESPACE}:${rung}`),
-        ...Object.entries(policy.apps).flatMap(([appId, app]) =>
-          Object.keys(app.rows).map((rung) => `${appId}:${rung}`),
-        ),
+        // An app's rungs are not in the policy — an app namespace carries one
+        // ceiling and the ladder is the app's own table — so the app names the
+        // ones it wants listed. Without it a rung that has been emptied
+        // disappears from the Storage screen, which is the moment it is most
+        // worth seeing.
+        ...(options.reportedClasses ?? []),
       ];
       const classes = [...new Set([...named, ...Object.keys(held)])]
         .map((sizeClass) => {

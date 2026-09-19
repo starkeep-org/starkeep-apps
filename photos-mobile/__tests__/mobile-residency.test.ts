@@ -138,11 +138,7 @@ describe("a budget that binds", () => {
       budgetBytes: 25 * KB,
     },
     apps: {},
-    appFallback: {
-      rows: {},
-      fallback: { prefetch: true, share: 1 },
-      budgetBytes: 25 * KB,
-    },
+    appFallback: { budgetBytes: 25 * KB },
   };
 
   it("keeps the records and declines some of the bytes", async () => {
@@ -215,7 +211,7 @@ describe("a class with no share", () => {
         budgetBytes: 1,
       },
       apps: {},
-      appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 1 },
+      appFallback: { budgetBytes: 1 },
     });
     for (let i = 0; i < 2; i += 1) await phone.exchange();
 
@@ -249,7 +245,7 @@ describe("fetching back a declined photo", () => {
       budgetBytes: 1,
     },
     apps: {},
-    appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 1 },
+    appFallback: { budgetBytes: 1 },
   };
 
   it("brings down bytes no sync round would ever offer again", async () => {
@@ -346,7 +342,7 @@ describe("acquiring what a round declined", () => {
       budgetBytes: 25 * KB,
     },
     apps: {},
-    appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 25 * KB },
+    appFallback: { budgetBytes: 25 * KB },
   };
 
   it("queues what the budget declined during the round", async () => {

@@ -66,7 +66,12 @@ import {
   type MotionPhotoDeps,
   type OpenMotionPhoto,
 } from "./media/motion-photo-playback";
-import { PHONE_RETENTION, PHOTOS_APP_ID, PHOTOS_SIZE_CLASS_KEY } from "./retention";
+import {
+  PHONE_RETENTION,
+  PHOTOS_APP_ID,
+  PHOTOS_SIZE_CLASS_KEY,
+  photosRungClasses,
+} from "./retention";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { clearNodeFiles } from "./node-reset";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
@@ -327,6 +332,7 @@ export async function bringUpNode(): Promise<{
     // and for what this budget deliberately does *not* govern.
     retention: PHONE_RETENTION,
     sizeClassKeys: { [PHOTOS_APP_ID]: PHOTOS_SIZE_CLASS_KEY },
+    reportedClasses: photosRungClasses(),
     ...(config?.baseUrl ? { cloud: driveChannel(config.baseUrl, deviceKey) } : {}),
   });
   return { node, identity, deviceKey };

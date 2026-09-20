@@ -1,4 +1,3 @@
-import { RENDITION_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
 import {
   canonicalTarget,
   currentRenditionPolicies,
@@ -12,8 +11,14 @@ import {
   resolveVideo,
   type UpstreamRecord,
 } from "./library";
+import {
+  loadHydratedRenditions,
+  type HydratedRendition,
+} from "@/photos-lib/renditions/store";
 
 export const MAX_RENDITION_BATCH_PAIRS = 100;
+/** Matches the file plane's own default, which is what mints these URLs. */
+const URL_LIFETIME_SECONDS = 3600;
 export const MAX_RENDITION_BATCH_RECORDS = 100;
 
 interface RequestedResolution {
@@ -33,17 +38,21 @@ function coverage(policy: RenditionThresholdPolicy, target: number) {
   return { requiredLongEdgeMin: previous + 1, requiredLongEdgeMax: target };
 }
 
+/**
+ * How long the URLs in a decision are good for.
+ *
+ * Every rendition URL expires now, and by the same amount: the app-private file
+ * plane mints a token URL locally and a presigned S3 URL in the cloud, both
+ * from one `expiresIn`. The shared plane could answer `non-expiring` for a
+ * record whose bytes sat behind a permanent local path; nothing on this plane
+ * can, so the client's refresh path runs for every rung rather than for some.
+ */
 function attachStillUrlLifetime(
   decision: ReturnType<typeof resolveFor>[string],
-  record: UpstreamRecord,
+  expiresAt: string,
 ) {
-  const lifetimeById = new Map(
-    (record.variant_candidates ?? []).map((candidate) => [candidate.id, candidate.url_lifetime]),
-  );
-  const attach = <T extends { id?: string }>(entry: T): T & { urlLifetime?: unknown } => {
-    const lifetime = entry.id ? lifetimeById.get(entry.id) : undefined;
-    return lifetime ? { ...entry, urlLifetime: lifetime } : entry;
-  };
+  const attach = <T extends { url?: string }>(entry: T): T & { urlLifetime?: unknown } =>
+    entry.url ? { ...entry, urlLifetime: { kind: "expires", expires_at: expiresAt } } : entry;
   return {
     ideal: attach(decision.ideal),
     ...(decision.fallback ? { fallback: attach(decision.fallback) } : {}),
@@ -103,7 +112,6 @@ export async function POST(req: Request): Promise<Response> {
     // a 100-record batch as though the rest had no renditions.
     `limit=${recordIds.length}`,
     "include=metadata",
-    `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
   ];
   const upstream = await authorized.fetch(`/data/records?${params.join("&")}`);
   if (!upstream.ok) {
@@ -114,6 +122,12 @@ export async function POST(req: Request): Promise<Response> {
   }
   const body = (await upstream.json()) as { records: UpstreamRecord[] };
   const records = new Map(body.records.map((record) => [record.id, record]));
+  // The rungs, their URLs and whether this node holds the bytes — Photos' own
+  // table and Photos' own file plane, which is where a rendition lives now. The
+  // shared page above carries the source dimensions the ladder is measured
+  // against and nothing else about a rendition.
+  const renditions = await loadHydratedRenditions(authorized.fetch, [...records.keys()]);
+  const expiresAt = new Date(Date.now() + URL_LIFETIME_SECONDS * 1000).toISOString();
   const policies = currentRenditionPolicies();
   const cloud = process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
   const localVerdicts = cloud ? null : await loadLocalVerdicts();
@@ -136,11 +150,12 @@ export async function POST(req: Request): Promise<Response> {
     const key = `${record.id}:${policy.version}:${targetLongEdge}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const rungs: readonly HydratedRendition[] = renditions.get(record.id) ?? [];
     const rawDecision = kind === "video"
-      ? resolveVideo(record, [targetLongEdge], cloud)[String(targetLongEdge)] ?? {}
-      : resolveFor(record, [targetLongEdge], cloud, localVerdicts)[String(targetLongEdge)];
+      ? resolveVideo(rungs, [targetLongEdge], cloud)[String(targetLongEdge)] ?? {}
+      : resolveFor(record, rungs, [targetLongEdge], cloud, localVerdicts)[String(targetLongEdge)];
     const decision = kind === "still"
-      ? attachStillUrlLifetime(rawDecision as ReturnType<typeof resolveFor>[string], record)
+      ? attachStillUrlLifetime(rawDecision as ReturnType<typeof resolveFor>[string], expiresAt)
       : rawDecision;
     results.push({
       recordId: record.id,

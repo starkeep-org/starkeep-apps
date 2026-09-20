@@ -27,15 +27,14 @@ export interface VideoIngestDeps {
   readonly signedFetch: SignedFetch;
   readonly tools: VideoTools;
   /**
-   * Content hash and storage key for a rendition's bytes.
+   * The content hash of a rendition's bytes.
    *
-   * Supplied by the caller because the two servers address storage differently,
-   * and this module has no business knowing which one it is running inside.
+   * Supplied by the caller because hashing is a Node or a WebCrypto call
+   * depending on where this runs, and this module has no business knowing
+   * which. The storage key is no longer the caller's to choose: an app-private
+   * rendition lands under a key the ladder names.
    */
-  readonly keyFor: (
-    bytes: Uint8Array,
-    rendition: { readonly type: "image" | "video" },
-  ) => Promise<{ contentHash: string; objectStorageKey: string }>;
+  readonly hashOf: (bytes: Uint8Array) => Promise<string>;
   readonly enabledOptional?: readonly SizeClass[];
   /** Rungs whose bytes this node can serve; supplied by the local sweep. */
   readonly availableRenditionClasses?: readonly SizeClass[];
@@ -55,16 +54,14 @@ export async function deriveAndPublishVideo(
   parent: RenditionParent,
   deps: VideoIngestDeps,
 ): Promise<VideoIngestResult> {
-  // A label alone is not a usable rendition. Candidate resolution drops a
-  // child without dimensions, so counting one here could archive the original
-  // while every reader remains unable to select its replacement. Re-deriving
-  // such a child is safe: record registration deduplicates by parent and hash,
-  // then the metadata write repairs the existing record.
+  // A row in Photos' table is a usable rendition by construction: `width` and
+  // `height` are not-null columns, so the dimensionless child that candidate
+  // resolution used to drop cannot be represented any more. The sweep supplies
+  // this list when it has one, because a row can exist on a node whose bytes
+  // are not here and that rung still needs local work.
   const existing = deps.availableRenditionClasses
     ? [...deps.availableRenditionClasses]
-    : await existingRenditionClasses(deps.signedFetch, parent.id, {
-        requireDimensions: true,
-      });
+    : await existingRenditionClasses(deps.signedFetch, parent.id);
   const missing = new Set<SizeClass>(
     VIDEO_LADDER.map((spec) => spec.sizeClass)
       .filter((sizeClass) => !existing.includes(sizeClass)),
@@ -83,15 +80,9 @@ export async function deriveAndPublishVideo(
 
   for (const rendition of result.renditions) {
     try {
-      const { contentHash, objectStorageKey } = await deps.keyFor(rendition.bytes, rendition);
+      const contentHash = await deps.hashOf(rendition.bytes);
       published.push(
-        await publishVideoRendition(
-          deps.signedFetch,
-          parent,
-          rendition,
-          contentHash,
-          objectStorageKey,
-        ),
+        await publishVideoRendition(deps.signedFetch, parent, rendition, contentHash),
       );
     } catch (err) {
       // A publish failure is transient by nature (network, presign, a 5xx) and

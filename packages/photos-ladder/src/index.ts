@@ -5,6 +5,7 @@ export {
   applicableStillClasses,
   applicableVideoClasses,
   classForTargetLongEdge,
+  renditionExtension,
   renditionFileName,
   renditionLongEdge,
   topApplicableStillClass,
@@ -59,3 +60,12 @@ export {
   type JustifiedPlacement,
   type JustifiedRow,
 } from "./justified-layout";
+
+export {
+  RENDITIONS_TABLE,
+  RENDITION_SUBKEY_PREFIX,
+  parentOfRenditionSubKey,
+  renditionCandidate,
+  renditionSubKey,
+  type RenditionRow,
+} from "./rendition-table";

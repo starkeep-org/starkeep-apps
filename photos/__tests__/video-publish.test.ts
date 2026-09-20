@@ -25,26 +25,54 @@ interface Call {
 let calls: Call[];
 let signedFetch: ReturnType<typeof makeSignedFetch>;
 
-function makeSignedFetch(overrides: Record<string, () => Response> = {}) {
+/**
+ * A data server that speaks the app-private plane.
+ *
+ * `existingRungs` is what the rendition table already holds for `rec-1`, which
+ * is what first-writer-wins reads before it uploads anything.
+ */
+function makeSignedFetch(
+  overrides: Record<string, () => Response> = {},
+  existingRungs: string[] = [],
+) {
   return vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
+    const method = init?.method ?? "GET";
     calls.push({
       path,
-      method: init?.method ?? "GET",
+      method,
       body: init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {},
     });
-    for (const [prefix, make] of Object.entries(overrides)) {
-      if (path.startsWith(prefix)) return make();
+    // A key with a space is method-scoped ("POST /app-data/db/renditions"),
+    // which is what lets a test fail the row *write* without also failing the
+    // first-writer-wins *read* of the same path.
+    for (const [key, make] of Object.entries(overrides)) {
+      const [wantMethod, prefix] = key.includes(" ") ? key.split(" ") : [null, key];
+      if (path.startsWith(prefix!) && (wantMethod === null || wantMethod === method)) {
+        return make();
+      }
     }
-    if (path === "/files/presign") {
+    if (path.startsWith("/app-data/db/renditions") && method === "GET") {
+      return new Response(
+        JSON.stringify({
+          rows: existingRungs.map((size_class) => ({
+            parent_record_id: "rec-1",
+            size_class,
+            sub_key: `renditions/rec-1/${size_class}/hh.mp4`,
+            content_hash: "hh",
+            width: 1280,
+            height: 720,
+            size_bytes: 1000,
+            content_type: "video/mp4",
+          })),
+          page_token: null,
+        }),
+        { status: 200 },
+      );
+    }
+    if (path === "/app-data/files/presign") {
       return new Response(JSON.stringify({ url: "https://upload.example/put" }), { status: 200 });
     }
-    if (path === "/data/records") {
-      return new Response(JSON.stringify({ record: { id: "child-1" } }), { status: 200 });
-    }
-    if (path.startsWith("/data/records?")) {
-      return new Response(JSON.stringify({ records: [] }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ tagged: true, refusals: [] }), { status: 200 });
+    return new Response(JSON.stringify({ tagged: true, refusals: [], ok: true }), { status: 200 });
   });
 }
 
@@ -116,68 +144,72 @@ describe("writing container facts", () => {
 });
 
 describe("publishing a rendition", () => {
-  // The poster is what the grid paints. Registered as video it would be hidden
-  // from every image-granted app — a library with holes where the clips are.
-  it("registers a poster as an image", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
-    const create = calls.find((c) => c.path === "/data/records")!;
-    expect(create.body.type).toBe("image/jpeg");
+  // Nothing about a rung reaches the shared plane any more. A poster used to be
+  // registered as an `image` record so image-granted apps could see it; no app
+  // sees any rung now, which is the decision this project made.
+  it("writes no shared record at all", async () => {
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
+    expect(calls.some((c) => c.path === "/data/records")).toBe(false);
   });
 
-  it("registers a transcode as video", async () => {
+  it("puts the bytes under the ladder's own key, hash and all", async () => {
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
+    expect(calls.find((c) => c.path === "/app-data/files/presign")!.body.subKey).toBe(
+      "renditions/rec-1/video-poster-thumb/hash.jpg",
+    );
+  });
+
+  it("names a transcode by its own type, not the poster's", async () => {
     await publishVideoRendition(
       signedFetch, parent,
       rendition({ sizeClass: "video-720p", kind: "transcode", type: "video", contentType: "video/mp4", durationMs: 12_000 }),
-      "hash", "key",
+      "hash",
     );
-    expect(calls.find((c) => c.path === "/data/records")!.body.type).toBe("video/mp4");
-  });
-
-  // Sending the wrong typeId writes into a table the record has no row in.
-  it("writes dimensions to the metadata table matching the record's type", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
-    const meta = calls.find((c) => c.path === "/data/records/child-1/metadata")!;
-    expect(meta.body.typeId).toBe("image");
-    expect(meta.body.metadata).toMatchObject({ width: 225, height: 400 });
-  });
-
-  it("includes duration for moving renditions only", async () => {
-    await publishVideoRendition(
-      signedFetch, parent,
-      rendition({ sizeClass: "video-skim", kind: "skim", type: "video", contentType: "video/mp4", durationMs: 2_000 }),
-      "hash", "key",
+    expect(calls.find((c) => c.path === "/app-data/files/presign")!.body.subKey).toBe(
+      "renditions/rec-1/video-720p/hash.mp4",
     );
-    const meta = calls.find((c) => c.path === "/data/records/child-1/metadata")!;
-    expect(meta.body.metadata).toMatchObject({ duration_ms: 2_000 });
   });
 
-  it("labels the rung so resolution can find it", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
-    expect(calls.find((c) => c.path === "/data/records")!.body.labels).toEqual([
-      { key: "rendition", value: "video-poster-thumb" },
-    ]);
+  // Dimensions are columns of the row now, written with it rather than after
+  // it, so the window where a rung existed and its size did not is gone.
+  it("writes the rung's dimensions as part of its row", async () => {
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
+    const row = calls.find(
+      (c) => c.path === "/app-data/db/renditions" && c.method === "POST",
+    )!.body.row as Record<string, unknown>;
+    expect(row).toMatchObject({
+      parent_record_id: "rec-1",
+      size_class: "video-poster-thumb",
+      width: 225,
+      height: 400,
+      content_type: "image/jpeg",
+    });
   });
 
   // A poster named `.mov` is a JPEG that half the world refuses to open.
   it("names the file for what was produced, not for the source", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
-    expect(calls.find((c) => c.path === "/data/records")!.body.fileName).toBe(
-      "video-poster-thumb_IMG_0042.jpg",
-    );
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
+    expect(
+      calls.find((c) => c.path.endsWith("/record"))!.body.originalFilename,
+    ).toBe("video-poster-thumb_IMG_0042.jpg");
   });
 
-  it("declares every rung instant, since renditions are what a cold library is read from", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
-    expect(calls.find((c) => c.path === "/files/presign")!.body.intent).toBe("instant");
-  });
-
-  it("does not report publication success when dimensions cannot be stored", async () => {
+  it("does not report publication success when the row cannot be written", async () => {
     const failing = makeSignedFetch({
-      "/data/records/child-1/metadata": () => new Response("nope", { status: 500 }),
+      "POST /app-data/db/renditions": () => new Response("nope", { status: 500 }),
     });
     await expect(
-      publishVideoRendition(failing, parent, rendition(), "hash", "key"),
-    ).rejects.toMatchObject({ stage: "metadata", sizeClass: "video-poster-thumb" });
+      publishVideoRendition(failing, parent, rendition(), "hash"),
+    ).rejects.toMatchObject({ stage: "row", sizeClass: "video-poster-thumb" });
+  });
+
+  // Object keys stop moving once a rung exists, which is what lets a published
+  // URL keep its meaning under a reader holding it.
+  it("leaves a rung another node already published alone", async () => {
+    const withExisting = makeSignedFetch({}, ["video-poster-thumb"]);
+    const result = await publishVideoRendition(withExisting, parent, rendition(), "hash");
+    expect(result.alreadyPublished).toBe(true);
+    expect(calls.some((c) => c.path === "/app-data/files/presign")).toBe(false);
   });
 });
 
@@ -194,14 +226,14 @@ describe("the ingest path", () => {
   const deps = (over: Partial<Parameters<typeof deriveAndPublishVideo>[2]> = {}) => ({
     signedFetch,
     tools: tools(),
-    keyFor: async () => ({ contentHash: "h", objectStorageKey: "k" }),
+    hashOf: async () => "h",
     ...over,
   });
 
   it("writes facts before publishing renditions", async () => {
     await deriveAndPublishVideo("/clip.mov", parent, deps());
     const factsAt = calls.findIndex((c) => c.path === "/data/records/rec-1/metadata");
-    const firstUpload = calls.findIndex((c) => c.path === "/files/presign");
+    const firstUpload = calls.findIndex((c) => c.path === "/app-data/files/presign");
     // Interrupted after the facts, the record is a correctly-shaped placeholder.
     // Interrupted the other way round, the layout cannot place it at all.
     expect(factsAt).toBeGreaterThanOrEqual(0);
@@ -216,15 +248,12 @@ describe("the ingest path", () => {
   });
 
   it("does not re-encode or republish rungs that already exist", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records?": () => new Response(JSON.stringify({
-        records: ["video-poster-thumb", "video-poster-720p", "video-skim", "video-720p"]
-          .map((value) => ({
-            metadata: { width: 1280, height: 720 },
-            labels: [{ app_id: "photos", key: "rendition", value }],
-          })),
-      }), { status: 200 }),
-    });
+    signedFetch = makeSignedFetch({}, [
+      "video-poster-thumb",
+      "video-poster-720p",
+      "video-skim",
+      "video-720p",
+    ]);
     const extractPoster = vi.fn();
     const skim = vi.fn();
     const transcode = vi.fn();
@@ -240,16 +269,13 @@ describe("the ingest path", () => {
     expect(result.ladderComplete).toBe(true);
   });
 
-  it("re-publishes labelled rungs whose bytes are unavailable on this node", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records?": () => new Response(JSON.stringify({
-        records: ["video-poster-thumb", "video-poster-720p", "video-skim", "video-720p"]
-          .map((value) => ({
-            metadata: { width: 1280, height: 720 },
-            labels: [{ app_id: "photos", key: "rendition", value }],
-          })),
-      }), { status: 200 }),
-    });
+  it("re-derives a rung whose row is here and whose bytes are not", async () => {
+    signedFetch = makeSignedFetch({}, [
+      "video-poster-thumb",
+      "video-poster-720p",
+      "video-skim",
+      "video-720p",
+    ]);
     const extractPoster = vi.fn(async () => ({
       bytes: new Uint8Array([1]),
       width: 225,
@@ -269,32 +295,9 @@ describe("the ingest path", () => {
     expect(result.published.length).toBeGreaterThan(0);
   });
 
-  it("retries a labelled child whose missing dimensions make it unreadable", async () => {
+  it("keeps the archive gate closed when a rung's row cannot be written", async () => {
     signedFetch = makeSignedFetch({
-      "/data/records?": () => new Response(JSON.stringify({
-        records: [{
-          metadata: null,
-          labels: [{ app_id: "photos", key: "rendition", value: "video-poster-thumb" }],
-        }],
-      }), { status: 200 }),
-    });
-    const extractPoster = vi.fn(async () => ({
-      bytes: new Uint8Array([1]),
-      width: 225,
-      height: 400,
-    }));
-    await deriveAndPublishVideo(
-      "/clip.mov",
-      parent,
-      deps({ tools: tools({ extractPoster }) }),
-    );
-    expect(extractPoster).toHaveBeenCalled();
-    expect(calls.some((call) => call.path === "/data/records/child-1/metadata")).toBe(true);
-  });
-
-  it("keeps the archive gate closed when a child dimensions write fails", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records/child-1/metadata": () => new Response("nope", { status: 500 }),
+      "POST /app-data/db/renditions": () => new Response("nope", { status: 500 }),
     });
     const result = await deriveAndPublishVideo("/clip.mov", parent, deps());
     expect(result.failed.length).toBeGreaterThan(0);

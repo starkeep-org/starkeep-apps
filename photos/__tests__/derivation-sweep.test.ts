@@ -41,7 +41,7 @@ function record(over: Partial<SweepRecord> = {}): SweepRecord {
     mime_type: "image/jpeg",
     original_filename: "photo.jpg",
     metadata: { width: BIG, height: Math.round(BIG * 0.75), thumb_hash: "abc" },
-    variant_candidates: [],
+    renditions: [],
     ...over,
   };
 }
@@ -55,8 +55,9 @@ describe("which rungs are missing", () => {
   it("names none when every applicable rung exists", () => {
     const missing = missingClasses(
       record({
-        variant_candidates: edgesFor(BIG).map((long_edge) => ({
+        renditions: edgesFor(BIG).map((long_edge) => ({
           long_edge,
+          size_class: `edge-${long_edge}`,
           available_here: true,
         })),
       }),
@@ -69,8 +70,9 @@ describe("which rungs are missing", () => {
     const unavailableEdge = edges[1]!;
     const missing = missingClasses(
       record({
-        variant_candidates: edges.map((long_edge) => ({
+        renditions: edges.map((long_edge) => ({
           long_edge,
+          size_class: `edge-${long_edge}`,
           available_here: long_edge !== unavailableEdge,
         })),
       }),
@@ -94,7 +96,7 @@ describe("which rungs are missing", () => {
     const missing = missingClasses(
       record({
         metadata: { width: small, height: small, thumb_hash: "abc" },
-        variant_candidates: edges.map((long_edge) => ({ long_edge, available_here: true })),
+        renditions: edges.map((long_edge) => ({ long_edge, size_class: `edge-${long_edge}`, available_here: true })),
       }),
     );
     expect(missing).toEqual([]);
@@ -137,8 +139,9 @@ describe("which stage has work", () => {
   // expensive rungs fill in behind it without anything waiting.
   it("leaves only the expensive stage once the cheap rungs exist", () => {
     const partial = record({
-      variant_candidates: cheapEdges().map((long_edge) => ({
+      renditions: cheapEdges().map((long_edge) => ({
         long_edge,
+        size_class: `edge-${long_edge}`,
         available_here: true,
       })),
     });
@@ -150,8 +153,8 @@ describe("which stage has work", () => {
   it("leaves only full work after cheap and medium are present", () => {
     const throughMedium = applicableStillClasses(BIG)
       .filter((spec) => spec.maxLongEdge <= 1280)
-      .map((spec) => ({ long_edge: renditionLongEdge(spec, BIG), available_here: true }));
-    const partial = record({ variant_candidates: throughMedium });
+      .map((spec) => ({ long_edge: renditionLongEdge(spec, BIG), size_class: spec.sizeClass, available_here: true }));
+    const partial = record({ renditions: throughMedium });
     expect(stageHasWork(partial, "cheap", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(partial, "medium", CHEAP_STILL_CLASSES)).toBe(false);
     expect(stageHasWork(partial, "full", CHEAP_STILL_CLASSES)).toBe(true);
@@ -159,8 +162,9 @@ describe("which stage has work", () => {
 
   it("gives a fully derived record no work at all", () => {
     const done = record({
-      variant_candidates: edgesFor(BIG).map((long_edge) => ({
+      renditions: edgesFor(BIG).map((long_edge) => ({
         long_edge,
+        size_class: `edge-${long_edge}`,
         available_here: true,
       })),
     });
@@ -198,11 +202,11 @@ describe("which stage has work", () => {
     const video = record({
       mime_type: "video/mp4",
       metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
-      variant_candidates: [
-        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
-        { long_edge: 1280, label_value: "video-poster-720p", available_here: true },
-        { long_edge: 640, label_value: "video-skim", available_here: true },
-        { long_edge: 1280, label_value: "video-720p", available_here: true },
+      renditions: [
+        { long_edge: 400, size_class: "video-poster-thumb", available_here: true },
+        { long_edge: 1280, size_class: "video-poster-720p", available_here: true },
+        { long_edge: 640, size_class: "video-skim", available_here: true },
+        { long_edge: 1280, size_class: "video-720p", available_here: true },
       ],
     });
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
@@ -212,15 +216,15 @@ describe("which stage has work", () => {
     const video = record({
       mime_type: "video/mp4",
       metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
-      variant_candidates: [
-        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
+      renditions: [
+        { long_edge: 400, size_class: "video-poster-thumb", available_here: true },
         {
           long_edge: 1280,
-          label_value: "video-poster-720p",
+          size_class: "video-poster-720p",
           available_here: false,
         },
-        { long_edge: 640, label_value: "video-skim", available_here: true },
-        { long_edge: 1280, label_value: "video-720p", available_here: true },
+        { long_edge: 640, size_class: "video-skim", available_here: true },
+        { long_edge: 1280, size_class: "video-720p", available_here: true },
       ],
     });
 
@@ -231,9 +235,9 @@ describe("which stage has work", () => {
     const video = record({
       mime_type: "video/mp4",
       metadata: { width: 400, height: 300, bitrate: 800_000 },
-      variant_candidates: [
-        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
-        { long_edge: 320, label_value: "video-skim", available_here: true },
+      renditions: [
+        { long_edge: 400, size_class: "video-poster-thumb", available_here: true },
+        { long_edge: 320, size_class: "video-skim", available_here: true },
       ],
     });
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
@@ -241,7 +245,7 @@ describe("which stage has work", () => {
 });
 
 describe("paging the library", () => {
-  it("asks for the unnarrowed candidate list, not a resolution", async () => {
+  it("asks the shared plane for records alone, and never for a variant", async () => {
     let asked = "";
     await fetchSweepPage(
       async (path) => {
@@ -252,12 +256,87 @@ describe("paging the library", () => {
       null,
     );
     const params = new URLSearchParams(asked.split("?")[1]);
-    expect(params.get("variant")).toBe("photos/rendition");
-    // Resolution would answer "which rung best fits 400 px"; the question here
-    // is "which rungs are missing", and only the whole set answers it.
+    // The platform has nothing to say about a rung any more: the rows are
+    // Photos' own, and asking the shared plane for them would be asking a
+    // question it cannot answer.
+    expect(params.get("variant")).toBeNull();
     expect(params.get("variantLongEdge")).toBeNull();
+    // Renditions published before the move are still shared records, and a page
+    // that listed them is a page the client cannot read.
     expect(params.get("notLabel")).toBe("photos/rendition");
     expect(params.get("include")).toBe("metadata,labels");
+  });
+
+  it("hangs each record's rungs off it, resolved against this node's bytes", async () => {
+    const calls: string[] = [];
+    const page = await fetchSweepPage(
+      async (path, init) => {
+        calls.push(path);
+        if (path.startsWith("/data/records")) {
+          return new Response(
+            JSON.stringify({
+              records: [
+                { id: "rec-1", mime_type: "image/jpeg", original_filename: "a.jpg" },
+              ],
+              nextCursor: null,
+            }),
+          );
+        }
+        if (path.startsWith("/app-data/db/renditions")) {
+          return new Response(
+            JSON.stringify({
+              rows: [
+                {
+                  parent_record_id: "rec-1",
+                  size_class: "image-thumb",
+                  sub_key: "renditions/rec-1/image-thumb/aa.avif",
+                  content_hash: "aa",
+                  width: 400,
+                  height: 300,
+                  size_bytes: 1000,
+                  content_type: "image/avif",
+                },
+                {
+                  parent_record_id: "rec-1",
+                  size_class: "image-medium",
+                  sub_key: "renditions/rec-1/image-medium/bb.avif",
+                  content_hash: "bb",
+                  width: 1280,
+                  height: 960,
+                  size_bytes: 9000,
+                  content_type: "image/avif",
+                },
+              ],
+              page_token: null,
+            }),
+          );
+        }
+        if (path === "/app-data/residency/lookup") {
+          const body = JSON.parse(String(init?.body)) as { subKeys: string[] };
+          return new Response(
+            JSON.stringify({
+              entries: body.subKeys.map((subKey) => ({
+                subKey,
+                sizeBytes: 1,
+                // The thumb's bytes are here; the medium's row arrived without
+                // them, which is what a round does on the app-private plane.
+                resident: subKey.includes("image-thumb"),
+                lastOpenedAtMs: null,
+              })),
+            }),
+          );
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+      "photos/rendition",
+      null,
+    );
+
+    expect(page.records[0]!.renditions).toEqual([
+      { size_class: "image-thumb", long_edge: 400, available_here: true },
+      { size_class: "image-medium", long_edge: 1280, available_here: false },
+    ]);
+    expect(calls.some((p) => p.startsWith("/app-data/db/renditions"))).toBe(true);
   });
 
   it("treats a missing nextCursor as the end rather than looping forever", async () => {

@@ -21,36 +21,69 @@ import sharp from "sharp";
 import { deriveAndPublish } from "../src/photos-lib/image-processing/derive-and-publish";
 import type { DerivationAttempt } from "../src/photos-lib/image-processing/derivation-attempts";
 import type { SignedFetchInit } from "../src/photos-lib/image-processing/publish-renditions";
-import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS } from "../src/photos-lib/labels";
 import { STILL_LADDER, applicableStillClasses } from "../src/photos-lib/ladder";
 
 /**
- * A data plane just real enough for this flow: renditions are child records
- * carrying the rendition label, metadata is a per-record bag, and presigned
- * uploads succeed.
+ * A data plane just real enough for this flow.
+ *
+ * Two planes, as the real thing has: the shared one holds the parent's record
+ * and its metadata, and Photos' own holds the rendition rows and their bytes.
+ * A rung is a row keyed by `(parent, size class)` — not a child record and not
+ * a label — so a second derivation of one is an upsert rather than a duplicate.
  */
 class FakePlane {
   calls: string[] = [];
-  renditions: string[] = [];
+  /** The rendition table, keyed by size class for this one parent. */
+  rows: Record<string, Record<string, unknown>> = {};
   metadata: Record<string, unknown> = {};
-  /** Metadata supplied inline on `POST /data/records`, by size class. */
-  renditionMetadata: Record<string, Record<string, unknown>> = {};
   gateAsserted = false;
   uploads = 0;
+  /** Registered app-private files, by sub-key. */
+  files: Record<string, Record<string, unknown>> = {};
 
   constructor(readonly parentId: string) {}
+
+  /** The size classes the table holds, which is what "already derived" means. */
+  get renditions(): string[] {
+    return Object.keys(this.rows);
+  }
+
+  set renditions(sizeClasses: string[]) {
+    this.rows = {};
+    for (const sizeClass of sizeClasses) {
+      this.rows[sizeClass] = {
+        parent_record_id: this.parentId,
+        size_class: sizeClass,
+        sub_key: `renditions/${this.parentId}/${sizeClass}/seeded.jpg`,
+        content_hash: "seeded",
+        width: 100,
+        height: 75,
+        size_bytes: 10,
+        content_type: "image/jpeg",
+      };
+    }
+  }
 
   fetch = async (path: string, init?: SignedFetchInit): Promise<Response> => {
     const method = init?.method ?? "GET";
     this.calls.push(`${method} ${path.split("?")[0]}`);
     const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
 
-    if (path.startsWith("/data/records?")) {
-      return json({
-        records: this.renditions.map((sizeClass) => ({
-          labels: [{ app_id: PHOTOS_APP_ID, key: PHOTOS_LABEL_KEYS.rendition, value: sizeClass }],
-        })),
-      });
+    if (path.startsWith("/app-data/db/renditions")) {
+      if (method === "GET") return json({ rows: Object.values(this.rows), page_token: null });
+      if (method === "POST") {
+        const row = body.row as Record<string, unknown>;
+        this.rows[row.size_class as string] = row;
+        return json({ ok: true });
+      }
+    }
+    if (path === "/app-data/files/presign") {
+      return json({ url: "https://uploads.invalid/put" });
+    }
+    if (path.startsWith("/app-data/files/") && path.endsWith("/record")) {
+      const subKey = path.slice("/app-data/files/".length, -"/record".length);
+      this.files[subKey] = body;
+      return json({ key: subKey });
     }
     if (path.endsWith("/metadata/image")) {
       const known = Object.keys(this.metadata).length > 0 ? this.metadata : null;
@@ -59,18 +92,6 @@ class FakePlane {
     if (path.endsWith("/metadata")) {
       Object.assign(this.metadata, body.metadata as Record<string, unknown>);
       return json({ ok: true });
-    }
-    if (path === "/files/presign") {
-      return json({ url: "https://uploads.invalid/put" });
-    }
-    if (path === "/data/records") {
-      const labels = (body.labels ?? []) as Array<{ key: string; value: string }>;
-      const sizeClass = labels[0]!.value;
-      this.renditions.push(sizeClass);
-      if (body.metadata) {
-        this.renditionMetadata[sizeClass] = body.metadata as Record<string, unknown>;
-      }
-      return json({ record: { id: `${this.parentId}-${sizeClass}` } });
     }
     if (path.endsWith("/archive-gate")) {
       this.gateAsserted = true;
@@ -150,7 +171,7 @@ describe("a record with nothing derived yet", () => {
   it("publishes the placeholder and the record's own facts before any rung", async () => {
     await run();
 
-    const firstRendition = plane.calls.indexOf("POST /data/records");
+    const firstRendition = plane.calls.indexOf("POST /app-data/db/renditions");
     const metadataWrites = plane.calls
       .map((c, i) => [c, i] as const)
       .filter(([c]) => c === "POST /data/records/REC1/metadata")
@@ -174,24 +195,22 @@ describe("a record with nothing derived yet", () => {
     expect(plane.metadata.camera_make).toBe("TestMake");
   }, 60_000);
 
-  it("registers each rung with its dimensions, in one call", async () => {
+  it("records each rung's dimensions in the row itself", async () => {
     await run();
 
-    // Dimensions used to be a second request. The gap between the two was
-    // enough for a sync round to ship the rendition without them, and a
-    // rendition with no dimensions cannot be ordered by long edge — so variant
-    // resolution excluded it and the original reported no renditions at all.
+    // Dimensions used to be a second request against a child record. The gap
+    // between the two was enough for a sync round to ship the rendition without
+    // them, and a rendition with no dimensions cannot be ordered by long edge —
+    // so resolution excluded it and the original reported no renditions at all.
+    // As columns of the row the gap cannot exist.
     for (const sizeClass of plane.renditions) {
-      const meta = plane.renditionMetadata[sizeClass];
-      expect(meta, sizeClass).toBeDefined();
-      expect(meta!["width"]).toBeGreaterThan(0);
-      expect(meta!["height"]).toBeGreaterThan(0);
+      const row = plane.rows[sizeClass]!;
+      expect(row["width"], sizeClass).toBeGreaterThan(0);
+      expect(row["height"], sizeClass).toBeGreaterThan(0);
+      expect(row["sub_key"]).toContain(`renditions/REC1/${sizeClass}/`);
     }
-    // And no per-rendition metadata request survives on the hot path.
-    const childWrites = plane.calls.filter(
-      (c) => c.startsWith("POST /data/records/REC1-") && c.endsWith("/metadata"),
-    );
-    expect(childWrites).toEqual([]);
+    // And nothing about a rung reaches the shared plane at all.
+    expect(plane.calls.some((c) => c === "POST /data/records")).toBe(false);
   }, 60_000);
 
   it("publishes rungs smallest first", async () => {
@@ -222,10 +241,10 @@ describe("a record that is already fully derived", () => {
     // ladder and then filtering out what already existed cost a full decode and
     // every encode to publish nothing.
     expect(loads).toBe(before);
-    expect(plane.calls).not.toContain("POST /data/records");
+    expect(plane.calls).not.toContain("POST /app-data/db/renditions");
   }, 60_000);
 
-  it("re-publishes child records whose bytes are unavailable on this node", async () => {
+  it("re-derives a rung whose row is here and whose bytes are not", async () => {
     const sourceLongEdge = STILL_LADDER[STILL_LADDER.length - 1]!.maxLongEdge + 100;
     plane.metadata = {
       width: sourceLongEdge,

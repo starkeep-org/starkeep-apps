@@ -388,21 +388,47 @@ export function applicableVideoClasses(
 // Naming
 // ---------------------------------------------------------------------------
 
+const RENDITION_EXTENSIONS: Readonly<Record<string, string>> = {
+  "image/avif": "avif",
+  "image/webp": "webp",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "video/mp4": "mp4",
+};
+
 /**
- * What a published still rung is called.
+ * The file extension bytes of this type are named with.
  *
- * Here rather than beside either publisher because two nodes now derive: a
- * machine running `sharp` and a phone running `avif-coder`. The name is part of
- * a record's content-addressed id — `(parent, filename, contentHash)` — so two
- * spellings of it are two ids for the same rung of the same photograph, which
- * nothing downstream would ever reconcile.
- *
- * No extension is appended, deliberately, and the video publisher's own rule is
- * the reason it can stay that way: a poster changes container relative to its
- * parent, so it has to say so, while a still rung's name is only ever read as a
- * label and its type travels in the record.
+ * Here rather than derived from the MIME subtype because `image/jpeg` is `.jpg`
+ * and nothing in the string says so. Unknown types get `.bin`, which is honest:
+ * a name that lies about a container is worse than one that declines to guess.
  */
-export function renditionFileName(originalFilename: string | null, sizeClass: string): string {
+export function renditionExtension(contentType: string): string {
+  return RENDITION_EXTENSIONS[contentType] ?? "bin";
+}
+
+/**
+ * What a published rung is called.
+ *
+ * Here rather than beside either publisher because three surfaces now derive: a
+ * machine running `sharp`, a Lambda, and a phone running `avif-coder`. The name
+ * is what a person sees if they ever download a rung, and one spelling across
+ * every surface is what stops the same rung of the same photograph reading as
+ * two different files.
+ *
+ * The extension follows the *produced* bytes rather than the source's, because
+ * a rung routinely changes container: a JPEG original yields an AVIF rung, and
+ * a `.mov` clip yields a `.jpg` poster that half the world refuses to open
+ * under its parent's name. Omit `contentType` and the source's name is kept
+ * whole, which is what a caller that has no bytes in hand can honestly say.
+ */
+export function renditionFileName(
+  originalFilename: string | null,
+  sizeClass: string,
+  contentType?: string,
+): string {
   const base = originalFilename ?? "image";
-  return `${sizeClass}_${base}`;
+  if (contentType === undefined) return `${sizeClass}_${base}`;
+  const stripped = base.replace(/\.[^.]+$/, "");
+  return `${sizeClass}_${stripped}.${renditionExtension(contentType)}`;
 }

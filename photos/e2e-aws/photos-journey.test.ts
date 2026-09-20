@@ -5,9 +5,9 @@
  * install, sync, the data plane, the session gate, CloudFront, uninstall —
  * against Photos rather than against a fixture, and adds the assertions that
  * are true of Photos and of nothing else: that the shipping app derives its
- * full rendition ladder, that every rung reaches the cloud carrying its label
- * and its dimensions, and that the cloud grid paints a rendition rather than
- * the original.
+ * full rendition ladder, that every rung reaches the cloud as a row in Photos'
+ * own table with its dimensions, and that the cloud grid paints a rendition
+ * rather than the original.
  *
  * The journey comes from `@starkeep/e2e-aws`, a `link:` dependency on the
  * sibling starkeep-core checkout — the same arrangement `@starkeep/e2e` uses at
@@ -43,11 +43,12 @@ import {
   type LdsApp,
   type WebServer,
 } from "@starkeep/e2e";
-import { applicableStillClasses, STILL_LADDER } from "../src/photos-lib/ladder";
 import {
-  RENDITION_LABEL_REF,
-  renditionFileName,
-} from "../src/photos-lib/image-processing/publish-renditions";
+  applicableStillClasses,
+  renditionSubKey,
+  STILL_LADDER,
+  type RenditionRow,
+} from "../src/photos-lib/ladder";
 
 const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,52 +98,26 @@ function assertNoPhotosDevServer(): void {
   );
 }
 
-/** A rendition child as the rendition steps read it back. */
-interface RungRecord {
-  id: string;
-  parent_id: string | null;
-  original_filename: string | null;
-  object_storage_key: string | null;
-  metadata?: { width?: number | null; height?: number | null } | null;
-  labels?: Array<{
-    app_id: string;
-    key: string;
-    value: string | null;
-    label: string;
-  }>;
-}
-
 /**
- * A record's `photos/rendition` children, with their labels and their
- * dimensions, from whichever data plane is asked.
+ * A record's rungs, read out of Photos' own table on whichever node is asked.
  *
- * `parentId` + `label` is one indexed lookup, and it is the same query Photos
- * itself issues to decide what is left to derive — so the assertions read the
- * library the way the app does rather than through a shape invented for a test.
+ * Not a query against `/data/records` any more: a rung stopped being a shared
+ * child record in phase 3 of the rendition-ownership plan, because five derived
+ * copies of every photograph in a plane every app reads is a library Drive
+ * lists at five times its size. The primary key is `(parent_record_id,
+ * size_class)`, so this is one indexed lookup and the same one Photos itself
+ * issues to decide what is left to derive.
  */
-async function renditionChildren(
-  app: LdsApp,
-  parentId: string,
-): Promise<RungRecord[]> {
+async function renditionRows(app: LdsApp, parentId: string): Promise<RenditionRow[]> {
   const res = await app.fetch(
-    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
-      `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
-      `&include=labels,metadata&limit=50`,
+    `/app-data/db/renditions?where=${encodeURIComponent(
+      JSON.stringify({ parent_record_id: parentId }),
+    )}&limit=500`,
   );
   if (!res.ok) {
-    throw new Error(
-      `rendition children of ${parentId} → ${res.status} ${await res.text()}`,
-    );
+    throw new Error(`rendition rows of ${parentId} → ${res.status} ${await res.text()}`);
   }
-  return ((await res.json()) as { records: RungRecord[] }).records;
-}
-
-/** Which rung of the ladder a child is — the `photos/rendition` label's value. */
-function renditionClassOf(rung: RungRecord): string {
-  return (
-    (rung.labels ?? []).find((l) => l.label === RENDITION_LABEL_REF)?.value ??
-    ""
-  );
+  return ((await res.json()) as { rows: RenditionRow[] }).rows;
 }
 
 /** A record's bytes, through the data plane's own file-url. */
@@ -156,6 +131,18 @@ async function readRecordBytes(app: LdsApp, recordId: string): Promise<Buffer> {
   const { url } = (await urlRes.json()) as { url: string };
   const blob = await fetch(url);
   if (!blob.ok) throw new Error(`bytes for ${recordId} → ${blob.status}`);
+  return Buffer.from(await blob.arrayBuffer());
+}
+
+/** A rendition's bytes, through the app-private file plane that now holds them. */
+async function readRenditionBytes(app: LdsApp, subKey: string): Promise<Buffer> {
+  const urlRes = await app.fetch(`/app-data/files/${subKey}`);
+  if (!urlRes.ok) {
+    throw new Error(`app-file url for ${subKey} → ${urlRes.status} ${await urlRes.text()}`);
+  }
+  const { url } = (await urlRes.json()) as { url: string };
+  const blob = await fetch(url);
+  if (!blob.ok) throw new Error(`bytes for ${subKey} → ${blob.status}`);
   return Buffer.from(await blob.arrayBuffer());
 }
 
@@ -176,7 +163,7 @@ let ladderSourceName: string;
 let ladderClasses: string[];
 /** Its object key, so a tile serving the original is distinguishable from a rung. */
 let ladderOriginalKey: string;
-/** Size class → the object key the rung arrived in the cloud under. */
+/** Size class → the app-private sub-key the rung arrived in the cloud under. */
 const syncedRungKeys = new Map<string, string>();
 
 function photosSteps(ctx: JourneyContext): void {
@@ -314,45 +301,51 @@ function photosSteps(ctx: JourneyContext): void {
     );
     const rungs = await eventually(
       async () => {
-        const found = await renditionChildren(photos, ladderRecordId);
+        const found = await renditionRows(photos, ladderRecordId);
         if (found.length < ladderClasses.length) {
           throw new Error(
             `${found.length} of ${ladderClasses.length} rungs published so far ` +
-              `(${found.map(renditionClassOf).join(", ") || "none"})`,
+              `(${found.map((r) => r.size_class).join(", ") || "none"})`,
           );
         }
         return found;
       },
       { timeoutMs: 5 * 60 * 1000, intervalMs: 2_000 },
     );
-    // One child per applicable rung and nothing more. Two callers derive this
-    // record at once — the boot sweep and the call above — and the property
-    // keeping that from producing two children per rung is content-hash dedup on
-    // identical bytes, which nothing else in this suite exercises.
+    // One row per applicable rung and nothing more. Two callers derive this
+    // record at once — the boot sweep and the call above — and what keeps that
+    // from producing two rungs is the table's primary key, which makes the
+    // second write an upsert against the first.
     expect(rungs).toHaveLength(ladderClasses.length);
 
-    const byClass = new Map(
-      rungs.map((rung) => [renditionClassOf(rung), rung]),
-    );
+    const byClass = new Map(rungs.map((rung) => [rung.size_class, rung]));
     expect([...byClass.keys()].sort()).toEqual([...ladderClasses].sort());
     for (const [sizeClass, rung] of byClass) {
-      // Dimensions are the property the cloud drops a candidate for. They ride
-      // the record's create call precisely so no sync round can see the rung
-      // without them; asserting them here is what makes the cloud assertion in
-      // the next step meaningful rather than vacuous.
-      expect(
-        rung.metadata?.width ?? 0,
-        `${sizeClass} has no width`,
-      ).toBeGreaterThan(0);
-      expect(
-        rung.metadata?.height ?? 0,
-        `${sizeClass} has no height`,
-      ).toBeGreaterThan(0);
-      expect(rung.parent_id).toBe(ladderRecordId);
-      expect(rung.original_filename).toBe(
-        renditionFileName(ladderSourceName, sizeClass),
+      // Dimensions are columns of the row, written with it. A rung with no
+      // dimensions cannot be ordered by long edge and is therefore invisible to
+      // resolution — which is what the 2026-08-27 failure was — and as not-null
+      // columns that state is no longer representable.
+      expect(rung.width, `${sizeClass} has no width`).toBeGreaterThan(0);
+      expect(rung.height, `${sizeClass} has no height`).toBeGreaterThan(0);
+      // The key carries the content hash, which is what lets two nodes that
+      // encoded one rung differently both write without overwriting each other.
+      expect(rung.sub_key).toBe(
+        renditionSubKey(ladderRecordId, sizeClass, rung.content_hash, rung.content_type),
       );
     }
+
+    // The claim the move was made for. Drive lists what the user put in — one
+    // photograph — rather than the photograph plus five derived copies of it.
+    const drive = ctx.drive();
+    const driveChildren = await drive.fetch(
+      `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: ladderRecordId }))}` +
+        `&include=labels&limit=50`,
+    );
+    expect(driveChildren.status).toBe(200);
+    const { records: seenByDrive } = (await driveChildren.json()) as {
+      records: Array<{ id: string }>;
+    };
+    expect(seenByDrive).toEqual([]);
   });
 
   it("syncs the ladder up: every rung reaches the cloud with its label and its dimensions", async () => {
@@ -366,10 +359,8 @@ function photosSteps(ctx: JourneyContext): void {
     const cloudPhotos = ctx.cloudApp();
     const drive = ctx.drive();
     const expected = ladderClasses.length;
-    const localChildren = await renditionChildren(photos, ladderRecordId);
-    expect(localChildren, "the local ladder must still be intact").toHaveLength(
-      expected,
-    );
+    const localRows = await renditionRows(photos, ladderRecordId);
+    expect(localRows, "the local ladder must still be intact").toHaveLength(expected);
 
     // A minute, not ten. The rungs are already derived and already local by the
     // time this runs, so what is left is one sync round shipping five small
@@ -377,23 +368,17 @@ function photosSteps(ctx: JourneyContext): void {
     // five-second operation does not buy reliability; it buys a ten-minute
     // stall before you learn anything, and the thing it is most likely to be
     // waiting on is a failure that will never resolve.
-    let arrived: RungRecord[];
+    let arrived: RenditionRow[];
     try {
       arrived = await eventually(
         async () => {
           const sync = await drive.fetch("/sync/now", { method: "POST" });
           expect(sync.status).toBe(200);
-          const res = await cloudPhotos.fetch(
-            `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: ladderRecordId }))}` +
-              `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
-              `&include=labels,metadata&limit=50`,
-          );
-          expect(res.status).toBe(200);
-          const { records } = (await res.json()) as { records: RungRecord[] };
-          if (records.length < expected) {
-            throw new Error(`${records.length} of ${expected} rungs have reached the cloud`);
+          const rows = await renditionRows(cloudPhotos, ladderRecordId);
+          if (rows.length < expected) {
+            throw new Error(`${rows.length} of ${expected} rungs have reached the cloud`);
           }
-          return records;
+          return rows;
         },
         { timeoutMs: 60_000, intervalMs: 2_000 },
       );
@@ -420,75 +405,57 @@ function photosSteps(ctx: JourneyContext): void {
       console.error(`[photos-tier3] last 40 lines of the Photos dev server:\n${appLog}`);
       // And what the local side actually holds, which separates "sync did not
       // carry them" from "they were never there to carry".
-      const stillLocal = await renditionChildren(photos, ladderRecordId);
+      const stillLocal = await renditionRows(photos, ladderRecordId);
       console.error(
-        `[photos-tier3] locally the parent has ${stillLocal.length} rendition children ` +
-          `(${stillLocal.map(renditionClassOf).join(", ") || "none"}).`,
+        `[photos-tier3] locally the parent has ${stillLocal.length} rendition rows ` +
+          `(${stillLocal.map((r) => r.size_class).join(", ") || "none"}).`,
       );
       throw err;
     }
     expect(arrived).toHaveLength(expected);
 
     for (const rung of arrived) {
-      const sizeClass = renditionClassOf(rung);
-      expect(
-        sizeClass,
-        `a synced rung carries no ${RENDITION_LABEL_REF} value`,
-      ).toBeTruthy();
-      expect(
-        rung.metadata?.width ?? 0,
-        `${sizeClass} arrived with no width`,
-      ).toBeGreaterThan(0);
-      expect(
-        rung.metadata?.height ?? 0,
-        `${sizeClass} arrived with no height`,
-      ).toBeGreaterThan(0);
-      syncedRungKeys.set(sizeClass, rung.object_storage_key as string);
+      expect(rung.size_class, "a synced rung names no rung").toBeTruthy();
+      expect(rung.width, `${rung.size_class} arrived with no width`).toBeGreaterThan(0);
+      expect(rung.height, `${rung.size_class} arrived with no height`).toBeGreaterThan(0);
+      syncedRungKeys.set(rung.size_class, rung.sub_key);
     }
     expect([...syncedRungKeys.keys()].sort()).toEqual(
       [...ladderClasses].sort(),
     );
 
-    // The assertion the 2026-08-27 failure would fail. `variant=<label>` with no
-    // `variantLongEdge` asks the unnarrowed question — every derived child of
-    // this record — and the broker silently drops any candidate with no stored
-    // dimensions, so a record whose rungs all arrived dimensionless answers with
-    // an empty list that reads as "nothing derived yet". This is also the exact
-    // query the Photos client issues to paint a tile.
-    const resolvedRes = await cloudPhotos.fetch(
-      `/data/records?where=${encodeURIComponent(JSON.stringify({ id: { in: [ladderRecordId] } }))}` +
-        `&limit=1&include=metadata&variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+    // Nothing about a rung reaches the shared plane any more, so the assertion
+    // that used to read the broker's variant resolution reads the absence of
+    // the thing it resolved over. A rung that still arrived as a shared child
+    // would be exactly the regression phase 3 exists to prevent.
+    const cloudChildren = await cloudPhotos.fetch(
+      `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: ladderRecordId }))}` +
+        `&include=labels&limit=50`,
     );
-    expect(resolvedRes.status).toBe(200);
-    const { records: parents } = (await resolvedRes.json()) as {
-      records: Array<{
-        id: string;
-        variant_candidates?: Array<{ id: string; long_edge: number }>;
-      }>;
+    expect(cloudChildren.status).toBe(200);
+    const { records: cloudSeen } = (await cloudChildren.json()) as {
+      records: Array<{ id: string }>;
     };
-    const parent = parents.find((r) => r.id === ladderRecordId);
-    expect(parent, "the original must be readable in the cloud").toBeDefined();
     expect(
-      parent!.variant_candidates?.length ?? 0,
-      "the broker resolved fewer candidates than the rungs that arrived — a rung " +
-        "reaching the cloud without dimensions is dropped here and nowhere else",
-    ).toBe(expected);
+      cloudSeen,
+      "a rung reached the cloud as a shared child record, which phase 3 removed",
+    ).toEqual([]);
 
     // The bytes shipped too, not just the row. Every other byte round-trip in
     // this journey fetches an original; this is the only one that fetches a
     // rendition, through the same CloudFront-signed file-url a client uses. The
     // bottom rung, chosen by name rather than by iteration order so a failure
     // names the same rung on every run.
-    const [sizeClass, cloudKey] = [...syncedRungKeys.entries()].sort(
+    const [sizeClass, cloudSubKey] = [...syncedRungKeys.entries()].sort(
       ([a], [b]) => a.localeCompare(b),
     )[0]!;
-    const rung = localChildren.find((r) => renditionClassOf(r) === sizeClass)!;
+    const rung = localRows.find((r) => r.size_class === sizeClass)!;
     expect(
-      rung.object_storage_key,
-      "content-addressed keys must match across nodes",
-    ).toBe(cloudKey);
-    const localBytes = await readRecordBytes(photos, rung.id);
-    const cloudBytes = await readRecordBytes(cloudPhotos, rung.id);
+      rung.sub_key,
+      "a rung's key is content-addressed and must match across nodes",
+    ).toBe(cloudSubKey);
+    const localBytes = await readRenditionBytes(photos, rung.sub_key);
+    const cloudBytes = await readRenditionBytes(cloudPhotos, cloudSubKey);
     expect(
       cloudBytes.equals(localBytes),
       `${sizeClass} differs between the cloud (${cloudBytes.byteLength} bytes) and ` +
@@ -522,9 +489,10 @@ function photosSteps(ctx: JourneyContext): void {
     // A CloudFront signed URL's path is the object key itself — the signature
     // rides the query string — so what a tile resolved to is readable straight
     // off its `src`.
-    const rungPaths = new Set(
-      [...syncedRungKeys.values()].map((key) => `/${key}`),
-    );
+    // A rendition's bytes live under `apps/photos/syncable/<sub key>`, and a
+    // signed URL's path is the object key, so a tile's `src` is matched by
+    // suffix rather than by an exact path this test would have to reconstruct.
+    const rungSubKeys = [...syncedRungKeys.values()];
 
     const browser = await chromium.launch();
     let problemReport: () => string = () => "";
@@ -558,7 +526,7 @@ function photosSteps(ctx: JourneyContext): void {
         async () => {
           const src = (await tile.getAttribute("src")) ?? "";
           const path = src.startsWith("http") ? new URL(src).pathname : src;
-          if (!rungPaths.has(path)) {
+          if (!rungSubKeys.some((subKey) => path.endsWith(subKey))) {
             throw new Error(
               `the tile is serving ${path || "(no src)"}, which is ` +
                 (path === `/${ladderOriginalKey}`

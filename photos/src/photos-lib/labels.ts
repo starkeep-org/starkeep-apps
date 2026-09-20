@@ -117,6 +117,18 @@ export const LABEL_VALUES_PER_KEY_MAX = 32;
  * keys are flags and so appear at most once each, but the array as a whole
  * carries every app's labels and must not be read as a key→label map.
  */
+/**
+ * The label ref naming a rendition on the shared plane.
+ *
+ * Nothing writes it any more: a rung is a row in Photos' own table from phase 3
+ * of the rendition-ownership plan onward. It survives as the filter that keeps
+ * renditions published *before* that change out of the library, the sweep and
+ * the grid, and as the selector the one-time cleanup uses to find them. Both it
+ * and the manifest declaration behind it go when the platform's ladder
+ * awareness does.
+ */
+export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}`;
+
 export interface LabelledRecord {
   labels?: Array<{ app_id: string; key: string; value?: string }>;
 }

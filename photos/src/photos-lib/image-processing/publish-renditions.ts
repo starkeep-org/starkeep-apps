@@ -1,33 +1,56 @@
 /**
- * Publishing derived renditions as shared child records.
+ * Publishing derived renditions onto Photos' own plane.
  *
- * Shared by the Next `/api/resize` route and the cloud resize Lambda, which are
- * otherwise line-for-line copies of each other — the codebase's existing rule
- * is that anything kept in both eventually gets fixed in only one, and this is
- * a multi-step flow (presign → PUT → register → metadata) where a divergence
- * would be silent.
+ * Shared by the local derivation worker, the on-demand resize route and the
+ * cloud resize Lambda, which are otherwise line-for-line copies of each other —
+ * the codebase's existing rule is that anything kept in both eventually gets
+ * fixed in only one, and this is a multi-step flow (presign → PUT → register →
+ * row) where a divergence would be silent.
  *
- * ## Renditions are shared image records, not app-private data
+ * ## Renditions are app-private data, not shared records
  *
- * They are child records with `parent_id` set, exactly as thumbnails were,
- * because after originals are archived the renditions *are* the accessible form
- * of the library — so any image-granted app needs them. Two costs were accepted
- * for that: they outlive a Photos uninstall, and the label namespace stays
- * `photos/`.
+ * They used to be shared child records carrying a `photos/rendition` label,
+ * and that cost more than it bought. Every consumer of shared image records had
+ * to know the convention and filter on it, and Drive — which lists what the
+ * user put in — did not, so a library of 60,000 photographs listed as 300,000
+ * items. Nothing outside Photos ever read a rung, every rung is re-derivable
+ * from the original, and which rungs exist is an implementation detail of one
+ * app's ladder. So they moved to the plane that describes exactly that.
+ *
+ * What moved with them: the platform no longer evicts them (an app namespace is
+ * skipped by the eviction pass), Photos is charged one advisory budget line for
+ * all of them, and an uninstall that keeps the app's data keeps them.
+ *
+ * ## First writer wins
+ *
+ * A node reads the `(parent_record_id, size_class)` row before it uploads. A
+ * live row means somebody already published this rung and this node keeps its
+ * bytes to itself. The table's primary key is what makes the old
+ * duplicate-minting loop unrepresentable: two encoders that disagree about the
+ * bytes produce one row, not two children under one label.
+ *
+ * Two nodes that both read an absent row both write, and last-writer-wins over
+ * the HLC picks one. The loser's bytes are a live file row nothing references,
+ * which is what the reaper is for — see `derivation/reap-renditions.ts`.
  */
 
-import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS } from "../labels";
-import { renditionFileName } from "../ladder";
-import type { DerivedRendition } from "./derive-ladder";
+import { renditionFileName, renditionSubKey, type RenditionRow } from "../ladder";
+import {
+  loadRenditionsOf,
+  putRenditionRow,
+  type SignedFetch,
+  type SignedFetchInit,
+} from "../renditions/store";
+
+
+export type { SignedFetch, SignedFetchInit };
 
 /**
  * What a published rung is called.
  *
- * Re-exported rather than defined here since the phone began deriving too. The
- * name is part of a record's content-addressed id, so it has to be one rule
- * shared by every node that publishes a rung; `@starkeep/photos-ladder` is where
- * it now lives, and this export is the name the tests and call sites in this app
- * already import.
+ * Re-exported rather than defined here since the phone began deriving too.
+ * `@starkeep/photos-ladder` is where it lives, and this export is the name the
+ * tests and call sites in this app already import.
  */
 export { renditionFileName };
 
@@ -37,31 +60,22 @@ export interface RenditionParent {
   readonly originalFilename: string | null;
 }
 
-/**
- * Something that can issue authenticated data-plane requests.
- *
- * Headers are a plain record rather than `HeadersInit`, matching what both
- * callers' `signedFetch` already accepts. Widening to `HeadersInit` here would
- * force every caller to handle the array and `Headers` forms it never receives.
- */
-export interface SignedFetchInit {
-  method?: string;
-  headers?: Record<string, string>;
-  body?: string;
-}
-
-export type SignedFetch = (path: string, init?: SignedFetchInit) => Promise<Response>;
-
 export interface PublishedRendition {
   readonly sizeClass: string;
-  readonly recordId: string;
+  /** The app-private file key the bytes landed under. */
+  readonly subKey: string;
   readonly contentHash: string;
   readonly sizeBytes: number;
+  /**
+   * True when another node had already published this rung and this one wrote
+   * nothing. The rung exists either way, which is what the caller is asking.
+   */
+  readonly alreadyPublished: boolean;
 }
 
 export class RenditionPublishError extends Error {
   constructor(
-    readonly stage: "presign" | "upload" | "register" | "metadata",
+    readonly stage: "presign" | "upload" | "register" | "row",
     readonly sizeClass: string,
     readonly status: number,
     detail: string,
@@ -71,54 +85,62 @@ export class RenditionPublishError extends Error {
   }
 }
 
+/** What a rendition of any medium has to say about itself to be published. */
+export interface PublishableRendition {
+  readonly sizeClass: string;
+  readonly contentType: string;
+  readonly width: number;
+  readonly height: number;
+  readonly data: Uint8Array;
+}
+
 /**
- * Publish one derived rendition: upload the bytes, then register the record
- * with its dimensions.
+ * Publish one derived rendition: claim the rung, upload the bytes, register the
+ * file, write the row.
  *
  * Bytes go up via presigned PUT rather than inline, because the API Gateway
- * body cap is 7 MB and an `image-large` AVIF can approach it — but more
- * importantly because that is the path where the broker pins a checksum, so the
- * upload is verified rather than merely accepted.
+ * body cap is 7 MB and an `image-large` AVIF can approach it, and because the
+ * platform never holds an app's private bytes on the write path.
  *
- * Dimensions are written because variant resolution orders renditions by long
- * edge. A rendition with no dimensions is invisible to resolution — it cannot
- * be ordered, so it is excluded — which would make it storage nobody ever
- * reads. Hence the dimensions are **not** best-effort here, unlike the
- * caption-style metadata elsewhere.
- *
- * ## The dimensions ride the create, they are not a second call
- *
- * They used to be: register, then `POST /data/records/:id/metadata`. That left
- * a window in which the record was visible to a sync scan and its dimensions
- * were not, and a round landing inside the window shipped the rendition to the
- * cloud with no dimensions at all — where the cloud dropped it as an
- * unorderable candidate and reported the original as having *no renditions*.
- * Indistinguishable from "nothing derived yet", which is what sent this app
- * into a derivation loop against a complete ladder.
- *
- * The window is closed at its source by writing both in one call. It is also
- * closed on the sync side — a metadata write now moves the record's clock, so a
- * late write reaches a peer on the next round — and both matter: this is the
- * hot path of every derivation, and that is the repair for everything written
- * some other way.
+ * Dimensions are written because resolution orders rungs by long edge. A
+ * rendition with no dimensions cannot be ordered and is therefore invisible —
+ * storage nobody ever reads. They are columns of the row rather than a second
+ * call, so the window in which a rung existed and its size did not is closed by
+ * construction rather than by repair.
  */
 export async function publishRendition(
   signedFetch: SignedFetch,
   parent: RenditionParent,
-  rendition: DerivedRendition,
+  rendition: PublishableRendition,
   contentHash: string,
-  objectStorageKey: string,
 ): Promise<PublishedRendition> {
-  const presignRes = await signedFetch(`/files/presign`, {
+  // First-writer-wins, read at the top. A rung another node has already
+  // published is not re-uploaded: object keys stop moving once a rung exists,
+  // which is what lets a published URL keep its meaning.
+  const existing = (await loadRenditionsOf(signedFetch, parent.id)).find(
+    (row) => row.size_class === rendition.sizeClass,
+  );
+  if (existing) {
+    return {
+      sizeClass: existing.size_class,
+      subKey: existing.sub_key,
+      contentHash: existing.content_hash,
+      sizeBytes: Number(existing.size_bytes),
+      alreadyPublished: true,
+    };
+  }
+
+  const subKey = renditionSubKey(
+    parent.id,
+    rendition.sizeClass,
+    contentHash,
+    rendition.contentType,
+  );
+
+  const presignRes = await signedFetch(`/app-data/files/presign`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      key: objectStorageKey,
-      contentType: rendition.contentType,
-      // Renditions are what the library is read from once originals are cold,
-      // so every rung is `instant`. Only the original is ever `archive`.
-      intent: "instant",
-    }),
+    body: JSON.stringify({ subKey, contentType: rendition.contentType }),
   });
   if (!presignRes.ok) {
     throw new RenditionPublishError(
@@ -128,29 +150,11 @@ export async function publishRendition(
       await presignRes.text().catch(() => ""),
     );
   }
-  const presign = (await presignRes.json()) as {
-    url: string;
-    checksumSha256?: string;
-    storageClass?: string;
-    tagging?: Record<string, string>;
-  };
+  const presign = (await presignRes.json()) as { url: string };
 
   const uploadRes = await fetch(presign.url, {
     method: "PUT",
-    headers: {
-      "Content-Type": rendition.contentType,
-      // Mandatory when present — they are inside the signature, so dropping one
-      // fails the request rather than uploading something unverified.
-      ...(presign.checksumSha256 ? { "x-amz-checksum-sha256": presign.checksumSha256 } : {}),
-      ...(presign.storageClass ? { "x-amz-storage-class": presign.storageClass } : {}),
-      ...(presign.tagging && Object.keys(presign.tagging).length > 0
-        ? {
-            "x-amz-tagging": Object.entries(presign.tagging)
-              .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-              .join("&"),
-          }
-        : {}),
-    },
+    headers: { "Content-Type": rendition.contentType },
     // Copied into a fresh view: the DOM fetch types accept ArrayBufferView but
     // not the generic Uint8Array<ArrayBufferLike> that sharp's output widens to.
     body: new Uint8Array(rendition.data),
@@ -164,71 +168,59 @@ export async function publishRendition(
     );
   }
 
-  const createRes = await signedFetch(`/data/records`, {
+  // The index row, which is what makes the bytes visible to existence checks,
+  // to cross-node sync and to this node's own byte accounting. The platform
+  // never held the bytes, so this is the only point on the write path that
+  // knows they are here.
+  const registerRes = await signedFetch(`/app-data/files/${subKey}/record`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type: rendition.type,
-      fileName: renditionFileName(parent.originalFilename, rendition.sizeClass),
-      contentType: rendition.contentType,
       contentHash,
+      mimeType: rendition.contentType,
       sizeBytes: rendition.data.byteLength,
-      parentId: parent.id,
-      // `parent_id` says *which* record this came from; the label says *how*,
-      // which the column alone cannot express — without it a Live Photo clip is
-      // indistinguishable from a rendition. The `photos/` namespace comes from
-      // the authenticated identity, so no prefix is sent.
-      labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: rendition.sizeClass }],
-      // Written with the record rather than after it. The server validates
-      // these column names against the image category's declaration and gates
-      // them on the same `metadataWrite` grant the metadata route uses — the
-      // platform declares which columns exist, this app decides what goes in
-      // them.
-      metadata: { width: rendition.width, height: rendition.height },
+      originalFilename: renditionFileName(
+        parent.originalFilename,
+        rendition.sizeClass,
+        rendition.contentType,
+      ),
     }),
   });
-  if (!createRes.ok) {
+  if (!registerRes.ok) {
     throw new RenditionPublishError(
       "register",
       rendition.sizeClass,
-      createRes.status,
-      await createRes.text().catch(() => ""),
+      registerRes.status,
+      await registerRes.text().catch(() => ""),
     );
   }
-  const { record, deduped } = (await createRes.json()) as {
-    record: { id: string };
-    deduped?: boolean;
-  };
 
-  // A dedup hit is somebody else's record, and both servers decline to rewrite
-  // its derived columns — which is right, since byte-identical renditions have
-  // identical dimensions and there is normally nothing to write. The one case
-  // that is not normal is a first registration whose metadata write failed
-  // after the row landed, leaving a rendition invisible to variant resolution
-  // forever. One extra call on the cold path repairs it; the hot path is
-  // untouched.
-  if (deduped) {
-    const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        typeId: "image",
-        metadata: { width: rendition.width, height: rendition.height },
-      }),
-    });
-    if (!metaRes.ok) {
-      console.warn(
-        `[renditions] dimensions write failed for ${rendition.sizeClass} of ${parent.id} ` +
-          `(${metaRes.status}) — this rendition is invisible to variant resolution until repaired`,
-      );
-    }
+  const row: RenditionRow = {
+    parent_record_id: parent.id,
+    size_class: rendition.sizeClass,
+    sub_key: subKey,
+    content_hash: contentHash,
+    width: rendition.width,
+    height: rendition.height,
+    size_bytes: rendition.data.byteLength,
+    content_type: rendition.contentType,
+  };
+  try {
+    await putRenditionRow(signedFetch, row);
+  } catch (err) {
+    // The bytes are up and the file row is written; only the rendition row is
+    // missing, so the rung is an orphan the reaper will collect and the next
+    // pass will derive it again. Reported as a publish failure rather than
+    // swallowed, because a caller counting published rungs must not count this.
+    throw new RenditionPublishError("row", rendition.sizeClass, 0, (err as Error).message);
   }
 
   return {
     sizeClass: rendition.sizeClass,
-    recordId: record.id,
+    subKey,
     contentHash,
     sizeBytes: rendition.data.byteLength,
+    alreadyPublished: false,
   };
 }
 
@@ -249,12 +241,6 @@ export async function publishThumbHash(
   parentId: string,
   thumbHash: string,
 ): Promise<void> {
-  // This used to write `perceptual_hash` alongside, computed from the same
-  // decode. Nothing reads that column any more: near-duplicate detection was
-  // removed on 2026-09-11, and a derived fact with no reader is work every
-  // derivation pays for nobody. The column stays declared in the registry, and
-  // whether to retire it is a separate decision — see
-  // `photos-cleanup-2026-09-11.md`.
   const res = await signedFetch(`/data/records/${parentId}/metadata`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -278,18 +264,14 @@ export async function publishThumbHash(
  * *is* — the platform must never learn what `image-medium` means, and a
  * platform-side check would have to. So the app asserts completeness, and the
  * platform independently applies its own floors (object size, cloud exclusion)
- * before tagging. Neither side alone can freeze anything: an app that is wrong
- * about its ladder still cannot archive a small file, and a platform that
- * wanted to be clever still cannot archive a record whose renditions do not
- * exist.
+ * before tagging. Neither side alone can freeze anything.
  *
- * Tagging is not transitioning. The lifecycle rule performs the move after the
- * hold period, which is what buys a week to catch a derivation bug before the
- * input is behind a 48-hour thaw.
+ * The claim now reads Photos' own table rather than a shared label, which is
+ * the only source left: no rung is a shared record, so the platform can see
+ * nothing about a ladder at all.
  *
  * Best-effort: a record that stays un-tagged simply stays in the instant tier,
- * costing a little more and behaving identically. Failing an ingest because an
- * optimisation did not apply would be the wrong trade.
+ * costing a little more and behaving identically.
  */
 export async function assertLadderComplete(
   signedFetch: SignedFetch,
@@ -308,47 +290,19 @@ export async function assertLadderComplete(
   return { tagged: body.tagged === true, refusals: body.refusals ?? [] };
 }
 
-/** The label ref a caller uses to ask the server which rungs a record has. */
-export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}`;
-
 /**
- * Which rungs already exist for a record, read from the server.
+ * Which rungs already exist for a record, read from Photos' own table.
  *
- * The `parentId` + `label` combination is one indexed lookup — this is the
- * query that makes "derivation state is a query, not a field" affordable, and
- * it is the same query the ladder-complete gate needs, so the two cannot
- * disagree.
+ * One indexed lookup on the primary key's leading column — the query that makes
+ * "derivation state is a query, not a field" affordable, and the same query the
+ * ladder-complete gate needs, so the two cannot disagree.
+ *
+ * `requireDimensions` is gone with the shared records: width and height are
+ * `notNull` columns of the row, so a rung that exists has dimensions.
  */
 export async function existingRenditionClasses(
   signedFetch: SignedFetch,
   parentId: string,
-  options: { requireDimensions?: boolean } = {},
 ): Promise<string[]> {
-  const res = await signedFetch(
-    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
-      `&label=${RENDITION_LABEL_REF}` +
-      `&include=${options.requireDimensions ? "labels,metadata" : "labels"}&limit=50`,
-  );
-  if (!res.ok) return [];
-  const { records } = (await res.json()) as {
-    records: Array<{
-      metadata?: { width?: number | null; height?: number | null } | null;
-      labels?: Array<{ app_id: string; key: string; value?: string }>;
-    }>;
-  };
-  const classes: string[] = [];
-  for (const record of records) {
-    if (
-      options.requireDimensions &&
-      !((record.metadata?.width ?? 0) > 0 && (record.metadata?.height ?? 0) > 0)
-    ) {
-      continue;
-    }
-    for (const label of record.labels ?? []) {
-      if (label.app_id === PHOTOS_APP_ID && label.key === PHOTOS_LABEL_KEYS.rendition) {
-        if (label.value) classes.push(label.value);
-      }
-    }
-  }
-  return classes;
+  return (await loadRenditionsOf(signedFetch, parentId)).map((row) => row.size_class);
 }

@@ -21,26 +21,61 @@ function request(body: unknown) {
 }
 
 describe("POST /api/photos/renditions", () => {
+  const MEDIUM_SUBKEY = "renditions/rec-1/image-medium/abc.webp";
+
+  /** A shared page carrying the source's dimensions, and Photos' own rungs. */
+  function planes(): (path: string, init?: { method?: string; body?: string }) => Promise<Response> {
+    return async (path, init) => {
+      if (path.startsWith("/data/records")) {
+        return new Response(JSON.stringify({
+          records: [{
+            id: "rec-1",
+            type: "image/jpeg",
+            mime_type: "image/jpeg",
+            metadata: { width: 4000, height: 3000 },
+          }],
+        }), { status: 200 });
+      }
+      if (path.startsWith("/app-data/db/renditions")) {
+        return new Response(JSON.stringify({
+          rows: [{
+            parent_record_id: "rec-1",
+            size_class: "image-medium",
+            sub_key: MEDIUM_SUBKEY,
+            content_hash: "abc",
+            width: 1280,
+            height: 960,
+            size_bytes: 40_000,
+            content_type: "image/webp",
+          }],
+          page_token: null,
+        }), { status: 200 });
+      }
+      if (path === "/app-data/residency/lookup") {
+        const body = JSON.parse(String(init?.body)) as { subKeys: string[] };
+        return new Response(JSON.stringify({
+          entries: body.subKeys.map((subKey) => ({
+            subKey,
+            sizeBytes: 40_000,
+            // Not here. In cloud mode the URL still answers, because the cloud
+            // holds what it has a row for.
+            resident: false,
+            lastOpenedAtMs: null,
+          })),
+        }), { status: 200 });
+      }
+      if (path === "/app-data/file-urls") {
+        return new Response(JSON.stringify({
+          urls: { [MEDIUM_SUBKEY]: "https://example.test/rendition" },
+          expiresIn: 3600,
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected ${path}`);
+    };
+  }
+
   it("recanonicalizes a stale request and resolves one upstream ID batch", async () => {
-    upstreamFetch.mockResolvedValue(new Response(JSON.stringify({
-      records: [{
-        id: "rec-1",
-        type: "image/jpeg",
-        mime_type: "image/jpeg",
-        metadata: { width: 4000, height: 3000 },
-        variant_candidates: [{
-          id: "rend-1280",
-          type: "image/webp",
-          label_value: "image-medium",
-          width: 1280,
-          height: 960,
-          long_edge: 1280,
-          available_here: false,
-          url: "https://example.test/rendition",
-          url_lifetime: { kind: "expires", expires_at: "2026-08-28T00:00:00.000Z" },
-        }],
-      }],
-    }), { status: 200 }));
+    upstreamFetch.mockImplementation(planes());
 
     // A requirement inside the medium rung's range, paired with a target from a
     // policy that no longer exists. The server recanonicalizes the requirement
@@ -52,21 +87,26 @@ describe("POST /api/photos/renditions", () => {
       targetLongEdge: 400,
     }] }));
     expect(response.status).toBe(200);
-    expect(upstreamFetch).toHaveBeenCalledTimes(1);
-    const path = upstreamFetch.mock.calls[0]![0] as string;
-    const params = new URLSearchParams(path.split("?")[1]);
+    const recordCalls = upstreamFetch.mock.calls.filter(
+      (call) => (call[0] as string).startsWith("/data/records"),
+    );
+    expect(recordCalls).toHaveLength(1);
+    const params = new URLSearchParams((recordCalls[0]![0] as string).split("?")[1]);
     expect(JSON.parse(params.get("where")!)).toEqual({ id: { in: ["rec-1"] } });
     expect(params.get("include")).toBe("metadata");
-    expect(params.get("variant")).toBe("photos/rendition");
+    // The platform has nothing to say about a rung: the rows are Photos' own.
+    expect(params.get("variant")).toBeNull();
     const body = await response.json();
     const result = body.results[0];
     expect(result.policyVersion).toBe(currentRenditionPolicies().still.version);
     expect(result.canonicalTargetLongEdge).toBe(canonicalTarget(currentRenditionPolicies().still, 700));
     expect(result.decision.ideal).toMatchObject({
-      id: "rend-1280",
+      id: "abc",
       available: true,
       urlLifetime: { kind: "expires" },
     });
+    // The client asks in pixels and is answered in pixels. A rung's name is an
+    // implementation detail of Photos' ladder and never crosses the wire.
     expect(JSON.stringify(result)).not.toContain("image-medium");
   });
 

@@ -1,6 +1,8 @@
 import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
-import { RENDITION_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
+import { RENDITION_LABEL_REF } from "@/photos-lib/labels";
 import { cloudCanDecode } from "@/photos-lib/image-processing/derive-ladder";
+import { renditionCandidate } from "@/photos-lib/ladder";
+import type { HydratedRendition } from "@/photos-lib/renditions/store";
 import {
   resolveRenditions,
   resolveWithoutDimensions,
@@ -135,19 +137,6 @@ export interface UpstreamRecord {
   type?: string;
   mime_type: string | null;
   metadata?: { width?: number | null; height?: number | null } | null;
-  variant_candidates?: Array<{
-    id: string;
-    type: string;
-    width: number;
-    height: number;
-    long_edge: number;
-    label_value: string;
-    available_here: boolean;
-    url?: string;
-    url_lifetime?:
-      | { kind: "expires"; expires_at: string }
-      | { kind: "non-expiring" };
-  }>;
 }
 
 /**
@@ -171,13 +160,16 @@ function isVideo(record: UpstreamRecord): boolean {
  * shape the data server used to return, so every video consumer keeps working
  * unchanged.
  */
-export function resolveVideo(record: UpstreamRecord, targets: readonly number[], cloud: boolean) {
-  const candidates = record.variant_candidates ?? [];
+export function resolveVideo(
+  renditions: readonly HydratedRendition[],
+  targets: readonly number[],
+  cloud: boolean,
+) {
   const posterClasses = new Set(VIDEO_LADDER.filter((spec) => spec.kind === "poster").map((spec) => spec.sizeClass));
   const playbackClasses = new Set(VIDEO_LADDER.filter((spec) => spec.kind === "transcode").map((spec) => spec.sizeClass));
-  const posters = candidates.filter((c) => posterClasses.has(c.label_value as never));
-  const playback = candidates.filter((c) => playbackClasses.has(c.label_value as never));
-  const out: Record<string, { poster?: (typeof candidates)[number]; playback?: (typeof candidates)[number] }> = {};
+  const posters = renditions.filter((r) => posterClasses.has(r.size_class as never));
+  const playback = renditions.filter((r) => playbackClasses.has(r.size_class as never));
+  const out: Record<string, { poster?: VideoEntry; playback?: VideoEntry }> = {};
   for (const target of targets) {
     const poster = chooseVideoCandidate(posters, target, cloud);
     const playable = chooseVideoCandidate(playback, target, cloud);
@@ -189,45 +181,66 @@ export function resolveVideo(record: UpstreamRecord, targets: readonly number[],
   return out;
 }
 
+/** What a video decision hands the browser for one rung. */
+export interface VideoEntry {
+  id: string;
+  type: string;
+  label_value: string;
+  width: number;
+  height: number;
+  long_edge: number;
+  available_here: boolean;
+  url?: string;
+}
+
+function videoEntry(row: HydratedRendition): VideoEntry {
+  return {
+    // The sub-key stands in for the record id the client used to key on: same
+    // stability, same purpose, and no shared record left to take one from.
+    id: row.sub_key,
+    type: row.content_type,
+    label_value: row.size_class,
+    width: row.width,
+    height: row.height,
+    long_edge: Math.max(row.width, row.height),
+    available_here: row.availableHere,
+    ...(row.url ? { url: row.url } : {}),
+  };
+}
+
 /** Exact/next-larger, then largest-smaller, restricted to bytes this node can serve. */
 function chooseVideoCandidate(
-  candidates: NonNullable<UpstreamRecord["variant_candidates"]>,
+  rows: readonly HydratedRendition[],
   target: number,
   cloud: boolean,
-) {
-  const readable = candidates
-    .filter((c) => Boolean(c.url) && (cloud || c.available_here))
+): VideoEntry | undefined {
+  const readable = rows
+    .filter((r) => Boolean(r.url) && (cloud || r.availableHere))
+    .map(videoEntry)
     .sort((a, b) => a.long_edge - b.long_edge || a.id.localeCompare(b.id));
   return readable.find((c) => c.long_edge >= target) ?? readable[readable.length - 1];
 }
 
 export function resolveFor(
   record: UpstreamRecord,
+  renditions: readonly HydratedRendition[],
   targets: readonly number[],
   cloud: boolean,
   localVerdicts: ReadonlyMap<string, RenditionState> | null,
 ) {
-  // A child record can outlive its bytes on this node. The data server keeps
-  // returning it as a candidate so another node can still reason about and
-  // synchronize it, but deliberately omits its URL and reports
-  // `available_here: false`. Such a record is not an available rendition for
-  // this response. Passing it to the ladder resolver would mark the ideal
-  // available by record existence alone; the browser would then receive no
-  // URL, paint the ThumbHash forever, and never request the missing rung.
+  // A rendition row can outlive its bytes on this node, and now does so as the
+  // ordinary case: a round applies Photos' rows and never pulls its blobs, so a
+  // rung derived on the desktop reaches the handset as a row alone. Such a row
+  // is not an available rendition for this response. Passing it to the resolver
+  // would mark the ideal available on the strength of a row; the browser would
+  // then receive no URL, paint the ThumbHash forever, and never ask again.
   //
-  // In cloud mode, a URL can point at remotely available bytes even though
-  // `available_here` is false. This is the same readability rule used for
-  // video candidates above.
-  const candidates: DerivedChild[] = (record.variant_candidates ?? [])
-    .filter((c) => Boolean(c.url) && (cloud || c.available_here))
-    .map((c) => ({
-      id: c.id,
-      longEdge: c.long_edge,
-      width: c.width,
-      height: c.height,
-      type: c.type,
-      url: c.url!,
-    }));
+  // In cloud mode the URL points at bytes the cloud holds whether or not this
+  // node does, which is why residency is not consulted there. Same readability
+  // rule as the video candidates above.
+  const candidates: DerivedChild[] = renditions
+    .filter((r) => Boolean(r.url) && (cloud || r.availableHere))
+    .map((r) => renditionCandidate(r, r.url));
 
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
   // No stored dimensions means no applicable set, so the exact clamped rung

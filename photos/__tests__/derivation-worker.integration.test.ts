@@ -34,11 +34,13 @@ interface StoredRecord {
   parent_id: string | null;
   size_bytes: number;
   metadata: Record<string, unknown>;
-  /** The `photos/rendition` label's value, for a derived child. */
-  renditionClass: string | null;
 }
 
 const records = new Map<string, StoredRecord>();
+/** Photos' own rendition table, keyed `<parent>\u0000<size class>`. */
+const renditions = new Map<string, Record<string, unknown>>();
+/** The app-private file plane: sub-key → registered row. */
+const appFiles = new Map<string, { sizeBytes: number }>();
 let sourceBytes: Buffer;
 let server: Server;
 let port: number;
@@ -62,8 +64,8 @@ function json(res: import("node:http").ServerResponse, body: unknown, status = 2
   res.end(JSON.stringify(body));
 }
 
-function childrenOf(parentId: string): StoredRecord[] {
-  return [...records.values()].filter((r) => r.parent_id === parentId);
+function rungsOf(parentId: string): Record<string, unknown>[] {
+  return [...renditions.values()].filter((r) => r["parent_record_id"] === parentId);
 }
 
 function handler(
@@ -87,9 +89,76 @@ function handler(
       json(res, { ok: true });
       return;
     }
-    if (path === "/files/presign" && method === "POST") {
+    if (path === "/app-data/files/presign" && method === "POST") {
       await readBody(req);
       json(res, { url: `http://127.0.0.1:${port}/files/upload` });
+      return;
+    }
+
+    // Photos' own plane. A rung is a row here and its bytes are an app-private
+    // file; nothing about either is a shared record any more.
+    const fileRecord = /^\/app-data\/files\/(.+)\/record$/.exec(path);
+    if (fileRecord && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { sizeBytes: number };
+      appFiles.set(decodeURIComponent(fileRecord[1]!), { sizeBytes: body.sizeBytes });
+      json(res, { key: fileRecord[1] });
+      return;
+    }
+
+    if (path === "/app-data/db/renditions") {
+      if (method === "POST") {
+        const body = JSON.parse(await readBody(req)) as { row: Record<string, unknown> };
+        // An upsert on `(parent_record_id, size_class)`, which is the property
+        // that makes a second derivation of a rung one row rather than two.
+        renditions.set(`${body.row["parent_record_id"]}\u0000${body.row["size_class"]}`, body.row);
+        json(res, { ok: true });
+        return;
+      }
+      if (method === "GET") {
+        const where = JSON.parse(url.searchParams.get("where") ?? "{}") as {
+          parent_record_id?: { in?: string[] } | string;
+        };
+        const wanted = typeof where.parent_record_id === "string"
+          ? [where.parent_record_id]
+          : (where.parent_record_id?.in ?? []);
+        json(res, {
+          rows: [...renditions.values()].filter((r) =>
+            wanted.includes(r["parent_record_id"] as string),
+          ),
+          page_token: null,
+        });
+        return;
+      }
+    }
+
+    // Everything this node has a row for is here: it wrote the bytes itself.
+    if (path === "/app-data/residency/lookup" && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { subKeys: string[] };
+      json(res, {
+        entries: body.subKeys
+          .filter((subKey) => appFiles.has(subKey))
+          .map((subKey) => ({
+            subKey,
+            sizeBytes: appFiles.get(subKey)!.sizeBytes,
+            resident: true,
+            lastOpenedAtMs: null,
+          })),
+      });
+      return;
+    }
+
+    if (path === "/app-data/residency" && method === "GET") {
+      json(res, {
+        budgetBytes: null,
+        heldBytes: 0,
+        entries: [...appFiles.entries()].map(([subKey, file]) => ({
+          subKey,
+          sizeBytes: file.sizeBytes,
+          resident: true,
+          lastOpenedAtMs: null,
+        })),
+        nextCursor: null,
+      });
       return;
     }
 
@@ -122,57 +191,9 @@ function handler(
       return;
     }
 
-    if (path === "/data/records" && method === "POST") {
-      const body = JSON.parse(await readBody(req)) as {
-        parentId: string;
-        fileName: string;
-        contentType: string;
-        sizeBytes: number;
-        labels: Array<{ key: string; value: string }>;
-        metadata?: Record<string, unknown>;
-      };
-      const id = `child-${records.size}`;
-      records.set(id, {
-        id,
-        mime_type: body.contentType,
-        original_filename: body.fileName,
-        parent_id: body.parentId,
-        size_bytes: body.sizeBytes,
-        // `metadata` rides the registration, and a fake that drops it is not a
-        // dumber server but a *different* one. `publishRendition` sends each
-        // rung's dimensions inline precisely so the record is never visible to
-        // sync without them, and both real servers write them before the record
-        // exists. Dropping them here left every child with no dimensions, so the
-        // sweep's `variant_candidates` came back empty, every record read as
-        // underived, and the second pass rebuilt the whole ladder — which is the
-        // behaviour this file's second case exists to catch.
-        metadata: { ...(body.metadata ?? {}) },
-        renditionClass: body.labels[0]?.value ?? null,
-      });
-      json(res, { record: { id } });
-      return;
-    }
-
     if (path === "/data/records" && method === "GET") {
-      // `?where={"parent_id":…}&label=…` is the existence query one derivation
-      // runs to learn which rungs it can skip. Honouring it is not optional
-      // detail: a fake that ignored it would report every record as underived
-      // and the sweep would look like it worked while re-deriving everything.
-      const where = url.searchParams.get("where");
-      const parentId = where === null
-        ? null
-        : ((JSON.parse(where) as { parent_id?: string }).parent_id ?? null);
-      if (parentId !== null) {
-        json(res, {
-          records: childrenOf(parentId).map((c) => ({
-            labels: [{ app_id: "photos", key: "rendition", value: c.renditionClass }],
-          })),
-        });
-        return;
-      }
-
-      // The sweep's listing: originals only, each carrying every derived child
-      // with its dimensions.
+      // Originals only, and no derived children to attach: the sweep asks this
+      // plane for records and Photos' own table for their rungs.
       const parents = [...records.values()].filter((r) => r.parent_id === null);
       json(res, {
         records: parents.map((r) => ({
@@ -180,16 +201,6 @@ function handler(
           mime_type: r.mime_type,
           original_filename: r.original_filename,
           metadata: Object.keys(r.metadata).length > 0 ? r.metadata : null,
-          variant_candidates: childrenOf(r.id)
-            .filter((c) => typeof c.metadata.width === "number")
-            .map((c) => ({
-              // `label_value` is what names the rung. The sweep reads it to
-              // decide which classes this node can already serve, so a
-              // candidate without one is a rung the worker cannot recognise.
-              label_value: c.renditionClass,
-              long_edge: Math.max(c.metadata.width as number, c.metadata.height as number),
-              available_here: true,
-            })),
         })),
         nextCursor: null,
       });
@@ -274,6 +285,8 @@ describe("a cold library, swept by the real worker", () => {
       throw new Error("run `pnpm derive:build-worker` before this test");
     }
     records.clear();
+    renditions.clear();
+    appFiles.clear();
     records.set("orig-1", {
       id: "orig-1",
       mime_type: "image/jpeg",
@@ -281,7 +294,6 @@ describe("a cold library, swept by the real worker", () => {
       parent_id: null,
       size_bytes: sourceBytes.byteLength,
       metadata: {},
-      renditionClass: null,
     });
 
     const event = await runWorker({
@@ -301,14 +313,20 @@ describe("a cold library, swept by the real worker", () => {
     // import date and then silently reorders as photos are opened one by one.
     expect(new Date(parent.metadata.captured_at as string).getFullYear()).toBe(2019);
 
-    // Both stages ran, so the whole applicable ladder exists.
-    expect(childrenOf("orig-1")).toHaveLength(STILL_LADDER.length);
+    // Both stages ran, so the whole applicable ladder exists — as rows in
+    // Photos' own table, with bytes behind each one.
+    const rungs = rungsOf("orig-1");
+    expect(rungs).toHaveLength(STILL_LADDER.length);
+    for (const rung of rungs) {
+      expect(rung["width"]).toBeGreaterThan(0);
+      expect(appFiles.has(rung["sub_key"] as string)).toBe(true);
+    }
   }, 180_000);
 
   it("finds nothing to do on a second pass", async () => {
     // The measurement that used to be thirty seconds of saturated CPU
     // publishing zero new bytes, on every page load.
-    const before = childrenOf("orig-1").length;
+    const before = rungsOf("orig-1").length;
     const event = await runWorker({
       type: "start",
       resume: { stage: "cheap", cursor: null },
@@ -319,6 +337,6 @@ describe("a cold library, swept by the real worker", () => {
       expect(event.state.derived).toBe(0);
       expect(event.state.skipped).toBeGreaterThan(0);
     }
-    expect(childrenOf("orig-1")).toHaveLength(before);
+    expect(rungsOf("orig-1")).toHaveLength(before);
   }, 180_000);
 });

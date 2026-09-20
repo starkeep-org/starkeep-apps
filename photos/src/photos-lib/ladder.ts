@@ -33,4 +33,11 @@ export {
   type StillClassSpec,
   type VideoClassSpec,
   type VideoSource,
+  RENDITIONS_TABLE,
+  RENDITION_SUBKEY_PREFIX,
+  parentOfRenditionSubKey,
+  renditionCandidate,
+  renditionExtension,
+  renditionSubKey,
+  type RenditionRow,
 } from "@starkeep/photos-ladder";

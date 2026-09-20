@@ -42,7 +42,7 @@ import { deriveAndPublish } from "../../photos-lib/image-processing/derive-and-p
 import { createSipsDecoder } from "../../photos-lib/image-processing/platform-decoder";
 import { deriveAndPublishVideo, isTerminalVideoError } from "../../photos-lib/video/derive-and-publish";
 import { createFfmpegTools } from "../../photos-lib/video/video-tools";
-import { RENDITION_LABEL_REF } from "../../photos-lib/image-processing/publish-renditions";
+import { RENDITION_LABEL_REF } from "../../photos-lib/labels";
 import {
   CHEAP_STILL_CLASSES,
   CHEAP_TARGET_LONG_EDGE,
@@ -50,6 +50,7 @@ import {
   type SizeClass,
 } from "../../photos-lib/ladder";
 import { fileAttemptStore } from "../attempt-store";
+import { reapRenditions } from "../reap-renditions";
 import { readSweepState, writeSweepState } from "../sweep-state";
 import { fetchSweepPage, stageHasWork, type SweepRecord } from "../sweep-set";
 import { emptySweepState, SWEEP_STAGES, type SweepStage, type SweepState } from "../types";
@@ -139,7 +140,9 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
         return;
       }
       const page = await fetchSweepPage(
-        (path) => signedFetch(creds, path),
+        // `init` forwarded, not dropped: the page is three requests now and two
+        // of them are POSTs against Photos' own plane.
+        (path, init) => signedFetch(creds, path, init),
         RENDITION_LABEL_REF,
         cursor,
       );
@@ -167,6 +170,20 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
     } while (cursor !== null);
 
     state.cursor = null;
+  }
+
+  // The reaper runs once the stages are done rather than per page: it is a
+  // whole-plane question — which blobs does no row name — and asking it
+  // mid-sweep would judge a rung that is about to be published.
+  //
+  // Never fatal. A sweep that derived a library and then failed to tidy up is a
+  // successful sweep with bytes to collect next time, and reporting it as a
+  // failed one would hide the derivation that worked.
+  try {
+    const reaped = await reapRenditions((path, init) => signedFetch(creds, path, init));
+    state.reaped = reaped.orphanedBlobs;
+  } catch (err) {
+    console.warn(`[reap] pass failed:`, err);
   }
 
   finish(state, null, true);
@@ -245,13 +262,7 @@ async function deriveOneVideo(
       {
         signedFetch: (requestPath, init) => signedFetch(creds, requestPath, init),
         tools: createFfmpegTools(),
-        keyFor: async (bytes, rendition) => {
-          const contentHash = createHash("sha256").update(bytes).digest("hex");
-          return {
-            contentHash,
-            objectStorageKey: `shared/${rendition.type}/${contentHash.slice(0, 2)}/${contentHash}`,
-          };
-        },
+        hashOf: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
         availableRenditionClasses: locallyAvailableClasses(record),
       },
     );
@@ -267,12 +278,9 @@ async function deriveOneVideo(
 }
 
 function locallyAvailableClasses(record: SweepRecord): SizeClass[] {
-  return (record.variant_candidates ?? [])
-    .filter(
-      (candidate): candidate is typeof candidate & { label_value: SizeClass } =>
-        candidate.available_here && Boolean(candidate.label_value),
-    )
-    .map((candidate) => candidate.label_value);
+  return (record.renditions ?? [])
+    .filter((rung) => rung.available_here)
+    .map((rung) => rung.size_class as SizeClass);
 }
 
 async function downloadSourceFile(

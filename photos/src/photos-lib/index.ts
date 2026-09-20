@@ -19,6 +19,7 @@ export {
   isThumbnail,
   renditionClassOf,
   precheckThumbnail,
+  RENDITION_LABEL_REF,
   type LabelledRecord,
   type ThumbnailPrecheck,
 } from "./labels";
@@ -70,8 +71,8 @@ export {
   publishThumbHash,
   assertLadderComplete,
   RenditionPublishError,
-  RENDITION_LABEL_REF,
   renditionFileName,
+  type PublishableRendition,
   type PublishedRendition,
   type SignedFetch,
 } from "./image-processing/publish-renditions";

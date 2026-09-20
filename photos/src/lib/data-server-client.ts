@@ -3,7 +3,7 @@ import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 import { exifColumnFacts } from "../photos-lib/metadata/exif-generator";
-import { RENDITION_LABEL_REF } from "../photos-lib/image-processing/publish-renditions";
+import { RENDITION_LABEL_REF } from "../photos-lib/labels";
 import type { RenditionChoice } from "../photos-lib/rendition-resolution";
 import type { RenditionPolicies } from "../photos-lib/rendition-policy";
 

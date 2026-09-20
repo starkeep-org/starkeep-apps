@@ -57,6 +57,13 @@ export interface SweepState {
   failed: number;
   /** Records this node has decided it cannot decode. */
   undecodable: number;
+  /**
+   * Rendition blobs the reaping pass collected at the end of the sweep.
+   *
+   * Nothing but a race or a deleted original produces one, so a number that
+   * climbs steadily is a signal rather than housekeeping noise.
+   */
+  reaped: number;
   startedAt: string | null;
   finishedAt: string | null;
   error: string | null;
@@ -73,6 +80,7 @@ export function emptySweepState(): SweepState {
     derived: 0,
     failed: 0,
     undecodable: 0,
+    reaped: 0,
     startedAt: null,
     finishedAt: null,
     error: null,

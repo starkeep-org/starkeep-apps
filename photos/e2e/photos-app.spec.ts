@@ -31,10 +31,8 @@ import {
 import { jpegWithExif } from "../__tests__/jpeg-fixture";
 import { applicableStillClasses } from "../src/photos-lib/ladder";
 import { DEFAULT_RENDITION_TYPE } from "../src/photos-lib/image-processing/derive-ladder";
-import {
-  RENDITION_LABEL_REF,
-  renditionFileName,
-} from "../src/photos-lib/image-processing/publish-renditions";
+import { RENDITION_LABEL_REF } from "../src/photos-lib/labels";
+import { renditionSubKey, type RenditionRow } from "../src/photos-lib/ladder";
 
 test.describe.configure({ mode: "serial" });
 
@@ -218,7 +216,7 @@ test("a JPEG upload carries EXIF camera fields into shared image metadata", asyn
   expect(meta.height).toBe(8);
 });
 
-test("the applicable rendition ladder is registered as shared child records with parentId", async () => {
+test("the applicable rendition ladder lands on Photos' own plane, not the shared one", async () => {
   // Derivation needs no tab: `instrumentation.register` starts the ingest watch
   // when the app's server starts, and every write on the data server kicks a
   // sweep. A tile waiting on a rung asks for the same work through /api/resize.
@@ -231,77 +229,70 @@ test("the applicable rendition ladder is registered as shared child records with
   // the same change that made it wrong.
   const expectedClasses = applicableStillClasses(PNG_EDGE).map((spec) => spec.sizeClass);
 
-  const children = await eventually(
+  const rows = await eventually(
     async () => {
-      const records = (await listRecords(
-        photosApp,
-        "?include=labels&limit=1000",
-      )) as unknown as SharedRecord[];
-      const found = records.filter((r) => r.parent_id === pngRecordId);
+      const res = await photosApp.fetch(
+        `/app-data/db/renditions?where=${encodeURIComponent(
+          JSON.stringify({ parent_record_id: pngRecordId }),
+        )}&limit=500`,
+      );
+      if (!res.ok) throw new Error(`rendition table read failed: ${res.status}`);
+      const { rows: found } = (await res.json()) as { rows: RenditionRow[] };
       if (found.length < expectedClasses.length) {
-        throw new Error(
-          `${found.length} of ${expectedClasses.length} rungs registered so far`,
-        );
+        throw new Error(`${found.length} of ${expectedClasses.length} rungs written so far`);
       }
       return found;
     },
     { timeoutMs: 60_000 },
   );
-  // One child per applicable rung and nothing else: a ladder with a spare child
-  // is a record whose archive gate can never be reasoned about.
-  expect(children).toHaveLength(expectedClasses.length);
 
-  // Each rung carries Photos' rendition marker, so other image-declaring apps
-  // can filter derived images out of a library view. Photos writes it as a
-  // cross-app label in the same request as the record (see publish-renditions) —
-  // the `photos/` namespace comes from its authenticated identity, never from
-  // the body. The rung is the label's VALUE: the old bare `photos/thumbnail`
-  // flag could name only one derived size, and the manifest no longer declares
-  // it, so the platform now rejects a write of it.
-  const rungs = children.map((child) => {
-    expect(child.labels).toHaveLength(1);
-    const label = child.labels![0]!;
-    expect(label.app_id).toBe("photos");
-    expect(label.key).toBe("rendition");
-    expect(label.label).toBe(RENDITION_LABEL_REF);
-    return { child, sizeClass: label.value };
-  });
-  expect(rungs.map((r) => r.sizeClass).sort()).toEqual([...expectedClasses].sort());
+  // One row per applicable rung and nothing else. The primary key is
+  // `(parent_record_id, size_class)`, so a second derivation of a rung is an
+  // upsert rather than a spare child nobody can reason about.
+  expect(rows).toHaveLength(expectedClasses.length);
+  expect(rows.map((r) => r.size_class).sort()).toEqual([...expectedClasses].sort());
 
-  // Re-encoded by the ladder's default codec and named for its rung, which is
-  // what makes two rungs of one original distinguishable in a file listing.
-  for (const { child, sizeClass } of rungs) {
-    expect(child.type).toBe(DEFAULT_RENDITION_TYPE);
-    expect(child.original_filename).toBe(renditionFileName(PNG_NAME, sizeClass!));
+  for (const row of rows) {
+    expect(row.content_type).toBe(DEFAULT_RENDITION_TYPE);
+    expect(row.width).toBeGreaterThan(0);
+    expect(row.height).toBeGreaterThan(0);
+    // The key carries the content hash, which is what lets two nodes that
+    // encoded one rung differently both write without overwriting each other.
+    expect(row.sub_key).toBe(
+      renditionSubKey(pngRecordId, row.size_class, row.content_hash, row.content_type),
+    );
   }
 
-  // Shared semantics: another app with image access (Drive) sees the rungs,
-  // their parent link, AND their labels — labels are platform data, not
-  // photos-private, and any app that can read the type sees every app's
-  // labels on it.
+  // The bytes are there, under Photos' own prefix and nobody else's.
+  const residency = await photosApp.fetch("/app-data/residency");
+  expect(residency.ok).toBe(true);
+  const page = (await residency.json()) as {
+    entries: Array<{ subKey: string; resident: boolean }>;
+  };
+  for (const row of rows) {
+    expect(page.entries.find((e) => e.subKey === row.sub_key)).toMatchObject({ resident: true });
+  }
+
+  // The claim the whole move is for. Drive lists what the user put in: one
+  // photograph, not one photograph plus five derived copies of it. Before this
+  // change a 60,000-item library listed as 300,000 items and every consumer of
+  // shared image records had to know the `photos/rendition` convention to avoid
+  // it — and Drive did not.
   const drive = await driveCreds(ldsUrl());
   const driveView = (await listRecords(
     drive,
     "?include=labels&limit=1000",
   )) as unknown as SharedRecord[];
-  for (const { child } of rungs) {
-    const driveChild = driveView.find((r) => r.id === child.id);
-    expect(driveChild?.parent_id).toBe(pngRecordId);
-    expect(driveChild?.labels?.map((l) => l.label)).toEqual([RENDITION_LABEL_REF]);
-  }
-  // …and the original stays unlabelled in the cross-app view.
+  expect(driveView.filter((r) => r.parent_id === pngRecordId)).toEqual([]);
   expect(driveView.find((r) => r.id === pngRecordId)?.labels).toEqual([]);
 
-  // The reverse query — the one labels exist for. Drive asks "which records did
-  // photos label as renditions?" without knowing anything about Photos.
-  const derived = (await listRecords(
+  // And nothing anywhere still carries the rung label, so the reverse query
+  // that existed to filter renditions out answers empty.
+  const labelled = (await listRecords(
     drive,
     `?label=${encodeURIComponent(RENDITION_LABEL_REF)}&limit=1000`,
   )) as unknown as SharedRecord[];
-  for (const { child } of rungs) {
-    expect(derived.map((r) => r.id)).toContain(child.id);
-  }
-  expect(derived.map((r) => r.id)).not.toContain(pngRecordId);
+  expect(labelled).toEqual([]);
 });
 
 test("captions live in the app-private image_enriched table, not in shared data", async ({

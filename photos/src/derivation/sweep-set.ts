@@ -9,12 +9,12 @@
  *
  * There is no `needs-derivation` flag anywhere, deliberately. A shared mutable
  * "somebody should fix this" invites two nodes to derive the same record and
- * produce two children. What is missing is simply which applicable rungs have
- * no child record — and the list response carries the answer, because the data
- * server can be asked for every derived child of a page with its dimensions.
+ * produce two rows. What is missing is simply which applicable rungs Photos'
+ * own rendition table has no row for.
  *
  * That is what makes a whole-library sweep affordable. Asking per record would
- * be two queries per record per pass; asking per page is two per two hundred.
+ * be three queries per record per pass; asking per page is three per two
+ * hundred — the records, their renditions, and which of those bytes are here.
  */
 
 import {
@@ -24,6 +24,11 @@ import {
   STILL_LADDER,
   type SizeClass,
 } from "../photos-lib/ladder";
+import {
+  loadRenditionRows,
+  loadResidency,
+  type SignedFetch,
+} from "../photos-lib/renditions/store";
 
 const MEDIUM_CLASS = STILL_LADDER.find((spec) => spec.sizeClass === "image-medium")!;
 
@@ -43,10 +48,18 @@ export interface SweepRecord {
     thumb_hash?: string | null;
     bitrate?: number | null;
   } | null;
-  variant_candidates?: Array<{
+  /**
+   * The rungs Photos' table records for this photograph, with the one
+   * node-local fact the sweep needs beside each.
+   *
+   * Attached by {@link fetchSweepPage} rather than returned by the data server:
+   * the platform holds no view of an app's private plane, which is the whole
+   * point of the plane.
+   */
+  renditions?: Array<{
+    size_class: string;
     long_edge: number;
-    label_value?: string;
-    /** False when the child record exists but its bytes are absent on this node. */
+    /** False when the row is here and the bytes are not. */
     available_here: boolean;
   }>;
 }
@@ -68,12 +81,15 @@ export interface SweepRecord {
 export function missingClasses(record: SweepRecord): SizeClass[] | "unknown" {
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
   if (sourceLongEdge <= 0) return "unknown";
-  // Record existence is not local byte availability. Reinstalls and sync can
-  // leave a child record present while its object is absent on this node; that
-  // rung still needs local derivation. Only an explicit availability claim is
-  // enough to suppress work.
+  // A row is not local bytes, and on the app-private plane the two come apart
+  // as the ordinary case: a round applies Photos' rows and never pulls its
+  // blobs, so a rung derived elsewhere arrives here as a row alone. That rung
+  // still needs local work. Only an explicit availability claim suppresses it.
+  //
+  // Phase 5 of the rendition-ownership plan is what makes "fetch it" the
+  // cheaper answer than "derive it again"; until then this re-derives.
   const have = new Set(
-    (record.variant_candidates ?? [])
+    (record.renditions ?? [])
       .filter((c) => c.available_here)
       .map((c) => c.long_edge),
   );
@@ -111,9 +127,9 @@ export function stageHasWork(
     // approximation of the ladder can safely decide which rungs apply.
     if (longEdge <= 0) return true;
     const have = new Set(
-      (record.variant_candidates ?? [])
+      (record.renditions ?? [])
         .filter((c) => c.available_here)
-        .map((c) => c.label_value),
+        .map((c) => c.size_class),
     );
     const bitrate = record.metadata?.bitrate ?? Number.POSITIVE_INFINITY;
     return applicableVideoClasses({ longEdge, bitrate, durationSeconds: 0 }).some(
@@ -147,7 +163,7 @@ function stillStage(sizeClass: SizeClass, cheap: ReadonlySet<SizeClass>): "cheap
 }
 
 /** `fetch`-alike over the data server, injected so this module owns no creds. */
-export type RecordFetcher = (path: string) => Promise<Response>;
+export type RecordFetcher = SignedFetch;
 
 export interface SweepPage {
   records: SweepRecord[];
@@ -155,16 +171,17 @@ export interface SweepPage {
 }
 
 /**
- * One page of records the sweep may have work for.
+ * One page of records the sweep may have work for, with its renditions.
  *
- * Renditions are excluded by label rather than by parent, because a Live Photo
- * clip has a parent too and a clip is user data that wants its own tile.
- * Reading `parent_id !== null` as "is a rendition" is the mistake
- * `photos-lib/labels.ts` exists to stop repeating.
+ * Renditions are excluded from the page by label rather than by parent, because
+ * a Live Photo clip has a parent too and a clip is user data that wants its own
+ * tile. Nothing publishes that label any more; the filter is what keeps rungs
+ * published before renditions moved off the shared plane out of the sweep.
  *
- * `variant` with no pixel size asks for the unnarrowed candidate list, which is
- * the whole point: resolution would answer "which rung best fits 640 px" when
- * the question is "which rungs are missing".
+ * Three requests per page, not one. The records come from the shared plane, the
+ * rendition rows from Photos' own table, and local byte availability from this
+ * node's resident set — three different owners, and the platform deliberately
+ * holds no joined view across them.
  */
 export async function fetchSweepPage(
   fetchRecords: RecordFetcher,
@@ -176,7 +193,6 @@ export async function fetchSweepPage(
     `limit=${pageSize}`,
     "include=metadata,labels",
     `notLabel=${encodeURIComponent(renditionLabelRef)}`,
-    `variant=${encodeURIComponent(renditionLabelRef)}`,
   ];
   if (cursor) params.push(`page_token=${encodeURIComponent(cursor)}`);
   const res = await fetchRecords(`/data/records?${params.join("&")}`);
@@ -185,8 +201,29 @@ export async function fetchSweepPage(
     records: SweepRecord[];
     nextCursor?: string | null;
   };
+
+  await attachRenditions(fetchRecords, body.records);
+
   // A short page is not the end — only an exhausted cursor is. `?? null`
   // because a server older than the contract omits the field entirely, and
   // `undefined !== null` loops forever.
   return { records: body.records, nextCursor: body.nextCursor ?? null };
+}
+
+/** Hang each record's rungs off it, with local availability resolved. */
+export async function attachRenditions(
+  signedFetch: SignedFetch,
+  records: SweepRecord[],
+): Promise<void> {
+  if (records.length === 0) return;
+  const rows = await loadRenditionRows(signedFetch, records.map((r) => r.id));
+  const subKeys = [...rows.values()].flat().map((row) => row.sub_key);
+  const residency = subKeys.length > 0 ? await loadResidency(signedFetch, subKeys) : new Map();
+  for (const record of records) {
+    record.renditions = (rows.get(record.id) ?? []).map((row) => ({
+      size_class: row.size_class,
+      long_edge: Math.max(row.width, row.height),
+      available_here: residency.get(row.sub_key) ?? false,
+    }));
+  }
 }

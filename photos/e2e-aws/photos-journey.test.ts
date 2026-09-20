@@ -26,7 +26,7 @@ import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chromium,
   defineCloudJourney,
@@ -45,10 +45,13 @@ import {
 } from "@starkeep/e2e";
 import {
   applicableStillClasses,
+  CHEAP_TARGET_LONG_EDGE,
   renditionSubKey,
   STILL_LADDER,
   type RenditionRow,
 } from "../src/photos-lib/ladder";
+import { fetchPublishedRenditions } from "../src/photos-lib/renditions/acquire";
+import { publishRendition } from "../src/photos-lib/image-processing/publish-renditions";
 
 const PHOTOS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -132,6 +135,31 @@ async function readRecordBytes(app: LdsApp, recordId: string): Promise<Buffer> {
   const blob = await fetch(url);
   if (!blob.ok) throw new Error(`bytes for ${recordId} → ${blob.status}`);
   return Buffer.from(await blob.arrayBuffer());
+}
+
+/**
+ * Whether this node holds a rung's bytes, as the app's own residency page says.
+ *
+ * Asked of the paged listing rather than of the targeted lookup because that is
+ * the surface Photos' acquisition pass reads, and a rung that vanished from it
+ * would leave the pass unable to see what it holds.
+ */
+async function residentHere(app: LdsApp, subKey: string): Promise<boolean> {
+  let cursor: string | null = null;
+  do {
+    const res = await app.fetch(
+      `/app-data/residency${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+    );
+    if (!res.ok) throw new Error(`residency → ${res.status} ${await res.text()}`);
+    const page = (await res.json()) as {
+      entries: Array<{ subKey: string; resident: boolean }>;
+      nextCursor: string | null;
+    };
+    const entry = page.entries.find((e) => e.subKey === subKey);
+    if (entry) return entry.resident;
+    cursor = page.nextCursor;
+  } while (cursor);
+  throw new Error(`${subKey} is in no residency page`);
 }
 
 /** A rendition's bytes, through the app-private file plane that now holds them. */
@@ -554,6 +582,233 @@ function photosSteps(ctx: JourneyContext): void {
       await browser.close();
     }
   });
+
+  it("brings a dropped rung back by acquisition, and only the rung that was asked for", async () => {
+    // Phase 5's repair rule at tier 3. Every layer below runs against a stub:
+    // the acquisition pass against a fake residency page, the app plane against
+    // a loopback server. What only a real deployment proves is that the rung
+    // another node published comes back out of S3 under the same key, by the
+    // route Photos actually takes, with the published row untouched.
+    //
+    // Two rungs are dropped and one is asked for. The sweep used to ask for
+    // every absent rung it could see, which turned a thumbnail request into a
+    // download of the library's large rungs; the pair is what makes "only the
+    // one" an assertion rather than a coincidence.
+    const photos = ctx.localApp();
+    const before = await renditionRows(photos, ladderRecordId);
+    expect(before.length, "the ladder steps must have run first").toBeGreaterThan(1);
+    const byEdge = [...before].sort(
+      (a, b) => Math.max(a.width, a.height) - Math.max(b.width, b.height),
+    );
+    const wanted = byEdge[0]!;
+    const untouched = byEdge[1]!;
+    const wantedBytes = await readRenditionBytes(photos, wanted.sub_key);
+
+    for (const rung of [wanted, untouched]) {
+      const dropped = await photos.fetch(`/app-data/files/${rung.sub_key}/blob`, {
+        method: "DELETE",
+      });
+      expect(dropped.status, `dropping ${rung.size_class} answered ${dropped.status}`).toBe(200);
+      expect(await dropped.json()).toMatchObject({ dropped: true });
+    }
+    // The file survives its bytes, which is what makes this acquisition rather
+    // than re-derivation: the row still names the object to go and get.
+    const dropped = await renditionRows(photos, ladderRecordId);
+    expect(dropped.map((r) => r.sub_key).sort()).toEqual(before.map((r) => r.sub_key).sort());
+    expect(await residentHere(photos, wanted.sub_key)).toBe(false);
+
+    const fetched = await fetchPublishedRenditions(
+      (path, init) => photos.fetch(path, init),
+      [wanted.sub_key],
+    );
+    expect(fetched).toEqual([wanted.sub_key]);
+    expect(await residentHere(photos, wanted.sub_key)).toBe(true);
+    expect(
+      await residentHere(photos, untouched.sub_key),
+      "a request for one rung downloaded another",
+    ).toBe(false);
+
+    // The same bytes under the same name. A node that had re-derived instead
+    // would have written a different content hash under a different key, which
+    // is exactly what the rendition table's primary key cannot express twice.
+    const back = await readRenditionBytes(photos, wanted.sub_key);
+    expect(back.equals(wantedBytes)).toBe(true);
+    const after = await renditionRows(photos, ladderRecordId);
+    expect(after.map((r) => `${r.size_class}:${r.content_hash}`).sort()).toEqual(
+      before.map((r) => `${r.size_class}:${r.content_hash}`).sort(),
+    );
+
+    // Put the other one back, so a later step reads the library the ladder
+    // steps left rather than one this step half-emptied.
+    await fetchPublishedRenditions((path, init) => photos.fetch(path, init), [untouched.sub_key]);
+  }, 300_000);
+
+  it("the cloud declines work it cannot finish, before reading the original", async () => {
+    // Section 6.6: the Lambda serves what exists, derives only from an
+    // instantly retrievable original it can decode, and only into the cheap
+    // tier. Everything else is a decline rather than a failure — the
+    // distinction matters because a failure retries and a decline tells the
+    // caller to ask a node that can.
+    //
+    // Driven against the deployed Lambda rather than a mocked broker, which is
+    // the only place the ordering is real: a regression that read the source
+    // first would still answer `declined` here and would do it after paying for
+    // a download.
+    const config = ctx.config();
+    const session = ctx.session();
+    const cloudPhotos = ctx.cloudApp();
+    const resize = (body: Record<string, unknown>) =>
+      fetch(`${config.apiGatewayUrl}/apps/photos/api/resize`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.idToken}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120_000),
+      });
+
+    // Above the cheap tier. The rungs that cost real time and memory are a
+    // local node's work whatever the original's state is.
+    const expensive = await resize({
+      targetId: ladderRecordId,
+      targetLongEdge: CHEAP_TARGET_LONG_EDGE * 2,
+    });
+    expect(expensive.status).toBe(200);
+    expect(await expensive.json()).toMatchObject({ declined: true, published: [] });
+
+    // A format the cloud's libvips cannot decode. The record carries PNG bytes
+    // under a HEIC type deliberately: the decline has to happen on the type,
+    // before anything reads or decodes the source, and bytes that would fail a
+    // decode are what tells the two apart.
+    const { record: heic } = await createRecordWithBytes(ctx.localApp(), {
+      type: "image/heic",
+      contentType: "image/heic",
+      bytes: solidPng([12, 34, 56], 600),
+      fileName: `e2e-undecodable-${Date.now()}.heic`,
+    });
+    const drive = ctx.drive();
+    await eventually(
+      async () => {
+        const round = await drive.fetch("/sync/now", { method: "POST" });
+        expect(round.status).toBe(200);
+        const found = await cloudPhotos.fetch(`/data/records/${heic.id}`);
+        if (found.status !== 200) throw new Error(`the HEIC record has not reached the cloud yet`);
+      },
+      { timeoutMs: 120_000, intervalMs: 2_000 },
+    );
+    const undecodable = await resize({ targetId: heic.id, targetLongEdge: 320 });
+    expect(undecodable.status).toBe(200);
+    expect(await undecodable.json()).toMatchObject({ declined: true, published: [] });
+    // No rung was written for a record the cloud declined.
+    expect(await renditionRows(cloudPhotos, heic.id)).toEqual([]);
+
+    // And the permitted case, stated only when its precondition holds: a
+    // decodable original the cloud can read right now, asked for a cheap rung.
+    const facts = await cloudPhotos.fetch(
+      `/data/records?where=${encodeURIComponent(JSON.stringify({ id: ladderRecordId }))}&limit=1`,
+    );
+    expect(facts.status).toBe(200);
+    const { records } = (await facts.json()) as {
+      records: Array<{ availability?: { state: string } }>;
+    };
+    if (records[0]?.availability?.state === "instant") {
+      const cheap = await resize({ targetId: ladderRecordId, targetLongEdge: 320 });
+      expect(cheap.status).toBe(200);
+      expect(
+        (await cheap.json()) as { declined?: boolean },
+        "the cloud declined a cheap rung of an instantly readable PNG",
+      ).not.toMatchObject({ declined: true });
+    }
+  }, 300_000);
+
+  it("keeps a second encoding local: the publication and the cloud are untouched", async () => {
+    // First-writer-wins says the rung another node published stays published.
+    // This node still paid for a decode, so it keeps its own bytes rather than
+    // discarding them — under a `local/` key, in an index beside the bytes, out
+    // of the synchronized file table.
+    //
+    // The half that needs a real cloud is the last one. Locally, "this row does
+    // not travel" is a claim about a table nobody is reading; here it is a sync
+    // round against a deployment that would have to have stored something.
+    const photos = ctx.localApp();
+    const cloudPhotos = ctx.cloudApp();
+    const drive = ctx.drive();
+    const published = (await renditionRows(photos, ladderRecordId)).sort(
+      (a, b) => Math.max(a.width, a.height) - Math.max(b.width, b.height),
+    )[0]!;
+
+    // Bytes no encoder would produce twice, which is the case this exists for:
+    // two encoders, one rung, neither byte-identical to the other.
+    const alternate = Buffer.concat([
+      Buffer.from("alternate encoding "),
+      randomBytes(64),
+    ]);
+    const contentHash = createHash("sha256").update(alternate).digest("hex");
+    const result = await publishRendition(
+      (path, init) => photos.fetch(path, init),
+      { id: ladderRecordId, originalFilename: ladderSourceName },
+      {
+        sizeClass: published.size_class,
+        contentType: published.content_type,
+        width: published.width,
+        height: published.height,
+        data: new Uint8Array(alternate),
+      },
+      contentHash,
+      true,
+    );
+    expect(result.subKey.startsWith("local/")).toBe(true);
+    expect(result.subKey).not.toBe(published.sub_key);
+
+    // The publication did not move. Every other node still resolves this rung
+    // to the key the first writer minted.
+    const afterPublish = await renditionRows(photos, ladderRecordId);
+    expect(afterPublish.find((r) => r.size_class === published.size_class)?.sub_key).toBe(
+      published.sub_key,
+    );
+    const localFiles = await photos.fetch(
+      `/app-data/local-files?prefix=${encodeURIComponent(`local/renditions/${ladderRecordId}/`)}`,
+    );
+    expect(localFiles.status).toBe(200);
+    const listed = (await localFiles.json()) as { files: Array<{ subKey: string }> };
+    expect(listed.files.map((f) => f.subKey)).toContain(result.subKey);
+
+    // Three rounds' worth of chances to ship something it must not ship.
+    for (let round = 0; round < 3; round++) {
+      const sync = await drive.fetch("/sync/now", { method: "POST" });
+      expect(sync.status).toBe(200);
+    }
+    const cloudRows = await renditionRows(cloudPhotos, ladderRecordId);
+    expect(
+      cloudRows.map((r) => r.sub_key).sort(),
+      "a local alternative reached the cloud as a rendition row",
+    ).toEqual(afterPublish.map((r) => r.sub_key).sort());
+    const stat = await cloudPhotos.fetch(
+      `/files/apps/photos/syncable/${result.subKey}/stat`,
+    );
+    expect(stat.status, "a local alternative's bytes reached cloud storage").not.toBe(200);
+
+    // Taken away again, because every step after this reads the library the
+    // ladder steps built and an extra copy of one rung is not part of it.
+    const removed = await photos.fetch(`/app-data/files/${result.subKey}`, {
+      method: "DELETE",
+    });
+    expect(removed.ok).toBe(true);
+    const afterRemoval = await photos.fetch("/app-data/local-files");
+    const remaining = ((await afterRemoval.json()) as { files: Array<{ subKey: string }> }).files;
+    expect(remaining.map((file) => file.subKey)).not.toContain(result.subKey);
+
+    // What is left is not this step's doing, and is the mechanism working. The
+    // journey is ordered so the cloud Lambda and the local app derive the same
+    // records — see the comment above `extraSteps` in the platform journey —
+    // and whichever lost that race kept its own encoding here. Every one of
+    // them is a `local/` key, because a published rung is named in the
+    // synchronized table instead and never in this index.
+    for (const file of remaining) {
+      expect(file.subKey.startsWith("local/"), `${file.subKey} is in the local index`).toBe(true);
+    }
+  }, 300_000);
 }
 
 const photosApp: JourneyApp = {

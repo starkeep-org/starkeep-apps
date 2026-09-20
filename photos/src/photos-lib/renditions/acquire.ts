@@ -1,9 +1,16 @@
 import { acquireRenditions, DESKTOP_RUNG_SHARES, DESKTOP_FALLBACK_SHARE, type AcquisitionEntry } from "@starkeep/photos-ladder";
 import { type SignedFetch } from "./store";
 
-/** Only the listing endpoint reports local original availability. */
+/**
+ * Only the listing endpoint reports local original availability.
+ *
+ * The filter is a bare scalar because that is how the shared query grammar
+ * spells equality — its operator objects are `lt`, `lte`, `gt`, `gte`, `ne`,
+ * `in`, `is`, `prefix` and `like`, and position disambiguates the rest, so
+ * `{"id":{"eq":…}}` is a 400 on both servers rather than a filter.
+ */
 export async function originalFacts(call: SignedFetch, id: string) {
-  const where = encodeURIComponent(JSON.stringify({ id: { eq: id } }));
+  const where = encodeURIComponent(JSON.stringify({ id }));
   const response = await call(`/data/records?where=${where}&limit=1&include=metadata`);
   if (!response.ok) throw new Error(`original availability failed: ${response.status}`);
   const body = await response.json() as { records: Array<{ availability?: { state: string }; metadata?: { width?: number; height?: number } }> };

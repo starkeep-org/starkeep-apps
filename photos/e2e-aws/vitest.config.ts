@@ -11,6 +11,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * cloud bundle, a local app build) take that long.
  */
 export default defineConfig({
+  // The journey drives Photos' own modules — the acquisition pass and the
+  // publisher, not reimplementations of them — and those modules address the
+  // app by its `@/` alias. Mirrors `vitest.config.ts` for the same reason that
+  // one exists: the resolver a test runs under has to agree with the build's.
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("../src", import.meta.url)) },
+  },
   test: {
     // Relative to this config's directory, which is where the journey lives.
     dir: __dirname,

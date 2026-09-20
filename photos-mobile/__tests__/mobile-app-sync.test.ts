@@ -22,7 +22,11 @@ import {
 } from "../src/node";
 import { deriveForRecord } from "../src/photos/derive-ladder";
 import { PHOTOS_FILE_PREFIX } from "../src/photos/app-data";
+import { listLibrary } from "../src/library";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
+
+/** One justified row of a phone screen, as `paint-rule.test.ts` states it. */
+const GRID = { targetRowHeight: 120, containerWidth: 350, devicePixelRatio: 3 };
 
 const hash = async (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -184,6 +188,104 @@ describe("Photos app-specific mobile sync", () => {
     // The resident bytes keep the grid drawable after the peer disappears.
     for (const row of rows) await desktop.objectStorage.delete(PHOTOS_FILE_PREFIX + row.sub_key);
     expect(rows.filter(r => receiver.residency!.index.get(PHOTOS_FILE_PREFIX + r.sub_key)?.resident)).toHaveLength(2);
+  });
+
+  it("draws every tile of a synced grid offline, from rungs and never from an original", async () => {
+    // The prefetch test above proves the bytes are resident. This one asks the
+    // grid what it would actually paint, which is the question an offline phone
+    // is really asking: a resident rung nothing resolves to is the same blank
+    // tile as a rung that never arrived.
+    const receiver = await makeNode("offline-phone", {
+      cloud: channel(desktop, false), photosCloud: channel(desktop, true),
+      retention: { ...policy, platform: { ...policy.platform, fallback: { share: 1, prefetch: false } },
+        apps: { photos: { budgetBytes: 10000000 } } },
+    });
+    const clock = createHLCClock({ nodeId: "desktop" });
+    const parents = [];
+    for (let index = 0; index < 3; index++) {
+      const parent = createDataRecord({ type: "image/jpeg", originAppId: "photos",
+        contentHash: String(index).repeat(64), objectStorageKey: `shared/image/original-${index}`,
+        sizeBytes: 7000000, originalFilename: `photo-${index}.jpg` }, clock);
+      await desktop.databaseAdapter.put(parent);
+      await desktop.databaseAdapter.putMetadata("image/jpeg", { recordId: parent.id, width: 4000, height: 3000 });
+      for (const [sizeClass, edge] of [["image-xsmall", 320], ["image-thumb", 640]] as const) {
+        const bytes = new Uint8Array(14000).fill((index * 16 + edge) % 255);
+        const contentHash = await hash(bytes);
+        await desktop.publishRendition({ parent_record_id: parent.id, size_class: sizeClass,
+          sub_key: `renditions/${parent.id}/${sizeClass}/${contentHash}.avif`, content_hash: contentHash,
+          width: edge, height: Math.round(edge * 0.75), size_bytes: bytes.length, content_type: "image/avif" }, bytes);
+      }
+      parents.push(parent);
+    }
+    await receiver.sync();
+    await receiver.acquireQueued();
+
+    // The peer goes away, bytes and all. Everything the grid draws from here on
+    // is what this device already holds.
+    for (const row of receiver.photosData.rows("renditions")) {
+      await desktop.objectStorage.delete(PHOTOS_FILE_PREFIX + row.sub_key);
+    }
+    const resident = new Set<string>();
+    for (const row of receiver.photosData.rows("renditions")) {
+      const key = PHOTOS_FILE_PREFIX + row.sub_key;
+      if (await receiver.objectStorage.has(key)) resident.add(key);
+    }
+    // `localFileUriFor` is the device store's synchronous answer to "are these
+    // bytes here"; the mock adapter has no such method, so the resident set read
+    // above stands in for it.
+    const objectStorage = Object.assign(Object.create(Object.getPrototypeOf(receiver.objectStorage)),
+      receiver.objectStorage, { localFileUriFor: (key: string) => resident.has(key) ? `file:///${key}` : null });
+    const page = await listLibrary({ database: receiver.databaseAdapter, objectStorage,
+      photosData: receiver.photosData, aliases: null }, { limit: 10, grid: GRID });
+
+    expect(page.items).toHaveLength(parents.length);
+    for (const item of page.items) {
+      expect(item.uri, `${item.record.originalFilename} paints nothing offline`).toBeTruthy();
+      expect(resident.has(item.uri!.replace("file:///", ""))).toBe(true);
+      // Never the photograph itself: the originals were not downloaded, and a
+      // grid that reached for one would be spending 7 MB on a 120 pt tile.
+      expect(item.uri).not.toContain(item.record.objectStorageKey);
+      expect(item.bytesHere).toBe(false);
+    }
+  });
+
+  it("fetches a published rung when the camera-roll asset behind an alias is gone", async () => {
+    // Repair selects on readable original bytes, not on provenance. An alias
+    // row outlives the photograph it points at — the user deleted it from the
+    // camera roll — and a node that read the row as "mine to derive" would
+    // suppress the one download that can repair this rung.
+    const fake = fakeExpoFs();
+    const receiver = await makeNode("stale-alias-phone", {
+      cloud: channel(desktop, false), photosCloud: channel(desktop, true),
+      deviceMedia: { fs: fake.fs },
+      retention: { ...policy, platform: { ...policy.platform, fallback: { share: 1, prefetch: false } },
+        apps: { photos: { budgetBytes: 10000000 } } },
+    });
+    const parent = createDataRecord({ type: "image/jpeg", originAppId: "photos",
+      contentHash: "b".repeat(64), objectStorageKey: "shared/image/deleted-original",
+      sizeBytes: 7000000, originalFilename: "deleted.jpg" }, createHLCClock({ nodeId: "desktop" }));
+    await desktop.databaseAdapter.put(parent);
+    await desktop.databaseAdapter.putMetadata("image/jpeg", { recordId: parent.id, width: 4000, height: 3000 });
+    const bytes = new Uint8Array(14000).fill(7);
+    const contentHash = await hash(bytes);
+    const subKey = `renditions/${parent.id}/image-thumb/${contentHash}.avif`;
+    await desktop.publishRendition({ parent_record_id: parent.id, size_class: "image-thumb",
+      sub_key: subKey, content_hash: contentHash, width: 640, height: 480,
+      size_bytes: bytes.length, content_type: "image/avif" }, bytes);
+
+    // The row says this device holds the photograph; the media store says the
+    // asset is gone. Nothing writes the URI into the fake file system, which is
+    // what a deleted camera-roll entry looks like from here.
+    await receiver.sync();
+    receiver.mediaAliases!.add({ objectStorageKey: parent.objectStorageKey, recordId: parent.id,
+      contentUri: "content://camera/deleted", assetId: "deleted", sizeBytes: 7000000,
+      contentType: "image/jpeg", modificationTimeMs: 1, addedAtMs: 1 });
+    expect(await receiver.objectStorage.has(parent.objectStorageKey)).toBe(false);
+
+    await receiver.acquireQueued();
+    expect(await receiver.objectStorage.has(PHOTOS_FILE_PREFIX + subKey)).toBe(true);
+    // The rung came down; the 7 MB photograph did not.
+    expect(await receiver.objectStorage.has(parent.objectStorageKey)).toBe(false);
   });
 
   it("declines an on-demand rung larger than its Photos share", async () => {

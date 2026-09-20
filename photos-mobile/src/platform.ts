@@ -20,6 +20,7 @@
 
 import { open as openOpSqlite } from "@op-engineering/op-sqlite";
 import { Directory, File, Paths, UploadType } from "expo-file-system";
+import * as Battery from "expo-battery";
 import * as MediaLibrary from "expo-media-library";
 // The app's only image decoder, and the one that already paints every tile. See
 // `thumbHashFor` below for why the ThumbHash is taken from it rather than
@@ -53,6 +54,8 @@ import {
 import type { ThumbHashEncoder } from "./media/thumb-hash";
 import StarkeepAvif from "../modules/starkeep-avif";
 import {
+  MOBILE_FULL_DERIVE_CEILING_LONG_EDGE,
+  MOBILE_DERIVE_CEILING_LONG_EDGE,
   deriveForRecord,
   deriveRenditions,
   type DeriveLadderDeps,
@@ -748,6 +751,7 @@ export function deriveRenditionsFor(
   clock: HLCClock,
   options: {
     readonly maxRecords?: number;
+    readonly full?: boolean;
     readonly signal?: { readonly aborted: boolean };
   } = {},
 ): Promise<DeriveLadderOutcome | null> {
@@ -755,8 +759,9 @@ export function deriveRenditionsFor(
   const deps = deriveDepsFor(node);
   if (deps === null) return Promise.resolve(null);
   return deriveRenditions(
-    { ...deps, cursor: node.derivationCursor },
+    { ...deps, cursor: options.full ? node.fullDerivationCursor : node.derivationCursor },
     {
+      ceilingLongEdge: options.full ? MOBILE_FULL_DERIVE_CEILING_LONG_EDGE : MOBILE_DERIVE_CEILING_LONG_EDGE,
       ...(options.maxRecords !== undefined ? { maxRecords: options.maxRecords } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     },
@@ -781,7 +786,7 @@ export function deriveRenditionsFor(
  * how a phone comes to make `image-screen` for the one photograph on screen
  * without volunteering to make it for sixty thousand others.
  */
-export function deriveRecordFor(
+export async function deriveRecordFor(
   node: MobileNode,
   clock: HLCClock,
   record: DataRecord,
@@ -789,9 +794,11 @@ export function deriveRecordFor(
 ): Promise<number | null> {
   const deps = deriveDepsFor(node);
   if (deps === null) return Promise.resolve(null);
-  return ceilingLongEdge === undefined
-    ? deriveForRecord(deps, record)
-    : deriveForRecord(deps, record, ceilingLongEdge);
+  const state = await Battery.getBatteryStateAsync();
+  const charging = state === Battery.BatteryState.CHARGING || state === Battery.BatteryState.FULL;
+  const ceiling = charging ? ceilingLongEdge ?? MOBILE_DERIVE_CEILING_LONG_EDGE
+    : Math.min(ceilingLongEdge ?? MOBILE_DERIVE_CEILING_LONG_EDGE, MOBILE_DERIVE_CEILING_LONG_EDGE);
+  return deriveForRecord(deps, record, ceiling);
 }
 
 /**
@@ -804,14 +811,25 @@ export function deriveRecordFor(
  * other.
  */
 function deriveDepsFor(node: MobileNode): DeriveLadderDeps | null {
-  if (!node.mediaAliases || avifEncoder === null) return null;
+  if (avifEncoder === null) return null;
   return {
-    aliases: node.mediaAliases,
+    aliases: node.mediaAliases ?? undefined,
     database: node.databaseAdapter,
+    originalUri: async record => await node.objectStorage.has(record.objectStorageKey)
+      ? node.objectStorage.localFileUriFor?.(record.objectStorageKey) ?? null : null,
+    listOriginals: async (after, limit) => {
+      const last = after?.startsWith("records:") ? after.slice(8) : null;
+      const page = await node.databaseAdapter.query({
+        filters: last ? [{ field: "id", operator: "gt", value: last }] : [],
+        sort: [{ field: "id", direction: "asc" }], limit,
+      });
+      return page.records.map(record => ({ recordId: record.id, objectStorageKey: `records:${record.id}`, contentUri: "" }));
+    },
     hash: sha256Bytes,
     encode: avifEncoder,
     photosData: node.photosData,
     publishRendition: (row, bytes) => node.publishRendition(row, bytes),
+    isRenditionResident: key => node.residency?.index.get(key)?.resident ?? Boolean(node.objectStorage.localFileUriFor?.(key)),
   };
 }
 

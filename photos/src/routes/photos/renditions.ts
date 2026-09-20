@@ -1,3 +1,4 @@
+import { fetchPublishedRenditions } from "@/photos-lib/renditions/acquire";
 import {
   canonicalTarget,
   currentRenditionPolicies,
@@ -56,6 +57,7 @@ function attachStillUrlLifetime(
   return {
     ideal: attach(decision.ideal),
     ...(decision.fallback ? { fallback: attach(decision.fallback) } : {}),
+    ...(decision.viewerFallback ? { viewerFallback: attach(decision.viewerFallback) } : {}),
   };
 }
 
@@ -150,7 +152,16 @@ export async function POST(req: Request): Promise<Response> {
     const key = `${record.id}:${policy.version}:${targetLongEdge}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const rungs: readonly HydratedRendition[] = renditions.get(record.id) ?? [];
+    let rungs: readonly HydratedRendition[] = renditions.get(record.id) ?? [];
+    if (!cloud && record.availability?.state !== "instant") {
+      const wanted = kind === "still"
+        ? resolveFor(record, rungs, [targetLongEdge], cloud, localVerdicts)[String(targetLongEdge)]?.ideal.longEdge
+        : targetLongEdge;
+      const keys = rungs.filter(r => !r.availableHere && Math.max(r.width, r.height) === wanted).map(r => r.sub_key);
+      if (keys.length && (await fetchPublishedRenditions(authorized.fetch, keys)).length) {
+        rungs = (await loadHydratedRenditions(authorized.fetch, [record.id])).get(record.id) ?? [];
+      }
+    }
     const rawDecision = kind === "video"
       ? resolveVideo(rungs, [targetLongEdge], cloud)[String(targetLongEdge)] ?? {}
       : resolveFor(record, rungs, [targetLongEdge], cloud, localVerdicts)[String(targetLongEdge)];

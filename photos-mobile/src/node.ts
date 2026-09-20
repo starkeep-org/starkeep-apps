@@ -1,3 +1,4 @@
+import { acquirePhotosRenditions } from "./photos/acquisition";
 import { createPhotosAppData, PHOTOS_FILE_PREFIX, type PhotosAppData, type RenditionRow } from "./photos/app-data";
 import { createPerAppSyncStateStore, deletePerAppSyncState } from "@starkeep/sync-engine";
 import { sqliteCompiler as qb } from "@starkeep/storage-sqlite";
@@ -242,6 +243,7 @@ export interface MobileNode {
    * this is a second table of the same shape. See `work/scan-cursor.ts`.
    */
   readonly derivationCursor: ScanCursorStore | null;
+  readonly fullDerivationCursor: ScanCursorStore;
   /**
    * Where the video inside a Motion Photo is, or null when this node reads no
    * camera roll.
@@ -515,12 +517,13 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     : null;
   // Built on the same condition as the alias table, because the sweep it
   // positions walks that table. See `MobileNode.derivationCursor`.
-  const derivationCursor = options.deviceMedia
-    ? createSqliteScanCursorStore({
+  const derivationCursor = createSqliteScanCursorStore({
         db: databaseAdapter.getRawDatabase(),
         table: DERIVATION_CURSOR_TABLE,
-      })
-    : null;
+      });
+  const fullDerivationCursor = createSqliteScanCursorStore({
+    db: databaseAdapter.getRawDatabase(), table: "photos_full_derivation_cursor",
+  });
   // Built on the same condition, because import is the only writer and import
   // is what a camera roll makes possible. See `media/motion-index.ts`.
   const motionIndex = options.deviceMedia
@@ -646,13 +649,29 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     return next;
   }
 
+  async function acquirePhotos(requestedKey?: string, maxBytes = MOBILE_MAX_BYTES) {
+    if (photosRemoved) return { fetched: [] as string[], dropped: [] as string[] };
+    return acquirePhotosRenditions({ photosData, photosEngine, residency, databaseAdapter,
+      mediaAliases, localObjectStorage, budgetBytes: options.retention?.apps.photos?.budgetBytes ?? Infinity,
+      requestedKey, maxBytes });
+  }
+
   return {
     databaseAdapter,
     photosData,
     photosEngine,
     publishRendition: (row, bytes) => serialized(async () => {
       if (photosRemoved) return false;
+      const previous = photosData.localRows().find(r => r.parent_record_id === row.parent_record_id && r.size_class === row.size_class);
       const published = await photosData.publish(row, bytes, localObjectStorage);
+      if (published && previous && previous.sub_key !== row.sub_key) {
+        const oldKey = PHOTOS_FILE_PREFIX + previous.sub_key;
+        // Only locally retained alternatives are eligible; a published file remains synchronized.
+        if (!photosData.rows("_starkeep_sync_records", "id", [oldKey]).length) {
+          await localObjectStorage.delete(oldKey);
+          residency?.index.markDeparted(oldKey);
+        }
+      }
       if (published && residency) {
         const key = PHOTOS_FILE_PREFIX + row.sub_key;
         const candidate = { recordId: key, objectStorageKey: key, sizeBytes: row.size_bytes,
@@ -665,13 +684,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     }),
     fetchRendition: key => serialized(async () => {
       if (!photosEngine || photosRemoved || !key.startsWith(PHOTOS_FILE_PREFIX)) return false;
-      const row = photosData.rows("_starkeep_sync_records", "id", [key])[0];
-      if (!row) return false;
-      return photosEngine.fetchBlob({ fileHash: String(row.content_hash), objectStorageKey: key,
-        sizeBytes: Number(row.size_bytes), mimeType: String(row.mime_type) },
-        { recordId: key, objectStorageKey: key, sizeBytes: Number(row.size_bytes),
-          type: String(row.mime_type), parentId: null, appId: "photos", originAppId: "photos", recencyAtMs: null,
-          lastOpenedAtMs: Date.now() });
+      const result = await acquirePhotos(key, Infinity);
+      return result.fetched.includes(key) || await localObjectStorage.has(key);
     }),
     removePhotosData: () => serialized(async () => {
       photosRemoved = true;
@@ -693,14 +707,17 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       for (const table of photosData.source.namespaces.get("photos")!.tableNames) {
         db.exec(qb.deleteFrom(`photos_syncable_${table}`).compile().sql);
       }
+      photosData.clearLocal();
       deletePerAppSyncState(db, "photos");
       derivationCursor?.set(null);
+      fullDerivationCursor.set(null);
     }),
     objectStorage: localObjectStorage,
     mediaAliases,
     importCursor,
     videoDurationCursor,
     derivationCursor,
+    fullDerivationCursor,
     motionIndex,
     engine,
     residency,
@@ -726,13 +743,14 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     async acquireQueued(acquireOptions) {
       // No cloud or no policy means no queue: a node that wants every blob
       // never declines one, and a node with nobody to ask cannot fetch.
-      if (!engine || !residency || !options.retention) return [];
       // Serialized behind the same lock as a round. Both read the resident set
       // and both charge budgets, and two of them at once would each see the
       // same apparent room — the overshoot reservations exist to bound within
       // one engine, reintroduced between two operations of it.
-      return serialized(() =>
-        runAcquisition({
+      return serialized(async () => {
+        await acquirePhotos(undefined, acquireOptions?.maxBytes ?? MOBILE_MAX_BYTES);
+        if (!engine || !residency || !options.retention) return [];
+        return runAcquisition({
           engine,
           manager: residency,
           databaseAdapter,
@@ -742,8 +760,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
           // unit that takes a minute is a unit that gets abandoned partway,
           // over and over.
           maxBytes: acquireOptions?.maxBytes ?? MOBILE_MAX_BYTES,
-        }),
-      );
+        });
+      });
     },
 
     async scanForAcquirable(scanOptions) {
@@ -817,6 +835,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     },
     async reclaimSpace() {
       if (!residency) return [];
+      await serialized(() => acquirePhotos(undefined, 0));
       // Reconcile first, always. See the doc comment: a pass run against a
       // stale index works to a target it may already have passed.
       //

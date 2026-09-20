@@ -39,6 +39,7 @@ import {
   deleteRenditionRow,
   listRenditionBlobs,
   loadRenditionRows,
+  loadLocalRenditions,
   type SignedFetch,
 } from "../photos-lib/renditions/store";
 
@@ -98,6 +99,8 @@ async function liveParents(
  */
 export async function reapRenditions(signedFetch: SignedFetch): Promise<ReapResult> {
   const blobs = await listRenditionBlobs(signedFetch);
+  const local = await loadLocalRenditions(signedFetch);
+  for (const row of local) blobs.push({ subKey: row.sub_key, sizeBytes: row.size_bytes, resident: true });
   if (blobs.length === 0) {
     return { examined: 0, orphanedBlobs: 0, orphanedRows: 0, failed: 0 };
   }
@@ -105,7 +108,7 @@ export async function reapRenditions(signedFetch: SignedFetch): Promise<ReapResu
   const parentIds = [
     ...new Set(
       blobs
-        .map((blob) => parentOfRenditionSubKey(blob.subKey))
+        .map((blob) => parentOfRenditionSubKey(blob.subKey.replace(/^local\//, "")))
         .filter((id): id is string => id !== null),
     ),
   ];
@@ -115,6 +118,13 @@ export async function reapRenditions(signedFetch: SignedFetch): Promise<ReapResu
   let orphanedRows = 0;
   let failed = 0;
   const named = new Set<string>();
+  const localWinners = new Map<string, string>();
+  for (const row of local) {
+    if (!live.has(row.parent_record_id)) continue;
+    const identity = `${row.parent_record_id}:${row.size_class}`;
+    localWinners.set(identity, row.sub_key);
+  }
+  for (const key of localWinners.values()) named.add(key);
   for (const [parentId, list] of rows) {
     const parentIsLive = live.has(parentId);
     for (const row of list) {

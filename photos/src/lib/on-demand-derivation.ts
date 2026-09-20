@@ -61,7 +61,7 @@ export function inFlightBudget(lambdaConcurrency: number): number {
  * makes two independent sharp pipelines derive the same record at once.
  */
 export function shouldDeriveOnDemand(config: RuntimeConfig | null): boolean {
-  return Boolean(config?.apiGatewayUrl);
+  return config !== null;
 }
 
 interface Request {

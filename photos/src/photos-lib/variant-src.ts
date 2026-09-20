@@ -107,6 +107,7 @@ export function displayForRenditionChoice(
   choice: RenditionChoice | undefined,
   targetLongEdge: number,
   legacyImage?: AppImage,
+  viewer = false,
 ): StillDisplay {
   if (!choice) {
     // No resolution for this target — an older server, a video, or a size the
@@ -131,7 +132,8 @@ export function displayForRenditionChoice(
 
   const state = choice.ideal.state ?? "pending";
   return {
-    source: choice.fallback ? entryToSource(choice.fallback, targetLongEdge) : null,
+    source: viewer && choice.viewerFallback ? entryToSource(choice.viewerFallback, targetLongEdge)
+      : choice.fallback ? entryToSource(choice.fallback, targetLongEdge) : null,
     // Keyed on availability, never on "smaller than I asked for". A 300 px
     // original asked for 2048 resolves to a rung that is genuinely below target
     // and genuinely final, so a watcher on the size comparison would wait

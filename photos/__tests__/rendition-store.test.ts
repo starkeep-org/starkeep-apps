@@ -45,6 +45,7 @@ describe("reading the table", () => {
     ];
     const asked: string[] = [];
     const fetch: SignedFetch = async (path) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
       asked.push(path);
       return json(pages.shift());
     };
@@ -65,6 +66,7 @@ describe("reading the table", () => {
     let asked = "";
     await loadRenditionRows(
       async (path) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
         asked = path;
         return json({ rows: [], page_token: null });
       },
@@ -98,6 +100,7 @@ describe("what this node is holding", () => {
     let body: unknown;
     const residency = await loadResidency(
       async (path, init) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
         expect(path).toBe("/app-data/residency/lookup");
         body = JSON.parse(String(init?.body));
         return json({
@@ -120,6 +123,7 @@ describe("what this node is holding", () => {
 describe("hydrating a page", () => {
   it("joins rows, residency and urls into one answer per parent", async () => {
     const fetch: SignedFetch = async (path, init) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
       if (path.startsWith("/app-data/db/renditions")) {
         return json({ rows: [row("a", "image-thumb"), row("b", "image-medium")], page_token: null });
       }
@@ -153,14 +157,14 @@ describe("hydrating a page", () => {
     expect(hydrated.get("b")![0]!.availableHere).toBe(false);
   });
 
-  it("asks for nothing else when the table has no rows for the page", async () => {
+  it("checks local alternatives when the synchronized table has no rows", async () => {
     let calls = 0;
     const hydrated = await loadHydratedRenditions(async () => {
       calls += 1;
       return json({ rows: [], page_token: null });
     }, ["a"]);
     expect(hydrated.size).toBe(0);
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
   });
 });
 
@@ -168,6 +172,7 @@ describe("writing a rung", () => {
   it("upserts the row rather than adding a second one", async () => {
     let body: unknown;
     await putRenditionRow(async (path, init) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
       expect(path).toBe("/app-data/db/renditions");
       expect(init?.method).toBe("POST");
       body = JSON.parse(String(init?.body));

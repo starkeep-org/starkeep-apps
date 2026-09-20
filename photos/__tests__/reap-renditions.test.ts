@@ -43,6 +43,7 @@ function plane(options: PlaneOptions) {
   const deletedBlobs: string[] = [];
   const deletedRows: unknown[] = [];
   const fetch: SignedFetch = async (path, init) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
     if (options.refuse?.(init?.method ?? "GET", path)) return json({ error: "nope" }, 500);
     if (path.startsWith("/app-data/residency")) {
       return json({

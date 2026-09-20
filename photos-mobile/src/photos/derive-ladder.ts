@@ -115,10 +115,12 @@ import type { ScanCursorStore } from "../work/scan-cursor";
  * `image-medium` — a different number for a different reason.
  */
 export const MOBILE_DERIVE_CEILING_LONG_EDGE: number = STILL_LADDER.find(
-  (spec) => spec.sizeClass === "image-medium",
+  (spec) => spec.sizeClass === "image-thumb",
 )!.maxLongEdge;
 
 /** What a rendition is encoded as here, matching every other node. */
+export const MOBILE_FULL_DERIVE_CEILING_LONG_EDGE = STILL_LADDER.at(-1)!.maxLongEdge;
+
 const RENDITION_TYPE = "image/avif";
 
 /**
@@ -221,12 +223,15 @@ export type ImageEncoder = (
 export type HashBytes = (bytes: Uint8Array) => Promise<string>;
 
 export interface DeriveLadderDeps {
-  readonly aliases: MediaAliasStore;
+  readonly aliases?: MediaAliasStore;
+  readonly originalUri?: (record: DataRecord) => Promise<string | null>;
+  readonly listOriginals?: (after: string | null, limit: number) => Promise<Array<{ recordId: string; objectStorageKey: string; contentUri: string }>>;
   readonly database: DatabaseAdapter;
   readonly hash: HashBytes;
   readonly encode: ImageEncoder;
   /** Read published rungs and write through the node’s serialized publisher. */
   readonly photosData: PhotosAppData;
+  readonly isRenditionResident?: (key: string) => boolean | Promise<boolean>;
   readonly publishRendition: (row: RenditionRow, bytes: Uint8Array) => Promise<boolean>;
 }
 
@@ -274,6 +279,7 @@ export interface DeriveLadderOutcome {
 export async function deriveRenditions(
   deps: DeriveLadderDeps & { readonly cursor: ScanCursorStore },
   options: {
+    readonly ceilingLongEdge?: number;
     readonly pageLimit?: number;
     readonly maxRecords?: number;
     readonly maxPages?: number;
@@ -293,6 +299,7 @@ export async function deriveRenditions(
     if (options.signal?.aborted) break;
     const page = await derivePage(deps, {
       limit: pageLimit,
+      ceilingLongEdge: options.ceilingLongEdge,
       after,
       maxRecords: budget - scanned,
       ...(options.signal ? { signal: options.signal } : {}),
@@ -332,13 +339,16 @@ export async function derivePage(
   deps: DeriveLadderDeps,
   options: {
     readonly limit: number;
+    readonly ceilingLongEdge?: number;
     readonly after?: string | null;
     /** How many records this page may still decode. */
     readonly maxRecords?: number;
     readonly signal?: { readonly aborted: boolean };
   },
 ): Promise<DeriveLadderOutcome> {
-  const page = deps.aliases.listAfter(options.after ?? null, options.limit);
+  const ceiling = options.ceilingLongEdge ?? MOBILE_DERIVE_CEILING_LONG_EDGE;
+  const page = deps.listOriginals ? await deps.listOriginals(options.after ?? null, options.limit)
+    : deps.aliases?.listAfter(options.after ?? null, options.limit) ?? [];
   if (page.length === 0) {
     return { scanned: 0, written: 0, failed: 0, complete: true, resumeAfter: null };
   }
@@ -401,25 +411,27 @@ export async function derivePage(
       record && sourceLongEdge > 0
         ? missingClasses(
             sourceLongEdge,
-            existing.get(record.id) ?? [],
+            await residentCandidates(deps, existing.get(record.id) ?? []),
             // The sweep keeps the standing ceiling. It runs over a whole camera
             // roll on a background window's budget, which is the case the
             // ceiling was written for — see `deriveForRecord` for the one
             // caller that raises it.
-            MOBILE_DERIVE_CEILING_LONG_EDGE,
+            ceiling,
           )
         : [];
 
-    if (record && missing.length > 0) {
+    const originalUri = record && missing.length > 0
+      ? deps.originalUri ? await deps.originalUri(record) : alias.contentUri : null;
+    if (record && originalUri && missing.length > 0) {
       scanned += 1;
       try {
         const rungs = await deriveOne(
           deps,
           record,
-          alias.contentUri,
+          originalUri,
           sourceLongEdge,
           missing,
-          MOBILE_DERIVE_CEILING_LONG_EDGE,
+          ceiling,
         );
         // Null is a photograph this device could not read at all, and it is
         // counted with the throws rather than with the successes: both are a
@@ -517,8 +529,8 @@ export async function deriveForRecord(
   // The alias is both the permission and the address: it says these bytes are
   // this device's to decode, and it carries the `content://` URI to open. One
   // indexed lookup, which is what makes this affordable per tile.
-  const alias = deps.aliases.ofRecord(record.id)[0];
-  if (!alias) return null;
+  const uri = deps.originalUri ? await deps.originalUri(record) : deps.aliases?.ofRecord(record.id)[0]?.contentUri;
+  if (!uri) return null;
 
   const row = (await deps.database.getMetadataByIds("image", [record.id])).get(record.id);
   const width = typeof row?.["width"] === "number" ? row["width"] : 0;
@@ -529,12 +541,12 @@ export async function deriveForRecord(
   const existing = deps.photosData.candidates([record.id]);
   const missing = missingClasses(
     sourceLongEdge,
-    existing.get(record.id) ?? [],
+    await residentCandidates(deps, existing.get(record.id) ?? []),
     ceilingLongEdge,
   );
   if (missing.length === 0) return 0;
 
-  return deriveOne(deps, record, alias.contentUri, sourceLongEdge, missing, ceilingLongEdge);
+  return deriveOne(deps, record, uri, sourceLongEdge, missing, ceilingLongEdge);
 }
 
 /**
@@ -612,4 +624,10 @@ async function publishRendition(
     content_hash: contentHash, width: encoded.width, height: encoded.height,
     size_bytes: encoded.bytes.byteLength, content_type: RENDITION_TYPE,
   }, encoded.bytes);
+}
+
+
+async function residentCandidates<T extends { objectStorageKey: string }>(deps: DeriveLadderDeps, candidates: readonly T[]): Promise<T[]> {
+  const flags = await Promise.all(candidates.map(c => deps.isRenditionResident?.(c.objectStorageKey) ?? true));
+  return candidates.filter((_, index) => flags[index]);
 }

@@ -199,11 +199,17 @@ function handler(
         records: parents.map((r) => ({
           id: r.id,
           mime_type: r.mime_type,
+          availability: { state: "instant" },
           original_filename: r.original_filename,
           metadata: Object.keys(r.metadata).length > 0 ? r.metadata : null,
         })),
         nextCursor: null,
       });
+      return;
+    }
+
+    if (path === "/app-data/local-files") {
+      json(res, { files: [], nextCursor: null });
       return;
     }
 

@@ -77,7 +77,7 @@ export interface TickReport {
  * rather than by appearing here, because that is a property of the binary rather
  * than of the graph.
  */
-export const UNBOUND_JOBS: readonly JobId[] = ["derive-ladder-full"];
+export const UNBOUND_JOBS: readonly JobId[] = [];
 
 export interface TickDeps {
   readonly node: MobileNode;
@@ -115,7 +115,7 @@ export interface TickDeps {
    */
   readonly deriveRenditions?: (signal: {
     readonly aborted: boolean;
-  }) => Promise<{
+  }, full?: boolean) => Promise<{
     /** Records this pass paid a decode for. */
     scanned: number;
     /** Rungs written. */
@@ -337,10 +337,11 @@ async function runJob(
     // callback at all is a caller that offers no derivation; a null outcome is a
     // device that cannot derive — no camera roll to walk, or no encoder in the
     // binary. Both are ordinary, and neither is a failure.
+    case "derive-ladder-full":
     case "derive-ladder-cheap": {
       if (!deps.deriveRenditions) return "nothing here derives renditions";
       const outcome = await deps.deriveRenditions(
-        shareOf(options, now, DERIVE_DEADLINE_SHARE),
+        shareOf(options, now, DERIVE_DEADLINE_SHARE), job === "derive-ladder-full",
       );
       if (outcome === null) return "this device cannot derive — no encoder, or no camera roll";
       return (

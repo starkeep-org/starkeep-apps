@@ -40,6 +40,21 @@ export interface RenditionCandidate {
 
 /** The handset consumes the same declaration and DDL as the installers. */
 export function createPhotosAppData(db: RawDatabase, clock: HLCClock) {
+  db.exec(qb.schema.createTable("photos_local_renditions").ifNotExists()
+    .addColumn("parent_record_id", "text", c => c.notNull())
+    .addColumn("size_class", "text", c => c.notNull())
+    .addColumn("payload", "text", c => c.notNull())
+    .addPrimaryKeyConstraint("photos_local_renditions_pk", ["parent_record_id", "size_class"]).compile().sql);
+  function localRows(): RenditionRow[] {
+    const query = qb.selectFrom("photos_local_renditions").select("payload").compile();
+    return db.prepare(query.sql).all().map(value => JSON.parse((value as { payload: string }).payload) as RenditionRow);
+  }
+  function keepLocal(row: RenditionRow) {
+    const query = qb.insertInto("photos_local_renditions").values({ parent_record_id: row.parent_record_id,
+      size_class: row.size_class, payload: JSON.stringify(row) })
+      .onConflict(c => c.columns(["parent_record_id", "size_class"]).doUpdateSet({ payload: JSON.stringify(row) })).compile();
+    db.prepare(query.sql).run(...query.parameters);
+  }
   const tables = manifest.infraRequirements.appSpecificSyncable
     .tables as DeclaredSyncableTable[];
   createAppSyncableTables(db, PHOTOS_ID, tables);
@@ -86,13 +101,23 @@ export function createPhotosAppData(db: RawDatabase, clock: HLCClock) {
   return {
     source,
     rows,
+    localRows,
+    removeLocal(row: RenditionRow) {
+      const query = qb.deleteFrom("photos_local_renditions").where("parent_record_id", "=", row.parent_record_id)
+        .where("size_class", "=", row.size_class).compile();
+      db.prepare(query.sql).run(...query.parameters);
+    },
+    clearLocal() { db.exec(qb.deleteFrom("photos_local_renditions").compile().sql); },
     write,
     candidates(
       parentIds: readonly string[],
     ): Map<string, RenditionCandidate[]> {
       const out = new Map<string, RenditionCandidate[]>();
       if (!parentIds.length) return out;
-      for (const row of rows("renditions", "parent_record_id", parentIds)) {
+      const local = localRows().filter(row => parentIds.includes(row.parent_record_id));
+      const published = rows("renditions", "parent_record_id", parentIds);
+      const publishedKeys = new Set(published.map(row => row.sub_key));
+      for (const row of [...published, ...local.filter(row => !publishedKeys.has(row.sub_key))]) {
         const parent = String(row.parent_record_id);
         const key = PHOTOS_FILE_PREFIX + row.sub_key;
         const candidates = out.get(parent) ?? [];
@@ -113,13 +138,17 @@ export function createPhotosAppData(db: RawDatabase, clock: HLCClock) {
       bytes: Uint8Array,
       storage: ObjectStorageAdapter,
     ) {
-      // Recheck after encoding. A live winner keeps its immutable URL.
-      if (
-        rows("renditions", "parent_record_id", [row.parent_record_id]).some(
-          (r) => r.size_class === row.size_class,
-        )
-      )
-        return false;
+      // An existing publication keeps its immutable bytes. An independently
+      // encoded local copy stays on this handset and never enters sync.
+      const existing = rows("renditions", "parent_record_id", [row.parent_record_id])
+        .find(r => r.size_class === row.size_class);
+      if (existing) {
+        const key = PHOTOS_FILE_PREFIX + row.sub_key;
+        if (await storage.has(key)) return false;
+        await storage.put(key, bytes, { contentType: row.content_type });
+        keepLocal(row);
+        return true;
+      }
       const key = PHOTOS_FILE_PREFIX + row.sub_key;
       await storage.put(key, bytes, { contentType: row.content_type });
       write("_starkeep_sync_records", {

@@ -187,7 +187,7 @@ describe("derivation", () => {
 
     expect(find(report, "derive-ladder-cheap").ran).toBe(true);
     expect(find(report, "derive-ladder-cheap").detail).toContain("rungs=3");
-    expect(deriveRenditions).toHaveBeenCalledTimes(1);
+    expect(deriveRenditions).toHaveBeenCalledTimes(2);
   });
 
   it("distinguishes a caller that offers no derivation from a device that cannot", async () => {
@@ -220,13 +220,13 @@ describe("derivation", () => {
     expect(DERIVE_DEADLINE_SHARE).toBeLessThan(1);
   });
 
-  it("keeps the expensive rungs unbound", async () => {
+  it("runs the expensive rungs while charging", async () => {
     const report = await runWorkTick(deps({ deriveRenditions: async () => derived() }), far());
 
     // 2560 and 4272 pixels on a side is real CPU for pixels no phone screen can
     // show. They stay a `sharp` node's work.
-    expect(UNBOUND_JOBS).toEqual(["derive-ladder-full"]);
-    expect(find(report, "derive-ladder-full").ran).toBe(false);
+    expect(UNBOUND_JOBS).toEqual([]);
+    expect(find(report, "derive-ladder-full").ran).toBe(true);
   });
 });
 

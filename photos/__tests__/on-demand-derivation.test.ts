@@ -32,9 +32,9 @@ describe("how many requests may be in flight", () => {
 });
 
 describe("where browser-driven derivation runs", () => {
-  it("runs only against the cloud, because the local sweep already owns the work", () => {
+  it("runs against configured local and cloud Photos servers", () => {
     expect(shouldDeriveOnDemand(null)).toBe(false);
-    expect(shouldDeriveOnDemand({})).toBe(false);
+    expect(shouldDeriveOnDemand({})).toBe(true);
     expect(shouldDeriveOnDemand({ apiGatewayUrl: "https://photos.invalid" })).toBe(true);
   });
 });

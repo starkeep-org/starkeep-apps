@@ -26,6 +26,7 @@ describe("POST /api/photos/renditions", () => {
   /** A shared page carrying the source's dimensions, and Photos' own rungs. */
   function planes(): (path: string, init?: { method?: string; body?: string }) => Promise<Response> {
     return async (path, init) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
       if (path.startsWith("/data/records")) {
         return new Response(JSON.stringify({
           records: [{

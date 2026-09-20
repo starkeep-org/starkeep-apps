@@ -24,6 +24,7 @@ export interface VideoIngestResult {
 }
 
 export interface VideoIngestDeps {
+  readonly retainLocal?: boolean;
   readonly signedFetch: SignedFetch;
   readonly tools: VideoTools;
   /**
@@ -82,7 +83,7 @@ export async function deriveAndPublishVideo(
     try {
       const contentHash = await deps.hashOf(rendition.bytes);
       published.push(
-        await publishVideoRendition(deps.signedFetch, parent, rendition, contentHash),
+        await publishVideoRendition(deps.signedFetch, parent, rendition, contentHash, deps.retainLocal),
       );
     } catch (err) {
       // A publish failure is transient by nature (network, presign, a 5xx) and

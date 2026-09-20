@@ -264,7 +264,7 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
           // waited on from a node running `sharp`. Bounded by the share the tick
           // gives it and by its own record budget, and resumable from a cursor —
           // so a window that closes mid-sweep costs the record in flight.
-          deriveRenditions: (signal) => deriveRenditionsFor(lease.node, clock, { signal }),
+          deriveRenditions: (signal, full) => deriveRenditionsFor(lease.node, clock, { signal, full }),
           // Kept so the watchdog has something to write. Each snapshot names
           // the job in flight, so an abandoned window says which one it was.
           onProgress: (snapshot) => {

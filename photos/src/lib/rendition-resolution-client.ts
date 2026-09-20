@@ -80,7 +80,7 @@ function mediaEntries(kind: MediaPolicyKind, decision: ResolutionDecision | unde
     return [video.poster, video.playback].filter(Boolean) as ResolutionMediaEntry[];
   }
   const still = decision as RenditionChoice;
-  return [still.ideal, still.fallback].filter(Boolean) as Array<RenditionChoice["ideal"] & {
+  return [still.ideal, still.fallback, still.viewerFallback].filter(Boolean) as Array<RenditionChoice["ideal"] & {
     urlLifetime?: UrlLifetime;
   }>;
 }
@@ -127,6 +127,7 @@ function retainStableUrls(
   return {
     ideal: retain(still.ideal),
     ...(still.fallback ? { fallback: retain(still.fallback) } : {}),
+    ...(still.viewerFallback ? { viewerFallback: retain(still.viewerFallback) } : {}),
   };
 }
 

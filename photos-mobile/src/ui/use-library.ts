@@ -1119,7 +1119,7 @@ export function useLibrary(node: NodeState): LibraryState {
       // that one is a button somebody pressed and this one is a surface deciding
       // for itself, so an error line would appear without anybody having asked
       // for anything.
-      if (!node.photosEngine) return false;
+      if (!node.photosEngine || await node.objectStorage.has(item.record.objectStorageKey)) return false;
 
       // The tile's rule, and the only difference between the two surfaces. A
       // tile already painting a rung is showing a picture, and the step up to
@@ -1191,10 +1191,9 @@ export function useLibrary(node: NodeState): LibraryState {
       // deriving here would mint a second record for the same rung — see
       // `deriveForRecord`. True for both surfaces: the viewer may raise the
       // ceiling, and may not re-encode a class that already has a record.
-      if (item.missingRendition !== null) return false;
       // Nothing on this device to decode. Checked here as well as inside
       // `deriveForRecord` so the ordinary synced record costs no query at all.
-      if (!item.bytesHere) return false;
+      if (!await node.objectStorage.has(item.record.objectStorageKey)) return false;
 
       try {
         // Keyed on the ceiling as well as the record. The two surfaces ask for

@@ -300,7 +300,7 @@ describe("cloud data path (client → proxy → data server)", () => {
     // different owner's answer, and the platform holds no joined view of them.
     const sharedCalls = received.filter((r) => r.path.startsWith("/data/records"));
     expect(sharedCalls).toHaveLength(1);
-    expect(received.filter((r) => r.path.startsWith("/app-data/"))).toHaveLength(3);
+    expect(received.filter((r) => r.path.startsWith("/app-data/"))).toHaveLength(4);
     const upstream = sharedCalls[0]!;
     const params = new URLSearchParams(upstream.path.split("?")[1]);
     expect(JSON.parse(params.get("where")!)).toEqual({ id: { in: ["rec-visible"] } });

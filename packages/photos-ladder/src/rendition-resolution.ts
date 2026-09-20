@@ -53,6 +53,7 @@ import {
 export type RenditionState =
   /** Nothing is wrong; it has not been derived yet. */
   | "pending"
+  | "missing"
   /**
    * The node answering this request cannot decode the source at all, so it
    * will never produce this rung. Somewhere else can — which is what makes
@@ -83,6 +84,8 @@ export interface RenditionEntry {
 }
 
 export interface RenditionChoice {
+  /** Only a local viewer may paint this larger resident rung. */
+  readonly viewerFallback?: RenditionEntry;
   /**
    * The rung the ladder says should answer this target for this record.
    *
@@ -116,6 +119,7 @@ export interface ResolveOptions {
    * what it is on a node that could derive it and simply has not yet.
    */
   readonly unavailableState?: RenditionState;
+  readonly allowLargerViewerFallback?: boolean;
 }
 
 /**
@@ -182,7 +186,9 @@ export function resolveRendition(
   const fallbackEdge = below.length > 0 ? below[below.length - 1]!.longEdge : null;
   const fallback =
     fallbackEdge === null ? undefined : below.find((c) => c.longEdge === fallbackEdge);
-  return fallback ? { ideal, fallback: availableEntry(fallback) } : { ideal };
+  const larger = options.allowLargerViewerFallback ? byEdge.find(c => c.longEdge > idealEdge) : undefined;
+  return { ideal, ...(fallback ? { fallback: availableEntry(fallback) } : {}),
+    ...(larger ? { viewerFallback: availableEntry(larger) } : {}) };
 }
 
 export function resolveRenditions(

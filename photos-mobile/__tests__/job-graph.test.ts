@@ -100,11 +100,11 @@ describe("battery policy", () => {
 
   // A phone that is never plugged in would otherwise never sync, which is
   // worse than a slightly emptier battery.
-  it("requires charging for nothing at all, as an OS constraint", () => {
+  it("requires charging only for the larger rendition job", () => {
     // The one job with a power rule expresses it as a runtime check instead —
     // see below — because WorkManager cannot say "charging or above half".
     for (const job of JOB_GRAPH) {
-      expect(job.constraints.requiresCharging, job.id).toBe(false);
+      expect(job.constraints.requiresCharging, job.id).toBe(job.id === "derive-ladder-full");
     }
   });
 
@@ -113,9 +113,9 @@ describe("battery policy", () => {
       expect(fullDeriveMayRun(device({ isCharging: true, batteryLevel: 0.05 }))).toBe(true);
     });
 
-    it("run unplugged when there is comfortable charge", () => {
+    it("wait for charging even when the battery is above half", () => {
       const above = Math.min(1, FULL_DERIVE_BATTERY_FLOOR + 0.1);
-      expect(fullDeriveMayRun(device({ isCharging: false, batteryLevel: above }))).toBe(true);
+      expect(fullDeriveMayRun(device({ isCharging: false, batteryLevel: above }))).toBe(false);
     });
 
     it("wait when unplugged and low", () => {

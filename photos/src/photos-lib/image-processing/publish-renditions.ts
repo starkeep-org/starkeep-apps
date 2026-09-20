@@ -113,6 +113,7 @@ export async function publishRendition(
   parent: RenditionParent,
   rendition: PublishableRendition,
   contentHash: string,
+  retainLocal = false,
 ): Promise<PublishedRendition> {
   // First-writer-wins, read at the top. A rung another node has already
   // published is not re-uploaded: object keys stop moving once a rung exists,
@@ -120,7 +121,7 @@ export async function publishRendition(
   const existing = (await loadRenditionsOf(signedFetch, parent.id)).find(
     (row) => row.size_class === rendition.sizeClass,
   );
-  if (existing) {
+  if (existing && !retainLocal) {
     return {
       sizeClass: existing.size_class,
       subKey: existing.sub_key,
@@ -130,12 +131,24 @@ export async function publishRendition(
     };
   }
 
-  const subKey = renditionSubKey(
+  const local = Boolean(existing && retainLocal);
+  const subKey = (local ? "local/" : "") + renditionSubKey(
     parent.id,
     rendition.sizeClass,
     contentHash,
     rendition.contentType,
   );
+
+  const row: RenditionRow = {
+    parent_record_id: parent.id,
+    size_class: rendition.sizeClass,
+    sub_key: subKey,
+    content_hash: contentHash,
+    width: rendition.width,
+    height: rendition.height,
+    size_bytes: rendition.data.byteLength,
+    content_type: rendition.contentType,
+  };
 
   const presignRes = await signedFetch(`/app-data/files/presign`, {
     method: "POST",
@@ -177,6 +190,7 @@ export async function publishRendition(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contentHash,
+      ...(local ? { localMetadata: row } : {}),
       mimeType: rendition.contentType,
       sizeBytes: rendition.data.byteLength,
       originalFilename: renditionFileName(
@@ -195,18 +209,8 @@ export async function publishRendition(
     );
   }
 
-  const row: RenditionRow = {
-    parent_record_id: parent.id,
-    size_class: rendition.sizeClass,
-    sub_key: subKey,
-    content_hash: contentHash,
-    width: rendition.width,
-    height: rendition.height,
-    size_bytes: rendition.data.byteLength,
-    content_type: rendition.contentType,
-  };
   try {
-    await putRenditionRow(signedFetch, row);
+    if (!local) await putRenditionRow(signedFetch, row);
   } catch (err) {
     // The bytes are up and the file row is written; only the rendition row is
     // missing, so the rung is an orphan the reaper will collect and the next

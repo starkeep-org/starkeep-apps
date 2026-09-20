@@ -122,7 +122,7 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
   // guarded was already unreachable whenever a policy is published, which is
   // always. On-demand derivation is what answers an underived record now.
   const rendition = !isVideo && viewportTarget && resolution?.decision
-    ? displayForRenditionChoice(resolution.decision as RenditionChoice, viewportTarget)
+    ? displayForRenditionChoice(resolution.decision as RenditionChoice, viewportTarget, undefined, true)
     : null;
   const pendingLongEdge = rendition?.awaitingBetter ? rendition.idealLongEdge : null;
   useEffect(() => {

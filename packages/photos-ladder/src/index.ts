@@ -69,3 +69,8 @@ export {
   renditionSubKey,
   type RenditionRow,
 } from "./rendition-table";
+
+export { PHOTOS_RUNG_SHARES, PHOTOS_FALLBACK_SHARE, type RungRetention } from "./acquisition-policy";
+export { acquireRenditions, compareRenditionRank, type AcquisitionEntry } from "./acquisition";
+
+export { DESKTOP_RUNG_SHARES, DESKTOP_FALLBACK_SHARE } from "./acquisition-policy";

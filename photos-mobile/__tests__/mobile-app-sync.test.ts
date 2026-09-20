@@ -156,6 +156,48 @@ async function derive() {
 }
 
 describe("Photos app-specific mobile sync", () => {
+  it("prefetches remote grid rungs within Photos shares without downloading the original", async () => {
+    const receiver = await makeNode("grid-phone", {
+      cloud: channel(desktop, false), photosCloud: channel(desktop, true),
+      retention: { ...policy, platform: { ...policy.platform, fallback: { share: 1, prefetch: false } },
+        apps: { photos: { budgetBytes: 10000000 } } },
+    });
+    const parent = createDataRecord({ type: "image/jpeg", originAppId: "photos",
+      contentHash: "a".repeat(64), objectStorageKey: "shared/image/large-original", sizeBytes: 7000000 }, createHLCClock({ nodeId: "desktop" }));
+    await desktop.databaseAdapter.put(parent);
+    await desktop.databaseAdapter.putMetadata("image/jpeg", { recordId: parent.id, width: 4000, height: 3000 });
+    for (const [sizeClass, edge] of [["image-xsmall", 320], ["image-thumb", 640], ["image-large", 3840]] as const) {
+      const bytes = new Uint8Array(14000).fill(edge % 255);
+      const contentHash = await hash(bytes);
+      await desktop.publishRendition({ parent_record_id: parent.id, size_class: sizeClass,
+        sub_key: `renditions/${parent.id}/${sizeClass}/${contentHash}.avif`, content_hash: contentHash,
+        width: edge, height: edge, size_bytes: bytes.length, content_type: "image/avif" }, bytes);
+    }
+    await receiver.sync();
+    const rows = receiver.photosData.rows("renditions");
+    expect(rows).toHaveLength(3);
+    await receiver.acquireQueued();
+    for (const row of rows) {
+      expect(await receiver.objectStorage.has(PHOTOS_FILE_PREFIX + row.sub_key)).toBe(row.size_class !== "image-large");
+    }
+    expect(await receiver.objectStorage.has(parent.objectStorageKey)).toBe(false);
+    // The resident bytes keep the grid drawable after the peer disappears.
+    for (const row of rows) await desktop.objectStorage.delete(PHOTOS_FILE_PREFIX + row.sub_key);
+    expect(rows.filter(r => receiver.residency!.index.get(PHOTOS_FILE_PREFIX + r.sub_key)?.resident)).toHaveLength(2);
+  });
+
+  it("declines an on-demand rung larger than its Photos share", async () => {
+    const parent = await derive();
+    await phone.photosEngine!.sync();
+    const row = phone.photosData.rows("renditions")[0]!;
+    const key = PHOTOS_FILE_PREFIX + row.sub_key;
+    await phone.objectStorage.delete(key);
+    phone.residency!.index.markDeparted(key);
+    phone.mediaAliases!.remove(parent.objectStorageKey);
+    expect(await phone.fetchRendition(key)).toBe(false);
+    expect(await phone.objectStorage.has(key)).toBe(false);
+  });
+
   it("round-trips a desktop caption independently of shared-record watermarks", async () => {
     desktop.photosData.write("image_enriched", {
       record_id: "photo",
@@ -198,7 +240,10 @@ describe("Photos app-specific mobile sync", () => {
         .classes.find((c) => c.sizeClass === "photos:unclassified")?.heldBytes,
     ).toBe(2);
     await phone.reclaimSpace();
-    expect(await phone.objectStorage.has(key)).toBe(true);
+    // Photos enforces its own one-byte ceiling; the published rows survive.
+    expect(await phone.objectStorage.has(key)).toBe(false);
+    expect(phone.photosData.rows("renditions")).toHaveLength(1);
+    expect(await desktop.objectStorage.has(key)).toBe(true);
   });
   it("keeps the first publication when another encoder produces different bytes", async () => {
     await derive();
@@ -219,9 +264,15 @@ describe("Photos app-specific mobile sync", () => {
         },
         bytes,
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(phone.photosData.rows("renditions")).toEqual([row]);
     expect(phone.photosData.rows("_starkeep_sync_records")).toHaveLength(1);
+    const local = phone.photosData.localRows()[0]!;
+    expect(await phone.objectStorage.has(PHOTOS_FILE_PREFIX + local.sub_key)).toBe(true);
+    expect(local.content_hash).toBe(contentHash);
+    await phone.photosEngine!.sync();
+    expect(desktop.photosData.localRows()).toEqual([]);
+    expect(desktop.photosData.rows("renditions")).toHaveLength(1);
   });
   it("removes only local Photos data and clears Photos watermarks without tombstones", async () => {
     const parent = await derive();
@@ -262,7 +313,7 @@ describe("Photos app-specific mobile sync", () => {
     const reopened = await makeNode("phone", {
       databasePath,
       photosCloud: channel(desktop, true),
-      retention: policy,
+      retention: { ...policy, apps: { photos: { budgetBytes: 1000 } } },
     });
     expect(await reopened.databaseAdapter.get(parent.id)).not.toBeNull();
     await reopened.sync();

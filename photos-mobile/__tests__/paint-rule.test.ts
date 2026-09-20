@@ -494,3 +494,25 @@ describe("a rung that two nodes derived", () => {
     expect(opened.missingRendition).toBe(medium.id);
   });
 });
+
+describe("adjacent larger viewer fallback", () => {
+  it("paints the adjacent larger resident rung without promoting the grid", async () => {
+    const parent = await seedParent({ bytesHere: false });
+    const small = await seedRendition(parent, 320, { resident: true });
+    const larger = await seedRendition(parent, 2560, { resident: true });
+    const item = await tile();
+    expect(item.uri).toBe(uriOf(small));
+    const { resolveRecordRenditions } = await import("../src/photos/renditions");
+    const opened = await resolveRecordRenditions(database, parent, 1280, key => held.has(key), SOURCE, fixture.data);
+    expect(opened?.paint?.objectStorageKey).toBe(larger.objectStorageKey);
+  });
+
+  it("does not skip an unpublished intermediate rung to paint a much larger one", async () => {
+    const parent = await seedParent({ bytesHere: false });
+    const small = await seedRendition(parent, 320, { resident: true });
+    await seedRendition(parent, 4272, { resident: true });
+    const { resolveRecordRenditions } = await import("../src/photos/renditions");
+    const opened = await resolveRecordRenditions(database, parent, 640, key => held.has(key), SOURCE, fixture.data);
+    expect(opened?.paint?.objectStorageKey).toBe(small.objectStorageKey);
+  });
+});

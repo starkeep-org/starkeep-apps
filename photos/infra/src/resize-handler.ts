@@ -16,12 +16,15 @@
 
 import { loadAppCredentials, signedFetch, USER_TOKEN_HEADER } from "@starkeep/app-client";
 import { deriveAndPublish } from "../../src/photos-lib/image-processing/derive-and-publish.js";
-import { CHEAP_TARGET_LONG_EDGE } from "../../src/photos-lib/ladder.js";
+import { cloudCanDecode } from "../../src/photos-lib/image-processing/derive-ladder.js";
+import { originalIsInstant } from "../../src/photos-lib/renditions/acquire.js";
+import { CHEAP_STILL_CLASSES, CHEAP_TARGET_LONG_EDGE } from "../../src/photos-lib/ladder.js";
 import { precheckThumbnail } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
 interface BrokerPhotoRecord {
   id: string;
+  type?: string;
   object_storage_key: string | null;
   parent_id: string | null;
   mime_type: string | null;
@@ -97,6 +100,11 @@ export async function handler(event: APIGatewayEvent) {
       return clientErr("Video renditions are generated only by a local Photos node", 422);
     }
 
+    if (!cloudCanDecode(record.mime_type ?? record.type ?? "") ||
+        requestedLongEdge > CHEAP_TARGET_LONG_EDGE || !await originalIsInstant(call, targetId)) {
+      return ok({ ok: true, declined: true, published: [] });
+    }
+
     // May this record be derived *from*? A rendition may not — that would
     // recurse. Any other child may: having a parent is not what makes a record
     // a rendition, and reading `parent_id !== null` as "is a rendition" is the
@@ -143,7 +151,7 @@ export async function handler(event: APIGatewayEvent) {
         if (!sourceRes.ok) throw new Error(`source fetch failed: ${sourceRes.status}`);
         return new Uint8Array(await sourceRes.arrayBuffer());
       },
-      targetLongEdge: requestedLongEdge,
+      onlyRenditionClasses: CHEAP_STILL_CLASSES,
     });
 
     if (result.outcome === "undecodable-here") {

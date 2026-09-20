@@ -1,3 +1,4 @@
+import { STILL_LADDER, applicableStillClasses } from "@starkeep/photos-ladder";
 import { photosDataFixture } from "./helpers/photos-data";
 import { PHOTOS_FILE_PREFIX, type PhotosAppData } from "../src/photos/app-data";
 /** Exercise mobile derivation against Photos-owned SQLite rendition rows. */
@@ -138,6 +139,7 @@ function deps(
   over: Partial<DeriveLadderDeps> = {},
 ): DeriveLadderDeps & { cursor: ScanCursorStore } {
   return { aliases, database, hash, encode, cursor, photosData,
+    isRenditionResident: key => objectStorage.has(key),
     publishRendition: (row, bytes) => photosData.publish(row, bytes, objectStorage), ...over };
 }
 
@@ -227,10 +229,10 @@ describe("which rungs a phone makes", () => {
     const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
 
     expect(outcome.scanned).toBe(1);
-    expect(outcome.written).toBe(3);
+    expect(outcome.written).toBe(2);
     expect(outcome.failed).toBe(0);
     const rungs = await rungsOf(parent);
-    expect([...rungs.keys()].sort()).toEqual(["image-medium", "image-thumb", "image-xsmall"]);
+    expect([...rungs.keys()].sort()).toEqual(["image-thumb", "image-xsmall"]);
     // The two above the ceiling are a `sharp` node's work, and their absence is
     // what keeps this record out of deep archive until one does it.
     expect(rungs.has("image-screen")).toBe(false);
@@ -244,7 +246,7 @@ describe("which rungs a phone makes", () => {
     await derivePage(deps(encoder.encode), { limit: 10 });
 
     expect(encoder.decoded).toHaveLength(1);
-    expect(encoder.encodes).toHaveLength(3);
+    expect(encoder.encodes).toHaveLength(2);
     expect(encoder.released).toBe(1);
   });
 
@@ -252,9 +254,9 @@ describe("which rungs a phone makes", () => {
     // 900 px makes `image-medium` applicable — the original exceeds
     // `image-thumb`'s 640 — but the class is a maximum, so it emits 900.
     const parent = await importOriginal({ width: 900, height: 600 });
-    const encoder = fakeEncoder();
+    const encoder = fakeEncoder({ ceiling: 1280 });
 
-    await derivePage(deps(encoder.encode), { limit: 10 });
+    await derivePage(deps(encoder.encode), { limit: 10, ceilingLongEdge: 1280 });
 
     expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640, 900]);
     expect(await dimensionsOf((await rungsOf(parent)).get("image-medium")!)).toEqual({
@@ -329,7 +331,7 @@ describe("what a derived rung looks like", () => {
     const parent = await importOriginal();
     await derivePage(deps(fakeEncoder().encode), { limit: 10 });
     const rows = photosData.rows("renditions", "parent_record_id", [parent.id]);
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);
     for (const row of rows) {
       const file = photosData.rows("_starkeep_sync_records", "id", [PHOTOS_FILE_PREFIX + row.sub_key])[0]!;
       expect(String(file.updated_at) < String(row.updated_at)).toBe(true);
@@ -367,15 +369,15 @@ describe("what it does not do twice", () => {
     expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([640]);
   });
 
-  it("keeps a published rung when its bytes are absent", async () => {
+  it("keeps publication stable while restoring absent local bytes", async () => {
     const parent = await importOriginal();
     await derivePage(deps(fakeEncoder().encode), { limit: 10 });
     const thumb = (await rungsOf(parent)).get("image-thumb")!;
     await objectStorage.delete(thumb.objectStorageKey);
     const encoder = fakeEncoder();
     const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
-    expect(outcome.written).toBe(0);
-    expect(encoder.decoded).toEqual([]);
+    expect(outcome.written).toBe(1);
+    expect(encoder.decoded).toHaveLength(1);
   });
 });
 
@@ -496,7 +498,7 @@ describe("what a failure costs", () => {
     expect(outcome.failed).toBe(1);
     expect(outcome.scanned).toBe(2);
     expect((await rungsOf(first)).size).toBe(0);
-    expect((await rungsOf(second)).size).toBe(3);
+    expect((await rungsOf(second)).size).toBe(2);
   });
 
   it("counts an encode that throws and still releases the bitmap", async () => {
@@ -544,9 +546,8 @@ describe("deriving one record on demand", () => {
 
     const written = await deriveForRecord(deps(encoder.encode), parent);
 
-    expect(written).toBe(3);
+    expect(written).toBe(2);
     expect([...(await rungsOf(parent)).keys()].sort()).toEqual([
-      "image-medium",
       "image-thumb",
       "image-xsmall",
     ]);
@@ -582,7 +583,7 @@ describe("deriving one record on demand", () => {
     expect(encoder.decoded).toEqual([]);
   });
 
-  it("refuses a rung that already has a record, rather than minting a second", async () => {
+  it("regenerates missing bytes locally without replacing an existing publication", async () => {
     // **The expensive mistake this branch could make.** A rung derived on
     // another node and synced down as a row has bytes to *fetch*; re-encoding it
     // here produces different bytes, a different content hash and therefore a
@@ -596,9 +597,9 @@ describe("deriving one record on demand", () => {
     const encoder = fakeEncoder();
     const written = await deriveForRecord(deps(encoder.encode), parent);
 
-    expect(written).toBe(0);
-    expect(encoder.decoded).toEqual([]);
-    expect((await rungsOf(parent)).size).toBe(3);
+    expect(written).toBe(2);
+    expect(encoder.decoded).toHaveLength(1);
+    expect((await rungsOf(parent)).size).toBe(2);
   });
 
   it("refuses a video, whose poster is a frame extraction rather than an encode", async () => {
@@ -711,6 +712,40 @@ describe("deriving one record on demand", () => {
       parent,
     );
 
-    expect(charged).toHaveLength(3);
+    expect(charged).toHaveLength(2);
+  });
+});
+
+describe("original availability selects repair", () => {
+  it("derives a downloaded original without a camera-roll alias", async () => {
+    const parent = await importOriginal();
+    aliases.remove(parent.objectStorageKey);
+    const encoder = fakeEncoder();
+    const written = await deriveForRecord(deps(encoder.encode, {
+      originalUri: async () => "file:///downloads/original.jpg",
+    }), parent);
+    expect(written).toBe(2);
+    expect(encoder.decoded).toEqual(["file:///downloads/original.jpg"]);
+  });
+
+  it("does not derive a stale camera-roll alias", async () => {
+    const parent = await importOriginal();
+    const encoder = fakeEncoder();
+    expect(await deriveForRecord(deps(encoder.encode, { originalUri: async () => null }), parent)).toBeNull();
+    expect(encoder.decoded).toEqual([]);
+  });
+
+  it("walks downloaded originals in the charging pass and completes every applicable rung", async () => {
+    const parent = await importOriginal();
+    aliases.remove(parent.objectStorageKey);
+    const ceiling = STILL_LADDER.at(-1)!.maxLongEdge;
+    const encoder = fakeEncoder({ ceiling });
+    const outcome = await derivePage(deps(encoder.encode, {
+      originalUri: async () => "file:///downloads/original.jpg",
+      listOriginals: async () => [{ recordId: parent.id, objectStorageKey: `records:${parent.id}`, contentUri: "" }],
+    }), { limit: 10, ceilingLongEdge: ceiling });
+    expect(outcome.written).toBe(applicableStillClasses(4000).length);
+    expect(encoder.decoded).toHaveLength(1);
+    expect(encoder.released).toBe(1);
   });
 });

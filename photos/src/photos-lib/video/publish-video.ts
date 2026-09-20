@@ -82,6 +82,7 @@ export async function publishVideoRendition(
   parent: RenditionParent,
   rendition: DerivedVideoRendition,
   contentHash: string,
+  retainLocal = false,
 ): Promise<PublishedRendition> {
   return publishRendition(
     signedFetch,
@@ -93,6 +94,6 @@ export async function publishVideoRendition(
       height: rendition.height,
       data: rendition.bytes,
     },
-    contentHash,
+    contentHash, retainLocal,
   );
 }

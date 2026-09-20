@@ -39,6 +39,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { loadAppCredentials, signedFetch, type AppCredentials } from "@starkeep/app-client";
 import { deriveAndPublish } from "../../photos-lib/image-processing/derive-and-publish";
+import { fetchPublishedRenditions } from "../../photos-lib/renditions/acquire";
 import { createSipsDecoder } from "../../photos-lib/image-processing/platform-decoder";
 import { deriveAndPublishVideo, isTerminalVideoError } from "../../photos-lib/video/derive-and-publish";
 import { createFfmpegTools } from "../../photos-lib/video/video-tools";
@@ -146,7 +147,7 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
         RENDITION_LABEL_REF,
         cursor,
       );
-      const work = page.records.filter((r) => stageHasWork(r, stage, CHEAP_STILL_CLASSES));
+      const work = page.records.filter((r) => r.availability?.state === "instant" && stageHasWork(r, stage, CHEAP_STILL_CLASSES));
       console.log(
         `[derive] stage=${stage} records=${page.records.length} work=${work.length} ` +
           `cursor=${cursor ?? "start"}`,
@@ -159,6 +160,13 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
         await deriveOne(creds, record, stage, state);
         tick();
       });
+
+      // Not an acquisition. With no key requested this pass only weighs what
+      // the plane already holds against Photos' desktop shares and drops the
+      // overflow, so a long sweep on a node under a ceiling stays inside it.
+      // The sweep never downloads a published rung: a resident original is
+      // what makes a rung this node's to derive, which is section 6.3.
+      await fetchPublishedRenditions((path, init) => signedFetch(creds, path, init), []);
 
       // The cursor advances only after the page's work is done, so a process
       // killed mid-page redoes that page rather than skipping it. Redoing is
@@ -227,6 +235,7 @@ async function deriveOne(
       // and the prebuilt sharp does not.
       platformDecoder: createSipsDecoder(),
       attempts: fileAttemptStore(),
+      retainLocal: true,
       availableRenditionClasses: locallyAvailableClasses(record),
     });
 
@@ -263,6 +272,7 @@ async function deriveOneVideo(
         signedFetch: (requestPath, init) => signedFetch(creds, requestPath, init),
         tools: createFfmpegTools(),
         hashOf: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+        retainLocal: true,
         availableRenditionClasses: locallyAvailableClasses(record),
       },
     );

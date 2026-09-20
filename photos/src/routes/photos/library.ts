@@ -1,3 +1,4 @@
+import { CHEAP_TARGET_LONG_EDGE } from "@starkeep/photos-ladder";
 import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
 import { RENDITION_LABEL_REF } from "@/photos-lib/labels";
 import { cloudCanDecode } from "@/photos-lib/image-processing/derive-ladder";
@@ -134,6 +135,7 @@ export async function GET(req: Request): Promise<Response> {
 
 export interface UpstreamRecord {
   id: string;
+  availability?: { state: string };
   type?: string;
   mime_type: string | null;
   metadata?: { width?: number | null; height?: number | null } | null;
@@ -248,19 +250,23 @@ export function resolveFor(
   // as available, or provisional pending targets when there are none. That
   // pending shape is what tells a parent-cursor client to full-relist for the
   // first child publication instead of discovering every cheap child at once.
-  if (sourceLongEdge <= 0) {
-    return resolveWithoutDimensions(
-      targets,
-      candidates,
-      unavailableState(record, cloud, localVerdicts),
-    );
+  const choices = sourceLongEdge <= 0
+    ? resolveWithoutDimensions(targets, candidates, unavailableState(record, cloud, localVerdicts))
+    : resolveRenditions(targets, {
+        sourceLongEdge,
+        allowLargerViewerFallback: !cloud,
+        candidates,
+        unavailableState: unavailableState(record, cloud, localVerdicts),
+      });
+  for (const [target, choice] of Object.entries(choices)) {
+    if (choice.ideal.available || choice.ideal.state === "undecodable-here") continue;
+    const published = renditions.some(r => Math.max(r.width, r.height) === choice.ideal.longEdge);
+    const canRepair = cloud
+      ? record.availability?.state === "instant" && Number(target) <= CHEAP_TARGET_LONG_EDGE
+      : record.availability?.state === "instant" || published;
+    if (!canRepair) choices[target] = { ...choice, ideal: { ...choice.ideal, state: "missing" } };
   }
-
-  return resolveRenditions(targets, {
-    sourceLongEdge,
-    candidates,
-    unavailableState: unavailableState(record, cloud, localVerdicts),
-  });
+  return choices;
 }
 
 function unavailableState(

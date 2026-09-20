@@ -4,6 +4,8 @@ import type { PhotosAppData } from "./app-data";
 import type { DataRecord, MetadataRow, StarkeepId } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import {
+  applicableStillClasses,
+  renditionLongEdge,
   resolveRenditions,
   resolveWithoutDimensions,
   type DerivedChild,
@@ -88,6 +90,7 @@ export async function resolveLibraryRenditions(
   options: {
     /** The pixel long edge this record's surface wants, or null to resolve nothing. */
     readonly photosData?: PhotosAppData;
+    readonly viewer?: boolean;
     readonly targetFor: (record: DataRecord) => number | null;
     /** Whether these bytes are on this device. */
     readonly isResident: (objectStorageKey: string) => boolean;
@@ -141,7 +144,13 @@ export async function resolveLibraryRenditions(
     // applied them: over the resident subset the ideal is available exactly when
     // rule 1 holds, and the fallback is the largest resident rung below it
     // exactly when rule 2 does.
-    const painted = here.ideal.available ? here.ideal : here.fallback;
+    const edges = sourceLongEdge > 0 ? applicableStillClasses(sourceLongEdge).map(spec => renditionLongEdge(spec, sourceLongEdge)) : [];
+    const nextEdge = edges[edges.indexOf(known.ideal.longEdge) + 1];
+    const oneUp = options.viewer && nextEdge !== undefined
+      ? candidates.find(c => c.longEdge === nextEdge) : undefined;
+    const largerChild = oneUp && resident.find(c => c.id === oneUp.id);
+    const larger = largerChild ? { ...largerChild, available: true } : undefined;
+    const painted = here.ideal.available ? here.ideal : larger ?? here.fallback;
     const paintId = painted?.available ? painted.id : undefined;
     const key = paintId ? keyById.get(paintId) : undefined;
 
@@ -205,6 +214,7 @@ export async function resolveRecordRenditions(
   if (target === null) return null;
   const resolved = await resolveLibraryRenditions(database, [record], {
     photosData,
+    viewer: true,
     targetFor: () => target,
     isResident,
     dimensionsOf: () => dimensions,

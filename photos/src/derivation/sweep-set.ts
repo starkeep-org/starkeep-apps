@@ -25,7 +25,7 @@ import {
   type SizeClass,
 } from "../photos-lib/ladder";
 import {
-  loadRenditionRows,
+  loadReadableRenditionRows,
   loadResidency,
   type SignedFetch,
 } from "../photos-lib/renditions/store";
@@ -38,6 +38,7 @@ export const RECORDS_PER_PAGE = 200;
 /** A row as Photos' sweep asks the data server to render it. */
 export interface SweepRecord {
   id: string;
+  availability?: { state: string };
   /** Canonical Starkeep type. Folder-watched records intentionally have no advisory MIME. */
   type?: string;
   mime_type: string | null;
@@ -57,6 +58,7 @@ export interface SweepRecord {
    * point of the plane.
    */
   renditions?: Array<{
+    sub_key?: string;
     size_class: string;
     long_edge: number;
     /** False when the row is here and the bytes are not. */
@@ -81,16 +83,10 @@ export interface SweepRecord {
 export function missingClasses(record: SweepRecord): SizeClass[] | "unknown" {
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
   if (sourceLongEdge <= 0) return "unknown";
-  // A row is not local bytes, and on the app-private plane the two come apart
-  // as the ordinary case: a round applies Photos' rows and never pulls its
-  // blobs, so a rung derived elsewhere arrives here as a row alone. That rung
-  // still needs local work. Only an explicit availability claim suppresses it.
-  //
-  // Phase 5 of the rendition-ownership plan is what makes "fetch it" the
-  // cheaper answer than "derive it again"; until then this re-derives.
+  // A resident original can regenerate absent bytes without a network request.
   const have = new Set(
     (record.renditions ?? [])
-      .filter((c) => c.available_here)
+      .filter(c => c.available_here)
       .map((c) => c.long_edge),
   );
   return applicableStillClasses(sourceLongEdge)
@@ -128,7 +124,7 @@ export function stageHasWork(
     if (longEdge <= 0) return true;
     const have = new Set(
       (record.renditions ?? [])
-        .filter((c) => c.available_here)
+        .filter(c => c.available_here)
         .map((c) => c.size_class),
     );
     const bitrate = record.metadata?.bitrate ?? Number.POSITIVE_INFINITY;
@@ -216,11 +212,12 @@ export async function attachRenditions(
   records: SweepRecord[],
 ): Promise<void> {
   if (records.length === 0) return;
-  const rows = await loadRenditionRows(signedFetch, records.map((r) => r.id));
+  const rows = await loadReadableRenditionRows(signedFetch, records.map((r) => r.id));
   const subKeys = [...rows.values()].flat().map((row) => row.sub_key);
   const residency = subKeys.length > 0 ? await loadResidency(signedFetch, subKeys) : new Map();
   for (const record of records) {
     record.renditions = (rows.get(record.id) ?? []).map((row) => ({
+      sub_key: row.sub_key,
       size_class: row.size_class,
       long_edge: Math.max(row.width, row.height),
       available_here: residency.get(row.sub_key) ?? false,

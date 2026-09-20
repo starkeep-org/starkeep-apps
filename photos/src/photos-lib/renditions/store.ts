@@ -190,7 +190,7 @@ export async function loadHydratedRenditions(
   parentIds: readonly string[],
   options: { urls?: boolean } = {},
 ): Promise<Map<string, HydratedRendition[]>> {
-  const rows = await loadRenditionRows(signedFetch, parentIds);
+  const rows = await loadReadableRenditionRows(signedFetch, parentIds);
   const subKeys = [...rows.values()].flat().map((row) => row.sub_key);
   if (subKeys.length === 0) return new Map();
   const [residency, urls] = await Promise.all([
@@ -279,4 +279,35 @@ export async function deleteRenditionBlob(
 ): Promise<void> {
   const res = await signedFetch(`/app-data/files/${subKey}`, { method: "DELETE" });
   if (!res.ok) await fail("delete blob", res);
+}
+
+
+/** Local alternatives never replace or synchronize the published rendition row. */
+export async function loadLocalRenditions(signedFetch: SignedFetch, parentIds?: readonly string[]): Promise<RenditionRow[]> {
+  if (process.env.STARKEEP_APP_CLIENT_MODE === "cloud") return [];
+  const rows: RenditionRow[] = [];
+  const prefixes = parentIds ? [...new Set(parentIds)].map(id => `local/renditions/${id}/`) : ["local/renditions/"];
+  for (const prefix of prefixes) {
+    let cursor: string | null = null;
+    do {
+      const response = await signedFetch(`/app-data/local-files?prefix=${encodeURIComponent(prefix)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      if (response.status === 404) break;
+      if (!response.ok) return fail("local files", response);
+      const page = await response.json() as { files?: Array<{ subKey: string; metadata: RenditionRow }>; nextCursor?: string | null };
+      for (const file of page.files ?? []) if (file.subKey.startsWith("local/renditions/")) rows.push(file.metadata);
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+  }
+  return rows;
+}
+
+export async function loadReadableRenditionRows(signedFetch: SignedFetch, parentIds: readonly string[]) {
+  const rows = await loadRenditionRows(signedFetch, parentIds);
+  const local = await loadLocalRenditions(signedFetch, parentIds);
+  const resident = await loadResidency(signedFetch, local.map(row => row.sub_key));
+  for (const row of local) {
+    if (!resident.get(row.sub_key)) continue;
+    rows.set(row.parent_record_id, [...(rows.get(row.parent_record_id) ?? []).filter(r => r.size_class !== row.size_class), row]);
+  }
+  return rows;
 }

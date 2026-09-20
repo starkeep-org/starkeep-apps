@@ -85,92 +85,68 @@
  * other device.
  */
 
-import type { NodeRetentionPolicy } from "@starkeep/sync-engine";
-
-import { PHOTOS_RUNG_SHARES } from "@starkeep/photos-ladder";
-export { PHOTOS_RUNG_SHARES, PHOTOS_FALLBACK_SHARE } from "@starkeep/photos-ladder";
-
-const GB = 1024 * 1024 * 1024;
-const MB = 1024 * 1024;
-
-/** Held only once something asks for it, then cached within this share. */
-const onDemand = (share: number) => ({ prefetch: false, share }) as const;
+export interface RungRetention { readonly prefetch: boolean; readonly share: number }
+const prefetched = (share: number) => ({ prefetch: true, share });
+const onDemand = (share: number) => ({ prefetch: false, share });
 
 /**
- * The rungs of Photos' own ladder, from `media-implementation-plan.md` §3.
+ * How Photos divides its own ceiling between the rungs of its ladder.
  *
- * Named here rather than imported because they are the *app's* vocabulary and
- * this is the app — the platform deliberately never learns what `image-medium`
- * is, which is what lets the ladder be respecified without a change anywhere in
- * `@starkeep/sync-engine`.
+ * **Photos' table, not the platform's.** The platform's retention policy gives
+ * this app one advisory ceiling per node and stops there: it cannot tell a
+ * thumbnail from a 4K master, and a budget that tried to would be the platform
+ * holding an opinion about a ladder it deliberately never learns. So the shares
+ * and the prefetch flags live here, where the ladder does.
+ *
+ * Between this change and the acquisition pass that reads it, nothing
+ * prefetches an app blob on a handset — a sync round applies Photos' rows and
+ * leaves its bytes alone, and a tap still lands what it asks for. The gap is
+ * deliberate and bounded, and these numbers are the record of what closes it:
+ * they were measured against a real library and the comments beside them are
+ * the only written account of where each came from.
  */
-export const PHOTOS_APP_ID = "photos";
-
-/** Which label key names a rung of that ladder. */
-export const PHOTOS_SIZE_CLASS_KEY = "rendition";
-
-export const PHONE_RETENTION: NodeRetentionPolicy = {
-  platform: {
-    rows: {
-      // Split photo/video because one 4K clip is worth hundreds of stills, and
-      // under a pooled budget one silently starves the other depending on the
-      // order things happened to arrive. 2 GB and 3 GB of the 5.
-      //
-      // **On demand, not prefetched, and the shares stay non-zero.** An
-      // original is the largest thing in the ladder and the least often looked
-      // at: `image-medium` serves fullscreen, share, export and on-device AI,
-      // so the only reader of an original on a handset is an explicit request.
-      // Prefetching them was the single largest source of the waste this app's
-      // acquisition order exists to bound — a twenty-year library transferred
-      // in full to retain the newest 2 GB of it, rewriting the phone's flash in
-      // budget-sized increments on the way. `prefetch: false` still holds the
-      // bytes once someone taps, and caches them within this share; `share: 0`
-      // would refuse an original even then, which is a different and wrong
-      // policy.
-      //
-      // A **Photos** statement rather than a platform one. Drive has no ladder,
-      // every record there is an original, and a node declining to prefetch
-      // originals would hold nothing at all. This file is the phone's own
-      // policy, so nothing generalises from it.
-      "original:image": onDemand(40),
-      "original:video": onDemand(60),
-    },
-    // A category this app has no ladder for — an audio file, a PDF someone put
-    // in Drive — pooled with every other unrecognised rung of the platform
-    // namespace. On demand rather than nothing: the record is browsable and one
-    // tap brings the bytes, which is the honest behaviour for something this
-    // app was not built to display anyway. Its share is deliberately small.
-    fallback: onDemand(10),
-    budgetBytes: 5 * GB + 512 * MB,
-  },
-  apps: {
-    // One number, because that is all an app namespace carries now. Which rungs
-    // exist and what each is worth moved to PHOTOS_RUNG_SHARES below, which is
-    // this app's own table rather than the platform's.
-    [PHOTOS_APP_ID]: { budgetBytes: 14 * GB },
-  },
-  // Some other app's derivatives, on a handset that is only running Photos.
-  // Small and on demand: they are real data and this device is not the place
-  // for them.
-  appFallback: { budgetBytes: 512 * MB },
+export const PHOTOS_RUNG_SHARES: Readonly<Record<string, RungRetention>> = {
+  // Everything the grid needs to draw itself with no network at all.
+  // Sized to hold the whole library at the rungs' measured byte cost —
+  // 0.54 GB and 1.75 GB against 0.49 GB and 1.73 GB needed. See "Why
+  // these shares and not the old ones".
+  "image-xsmall": prefetched(4),
+  "image-thumb": prefetched(13),
+  // The routine working rendition: fullscreen stage 1, share/export,
+  // on-device AI. Worth keeping the whole library's worth if it fits —
+  // and at 136 KB a record it does not fit, so this is the line that pays
+  // for the two above. 2.83 GB, or 37% of a 60,000-item library.
+  "image-medium": prefetched(21),
+  // Fullscreen at retina. The budget starts to bite here, which under the
+  // old table was spelled `recent-only` with a 30-day window — a rule
+  // that never once bound, because a rendition carries no capture date.
+  // A share does bind, and the eviction order decides which screens
+  // survive it.
+  "image-screen": prefetched(14),
+  // 4K TV, zoom, print preview. Fetched when someone actually zooms.
+  "image-large": onDemand(7),
+  // Pinned to `image-thumb` by the ladder, so it moved when that rung did.
+  "video-poster-thumb": prefetched(2),
+  "video-poster-720p": prefetched(2),
+  "video-skim": prefetched(4),
+  "video-720p": prefetched(28),
+  "video-1080p": onDemand(7),
 };
 
-/** Every rung Photos names, as the qualified class the resident set keys on. */
-export function photosRungClasses(): string[] {
-  return Object.keys(PHOTOS_RUNG_SHARES).map((rung) => `${PHOTOS_APP_ID}:${rung}`);
-}
-
 /**
- * Every byte this policy permits, for the Storage section's headline figure.
+ * The share given to a rung this build does not know about — the ladder
+ * respecified on another node, or a class added since.
  *
- * One line now. It used to sum the platform rows and then add each app's
- * separate total, which quietly asserted that those two levels were
- * commensurable — the assumption that let the rows and the total disagree in
- * the first place.
+ * Deliberately not zero: an unrecognised rendition is still something an app
+ * derived on purpose, and refusing it outright would make a respec invisible
+ * rather than merely conservative. One share between all of them, which is what
+ * makes rung invention cheap instead of free.
  */
-export function totalBudgetBytes(policy: NodeRetentionPolicy = PHONE_RETENTION): number {
-  return (
-    policy.platform.budgetBytes +
-    Object.values(policy.apps).reduce((sum, app) => sum + app.budgetBytes, 0)
-  );
-}
+export const PHOTOS_FALLBACK_SHARE: RungRetention = onDemand(2);
+
+
+/** Desktop proportions are provisional; phone measurements do not establish desktop needs. */
+export const DESKTOP_RUNG_SHARES: Readonly<Record<string, RungRetention>> = Object.fromEntries(
+  Object.entries(PHOTOS_RUNG_SHARES).map(([name, policy]) => [name, { ...policy, prefetch: false }]),
+);
+export const DESKTOP_FALLBACK_SHARE: RungRetention = { ...PHOTOS_FALLBACK_SHARE };

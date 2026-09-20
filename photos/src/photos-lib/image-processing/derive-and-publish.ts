@@ -71,6 +71,7 @@ export interface DerivationAttemptStore {
 }
 
 export interface DeriveAndPublishParams {
+  readonly retainLocal?: boolean;
   readonly signedFetch: SignedFetch;
   readonly parent: {
     readonly id: string;
@@ -225,6 +226,7 @@ export async function deriveAndPublish(
           { id: parent.id, originalFilename: parent.originalFilename },
           rendition,
           contentHash,
+          params.retainLocal,
         ),
       );
     }

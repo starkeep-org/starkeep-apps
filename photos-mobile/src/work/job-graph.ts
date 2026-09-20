@@ -210,17 +210,8 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     constraints: {
       requiresUnmetered: false,
       requiresNetwork: false,
-      // Not `requiresCharging`. The rule is "charging **or** comfortably above
-      // half battery", and WorkManager cannot express that: it offers
-      // `setRequiresCharging` and `setRequiresBatteryNotLow`, and the latter
-      // fires somewhere near 15–20% rather than at a level the caller picks.
-      //
-      // So the OS constraint is the loose one and the real threshold is
-      // re-checked in-process at the start of each unit — see
-      // {@link FULL_DERIVE_BATTERY_FLOOR} and {@link fullDeriveMayRun}. A job
-      // that declared `requiresCharging` here would simply never run on a phone
-      // that lives off a charger, which is most of them.
-      requiresCharging: false,
+      // Above the bottom two rungs, derivation waits for charging.
+      requiresCharging: true,
       requiresStorageNotLow: true,
     },
     // Shorter than the cheap tier's, and that is not a typo. These rungs are
@@ -402,9 +393,7 @@ export interface DeviceState {
  * job is resumable, so stopping costs nothing but the unit in flight.
  */
 export function fullDeriveMayRun(device: DeviceState): boolean {
-  if (device.isLowPowerMode) return false;
-  if (device.isCharging) return true;
-  return (device.batteryLevel ?? 0) > FULL_DERIVE_BATTERY_FLOOR;
+  return device.isCharging && !device.isLowPowerMode;
 }
 
 /** Whether the OS conditions currently permit this job. */

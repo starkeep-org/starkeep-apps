@@ -65,7 +65,7 @@ describe("which rungs are missing", () => {
     expect(missing).toEqual([]);
   });
 
-  it("names a rung whose record exists but whose bytes are absent here", () => {
+  it("derives absent rendition bytes when the original is resident", () => {
     const edges = edgesFor(BIG);
     const unavailableEdge = edges[1]!;
     const missing = missingClasses(
@@ -78,11 +78,7 @@ describe("which rungs are missing", () => {
       }),
     );
 
-    expect(missing).toEqual([
-      applicableStillClasses(BIG).find(
-        (spec) => renditionLongEdge(spec, BIG) === unavailableEdge,
-      )!.sizeClass,
-    ]);
+    expect(missing).toEqual(["image-thumb"]);
   });
 
   // Matching is by effective long edge, because that is what the platform can
@@ -212,7 +208,7 @@ describe("which stage has work", () => {
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
   });
 
-  it("rebuilds a video rendition whose record exists without local bytes", () => {
+  it("queues regeneration of absent video bytes from a resident original", () => {
     const video = record({
       mime_type: "video/mp4",
       metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
@@ -249,6 +245,7 @@ describe("paging the library", () => {
     let asked = "";
     await fetchSweepPage(
       async (path) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
         asked = path;
         return new Response(JSON.stringify({ records: [], nextCursor: null }));
       },
@@ -271,6 +268,7 @@ describe("paging the library", () => {
     const calls: string[] = [];
     const page = await fetchSweepPage(
       async (path, init) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
         calls.push(path);
         if (path.startsWith("/data/records")) {
           return new Response(
@@ -333,8 +331,8 @@ describe("paging the library", () => {
     );
 
     expect(page.records[0]!.renditions).toEqual([
-      { size_class: "image-thumb", long_edge: 400, available_here: true },
-      { size_class: "image-medium", long_edge: 1280, available_here: false },
+      { sub_key: "renditions/rec-1/image-thumb/aa.avif", size_class: "image-thumb", long_edge: 400, available_here: true },
+      { sub_key: "renditions/rec-1/image-medium/bb.avif", size_class: "image-medium", long_edge: 1280, available_here: false },
     ]);
     expect(calls.some((p) => p.startsWith("/app-data/db/renditions"))).toBe(true);
   });
@@ -354,6 +352,7 @@ describe("paging the library", () => {
     let asked = "";
     await fetchSweepPage(
       async (path) => {
+      if (path.startsWith("/app-data/local-files")) return Response.json({ files: [], nextCursor: null });
         asked = path;
         return new Response(JSON.stringify({ records: [], nextCursor: null }));
       },

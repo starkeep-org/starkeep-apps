@@ -1,3 +1,6 @@
+import { createPhotosAppData, PHOTOS_FILE_PREFIX, type PhotosAppData, type RenditionRow } from "./photos/app-data";
+import { createPerAppSyncStateStore, deletePerAppSyncState } from "@starkeep/sync-engine";
+import { sqliteCompiler as qb } from "@starkeep/storage-sqlite";
 /**
  * Assembling the phone as a sync peer (item 12).
  *
@@ -133,6 +136,7 @@ export interface MobileNodeOptions {
    * could ship metadata and then fail every blob transfer, which is a worse
    * state than being offline because it looks like it is working.
    */
+  readonly photosCloud?: { readonly transport: SyncTransport; readonly remoteObjectStorage: ObjectStorageAdapter };
   readonly cloud?: {
     readonly transport: SyncTransport;
     readonly remoteObjectStorage: ObjectStorageAdapter;
@@ -196,6 +200,11 @@ export interface MobileNodeOptions {
 }
 
 export interface MobileNode {
+  readonly photosData: PhotosAppData;
+  readonly photosEngine: SyncEngine | null;
+  publishRendition(row: RenditionRow, bytes: Uint8Array): Promise<boolean>;
+  fetchRendition(key: string): Promise<boolean>;
+  removePhotosData(): Promise<void>;
   readonly databaseAdapter: DatabaseAdapter;
   /**
    * How far background import has walked the camera roll, or null when this
@@ -369,24 +378,7 @@ export interface MobileNode {
    * answers and the placeholder should only stay for one of them.
    */
   fetchBlob(record: DataRecord): Promise<boolean>;
-  /**
-   * Charge a budget for bytes this node produced itself.
-   *
-   * Every other route into local storage is a transfer, and a transfer accounts
-   * for itself — `SyncEngine` calls `onLanded` on arrival. Derivation is the
-   * first route that is not: the rendition pass encodes bytes, writes them, and
-   * would leave them invisible to every budget. `reclaimSpace` names that state
-   * precisely — `unknownKeys`, bytes on disk no line describes — and expects the
-   * count to be zero, which is only true if the producer says so.
-   *
-   * Call it **after** the record and its rendition label are written. The class
-   * is resolved from the record's labels, so charging any earlier resolves every
-   * rung this device makes as an original and puts it in the wrong budget line.
-   *
-   * A no-op on a node with no retention policy, which is a node with no budget
-   * to be over.
-   */
-  noteDerived(record: DataRecord): Promise<void>;
+
   /**
    * Free space: reconcile what this node believes it holds against what it
    * actually holds, then run an eviction pass over every class and namespace
@@ -565,6 +557,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   // its budget must not silently start declining data, because the failure mode
   // of over-fetching is a full disk and the failure mode of under-fetching is a
   // photo that is quietly nowhere.
+  const photosData = createPhotosAppData(databaseAdapter.getRawDatabase(), clock);
   const residency = options.retention
     ? createResidencyManager({
         localDb: databaseAdapter.getRawDatabase(),
@@ -575,6 +568,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         // about cloud storage; a handset holding such a record is the intended
         // outcome, not a violation.
         isCloudNode: false,
+        regenerableBlobApps: new Set(["photos"]),
         policy: options.retention,
         overrideRules: options.overrideRules ?? [],
         durability: { minimumReplicas: options.minimumReplicas ?? 1 },
@@ -598,6 +592,18 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         ...(residency ? { residency: residencyHooks(residency) } : {}),
       })
     : null;
+
+  const photosEngine = options.photosCloud ? createSyncEngine({
+    localDatabaseAdapter: databaseAdapter, localObjectStorage,
+    remoteObjectStorage: options.photosCloud.remoteObjectStorage,
+    transport: options.photosCloud.transport, clock,
+    syncState: createPerAppSyncStateStore(databaseAdapter.getRawDatabase(), syncState, "photos"),
+    syncSharedRecords: false, appSyncableSource: photosData.source,
+    maxBytes: MOBILE_MAX_BYTES, maxItems: MOBILE_MAX_ITEMS,
+    transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
+    ...(residency ? { residency: residencyHooks(residency) } : {}),
+  }) : null;
+  let photosRemoved = false;
 
   /**
    * One engine, one operation at a time — the phone's copy of the rule the
@@ -642,6 +648,54 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
 
   return {
     databaseAdapter,
+    photosData,
+    photosEngine,
+    publishRendition: (row, bytes) => serialized(async () => {
+      if (photosRemoved) return false;
+      const published = await photosData.publish(row, bytes, localObjectStorage);
+      if (published && residency) {
+        const key = PHOTOS_FILE_PREFIX + row.sub_key;
+        const candidate = { recordId: key, objectStorageKey: key, sizeBytes: row.size_bytes,
+          type: row.content_type, parentId: null, appId: "photos", originAppId: "photos", recencyAtMs: null,
+          lastOpenedAtMs: null };
+        await residency.noteArrival(candidate, { decision: "fetch",
+          sizeClass: await residency.classOf(candidate), reason: "explicit-request" });
+      }
+      return published;
+    }),
+    fetchRendition: key => serialized(async () => {
+      if (!photosEngine || photosRemoved || !key.startsWith(PHOTOS_FILE_PREFIX)) return false;
+      const row = photosData.rows("_starkeep_sync_records", "id", [key])[0];
+      if (!row) return false;
+      return photosEngine.fetchBlob({ fileHash: String(row.content_hash), objectStorageKey: key,
+        sizeBytes: Number(row.size_bytes), mimeType: String(row.mime_type) },
+        { recordId: key, objectStorageKey: key, sizeBytes: Number(row.size_bytes),
+          type: String(row.mime_type), parentId: null, appId: "photos", originAppId: "photos", recencyAtMs: null,
+          lastOpenedAtMs: Date.now() });
+    }),
+    removePhotosData: () => serialized(async () => {
+      photosRemoved = true;
+      // Delete bytes before rows so a failed deletion remains retryable.
+      const keys = new Set(photosData.rows("_starkeep_sync_records")
+        .map(row => String(row.object_storage_key)));
+      let cursor: string | undefined;
+      do {
+        const page = await localObjectStorage.list(PHOTOS_FILE_PREFIX, { cursor });
+        for (const key of page.keys) keys.add(key);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      for (const key of keys) {
+        if (!key.startsWith(PHOTOS_FILE_PREFIX)) throw new Error("Invalid Photos file key");
+        await localObjectStorage.delete(key);
+        residency?.index.markDeparted(key);
+      }
+      const db = databaseAdapter.getRawDatabase();
+      for (const table of photosData.source.namespaces.get("photos")!.tableNames) {
+        db.exec(qb.deleteFrom(`photos_syncable_${table}`).compile().sql);
+      }
+      deletePerAppSyncState(db, "photos");
+      derivationCursor?.set(null);
+    }),
     objectStorage: localObjectStorage,
     mediaAliases,
     importCursor,
@@ -650,9 +704,24 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     motionIndex,
     engine,
     residency,
-    exchange: async () => (engine ? serialized(() => engine.exchange()) : null),
-    sync: async (syncOptions) =>
-      engine ? serialized(() => engine.sync(syncOptions)) : null,
+    exchange: () => serialized(async () => {
+      const result = engine ? await engine.exchange() : null;
+      if (photosEngine && !photosRemoved) await photosEngine.exchange();
+      return result;
+    }),
+    sync: (syncOptions) => serialized(async () => {
+      const results = [];
+      if (engine) results.push(await engine.sync(syncOptions));
+      if (photosEngine && !photosRemoved) results.push(await photosEngine.sync(syncOptions));
+      if (!results.length) return null;
+      return { rounds: results.reduce((n, r) => n + r.rounds, 0),
+        applied: results.reduce((n, r) => n + r.applied, 0),
+        shipped: results.reduce((n, r) => n + r.shipped, 0),
+        elided: results.reduce((n, r) => n + r.elided, 0),
+        complete: results.every(r => r.complete), stalled: results.some(r => r.stalled),
+        refusedAuthors: results.flatMap(r => r.refusedAuthors ?? []),
+        peerCoverageDegraded: results.map(r => r.peerCoverageDegraded).filter(Boolean).join(", ") || undefined };
+    }),
 
     async acquireQueued(acquireOptions) {
       // No cloud or no policy means no queue: a node that wants every blob
@@ -695,7 +764,19 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       return { queued: result.queued, complete: result.nextCursor === null };
     },
 
-    verify: async () => (engine ? serialized(() => engine.verify()) : null),
+    verify: () => serialized(async () => {
+      const results = [];
+      if (engine) results.push(await engine.verify());
+      if (photosEngine && !photosRemoved) results.push(await photosEngine.verify());
+      if (!results.length) return null;
+      return { supported: results.every(r => r.supported),
+        localRows: results.reduce((n, r) => n + r.localRows, 0),
+        peerRows: results.reduce((n, r) => n + r.peerRows, 0),
+        divergentBuckets: results.reduce((n, r) => n + r.divergentBuckets, 0),
+        missingLocally: results.reduce((n, r) => n + r.missingLocally, 0),
+        pendingUpload: results.reduce((n, r) => n + r.pendingUpload, 0),
+        pendingDownload: results.reduce((n, r) => n + r.pendingDownload, 0) };
+    }),
     // Deliberately *not* serialized behind the engine lock. It writes no sync
     // state, and making someone wait for a multi-minute drain before their
     // photo appears would defeat the point of an on-demand fetch. The transfer
@@ -734,39 +815,6 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         },
       );
     },
-    async noteDerived(record) {
-      if (!residency) return;
-      const candidate = {
-        recordId: record.id,
-        objectStorageKey: record.objectStorageKey,
-        sizeBytes: record.sizeBytes,
-        type: record.type,
-        parentId: record.parentId,
-        appId: null,
-        originAppId: record.originAppId,
-        // Both null, and both honestly so. These bytes have no capture date of
-        // their own — `recencyInputs` walks to the parent for a rendition's,
-        // which is exactly what it does for a synced one — and nobody has opened
-        // them: they exist because a background pass made them, not because
-        // somebody looked at the photograph.
-        recencyAtMs: null,
-        lastOpenedAtMs: null,
-      };
-      // Resolved from the record's labels, which is why the caller writes them
-      // first. A rung charged without its class lands in the originals line, and
-      // an originals line holding renditions is a budget that describes nothing.
-      const sizeClass = await residency.classOf(candidate);
-      await residency.noteArrival(candidate, {
-        decision: "fetch",
-        sizeClass,
-        // The nearest true thing the vocabulary has: these bytes are here
-        // because something outside the policy put them here, not because the
-        // policy chose to fetch them. `SyncEngine.fetchBlob` reports the same
-        // value for the same reason.
-        reason: "explicit-request",
-      });
-    },
-
     async reclaimSpace() {
       if (!residency) return [];
       // Reconcile first, always. See the doc comment: a pass run against a
@@ -781,7 +829,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       // the disk.
       //
       // The derivation pass is the one producer that could make it non-zero, and
-      // it accounts for itself — see {@link MobileNode.noteDerived}. A count that
+      // it accounts for itself — see {@link MobileNode.publishRendition}. A count that
       // climbs with the number of rungs this device has made is that call having
       // been skipped.
       try {
@@ -866,6 +914,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     },
 
     async close() {
+      await engineLock;
       await databaseAdapter.close();
       await localObjectStorage.close();
     },

@@ -258,6 +258,9 @@ export function HomeScreen({
     { checking: true } | { checking: false; result: VerifyResult | null } | null
   >(null);
   const [resetting, setResetting] = useState(false);
+  const [removingPhotos, setRemovingPhotos] = useState(false);
+  const [photosRemovalMessage, setPhotosRemovalMessage] = useState<string | null>(null);
+  const [confirmingPhotosRemoval, setConfirmingPhotosRemoval] = useState(false);
   /**
    * Aborts the running sync when this screen goes away or the app leaves the
    * foreground.
@@ -834,6 +837,27 @@ export function HomeScreen({
           ) : null}
       </View>
       <Section title="Storage">
+        {node.status === "ready" ? <>
+          <Pressable disabled={removingPhotos} style={styles.button} onPress={() => {
+            if (!confirmingPhotosRemoval) { setConfirmingPhotosRemoval(true); return; }
+            setConfirmingPhotosRemoval(false);
+            setRemovingPhotos(true);
+            void node.node.removePhotosData()
+              .then(async () => {
+                await library.reload();
+                setPhotosRemovalMessage("Photos data was removed from this phone. Restart the app to sync Photos data again.");
+              })
+              .catch(error => setPhotosRemovalMessage(String(error)))
+              .finally(() => setRemovingPhotos(false));
+          }}>
+            <Text style={styles.buttonLabel}>{removingPhotos ? "Removing…" : confirmingPhotosRemoval
+              ? "Confirm removal from this phone" : "Remove Photos data from this phone"}</Text>
+          </Pressable>
+          {confirmingPhotosRemoval ? <Text style={styles.muted}>
+            This removes this phone’s captions and renditions. Shared originals and copies on other devices remain available.
+          </Text> : null}
+          {photosRemovalMessage ? <Text style={styles.muted}>{photosRemovalMessage}</Text> : null}
+        </> : null}
         {storage.report === null || !storage.report.configured ? (
           <Text style={styles.muted}>
             This node has no storage budget, so it keeps every byte it is offered. That is the

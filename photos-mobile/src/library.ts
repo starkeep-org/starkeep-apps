@@ -1,3 +1,4 @@
+import type { PhotosAppData } from "./photos/app-data";
 /**
  * The library: what this node holds, and how the UI asks about it.
  *
@@ -78,6 +79,7 @@ import {
  * was never copied and a blob that arrived by sync or an on-demand fetch.
  */
 export interface LibraryDeps {
+  readonly photosData?: PhotosAppData;
   readonly database: DatabaseAdapter;
   readonly objectStorage: ObjectStorageAdapter;
   readonly aliases: MediaAliasStore | null;
@@ -372,6 +374,7 @@ export async function resolveLibraryItems(
   // per tile.
   const renditions = grid
     ? await resolveLibraryRenditions(deps.database, records, {
+        photosData: deps.photosData,
         targetFor,
         isResident,
         dimensionsOf,
@@ -549,6 +552,7 @@ export async function resolveForViewer(
     target,
     isResident,
     dims,
+    deps.photosData,
   );
 
   const renditionUri = resolved?.paint

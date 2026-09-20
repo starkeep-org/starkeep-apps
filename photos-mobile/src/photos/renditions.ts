@@ -1,37 +1,7 @@
-/**
- * Resolving a requested pixel size against Photos' ladder, on the phone.
- *
- * ## The boundary this file sits on
- *
- * On the laptop and in the cloud there are two processes with a signed HTTP hop
- * between them, so "the platform does not know what a size class is" enforces
- * itself. Here there is one process, so the same split has to hold as a
- * **module** boundary: `@starkeep/sync-engine`, the storage adapters and
- * `@starkeep/protocol-primitives` stay ladder-ignorant, and this — a
- * Photos-owned module *above* them — is where a class name may appear.
- *
- * Nothing but a convention enforces that, which is why
- * `__tests__/ladder-boundary.test.ts` exists.
- *
- * ## Why the ladder is imported rather than restated
- *
- * `@starkeep/photos-ladder` is the same package the web app and the cloud
- * Lambda consume. Two implementations of the resolution rule that disagree is a
- * rendering bug that appears on one device class only, which is close to the
- * worst kind to find — and a second copy of `STILL_LADDER` on the phone is
- * exactly how that happens.
- *
- * ## And why the *gathering* is not
- *
- * `loadVariantCandidatesForPage` is the platform's, and it is the same call the
- * two data servers make. It answers one app-agnostic question — what derived
- * children does this record have, and how big is each — over child records, a
- * label key and the width/height columns. It names no class, so it belongs
- * below this boundary rather than above it.
- */
+import type { PhotosAppData } from "./app-data";
+/** Resolve Photos-owned rendition rows against local byte availability. */
 
 import type { DataRecord, MetadataRow, StarkeepId } from "@starkeep/protocol-primitives";
-import { loadVariantCandidatesForPage } from "@starkeep/storage-adapter";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import {
   resolveRenditions,
@@ -45,7 +15,6 @@ export const PHOTOS_APP_ID = "photos";
 /** Which label key names a rung of the ladder. */
 export const PHOTOS_RENDITION_KEY = "rendition";
 
-const RENDITION_LABEL = { appId: PHOTOS_APP_ID, key: PHOTOS_RENDITION_KEY };
 
 /**
  * What one record's tile or stage should do about renditions.
@@ -57,23 +26,9 @@ const RENDITION_LABEL = { appId: PHOTOS_APP_ID, key: PHOTOS_RENDITION_KEY };
  * never fetching the rung it had just decided it wanted.
  */
 export interface ResolvedRendition {
-  /**
-   * The rendition to paint, and where its bytes are.
-   *
-   * Non-null only when the bytes are **on this device**. The key rides along
-   * because the caller needs a file, and asking the database for a child record
-   * it already resolved would be a second query per page for a string this one
-   * already had.
-   */
+  /** The resident file key identifies the rendition to paint. */
   readonly paint: { readonly id: StarkeepId; readonly objectStorageKey: string } | null;
-  /**
-   * The ideal rung's record, when its bytes are not here.
-   *
-   * Null when the ideal is already resident, and null when the ladder names no
-   * ideal at all — a record with no stored dimensions, or one whose rung was
-   * never derived and so has no record to fetch. A caller reads this as "there
-   * is something to fetch, and this is it".
-   */
+  /** The missing ideal rendition’s app-private file key, or null. */
   readonly missingIdeal: StarkeepId | null;
 }
 
@@ -132,6 +87,7 @@ export async function resolveLibraryRenditions(
   records: readonly DataRecord[],
   options: {
     /** The pixel long edge this record's surface wants, or null to resolve nothing. */
+    readonly photosData?: PhotosAppData;
     readonly targetFor: (record: DataRecord) => number | null;
     /** Whether these bytes are on this device. */
     readonly isResident: (objectStorageKey: string) => boolean;
@@ -149,11 +105,7 @@ export async function resolveLibraryRenditions(
   const out = new Map<StarkeepId, ResolvedRendition>();
   if (records.length === 0) return out;
 
-  const candidatesByParent = await loadVariantCandidatesForPage(
-    database,
-    records,
-    RENDITION_LABEL,
-  );
+  const candidatesByParent = options.photosData?.candidates(records.map(r => r.id)) ?? new Map();
 
   for (const record of records) {
     const target = options.targetFor(record);
@@ -193,20 +145,8 @@ export async function resolveLibraryRenditions(
     const paintId = painted?.available ? painted.id : undefined;
     const key = paintId ? keyById.get(paintId) : undefined;
 
-    // **The question is whether the ideal rung is here, not whether one
-    // particular record is.** Two nodes encoding one class produce different
-    // bytes — `avif-coder` against `sharp` — so a class can hold two records,
-    // and a node holding the copy the tiebreak does not prefer holds the pixels
-    // all the same. Testing residency of `known.ideal.id` would send this
-    // device to the network for a rung it can already paint.
-    //
-    // Long edges compared rather than `here.ideal.available` alone. For a record
-    // with stored dimensions the two are equivalent, because both passes compute
-    // the ideal from the applicable ladder rather than from the candidates they
-    // were handed. A record *without* them takes `resolveWithoutDimensions`,
-    // which picks its ideal out of the candidate set — so the resident pass can
-    // return a genuinely smaller rung marked available, and the comparison is
-    // what keeps that fetch alive.
+    // Dimensionless originals resolve from the candidate set, so compare sizes
+    // as well as availability before suppressing the ideal fetch.
     const idealIsHere =
       here.ideal.available && here.ideal.longEdge >= known.ideal.longEdge;
     // The ideal from the *known* pass, because that is the one that can name a
@@ -260,9 +200,11 @@ export async function resolveRecordRenditions(
   target: number | null,
   isResident: (objectStorageKey: string) => boolean,
   dimensions: RecordDimensions | null,
+  photosData?: PhotosAppData,
 ): Promise<ResolvedRendition | null> {
   if (target === null) return null;
   const resolved = await resolveLibraryRenditions(database, [record], {
+    photosData,
     targetFor: () => target,
     isResident,
     dimensionsOf: () => dimensions,

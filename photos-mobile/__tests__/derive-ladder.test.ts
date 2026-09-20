@@ -1,33 +1,10 @@
-/**
- * The phone making its own renditions.
- *
- * ## What is worth asserting here, and what is not
- *
- * The encode is native and is stubbed. Everything above it is not, and it is
- * where the failures live: which rungs a record is missing, what a rung is
- * called and where its bytes go, the order the four writes happen in, and how a
- * sweep that is stopped resumes. All of that decides whether a rendition is
- * visible to the resolution rule on this device and on every node it syncs to.
- *
- * The two rules with the sharpest teeth get cases of their own:
- *
- *  - **Nothing above `image-medium`.** That ceiling is what keeps the archive
- *    gate safe without a new rule — a record whose original exceeds it still has
- *    missing rungs, so `ladderIsComplete` stays false and the original stays out
- *    of deep archive until a node running `sharp` finishes the ladder. A phone
- *    that quietly derived the top rungs would satisfy the gate with files it
- *    never made.
- *  - **The label's timestamp is strictly after the record's.** A round cut moves
- *    in whole timestamps, so a label sharing its record's can be shipped without
- *    it — which is not hypothetical: `round-cut.ts` records a handset found
- *    holding rendition records whose label had been cut away, invisible to the
- *    grid and unclassifiable to residency.
- */
-import { describe, it, expect, beforeEach } from "vitest";
+import { photosDataFixture } from "./helpers/photos-data";
+import { PHOTOS_FILE_PREFIX, type PhotosAppData } from "../src/photos/app-data";
+/** Exercise mobile derivation against Photos-owned SQLite rendition rows. */
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
-  compareHLC,
   createDataRecord,
   createHLCClock,
   dataRecordObjectKey,
@@ -75,6 +52,8 @@ function rawDb(): RawDatabase {
   };
 }
 
+let fixture: ReturnType<typeof photosDataFixture>;
+let photosData: PhotosAppData;
 let aliases: MediaAliasStore;
 let database: MockDatabaseAdapter;
 let objectStorage: MockObjectStorageAdapter;
@@ -158,7 +137,8 @@ function deps(
   encode: ImageEncoder,
   over: Partial<DeriveLadderDeps> = {},
 ): DeriveLadderDeps & { cursor: ScanCursorStore } {
-  return { aliases, database, objectStorage, clock, hash, encode, cursor, ...over };
+  return { aliases, database, hash, encode, cursor, photosData,
+    publishRendition: (row, bytes) => photosData.publish(row, bytes, objectStorage), ...over };
 }
 
 /**
@@ -214,30 +194,23 @@ async function importOriginal(
   return record;
 }
 
-/** Every rendition child of a record, by the label value that names its rung. */
-async function rungsOf(parent: DataRecord): Promise<Map<string, DataRecord>> {
-  const children = await database.query({
-    filters: [{ field: "parentId", operator: "eq", value: parent.id }],
-    limit: 50,
-  });
-  const labels = await database.getLabelsByRecordIds(children.records.map((c) => c.id));
-  const out = new Map<string, DataRecord>();
-  for (const child of children.records) {
-    const label = (labels.get(child.id) ?? []).find(
-      (l) => !l.deletedAt && l.appId === "photos" && l.key === "rendition",
-    );
-    if (label) out.set(label.value, child);
-  }
-  return out;
+async function rungsOf(parent: DataRecord) {
+  return new Map(photosData.rows("renditions", "parent_record_id", [parent.id]).map(row => {
+    const key = PHOTOS_FILE_PREFIX + row.sub_key;
+    return [String(row.size_class), { id: key, objectStorageKey: key,
+      contentHash: String(row.content_hash), sizeBytes: Number(row.size_bytes),
+      type: String(row.content_type), parentId: String(row.parent_record_id),
+      width: Number(row.width), height: Number(row.height) }];
+  }));
 }
-
-async function dimensionsOf(record: DataRecord): Promise<{ width: unknown; height: unknown }> {
-  const rows = await database.getMetadataByIds("image", [record.id]);
-  const row = rows.get(record.id);
-  return { width: row?.["width"], height: row?.["height"] };
+async function dimensionsOf(record: { width: number; height: number }) {
+  return { width: record.width, height: record.height };
 }
+afterEach(() => fixture.close());
 
 beforeEach(async () => {
+  fixture = photosDataFixture(clock);
+  photosData = fixture.data;
   aliases = createSqliteMediaAliasStore({ db: rawDb() });
   cursor = createSqliteScanCursorStore({ db: rawDb(), table: DERIVATION_CURSOR_TABLE });
   database = new MockDatabaseAdapter();
@@ -327,7 +300,7 @@ describe("which rungs a phone makes", () => {
 });
 
 describe("what a derived rung looks like", () => {
-  it("publishes bytes, dimensions, a label and a record", async () => {
+  it("publishes bytes and a Photos rendition row", async () => {
     const parent = await importOriginal({ width: 4000, height: 3000 });
     const encoder = fakeEncoder();
 
@@ -339,10 +312,10 @@ describe("what a derived rung looks like", () => {
     // The name every other node gives this rung. It is part of the
     // content-addressed id, so a second spelling would be a second id for the
     // same rung of the same photograph.
-    expect(thumb.originalFilename).toBe(`image-thumb_${parent.originalFilename}`);
+    expect((await database.query({})).records).toHaveLength(1);
     // The key is the hash of the bytes, and the bytes are where it says.
     expect(thumb.objectStorageKey).toBe(
-      dataRecordObjectKey("image/avif", thumb.contentHash),
+      `${PHOTOS_FILE_PREFIX}renditions/${parent.id}/image-thumb/${thumb.contentHash}.avif`,
     );
     const stored = await objectStorage.get(thumb.objectStorageKey);
     expect(stored?.data.byteLength).toBe(thumb.sizeBytes);
@@ -352,41 +325,16 @@ describe("what a derived rung looks like", () => {
     expect(await dimensionsOf(thumb)).toEqual({ width: 640, height: 427 });
   });
 
-  it("stamps the label strictly after the record it describes", async () => {
+  it("writes file rows before publishing rendition references", async () => {
     const parent = await importOriginal();
-
     await derivePage(deps(fakeEncoder().encode), { limit: 10 });
-
-    const thumb = (await rungsOf(parent)).get("image-thumb")!;
-    const label = (await database.getLabelsByRecordIds([thumb.id])).get(thumb.id)![0]!;
-    // Strictly greater, not merely not-less. A round cut moves in whole
-    // timestamps, so an equal pair can be split — shipping the label and
-    // deferring the record it belongs to.
-    expect(compareHLC(label.updatedAt, thumb.createdAt)).toBeGreaterThan(0);
-  });
-
-  it("charges the bytes to a budget once the label is there to read", async () => {
-    const parent = await importOriginal();
-    const charged: { id: StarkeepId; labelled: boolean }[] = [];
-
-    await derivePage(
-      deps(fakeEncoder().encode, {
-        noteDerived: async (record) => {
-          const labels = (await database.getLabelsByRecordIds([record.id])).get(record.id) ?? [];
-          // The class these bytes are charged to is resolved from this label.
-          // Charging before it exists resolves every rung as an original.
-          charged.push({ id: record.id, labelled: labels.length > 0 });
-        },
-      }),
-      { limit: 10 },
-    );
-
-    expect(charged).toHaveLength(3);
-    expect(charged.every((c) => c.labelled)).toBe(true);
-    const rungs = await rungsOf(parent);
-    expect(charged.map((c) => c.id).sort()).toEqual(
-      [...rungs.values()].map((r) => r.id).sort(),
-    );
+    const rows = photosData.rows("renditions", "parent_record_id", [parent.id]);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const file = photosData.rows("_starkeep_sync_records", "id", [PHOTOS_FILE_PREFIX + row.sub_key])[0]!;
+      expect(String(file.updated_at) < String(row.updated_at)).toBe(true);
+    }
+    expect((await database.query({})).records).toHaveLength(1);
   });
 });
 
@@ -409,7 +357,8 @@ describe("what it does not do twice", () => {
     await derivePage(deps(fakeEncoder().encode), { limit: 10 });
     // Delete one rung's record, the way an eviction of a whole record would.
     const thumb = (await rungsOf(parent)).get("image-thumb")!;
-    await database.delete(thumb.id, clock.now());
+    photosData.source.applier.apply({ appId: "photos", table: "renditions", op: "delete",
+      timestamp: clock.now(), where: { parent_record_id: parent.id, size_class: "image-thumb" } });
 
     const encoder = fakeEncoder();
     const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
@@ -418,22 +367,15 @@ describe("what it does not do twice", () => {
     expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([640]);
   });
 
-  it("re-derives a rung whose dimensions were never written", async () => {
+  it("keeps a published rung when its bytes are absent", async () => {
     const parent = await importOriginal();
     await derivePage(deps(fakeEncoder().encode), { limit: 10 });
     const thumb = (await rungsOf(parent)).get("image-thumb")!;
-    // The state an interrupted publish leaves: a record and a label, and no
-    // dimensions — so variant resolution cannot order it and drops it.
-    await database.putMetadata(thumb.type, { recordId: thumb.id, width: null, height: null });
-
+    await objectStorage.delete(thumb.objectStorageKey);
     const encoder = fakeEncoder();
     const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
-
-    expect(outcome.written).toBe(1);
-    // Repaired in place: the same pixels hash to the same key, so the record is
-    // the same record and the write puts its dimensions back.
-    expect((await rungsOf(parent)).get("image-thumb")!.id).toBe(thumb.id);
-    expect(await dimensionsOf(thumb)).toEqual({ width: 640, height: 427 });
+    expect(outcome.written).toBe(0);
+    expect(encoder.decoded).toEqual([]);
   });
 });
 
@@ -762,7 +704,10 @@ describe("deriving one record on demand", () => {
     const charged: string[] = [];
 
     await deriveForRecord(
-      deps(fakeEncoder().encode, { noteDerived: async (r) => void charged.push(r.id) }),
+      deps(fakeEncoder().encode, { publishRendition: async (row, bytes) => {
+        charged.push(row.sub_key);
+        return photosData.publish(row, bytes, objectStorage);
+      } }),
       parent,
     );
 

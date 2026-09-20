@@ -665,6 +665,7 @@ export function useLibrary(node: NodeState): LibraryState {
   const depsFor = useCallback(
     (lease: NonNullable<typeof ready>) => ({
       database: lease.node.databaseAdapter,
+      photosData: lease.node.photosData,
       objectStorage: lease.node.objectStorage,
       aliases: lease.node.mediaAliases,
       // What lets a tile mark a Motion Photo. Null on a node with no device
@@ -1118,7 +1119,7 @@ export function useLibrary(node: NodeState): LibraryState {
       // that one is a button somebody pressed and this one is a surface deciding
       // for itself, so an error line would appear without anybody having asked
       // for anything.
-      if (!node.engine) return false;
+      if (!node.photosEngine) return false;
 
       // The tile's rule, and the only difference between the two surfaces. A
       // tile already painting a rung is showing a picture, and the step up to
@@ -1135,14 +1136,8 @@ export function useLibrary(node: NodeState): LibraryState {
 
       try {
         return await fetches.current.run(`${item.record.id}:${renditionId}`, async () => {
-          // Re-read at the point of use rather than trusting the id the caller
-          // resolved from: a rendition record can arrive, or be superseded,
-          // between the resolution and this call.
-          const rendition = await node.databaseAdapter.get(renditionId);
-          if (!rendition) return false;
-          // `fetchBlob` takes a `DataRecord` and a rendition *is* one — same
-          // key, same content hash, same size. No new transport and no new API.
-          const ok = await node.fetchBlob(rendition);
+          // The node re-reads the app-private file row before fetching.
+          const ok = await node.fetchRendition(renditionId);
           if (ok) {
             // The one record, re-derived by the same code a page is built from
             // — which is the whole of what `fetchBlob`'s reload was after. A

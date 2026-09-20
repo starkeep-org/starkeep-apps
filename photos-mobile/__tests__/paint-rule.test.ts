@@ -1,3 +1,5 @@
+import { photosDataFixture } from "./helpers/photos-data";
+import { PHOTOS_FILE_PREFIX } from "../src/photos/app-data";
 /**
  * Which rendition a surface paints, and which one it goes and gets.
  *
@@ -29,7 +31,7 @@
  * large objects tiering exists to keep cold — and on this device it also costs
  * the decode the rendition was chosen to avoid.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   createDataRecord,
   createHLCClock,
@@ -78,6 +80,7 @@ const INSETS = { top: 24, bottom: 34, left: 0, right: 0 };
  */
 const STAGE = viewerStageBox(WINDOW, INSETS);
 
+let fixture: ReturnType<typeof photosDataFixture>;
 let database: MockDatabaseAdapter;
 let held: Set<string>;
 
@@ -86,7 +89,7 @@ const objectStorage = {
 } as unknown as ObjectStorageAdapter;
 
 function deps(): LibraryDeps {
-  return { database, objectStorage, aliases: null };
+  return { database, objectStorage, aliases: null, photosData: fixture.data };
 }
 
 let seq = 0;
@@ -139,40 +142,14 @@ async function seedRendition(
   options: { readonly resident: boolean },
 ): Promise<DataRecord> {
   seq += 1;
-  const key = keyFor(`rendition-${longEdge}-${seq}`);
-  const record = createDataRecord(
-    {
-      type: "image/avif",
-      originAppId: "photos",
-      parentId: parent.id,
-      contentHash: String(seq).padStart(64, "1"),
-      objectStorageKey: key,
-      sizeBytes: longEdge * 100,
-      originalFilename: null,
-    },
-    clock,
-  );
-  await database.put(record);
-  await database.putMetadata(record.type, {
-    recordId: record.id,
-    width: longEdge,
+  const subKey = `renditions/${parent.id}/${longEdge}/${seq}.avif`;
+  const key = PHOTOS_FILE_PREFIX + subKey;
+  fixture.data.write("renditions", { parent_record_id: parent.id, size_class: String(longEdge),
+    sub_key: subKey, content_hash: String(seq).padStart(64, "1"), width: longEdge,
     height: Math.round((longEdge * SOURCE.height) / SOURCE.width),
-  });
-  // The label is what makes this a *rendition* rather than any other child.
-  // `loadVariantCandidatesForPage` filters on it, and a crop with a parent would
-  // otherwise be offered as an answer to a pixel request.
-  await database.upsertLabels([
-    {
-      recordId: record.id,
-      appId: "photos",
-      key: "rendition",
-      value: String(longEdge),
-      recordType: record.type,
-      hlc: clock.now(),
-    },
-  ]);
+    size_bytes: longEdge * 100, content_type: "image/avif" });
   if (options.resident) held.add(key);
-  return record;
+  return { id: key as StarkeepId, objectStorageKey: key } as DataRecord;
 }
 
 /** The one item of a one-record page. */
@@ -185,7 +162,9 @@ function uriOf(record: DataRecord | null): string | null {
   return record?.objectStorageKey ? `file:///objects/${record.objectStorageKey}` : null;
 }
 
+afterEach(() => fixture.close());
 beforeEach(async () => {
+  fixture = photosDataFixture(clock);
   database = new MockDatabaseAdapter();
   await database.init();
   held = new Set();
@@ -438,24 +417,9 @@ describe("orientation", () => {
   });
 });
 
-/**
- * A rung with two records, and what this device asks the network for.
- *
- * Two nodes encoding one class produce different bytes — `avif-coder` against
- * `sharp` — so a class can hold two records under two content-addressed ids.
- * Both are legal: the uniqueness key carries the content hash. Resolution
- * prefers the lower id, and a device holding only the *other* copy holds the
- * pixels all the same.
- *
- * The rule under test is that `missingRendition` asks whether the ideal **rung**
- * is here, not whether one particular record is. Asking the narrower question
- * sends the phone to the network for a picture it can already paint — once per
- * viewer open, because the viewer fetches unconditionally by design.
- *
- * See `renditions-duplicate-rungs-2026-09-05.md`.
- */
+/** Concurrent publication converges to one row through app-plane LWW. */
 describe("a rung that two nodes derived", () => {
-  it("asks for nothing when the copy on this device is the one not preferred", async () => {
+  it("paints the winning publication when its bytes are resident", async () => {
     const parent = await seedParent({ bytesHere: true });
     // Both at the viewer's ideal rung, neither resident yet. Ids are hashes, so
     // which one resolution prefers is not predictable from seed order — and the
@@ -481,11 +445,11 @@ describe("a rung that two nodes derived", () => {
     expect(preferred.id).not.toBe(other.id);
   });
 
-  it("prefers the lower id when both copies are on this device", async () => {
+  it("uses the winning row when both encodings remain on this device", async () => {
     const parent = await seedParent({ bytesHere: true });
     const a = await seedRendition(parent, 1280, { resident: true });
     const b = await seedRendition(parent, 1280, { resident: true });
-    const lower = a.id < b.id ? a : b;
+    expect(fixture.data.rows("renditions")).toHaveLength(1);
 
     const opened = await resolveForViewer(deps(), await tile(), {
       stage: STAGE,
@@ -495,7 +459,7 @@ describe("a rung that two nodes derived", () => {
     // Stability is what this buys, and it is what the viewer's layered upgrade
     // needs: a pick that moved with row order would re-key the `<Image>` and
     // re-decode for no change in resolution.
-    expect(opened.paintedRendition).toBe(lower.id);
+    expect(opened.paintedRendition).toBe(b.id);
     expect(opened.missingRendition).toBeNull();
   });
 

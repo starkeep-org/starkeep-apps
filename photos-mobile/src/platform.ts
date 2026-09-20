@@ -333,19 +333,19 @@ export async function bringUpNode(): Promise<{
     retention: PHONE_RETENTION,
     sizeClassKeys: { [PHOTOS_APP_ID]: PHOTOS_SIZE_CLASS_KEY },
     reportedClasses: photosRungClasses(),
-    ...(config?.baseUrl ? { cloud: driveChannel(config.baseUrl, deviceKey) } : {}),
+    ...(config?.baseUrl ? { cloud: syncChannel(config.baseUrl, deviceKey), photosCloud: syncChannel(config.baseUrl, deviceKey, "photos") } : {}),
   });
   return { node, identity, deviceKey };
 }
 
 /**
- * The Drive channel — how shared records reach the cloud.
+ * Construct either device-signed channel with the matching app identity.
  *
  * Drive, not `photos`, and that is the protocol rather than a choice:
  * `data-roles-and-permissions.md` routes *all* shared-record sync through the
  * always-on User-Data-Owner channel, and the photographs are shared records.
- * The `photos` channel carries app-specific rows — captions — and is a second
- * engine against a second base URL, not needed to answer "did my photos sync".
+ * The `photos` channel carries captions, rendition rows and app-private files
+ * through its own engine and watermarks.
  *
  * **Configured even when this device is not paired yet.** The engine exists and
  * every request 401s until the operator pairs it, which is a far better state
@@ -354,11 +354,11 @@ export async function bringUpNode(): Promise<{
  * send. That was the actual bug — signing in changed nothing because
  * `bringUpNode` passed no cloud, so `exchange()` was a no-op.
  */
-function driveChannel(baseUrl: string, deviceKey: DeviceKey) {
-  const channelUrl = `${baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
+function syncChannel(baseUrl: string, deviceKey: DeviceKey, appId = DRIVE_APP_ID) {
+  const channelUrl = `${baseUrl.replace(/\/+$/, "")}/apps/${appId}`;
   const signRequest = (method: string, path: string, body?: string | Uint8Array) =>
     deviceKey.signRequest(
-      DRIVE_APP_ID,
+      appId,
       method,
       path,
       typeof body === "string" ? new TextEncoder().encode(body) : body,
@@ -752,7 +752,7 @@ export function deriveRenditionsFor(
   } = {},
 ): Promise<DeriveLadderOutcome | null> {
   if (!node.derivationCursor) return Promise.resolve(null);
-  const deps = deriveDepsFor(node, clock);
+  const deps = deriveDepsFor(node);
   if (deps === null) return Promise.resolve(null);
   return deriveRenditions(
     { ...deps, cursor: node.derivationCursor },
@@ -787,7 +787,7 @@ export function deriveRecordFor(
   record: DataRecord,
   ceilingLongEdge?: number,
 ): Promise<number | null> {
-  const deps = deriveDepsFor(node, clock);
+  const deps = deriveDepsFor(node);
   if (deps === null) return Promise.resolve(null);
   return ceilingLongEdge === undefined
     ? deriveForRecord(deps, record)
@@ -803,16 +803,15 @@ export function deriveRecordFor(
  * a rung derived by one path ends up uncharged or unlabelled relative to the
  * other.
  */
-function deriveDepsFor(node: MobileNode, clock: HLCClock): DeriveLadderDeps | null {
+function deriveDepsFor(node: MobileNode): DeriveLadderDeps | null {
   if (!node.mediaAliases || avifEncoder === null) return null;
   return {
     aliases: node.mediaAliases,
     database: node.databaseAdapter,
-    objectStorage: node.objectStorage,
-    clock,
     hash: sha256Bytes,
     encode: avifEncoder,
-    noteDerived: (record) => node.noteDerived(record),
+    photosData: node.photosData,
+    publishRendition: (row, bytes) => node.publishRendition(row, bytes),
   };
 }
 

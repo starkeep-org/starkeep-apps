@@ -1,3 +1,4 @@
+import type { PhotosAppData, RenditionRow } from "./app-data";
 /**
  * The phone making its own renditions.
  *
@@ -76,25 +77,19 @@
  */
 
 import {
-  createDataRecord,
-  dataRecordObjectKey,
   typeCategory,
   type DataRecord,
-  type HLCClock,
   type StarkeepId,
 } from "@starkeep/protocol-primitives";
-import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
-import { loadVariantCandidatesForPage } from "@starkeep/storage-adapter";
+import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import {
   applicableStillClasses,
-  renditionFileName,
   renditionLongEdge,
   STILL_LADDER,
   type StillClassSpec,
 } from "@starkeep/photos-ladder";
 import type { MediaAliasStore } from "../media/media-alias";
 import type { ScanCursorStore } from "../work/scan-cursor";
-import { PHOTOS_APP_ID, PHOTOS_RENDITION_KEY } from "./renditions";
 
 /**
  * The largest rung a background sweep will produce.
@@ -228,22 +223,11 @@ export type HashBytes = (bytes: Uint8Array) => Promise<string>;
 export interface DeriveLadderDeps {
   readonly aliases: MediaAliasStore;
   readonly database: DatabaseAdapter;
-  /** Where the derived bytes land. The node's own local storage, never the cloud's. */
-  readonly objectStorage: ObjectStorageAdapter;
-  readonly clock: HLCClock;
   readonly hash: HashBytes;
   readonly encode: ImageEncoder;
-  /** Which app owns the records this writes. Defaults to Photos, which is this app. */
-  readonly originAppId?: string;
-  /**
-   * Charge these bytes to a budget.
-   *
-   * Optional, and its absence means the bytes are on disk and no budget knows
-   * about them — which is exactly the `unknownKeys` state `reclaimSpace` reports
-   * and expects to be zero. Supplied on a real node; omitted in a test that has
-   * no residency policy to charge against.
-   */
-  readonly noteDerived?: (record: DataRecord) => Promise<void>;
+  /** Read published rungs and write through the node’s serialized publisher. */
+  readonly photosData: PhotosAppData;
+  readonly publishRendition: (row: RenditionRow, bytes: Uint8Array) => Promise<boolean>;
 }
 
 export interface DeriveLadderOutcome {
@@ -264,7 +248,6 @@ export interface DeriveLadderOutcome {
   readonly resumeAfter: string | null;
 }
 
-const RENDITION_LABEL = { appId: PHOTOS_APP_ID, key: PHOTOS_RENDITION_KEY };
 
 /**
  * Walk this device's own originals from the cursor, deriving what is missing.
@@ -378,11 +361,7 @@ export async function derivePage(
   // nothing missing costs no decode: the dimensions that decide which rungs
   // apply, and the children that say which of them already exist.
   const dimensions = await deps.database.getMetadataByIds("image", [...stills.keys()]);
-  const existing = await loadVariantCandidatesForPage(
-    deps.database,
-    [...stills.values()],
-    RENDITION_LABEL,
-  );
+  const existing = deps.photosData.candidates([...stills.keys()]);
 
   const budget = options.maxRecords ?? Number.POSITIVE_INFINITY;
   let scanned = 0;
@@ -494,19 +473,8 @@ export async function derivePage(
  * because this entry point is reachable per tile and would otherwise become a
  * way for a phone to volunteer for every original it ever fetched.
  *
- * **Nothing for a rung that already has a record.** {@link missingClasses} is
- * the only definition of missing, and it counts records rather than bytes. That
- * is load-bearing here rather than incidental: a rung derived on another node
- * and synced down as a row has bytes this device can *fetch*, and re-encoding it
- * locally would produce different bytes, a different content hash and therefore
- * a **second record for the same rung of the same photograph**. An evicted rung
- * is the same case. Both want `fetchBlob`, not this.
- *
- * It is also what makes this pass unable to cycle with the fetch it defers to.
- * Counting records means an evicted rung and a duplicated rung both read as
- * present, so no amount of eviction pressure can make this device derive a class
- * it has already derived once — there is no derive/fetch/evict/derive loop to
- * fall into.
+ * A live rendition row suppresses another encode even when the bytes are absent.
+ * The app channel can fetch the published file without changing the winning URL.
  *
  * ## The ceiling is the caller's, and this is the caller that raises it
  *
@@ -558,7 +526,7 @@ export async function deriveForRecord(
   const sourceLongEdge = Math.max(width, height);
   if (sourceLongEdge <= 0) return null;
 
-  const existing = await loadVariantCandidatesForPage(deps.database, [record], RENDITION_LABEL);
+  const existing = deps.photosData.candidates([record.id]);
   const missing = missingClasses(
     sourceLongEdge,
     existing.get(record.id) ?? [],
@@ -596,7 +564,7 @@ function missingClasses(
 }
 
 /**
- * One record: decode once, encode each missing rung, publish each as a child.
+ * One record: decode once, encode each missing rung, publish each as an app-private row.
  * Null when this device could not read the file at all.
  *
  * The decode is released whatever happens. It holds a bitmap of up to
@@ -622,8 +590,7 @@ async function deriveOne(
         renditionLongEdge(spec, sourceLongEdge),
         spec.quality,
       );
-      await publishRendition(deps, parent, spec, encoded);
-      written += 1;
+      if (await publishRendition(deps, parent, spec, encoded)) written += 1;
     }
   } finally {
     decoded.release();
@@ -631,87 +598,18 @@ async function deriveOne(
   return written;
 }
 
-/**
- * Write one derived rung: the bytes, then its dimensions, then its label, then
- * the record.
- *
- * ## The order is the whole of this function
- *
- * **Bytes first.** A record whose blob is absent reads as `staged` — wanted, not
- * here — and a sync round would offer to fetch from the cloud bytes that are
- * sitting in local storage one write away.
- *
- * **Dimensions before the record.** Metadata rides the record over the wire,
- * read once per shipment after a round is cut, so a row written *after* `put` is
- * invisible to any round that cuts in between. That window is exactly the one
- * `publish-renditions.ts` documents at length: a rendition shipped without
- * dimensions is an unorderable candidate the far side drops, and a record whose
- * rungs are all dropped is indistinguishable from one with no rungs at all.
- *
- * **The label before the record too, and stamped after it.** Two different
- * things: the *write* goes first so no reader ever sees this child without the
- * label that makes it a rendition, and the *timestamp* comes from a later
- * `clock.now()` than the record's, so a round cut cannot ship the label ahead of
- * the record it describes. `round-cut.ts` records what that cost the last time
- * it happened — a handset holding rendition records whose label had been cut
- * away, unclassifiable to residency and invisible to the grid.
- *
- * The interrupted states are all self-repairing, and that is why this order is
- * safe without a transaction. A metadata row or a label whose record was never
- * written names an id nothing resolves; the next pass finds the rung still
- * missing, re-derives it from the same pixels, and the same content hash mints
- * the same id onto the same rows.
- */
+/** Publish the file and rendition row through the node’s serialized app-plane writer. */
 async function publishRendition(
   deps: DeriveLadderDeps,
   parent: DataRecord,
   spec: StillClassSpec,
   encoded: EncodedRendition,
-): Promise<void> {
+): Promise<boolean> {
   const contentHash = await deps.hash(encoded.bytes);
-  const objectStorageKey = dataRecordObjectKey(RENDITION_TYPE, contentHash);
-
-  await deps.objectStorage.put(objectStorageKey, encoded.bytes, {
-    contentType: RENDITION_TYPE,
-  });
-
-  const record = createDataRecord(
-    {
-      type: RENDITION_TYPE,
-      originAppId: deps.originAppId ?? PHOTOS_APP_ID,
-      contentHash,
-      objectStorageKey,
-      sizeBytes: encoded.bytes.byteLength,
-      mimeType: RENDITION_TYPE,
-      parentId: parent.id,
-      // The same name every other node gives this rung. It is part of the
-      // content-addressed id, so spelling it differently here would be a second
-      // naming rule producing a second id for the same rung of the same photo.
-      originalFilename: renditionFileName(parent.originalFilename, spec.sizeClass),
-    },
-    deps.clock,
-  );
-
-  await deps.database.putMetadata(record.type, {
-    recordId: record.id,
-    width: encoded.width,
-    height: encoded.height,
-  });
-  await deps.database.upsertLabels([
-    {
-      recordId: record.id,
-      appId: PHOTOS_APP_ID,
-      key: PHOTOS_RENDITION_KEY,
-      value: spec.sizeClass,
-      recordType: record.type,
-      // Strictly above the record's own timestamp — see this function's header.
-      hlc: deps.clock.now(),
-    },
-  ]);
-  await deps.database.put(record);
-
-  // Last, and after the record exists: the class these bytes are charged to is
-  // read from the label rows above, so charging any earlier would resolve every
-  // rendition this device makes as an original.
-  await deps.noteDerived?.(record);
+  return deps.publishRendition({
+    parent_record_id: parent.id, size_class: spec.sizeClass,
+    sub_key: `renditions/${parent.id}/${spec.sizeClass}/${contentHash}.avif`,
+    content_hash: contentHash, width: encoded.width, height: encoded.height,
+    size_bytes: encoded.bytes.byteLength, content_type: RENDITION_TYPE,
+  }, encoded.bytes);
 }

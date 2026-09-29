@@ -194,6 +194,7 @@ describe("scan state", () => {
       skipped: 2,
       processed: { faces: 7 },
       failed: 1,
+      waiting: 3,
       startedAt: "2026-07-28T00:00:00.000Z",
       finishedAt: null,
       error: null,

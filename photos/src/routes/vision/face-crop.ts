@@ -1,6 +1,7 @@
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { remoteNotImplemented } from "@/vision/remote";
 import { isCurrent, readFaceSidecar } from "@/vision/sidecars";
+import { fetchResidentImage, scaleBox } from "@/vision/source";
 
 /** Rendered size of a face tile in the People view. */
 const CROP_SIZE = 160;
@@ -17,6 +18,9 @@ const PADDING_RATIO = 0.35;
  * writes nothing.
  *
  * `.rotate()` first, because the sidecar's boxes are in display orientation.
+ *
+ * Reads a size already on this machine, as the scan does, and scales the box
+ * to it: a tile must never download an original.
  */
 export async function GET(req: Request, id: string): Promise<Response> {
   const remote = remoteNotImplemented();
@@ -42,16 +46,16 @@ export async function GET(req: Request, id: string): Promise<Response> {
     );
   }
 
-  const urlRes = await signedFetch(creds, `/data/records/${id}/file-url`);
-  if (!urlRes.ok) {
+  let image;
+  try {
+    image = await fetchResidentImage((path) => signedFetch(creds, path), id);
+  } catch {
     return Response.json({ error: "source image is unavailable" }, { status: 502 });
   }
-  const { url } = (await urlRes.json()) as { url: string };
-  const sourceRes = await fetch(url);
-  if (!sourceRes.ok) {
-    return Response.json({ error: "source image download failed" }, { status: 502 });
+  if (!image) {
+    return Response.json({ error: "no size of that photo is on this machine" }, { status: 404 });
   }
-  const bytes = Buffer.from(await sourceRes.arrayBuffer());
+  const bytes = Buffer.from(image.bytes);
 
   const { default: sharp } = (await import("sharp")) as { default: typeof import("sharp").default };
   const rotated = sharp(bytes).rotate();
@@ -59,7 +63,8 @@ export async function GET(req: Request, id: string): Promise<Response> {
   const imageWidth = meta.width ?? sidecar.w;
   const imageHeight = meta.height ?? sidecar.h;
 
-  const [x, y, w, h] = face.bbox;
+  // The sidecar measured `sidecar.w` pixels across; this image may be another size.
+  const [x, y, w, h] = scaleBox(face.bbox, imageWidth / sidecar.w);
   const pad = Math.max(w, h) * PADDING_RATIO;
   // Clamped to the frame: a face at the edge yields a smaller crop rather than
   // a sharp `extract` error on an out-of-bounds rectangle.

@@ -275,6 +275,18 @@ export const styles = StyleSheet.create({
   renderedSizeText: { color: "#ddd", fontSize: 11, fontFamily: "monospace" },
 
   row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
+  /** A row of mutually exclusive choices, such as the photo ceiling. */
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: {
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  chipSelected: { backgroundColor: colors.text, borderColor: colors.text },
+  chipLabel: { color: colors.text, fontSize: 13 },
+  chipLabelSelected: { color: colors.background, fontSize: 13, fontWeight: "600" },
   rowText: { flex: 1, gap: 2 },
   badge: { fontSize: 11, fontWeight: "700", paddingTop: 3, width: 34 },
   ok: { color: colors.accent },

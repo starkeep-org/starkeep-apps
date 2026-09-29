@@ -51,7 +51,14 @@ import {
 } from "../../photos-lib/ladder";
 import { fileAttemptStore } from "../attempt-store";
 import { readSweepState, writeSweepState } from "../sweep-state";
-import { fetchSweepPage, stageHasWork, type SweepRecord } from "../sweep-set";
+import {
+  fetchSweepPage,
+  fidelityWithoutDecode,
+  sweepWork,
+  type SweepRecord,
+} from "../sweep-set";
+import { mayDownloadOriginals, readDerivationConfig } from "../config";
+import { reportOriginalFidelity } from "../../photos-lib/image-processing/publish-renditions";
 import { emptySweepState, SWEEP_STAGES, type SweepStage, type SweepState } from "../types";
 import { PROGRESS_INTERVAL_MS, type SweepCommand, type SweepEvent } from "../worker-protocol";
 
@@ -100,6 +107,11 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
     throw new Error("photos has not been installed locally — run install from admin-web");
   }
 
+  // Read once per pass, so a switch changed mid-pass takes effect on the next
+  // one rather than halfway through a page.
+  const config = readDerivationConfig();
+  const switches = { ...config, mayDownload: mayDownloadOriginals(config) };
+
   const state: SweepState = {
     ...emptySweepState(),
     running: true,
@@ -143,7 +155,16 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
         DERIVED_LABEL_REF,
         cursor,
       );
-      const work = page.records.filter((r) => stageHasWork(r, stage, CHEAP_STILL_CLASSES));
+      const work = sweepWork(page.records, stage, switches, CHEAP_STILL_CLASSES);
+      // A fidelity the stored dimensions answer needs no decode and no bytes,
+      // so the records this pass leaves alone still get theirs.
+      if (stage === "cheap") {
+        const chosen = new Set(work);
+        await reportFidelities(
+          creds,
+          page.records.filter((r) => !chosen.has(r)),
+        );
+      }
       console.log(
         `[derive] stage=${stage} records=${page.records.length} work=${work.length} ` +
           `cursor=${cursor ?? "start"}`,
@@ -170,6 +191,18 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
   }
 
   finish(state, null, true);
+}
+
+async function reportFidelities(creds: AppCredentials, records: readonly SweepRecord[]): Promise<void> {
+  for (const record of records) {
+    const longEdge = fidelityWithoutDecode(record);
+    if (longEdge === null) continue;
+    try {
+      await reportOriginalFidelity((path, init) => signedFetch(creds, path, init), record.id, longEdge);
+    } catch (err) {
+      console.warn(`[derive] fidelity report for ${record.id} failed:`, err);
+    }
+  }
 }
 
 async function deriveOne(

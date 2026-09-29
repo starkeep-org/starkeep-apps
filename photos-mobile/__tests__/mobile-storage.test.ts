@@ -164,35 +164,39 @@ describe("what no stand-in can replace", () => {
   });
 });
 
-describe("pins", () => {
-  it("brings a pinned original above the ceiling to the phone", async () => {
+describe("this device's settings", () => {
+  it("starts at the phone's defaults", async () => {
+    phone = await startPhone();
+    expect(phone.deviceSettings()).toEqual({ imageCeiling: 1280, derivePhotoStandIns: true });
+  });
+
+  // Nothing is removed and nothing restarts: the next scan starts from the top
+  // and reaches the stand-in the round declined.
+  it("brings a stand-in a raised ceiling now covers", async () => {
     const original = await seedCloud(2 * 1024 * KB, { type: "image/jpeg", fidelity: 6000 });
+    const screen = await seedCloud(40 * KB, {
+      type: "image/avif",
+      parentId: original.id,
+      standInRole: "smaller",
+      fidelity: 2560,
+    });
     phone = await startPhone();
     await phone.sync();
-    expect(await phone.objectStorage.has(original.objectStorageKey!)).toBe(false);
+    expect(await phone.objectStorage.has(screen.objectStorageKey!)).toBe(false);
 
-    phone.setPinned(original.id, true);
-    await phone.scanForAcquirable();
+    expect(phone.setImageCeiling(2560)).toMatchObject({ imageCeiling: 2560 });
+    let complete = false;
+    while (!complete) complete = (await phone.scanForAcquirable()).complete;
     const outcome = await phone.acquireQueued();
     expect(outcome?.landed).toBe(1);
-    expect(await phone.objectStorage.has(original.objectStorageKey!)).toBe(true);
+    expect(await phone.objectStorage.has(screen.objectStorageKey!)).toBe(true);
+    expect(await phone.objectStorage.has(original.objectStorageKey!)).toBe(false);
   });
 
-  it("reports what it was told, and forgets on release", async () => {
+  it("keeps the derivation switch", async () => {
     phone = await startPhone();
-    phone.setPinned("rec-1", true);
-    expect(phone.isPinned("rec-1")).toBe(true);
-    phone.setPinned("rec-1", false);
-    expect(phone.isPinned("rec-1")).toBe(false);
-  });
-
-  // A pin is meaningful *before* the bytes arrive — pinning is how you ask for
-  // something you do not have yet — which is why pins live in their own table
-  // rather than on the resident-set row.
-  it("can be set for a record whose bytes are not here", async () => {
-    phone = await startPhone();
-    expect(() => phone!.setPinned("never-seen", true)).not.toThrow();
-    expect(phone.isPinned("never-seen")).toBe(true);
+    expect(phone.setDerivePhotoStandIns(false).derivePhotoStandIns).toBe(false);
+    expect(phone.deviceSettings().derivePhotoStandIns).toBe(false);
   });
 });
 

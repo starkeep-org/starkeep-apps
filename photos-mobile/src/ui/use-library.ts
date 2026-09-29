@@ -50,6 +50,7 @@ import {
 } from "../platform";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
+import type { DeviceSettings } from "../device-settings";
 import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth } from "./theme";
 import { type Dimensions as Box, type GridGeometry } from "../photos/render-target";
 import {
@@ -554,9 +555,6 @@ export interface LibraryState {
    * `resolveForViewer`.
    */
   openForViewer: (item: LibraryItem, stage: Box) => Promise<LibraryItem>;
-  /** Pin or release a record on this device. Returns the state afterwards. */
-  setPinned: (recordId: string, pinned: boolean) => boolean;
-  isPinned: (recordId: string) => boolean;
 }
 
 /** What the Storage section shows, and the action that changes it. */
@@ -573,6 +571,10 @@ export interface StorageState {
    * every stand-in above this device's ceiling — whose cloud copies are proved.
    */
   freeUp: (scope: "originals" | "originals-and-above-ceiling") => Promise<void>;
+  /** This device's photo ceiling and derivation switch; null until the node is up. */
+  readonly settings: DeviceSettings | null;
+  setImageCeiling: (ceiling: number | null) => void;
+  setDerivePhotoStandIns: (on: boolean) => void;
 }
 
 /**
@@ -624,7 +626,48 @@ export function useStorage(node: NodeState): StorageState {
     [ready, refresh],
   );
 
-  return { report, reclaiming, lastFreed, error, refresh, freeUp };
+  const [settings, setSettings] = useState<DeviceSettings | null>(null);
+  useEffect(() => {
+    setSettings(ready ? ready.node.deviceSettings() : null);
+  }, [ready]);
+
+  const setImageCeiling = useCallback(
+    (ceiling: number | null) => {
+      if (!ready) return;
+      try {
+        setSettings(ready.node.setImageCeiling(ceiling));
+        setError(null);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [ready],
+  );
+
+  const setDerivePhotoStandIns = useCallback(
+    (on: boolean) => {
+      if (!ready) return;
+      try {
+        setSettings(ready.node.setDerivePhotoStandIns(on));
+        setError(null);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [ready],
+  );
+
+  return {
+    report,
+    reclaiming,
+    lastFreed,
+    error,
+    refresh,
+    freeUp,
+    settings,
+    setImageCeiling,
+    setDerivePhotoStandIns,
+  };
 }
 
 /** The node's records, and the action that adds the camera roll to them. */
@@ -1350,20 +1393,6 @@ export function useLibrary(node: NodeState): LibraryState {
     };
   }, [ready, items, fetchRendition, deriveNow]);
 
-  const setPinned = useCallback(
-    (recordId: string, pinned: boolean) => {
-      if (!ready) return false;
-      ready.node.setPinned(recordId, pinned);
-      return ready.node.isPinned(recordId);
-    },
-    [ready],
-  );
-
-  const isPinned = useCallback(
-    (recordId: string) => ready?.node.isPinned(recordId) ?? false,
-    [ready],
-  );
-
   return {
     items,
     summary,
@@ -1390,7 +1419,5 @@ export function useLibrary(node: NodeState): LibraryState {
     fetchRendition,
     deriveNow,
     openForViewer,
-    setPinned,
-    isPinned,
   };
 }

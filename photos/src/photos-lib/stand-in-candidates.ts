@@ -33,6 +33,12 @@ export interface WireStandInSummary {
   readonly status: "archivable" | "self-canonical" | "video-below-floor" | "fidelity-unknown";
   readonly top: number | null;
   readonly sizes: readonly WireStandInSize[];
+  /**
+   * Where the original's own bytes sit on the node that answered. Optional
+   * because a data server older than the field omits it, which reads as "not
+   * known to be here".
+   */
+  readonly original_placement?: "here" | "cloud" | "missing";
 }
 
 export type UrlLifetime = { kind: "expires"; expires_at: string } | { kind: "non-expiring" };

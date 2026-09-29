@@ -42,6 +42,7 @@ import * as crop from "./routes/photos/crop";
 import * as library from "./routes/photos/library";
 import * as renditions from "./routes/photos/renditions";
 import * as styleGraphic from "./routes/photos/style-graphic";
+import * as deriveConfig from "./routes/derive/config";
 import * as deriveStatus from "./routes/derive/status";
 import * as deriveSweep from "./routes/derive/sweep";
 import * as visionConfig from "./routes/vision/config";
@@ -165,6 +166,8 @@ app.post("/api/resize", (c) => resize(c.req.raw));
 app.post("/api/share", () => share());
 app.post("/api/local-sync-handoff", (c) => localSyncHandoff(c.req.raw));
 
+app.get("/api/derive/config", () => deriveConfig.GET());
+app.put("/api/derive/config", (c) => deriveConfig.PUT(c.req.raw));
 app.get("/api/derive/status", () => deriveStatus.GET());
 app.post("/api/derive/sweep", (c) => deriveSweep.POST(c.req.raw));
 

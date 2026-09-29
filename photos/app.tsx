@@ -6,6 +6,7 @@ import {
   PhotoViewer,
   usePhotoContext,
   VisionPanel,
+  DerivationPanel,
   PeopleView,
   RenditionResolutionProvider,
   useRenditionResolutionCache,
@@ -80,6 +81,7 @@ function PhotosAppInner() {
   // answer 501, so the local/remote decision stays server-side rather than
   // being re-derived from the build flag here.
   const [showVision, setShowVision] = useState(false);
+  const [showDerivation, setShowDerivation] = useState(false);
   const [showPeople, setShowPeople] = useState(false);
   const [layout, setLayout] = useListLayoutPreferences();
   const narrow = useNarrowViewport();
@@ -240,6 +242,7 @@ function PhotosAppInner() {
               onLayoutChange={setLayout}
               onOpenCloudSetup={FORCE_REMOTE ? () => setShowCloudSetup(true) : null}
               onOpenFaces={FORCE_REMOTE ? null : () => setShowVision(true)}
+              onOpenDerivation={FORCE_REMOTE ? null : () => setShowDerivation(true)}
             />
           </div>
         </div>
@@ -328,6 +331,8 @@ function PhotosAppInner() {
             }}
           />
         )}
+
+        {showDerivation && <DerivationPanel onClose={() => setShowDerivation(false)} />}
 
         {showPeople && <PeopleView onClose={() => setShowPeople(false)} />}
       </div>

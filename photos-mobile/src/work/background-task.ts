@@ -27,6 +27,7 @@ import { Paths } from "expo-file-system";
 import * as Network from "expo-network";
 import { createHLCClock } from "@starkeep/protocol-primitives";
 import {
+  deriveFullRenditionsFor,
   deriveRenditionsFor,
   documentPath,
   expoFileSystem,
@@ -265,6 +266,10 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
           // gives it and by its own record budget, and resumable from a cursor —
           // so a window that closes mid-sweep costs the record in flight.
           deriveRenditions: (signal) => deriveRenditionsFor(lease.node, clock, { signal }),
+          // 2560 and the canonical, one photograph per unit. The graph runs this
+          // only when charging or comfortably above half battery.
+          deriveFullRenditions: (signal) => deriveFullRenditionsFor(lease.node, clock, { signal }),
+          photoDerivationOff: !lease.node.deviceSettings().derivePhotoStandIns,
           // Kept so the watchdog has something to write. Each snapshot names
           // the job in flight, so an abandoned window says which one it was.
           onProgress: (snapshot) => {

@@ -46,6 +46,7 @@ import {
   derivePage,
   deriveRenditions,
   DERIVE_PAGE_LIMIT,
+  FULL_DERIVE_CEILING_LONG_EDGE,
   MOBILE_DERIVE_CEILING_LONG_EDGE,
   type DecodedSource,
   type DeriveLadderDeps,
@@ -260,7 +261,30 @@ describe("which rungs a phone makes", () => {
     expect(rungs.has("image-large")).toBe(false);
   });
 
-  it("never makes the canonical stand-in in a sweep, even for an original that takes one", async () => {
+  it("makes 2560 and the canonical in the full-ladder sweep, after the cheap one", async () => {
+    // The phone's own photographs in full, so no desktop fetches their
+    // originals to make the larger rungs.
+    const parent = await importOriginal({ width: 6000, height: 4000 });
+    await derivePage(deps(fakeEncoder().encode), { limit: 10 });
+
+    const full = fakeEncoder({ ceiling: FULL_DERIVE_CEILING_LONG_EDGE });
+    const outcome = await deriveRenditions(deps(full.encode), {
+      ceilingLongEdge: FULL_DERIVE_CEILING_LONG_EDGE,
+      maxRecords: 1,
+    });
+
+    expect(outcome.written).toBe(2);
+    expect(full.encodes.map((e) => e.maxLongEdge)).toEqual([2560, 4272]);
+    expect([...(await rungsOf(parent)).keys()].sort()).toEqual([
+      "image-large",
+      "image-medium",
+      "image-screen",
+      "image-thumb",
+      "image-xsmall",
+    ]);
+  });
+
+  it("never makes the canonical stand-in in the cheap sweep, even for an original that takes one", async () => {
     // 6000 px and 4 MB is past the canonical threshold and the size floor, so
     // the original takes a canonical stand-in at 4272 — whose arrival in the
     // cloud sends the original to deep archive. That is a `sharp` node's work.

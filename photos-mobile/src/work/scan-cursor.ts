@@ -65,6 +65,15 @@ export const ACQUISITION_SCAN_CURSOR_TABLE = "acquisition_scan_cursor";
  */
 export const DERIVATION_CURSOR_TABLE = "rendition_derivation_cursor";
 
+/**
+ * Where the full-ladder sweep — the 2560 rung and the canonical stand-in —
+ * stopped walking this device's originals. Its own table for the reason
+ * {@link DERIVATION_CURSOR_TABLE} gives: it walks the same aliases at a
+ * different pace, gated on power, and a shared cursor would have each sweep
+ * skip what the other reached.
+ */
+export const FULL_DERIVATION_CURSOR_TABLE = "full_derivation_cursor";
+
 export function createSqliteScanCursorStore(options: {
   readonly db: RawDatabase;
   /** Defaults to the acquisition scan's, which was the only sweep for a while. */

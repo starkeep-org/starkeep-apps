@@ -55,6 +55,7 @@ import StarkeepAvif from "../modules/starkeep-avif";
 import {
   deriveForRecord,
   deriveRenditions,
+  FULL_DERIVE_CEILING_LONG_EDGE,
   type DeriveLadderDeps,
   type DeriveLadderOutcome,
   type ImageEncoder,
@@ -738,12 +739,48 @@ export function deriveRenditionsFor(
   } = {},
 ): Promise<DeriveLadderOutcome | null> {
   if (!node.derivationCursor) return Promise.resolve(null);
+  // The person turned background derivation off on this device. Null, like a
+  // device that cannot derive, so a caller stops asking for this open.
+  if (!node.deviceSettings().derivePhotoStandIns) return Promise.resolve(null);
   const deps = deriveDepsFor(node, clock);
   if (deps === null) return Promise.resolve(null);
   return deriveRenditions(
     { ...deps, cursor: node.derivationCursor },
     {
       ...(options.maxRecords !== undefined ? { maxRecords: options.maxRecords } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+/**
+ * Make the larger rungs — 2560 and the canonical — for this device's own
+ * photographs, one record at a time.
+ *
+ * The full-ladder counterpart to {@link deriveRenditionsFor}, with its own
+ * cursor and the same null contract. It is what lets a phone derive its own
+ * photographs in full, so no desktop has to fetch their originals to do it.
+ * The caller runs it only when power allows; see `fullDeriveMayRun`.
+ */
+export function deriveFullRenditionsFor(
+  node: MobileNode,
+  clock: HLCClock,
+  options: {
+    readonly maxRecords?: number;
+    readonly signal?: { readonly aborted: boolean };
+  } = {},
+): Promise<DeriveLadderOutcome | null> {
+  if (!node.fullDerivationCursor) return Promise.resolve(null);
+  if (!node.deviceSettings().derivePhotoStandIns) return Promise.resolve(null);
+  const deps = deriveDepsFor(node, clock);
+  if (deps === null) return Promise.resolve(null);
+  return deriveRenditions(
+    { ...deps, cursor: node.fullDerivationCursor },
+    {
+      ceilingLongEdge: FULL_DERIVE_CEILING_LONG_EDGE,
+      // One decode per unit: these encodes are the expensive ones, and a
+      // window must be able to stop between them.
+      maxRecords: options.maxRecords ?? 1,
       ...(options.signal ? { signal: options.signal } : {}),
     },
   );

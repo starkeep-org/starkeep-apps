@@ -64,11 +64,9 @@ export function LibraryViewer({
   item,
   stage,
   busy,
-  pinned,
   hasPrevious,
   hasNext,
   onStep,
-  onTogglePin,
   onFetch,
   onOpenMotion,
   onClose,
@@ -77,11 +75,9 @@ export function LibraryViewer({
   /** The box the photograph gets, in layout points. See `viewerStageBox`. */
   stage: Box;
   busy: boolean;
-  pinned: boolean;
   hasPrevious: boolean;
   hasNext: boolean;
   onStep: (step: ViewerStep) => void;
-  onTogglePin: (item: LibraryItem) => void;
   onFetch: (item: LibraryItem) => Promise<boolean>;
   onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   onClose: () => void;
@@ -130,11 +126,9 @@ export function LibraryViewer({
         item={item}
         stage={stage}
         busy={busy}
-        pinned={pinned}
         hasPrevious={hasPrevious}
         hasNext={hasNext}
         onStep={onStep}
-        onTogglePin={onTogglePin}
         onFetch={onFetch}
         onOpenMotion={onOpenMotion}
         onClose={onClose}
@@ -147,11 +141,9 @@ function ViewerBody({
   item,
   stage,
   busy,
-  pinned,
   hasPrevious,
   hasNext,
   onStep,
-  onTogglePin,
   onFetch,
   onOpenMotion,
   onClose,
@@ -159,11 +151,9 @@ function ViewerBody({
   item: LibraryItem;
   stage: Box;
   busy: boolean;
-  pinned: boolean;
   hasPrevious: boolean;
   hasNext: boolean;
   onStep: (step: ViewerStep) => void;
-  onTogglePin: (item: LibraryItem) => void;
   onFetch: (item: LibraryItem) => Promise<boolean>;
   onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   onClose: () => void;
@@ -376,21 +366,6 @@ function ViewerBody({
             </Text>
           </Pressable>
         )}
-        {/* A pin is this device's own preference and travels with nothing —
-            deliberately not a label, because a pin shared as a label would let
-            one device's choice silently rewrite every other device's
-            residency. A pinned file arrives even above this device's ceiling,
-            and "Free up space" skips it. */}
-        <Pressable onPress={() => onTogglePin(item)} style={{ paddingVertical: 8 }}>
-          <Text style={styles.linkLabel}>
-            {pinned ? "★ Kept on this device — tap to release" : "☆ Keep on this device"}
-          </Text>
-        </Pressable>
-        {pinned ? (
-          <Text style={styles.muted}>
-            This one stays on this device, even when you free up space.
-          </Text>
-        ) : null}
         <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
           <Text style={styles.linkLabel}>Close</Text>
         </Pressable>

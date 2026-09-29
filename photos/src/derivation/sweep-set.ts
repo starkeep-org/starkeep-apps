@@ -154,6 +154,56 @@ function stillStage(sizeClass: SizeClass, cheap: ReadonlySet<SizeClass>): "cheap
   return spec.maxLongEdge <= MEDIUM_CLASS.maxLongEdge ? "medium" : "full";
 }
 
+/**
+ * Whether the sweep may read this record's original under the machine's
+ * switches. Any read of an original this machine lacks downloads it and keeps
+ * it, so with downloads off only an original known to be here qualifies.
+ */
+export function originalReadable(record: SweepRecord, mayDownload: boolean): boolean {
+  return mayDownload || record.stand_ins?.original_placement === "here";
+}
+
+/**
+ * The fidelity a still's stored dimensions answer without a decode, or null
+ * when the record has one already, is not a still, or has no dimensions yet.
+ *
+ * Reported whatever the switches say: it costs one request and no bytes, and
+ * without it no node can place the original against its ceiling.
+ */
+export function fidelityWithoutDecode(record: SweepRecord): number | null {
+  if (record.fidelity !== null) return null;
+  const mediaType = record.mime_type ?? record.type ?? "";
+  if (!mediaType.startsWith("image/")) return null;
+  const longEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
+  return longEdge > 0 ? longEdge : null;
+}
+
+/** The switches one pass runs under. See `derivation/config.ts`. */
+export interface SweepSwitches {
+  readonly derivePhotoStandIns: boolean;
+  readonly deriveVideoStandIns: boolean;
+  /** Downloads allowed and at least one derive switch on. */
+  readonly mayDownload: boolean;
+}
+
+/**
+ * The records of one page this stage derives under the machine's switches:
+ * none when the stage's switch is off, and with downloads off only those whose
+ * original is already here.
+ */
+export function sweepWork(
+  records: readonly SweepRecord[],
+  stage: "cheap" | "medium" | "full" | "video",
+  switches: SweepSwitches,
+  cheapClasses: readonly SizeClass[],
+): SweepRecord[] {
+  const stageOn = stage === "video" ? switches.deriveVideoStandIns : switches.derivePhotoStandIns;
+  if (!stageOn) return [];
+  return records.filter(
+    (r) => stageHasWork(r, stage, cheapClasses) && originalReadable(r, switches.mayDownload),
+  );
+}
+
 /** `fetch`-alike over the data server, injected so this module owns no creds. */
 export type RecordFetcher = (path: string) => Promise<Response>;
 

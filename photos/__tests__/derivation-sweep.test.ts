@@ -17,8 +17,16 @@ import {
   needsRecordFacts,
   stageHasWork,
   fetchSweepPage,
+  fidelityWithoutDecode,
+  originalReadable,
+  sweepWork,
   type SweepRecord,
 } from "../src/derivation/sweep-set";
+import {
+  DEFAULT_DERIVATION_CONFIG,
+  mayDownloadOriginals,
+  mergeDerivationConfig,
+} from "../src/derivation/config";
 import {
   CHEAP_STILL_CLASSES,
   STILL_LADDER,
@@ -294,5 +302,67 @@ describe("paging the library", () => {
       "cursor-abc",
     );
     expect(new URLSearchParams(asked.split("?")[1]).get("page_token")).toBe("cursor-abc");
+  });
+});
+
+describe("this machine's switches", () => {
+  const here = (id: string) =>
+    record({
+      id,
+      stand_ins: { category: "image", fidelity: BIG, status: "archivable", top: 4272, sizes: [], original_placement: "here" },
+    });
+  const cloudOnly = (id: string) =>
+    record({
+      id,
+      stand_ins: { category: "image", fidelity: BIG, status: "archivable", top: 4272, sizes: [], original_placement: "cloud" },
+    });
+  const all = { derivePhotoStandIns: true, deriveVideoStandIns: true, mayDownload: true };
+
+  it("default to deriving everything and downloading what is missing", () => {
+    expect(DEFAULT_DERIVATION_CONFIG).toEqual({
+      derivePhotoStandIns: true,
+      deriveVideoStandIns: true,
+      downloadOriginalsToDerive: true,
+    });
+    expect(mayDownloadOriginals(DEFAULT_DERIVATION_CONFIG)).toBe(true);
+  });
+
+  it("take booleans field by field and ignore anything else", () => {
+    expect(
+      mergeDerivationConfig(DEFAULT_DERIVATION_CONFIG, { deriveVideoStandIns: false, derivePhotoStandIns: "no" }),
+    ).toEqual({ derivePhotoStandIns: true, deriveVideoStandIns: false, downloadOriginalsToDerive: true });
+  });
+
+  it("allow no download while both derive switches are off", () => {
+    expect(
+      mayDownloadOriginals({ derivePhotoStandIns: false, deriveVideoStandIns: false, downloadOriginalsToDerive: true }),
+    ).toBe(false);
+  });
+
+  it("derive no stills with photo derivation off, and no video with video derivation off", () => {
+    const records = [here("a")];
+    expect(sweepWork(records, "cheap", { ...all, derivePhotoStandIns: false }, CHEAP_STILL_CLASSES)).toEqual([]);
+    expect(sweepWork(records, "cheap", all, CHEAP_STILL_CLASSES).map((r) => r.id)).toEqual(["a"]);
+    const video = record({ id: "v", mime_type: "video/mp4", metadata: { width: 0, height: 0 } });
+    expect(sweepWork([video], "video", { ...all, deriveVideoStandIns: false }, CHEAP_STILL_CLASSES)).toEqual([]);
+    expect(sweepWork([video], "video", all, CHEAP_STILL_CLASSES).map((r) => r.id)).toEqual(["v"]);
+  });
+
+  // Any read of an original this machine lacks downloads it and keeps it.
+  it("read only originals already here with downloads off", () => {
+    const records = [here("a"), cloudOnly("b"), record({ id: "c" })];
+    expect(
+      sweepWork(records, "cheap", { ...all, mayDownload: false }, CHEAP_STILL_CLASSES).map((r) => r.id),
+    ).toEqual(["a"]);
+    expect(originalReadable(cloudOnly("b"), true)).toBe(true);
+    // A server older than the field says nothing, which is not "here".
+    expect(originalReadable(record({ id: "c" }), false)).toBe(false);
+  });
+
+  it("report a fidelity the stored dimensions answer, for a still with none", () => {
+    expect(fidelityWithoutDecode(record({ fidelity: null }))).toBe(BIG);
+    expect(fidelityWithoutDecode(record({ fidelity: 6000 }))).toBeNull();
+    expect(fidelityWithoutDecode(record({ fidelity: null, metadata: null }))).toBeNull();
+    expect(fidelityWithoutDecode(record({ fidelity: null, mime_type: "video/mp4" }))).toBeNull();
   });
 });

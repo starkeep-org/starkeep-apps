@@ -41,6 +41,10 @@ interface StoredRecord {
 }
 
 const records = new Map<string, StoredRecord>();
+/** Where each original's own bytes sit, as the platform reports it. Default `here`. */
+const originalPlacement = new Map<string, "here" | "cloud">();
+/** Every original whose bytes the worker asked for; each would be a download. */
+const fileUrlCalls: string[] = [];
 let sourceBytes: Buffer;
 let server: Server;
 let port: number;
@@ -97,6 +101,7 @@ function handler(
 
     const fileUrl = /^\/data\/records\/([^/]+)\/file-url$/.exec(path);
     if (fileUrl) {
+      fileUrlCalls.push(fileUrl[1]!);
       json(res, { url: `http://127.0.0.1:${port}/files/source` });
       return;
     }
@@ -213,6 +218,7 @@ function handler(
                 size_bytes: c.size_bytes,
                 placement: "here",
               })),
+            original_placement: originalPlacement.get(r.id) ?? "here",
           },
         })),
         nextCursor: null,
@@ -354,4 +360,54 @@ describe("a cold library, swept by the real worker", () => {
     }
     expect(childrenOf("orig-1")).toHaveLength(before);
   }, 180_000);
+});
+
+describe("a machine with downloads to derive turned off", () => {
+  const configPath = () => join(root, "app-local", "photos", "derivation", "config.json");
+
+  it("derives only from originals already here, and still reports a cloud-only original's fidelity", async () => {
+    if (!existsSync(workerBundlePath())) {
+      throw new Error("run `pnpm derive:build-worker` before this test");
+    }
+    mkdirSync(join(root, "app-local", "photos", "derivation"), { recursive: true });
+    writeFileSync(configPath(), JSON.stringify({ downloadOriginalsToDerive: false }));
+    try {
+      records.clear();
+      originalPlacement.clear();
+      fileUrlCalls.length = 0;
+      const stored = (id: string): StoredRecord => ({
+        id,
+        mime_type: "image/jpeg",
+        original_filename: `${id}.jpg`,
+        parent_id: null,
+        size_bytes: sourceBytes.byteLength,
+        // Dimensions already known, as a synced original's are.
+        metadata: { width: SOURCE_EDGE, height: Math.round(SOURCE_EDGE * 0.75), thumb_hash: "x" },
+        standIn: null,
+        fidelity: null,
+      });
+      records.set("orig-here", stored("orig-here"));
+      records.set("orig-cloud", stored("orig-cloud"));
+      originalPlacement.set("orig-cloud", "cloud");
+
+      const event = await runWorker({
+        type: "start",
+        resume: { stage: "cheap", cursor: null },
+        concurrency: 2,
+      });
+      expect(event.type, event.type === "failed" ? event.message : undefined).toBe("finished");
+
+      // Any read of the cloud-only original would have downloaded it.
+      expect(fileUrlCalls).not.toContain("orig-cloud");
+      expect(childrenOf("orig-cloud")).toEqual([]);
+      // The fidelity needs no bytes, so it is reported anyway.
+      expect(records.get("orig-cloud")!.fidelity).toBe(SOURCE_EDGE);
+
+      // The original that is here is still derived.
+      expect(fileUrlCalls).toContain("orig-here");
+      expect(childrenOf("orig-here").length).toBeGreaterThan(0);
+    } finally {
+      rmSync(configPath(), { force: true });
+    }
+  }, 120_000);
 });

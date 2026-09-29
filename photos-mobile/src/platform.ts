@@ -55,12 +55,12 @@ import StarkeepAvif from "../modules/starkeep-avif";
 import {
   deriveForRecord,
   deriveRenditions,
-  FULL_DERIVE_CEILING_LONG_EDGE,
   type DeriveLadderDeps,
   type DeriveLadderOutcome,
   type ImageEncoder,
 } from "./photos/derive-ladder";
 import { createMobileNode, type MobileNode } from "./node";
+import { backgroundDerivePlan, type BackgroundDerivePass } from "./photos/background-derive";
 import {
   openMotionPhoto,
   sweepMotionScratch,
@@ -738,19 +738,7 @@ export function deriveRenditionsFor(
     readonly signal?: { readonly aborted: boolean };
   } = {},
 ): Promise<DeriveLadderOutcome | null> {
-  if (!node.derivationCursor) return Promise.resolve(null);
-  // The person turned background derivation off on this device. Null, like a
-  // device that cannot derive, so a caller stops asking for this open.
-  if (!node.deviceSettings().derivePhotoStandIns) return Promise.resolve(null);
-  const deps = deriveDepsFor(node, clock);
-  if (deps === null) return Promise.resolve(null);
-  return deriveRenditions(
-    { ...deps, cursor: node.derivationCursor },
-    {
-      ...(options.maxRecords !== undefined ? { maxRecords: options.maxRecords } : {}),
-      ...(options.signal ? { signal: options.signal } : {}),
-    },
-  );
+  return runBackgroundPass(node, clock, "cheap", options);
 }
 
 /**
@@ -770,17 +758,29 @@ export function deriveFullRenditionsFor(
     readonly signal?: { readonly aborted: boolean };
   } = {},
 ): Promise<DeriveLadderOutcome | null> {
-  if (!node.fullDerivationCursor) return Promise.resolve(null);
-  if (!node.deviceSettings().derivePhotoStandIns) return Promise.resolve(null);
+  return runBackgroundPass(node, clock, "full", options);
+}
+
+/** One background pass, as `backgroundDerivePlan` allows it. */
+function runBackgroundPass(
+  node: MobileNode,
+  clock: HLCClock,
+  pass: BackgroundDerivePass,
+  options: { readonly maxRecords?: number; readonly signal?: { readonly aborted: boolean } },
+): Promise<DeriveLadderOutcome | null> {
+  const plan = backgroundDerivePlan(
+    node,
+    pass,
+    options.maxRecords !== undefined ? { maxRecords: options.maxRecords } : {},
+  );
+  if (plan === null) return Promise.resolve(null);
   const deps = deriveDepsFor(node, clock);
   if (deps === null) return Promise.resolve(null);
   return deriveRenditions(
-    { ...deps, cursor: node.fullDerivationCursor },
+    { ...deps, cursor: plan.cursor },
     {
-      ceilingLongEdge: FULL_DERIVE_CEILING_LONG_EDGE,
-      // One decode per unit: these encodes are the expensive ones, and a
-      // window must be able to stop between them.
-      maxRecords: options.maxRecords ?? 1,
+      ...(plan.ceilingLongEdge !== undefined ? { ceilingLongEdge: plan.ceilingLongEdge } : {}),
+      ...(plan.maxRecords !== undefined ? { maxRecords: plan.maxRecords } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     },
   );

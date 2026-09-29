@@ -11,17 +11,13 @@
  *
  * The two rules with the sharpest teeth get cases of their own:
  *
- *  - **Nothing above `image-medium`.** That ceiling is what keeps the archive
- *    gate safe without a new rule — a record whose original exceeds it still has
- *    missing rungs, so `ladderIsComplete` stays false and the original stays out
- *    of deep archive until a node running `sharp` finishes the ladder. A phone
- *    that quietly derived the top rungs would satisfy the gate with files it
- *    never made.
- *  - **The label's timestamp is strictly after the record's.** A round cut moves
- *    in whole timestamps, so a label sharing its record's can be shipped without
- *    it — which is not hypothetical: `round-cut.ts` records a handset found
- *    holding rendition records whose label had been cut away, invisible to the
- *    grid and unclassifiable to residency.
+ *  - **Nothing above `image-medium` in a sweep.** In particular a sweep never
+ *    makes the canonical stand-in, whose arrival in the cloud is what sends the
+ *    original to deep archive. That stand-in is a `sharp` node's work, or a
+ *    viewer's that raised the ceiling for the photograph on screen.
+ *  - **The original's fidelity is written once, before any stand-in.** The
+ *    platform reads a stand-in against its original's fidelity, and a peer
+ *    applying rows in clock order has to meet the fidelity first.
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
@@ -55,6 +51,7 @@ import {
   type DeriveLadderDeps,
   type ImageEncoder,
 } from "../src/photos/derive-ladder";
+import { classForStandIn } from "@starkeep/photos-ladder";
 
 const clock = createHLCClock({ nodeId: "phone" });
 const hash = async (bytes: Uint8Array): Promise<string> =>
@@ -214,27 +211,26 @@ async function importOriginal(
   return record;
 }
 
-/** Every rendition child of a record, by the label value that names its rung. */
+/** Every live stand-in of a record, by the ladder class its role and fidelity name. */
 async function rungsOf(parent: DataRecord): Promise<Map<string, DataRecord>> {
   const children = await database.query({
-    filters: [{ field: "parentId", operator: "eq", value: parent.id }],
+    filters: [
+      { field: "parentId", operator: "eq", value: parent.id },
+      { field: "deletedAt", operator: "isNull" },
+    ],
     limit: 50,
   });
-  const labels = await database.getLabelsByRecordIds(children.records.map((c) => c.id));
   const out = new Map<string, DataRecord>();
   for (const child of children.records) {
-    const label = (labels.get(child.id) ?? []).find(
-      (l) => !l.deletedAt && l.appId === "photos" && l.key === "rendition",
-    );
-    if (label) out.set(label.value, child);
+    if (child.standInRole === null || child.fidelity === null) continue;
+    const sizeClass = classForStandIn("image", child.standInRole, child.fidelity);
+    if (sizeClass) out.set(sizeClass, child);
   }
   return out;
 }
 
-async function dimensionsOf(record: DataRecord): Promise<{ width: unknown; height: unknown }> {
-  const rows = await database.getMetadataByIds("image", [record.id]);
-  const row = rows.get(record.id);
-  return { width: row?.["width"], height: row?.["height"] };
+async function current(record: DataRecord): Promise<DataRecord> {
+  return (await database.get(record.id))!;
 }
 
 beforeEach(async () => {
@@ -258,10 +254,27 @@ describe("which rungs a phone makes", () => {
     expect(outcome.failed).toBe(0);
     const rungs = await rungsOf(parent);
     expect([...rungs.keys()].sort()).toEqual(["image-medium", "image-thumb", "image-xsmall"]);
-    // The two above the ceiling are a `sharp` node's work, and their absence is
-    // what keeps this record out of deep archive until one does it.
+    // 2560 is above the sweep's ceiling. A 4000 px original is below the
+    // canonical threshold, so it takes no canonical stand-in at all.
     expect(rungs.has("image-screen")).toBe(false);
     expect(rungs.has("image-large")).toBe(false);
+  });
+
+  it("never makes the canonical stand-in in a sweep, even for an original that takes one", async () => {
+    // 6000 px and 4 MB is past the canonical threshold and the size floor, so
+    // the original takes a canonical stand-in at 4272 — whose arrival in the
+    // cloud sends the original to deep archive. That is a `sharp` node's work.
+    const parent = await importOriginal({ width: 6000, height: 4000 });
+    const encoder = fakeEncoder();
+
+    await derivePage(deps(encoder.encode), { limit: 10 });
+
+    expect([...(await rungsOf(parent)).keys()].sort()).toEqual([
+      "image-medium",
+      "image-thumb",
+      "image-xsmall",
+    ]);
+    expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640, 1280]);
   });
 
   it("decodes once for the whole ladder and releases the bitmap", async () => {
@@ -275,29 +288,31 @@ describe("which rungs a phone makes", () => {
     expect(encoder.released).toBe(1);
   });
 
-  it("never upscales: a small original clamps its top rung to its own size", async () => {
-    // 900 px makes `image-medium` applicable — the original exceeds
-    // `image-thumb`'s 640 — but the class is a maximum, so it emits 900.
+  it("makes only standard sizes strictly below the original, never a clamped one", async () => {
+    // A 900 px original takes 320 and 640. It used to take a third rung clamped
+    // to 900, which was a second copy of the original at nearly its own size.
+    // The original is its own top size now.
     const parent = await importOriginal({ width: 900, height: 600 });
     const encoder = fakeEncoder();
 
     await derivePage(deps(encoder.encode), { limit: 10 });
 
-    expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640, 900]);
-    expect(await dimensionsOf((await rungsOf(parent)).get("image-medium")!)).toEqual({
-      width: 900,
-      height: 600,
-    });
+    expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640]);
+    expect([...(await rungsOf(parent)).keys()].sort()).toEqual(["image-thumb", "image-xsmall"]);
   });
 
-  it("makes only the bottom rung for an original smaller than the second", async () => {
-    await importOriginal({ width: 300, height: 200 });
+  it("makes nothing for an original smaller than the smallest standard size, and still records its fidelity", async () => {
+    const parent = await importOriginal({ width: 300, height: 200 });
     const encoder = fakeEncoder();
 
     const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
 
-    expect(outcome.written).toBe(1);
-    expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([300]);
+    expect(outcome.written).toBe(0);
+    expect(encoder.decoded).toEqual([]);
+    // Nothing else would ever describe this original. Without its fidelity no
+    // node can tell it is self-canonical, and every other node would treat it
+    // as above its ceiling.
+    expect((await current(parent)).fidelity).toBe(300);
   });
 
   it("leaves a video alone", async () => {
@@ -327,7 +342,7 @@ describe("which rungs a phone makes", () => {
 });
 
 describe("what a derived rung looks like", () => {
-  it("publishes bytes, dimensions, a label and a record", async () => {
+  it("publishes bytes and a record carrying its role and fidelity", async () => {
     const parent = await importOriginal({ width: 4000, height: 3000 });
     const encoder = fakeEncoder();
 
@@ -347,42 +362,49 @@ describe("what a derived rung looks like", () => {
     const stored = await objectStorage.get(thumb.objectStorageKey);
     expect(stored?.data.byteLength).toBe(thumb.sizeBytes);
     expect(await hash(stored!.data)).toBe(thumb.contentHash);
-    // Without these it is unorderable, which makes it invisible to resolution
-    // on every node — storage nobody ever reads.
-    expect(await dimensionsOf(thumb)).toEqual({ width: 640, height: 427 });
+    // The columns are what every reader reads a stand-in by. It carries no
+    // label and no metadata row: its fidelity is its size.
+    expect(thumb.standInRole).toBe("smaller");
+    expect(thumb.fidelity).toBe(640);
+    expect((await database.getLabelsByRecordIds([thumb.id])).get(thumb.id) ?? []).toEqual([]);
+    expect((await database.getMetadataByIds("image", [thumb.id])).get(thumb.id)).toBeUndefined();
   });
 
-  it("stamps the label strictly after the record it describes", async () => {
-    const parent = await importOriginal();
+  it("writes the original's fidelity once, under an earlier clock than any stand-in", async () => {
+    const parent = await importOriginal({ width: 4000, height: 3000 });
 
     await derivePage(deps(fakeEncoder().encode), { limit: 10 });
 
-    const thumb = (await rungsOf(parent)).get("image-thumb")!;
-    const label = (await database.getLabelsByRecordIds([thumb.id])).get(thumb.id)![0]!;
-    // Strictly greater, not merely not-less. A round cut moves in whole
-    // timestamps, so an equal pair can be split — shipping the label and
-    // deferring the record it belongs to.
-    expect(compareHLC(label.updatedAt, thumb.createdAt)).toBeGreaterThan(0);
+    const original = await current(parent);
+    expect(original.fidelity).toBe(4000);
+    // Once, not once per rung: every rewrite moves the original's clock and
+    // sends its row around the whole replica set again.
+    expect(original.version).toBe(parent.version + 1);
+    // A peer applying rows in clock order meets the fidelity before the first
+    // stand-in the platform reads against it.
+    for (const rung of (await rungsOf(parent)).values()) {
+      expect(compareHLC(original.updatedAt, rung.createdAt)).toBeLessThan(0);
+    }
   });
 
-  it("charges the bytes to a budget once the label is there to read", async () => {
+  it("charges the bytes to a budget once the record carrying its role exists", async () => {
     const parent = await importOriginal();
-    const charged: { id: StarkeepId; labelled: boolean }[] = [];
+    const charged: { id: StarkeepId; role: string | null }[] = [];
 
     await derivePage(
       deps(fakeEncoder().encode, {
         noteDerived: async (record) => {
-          const labels = (await database.getLabelsByRecordIds([record.id])).get(record.id) ?? [];
-          // The class these bytes are charged to is resolved from this label.
-          // Charging before it exists resolves every rung as an original.
-          charged.push({ id: record.id, labelled: labels.length > 0 });
+          // The class these bytes are charged to is resolved from the stored
+          // record's role. Charging before it exists resolves every rung as an
+          // original.
+          charged.push({ id: record.id, role: (await database.get(record.id))?.standInRole ?? null });
         },
       }),
       { limit: 10 },
     );
 
     expect(charged).toHaveLength(3);
-    expect(charged.every((c) => c.labelled)).toBe(true);
+    expect(charged.every((c) => c.role === "smaller")).toBe(true);
     const rungs = await rungsOf(parent);
     expect(charged.map((c) => c.id).sort()).toEqual(
       [...rungs.values()].map((r) => r.id).sort(),
@@ -418,22 +440,45 @@ describe("what it does not do twice", () => {
     expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([640]);
   });
 
-  it("re-derives a rung whose dimensions were never written", async () => {
+  it("keeps the stand-in another node wrote first when the two race for one size", async () => {
+    // The page read says 640 is missing; another node's 640 lands before this
+    // device's write does. The slot index refuses the second, and the pass
+    // keeps the one already there rather than failing the record.
     const parent = await importOriginal();
-    await derivePage(deps(fakeEncoder().encode), { limit: 10 });
-    const thumb = (await rungsOf(parent)).get("image-thumb")!;
-    // The state an interrupted publish leaves: a record and a label, and no
-    // dimensions — so variant resolution cannot order it and drops it.
-    await database.putMetadata(thumb.type, { recordId: thumb.id, width: null, height: null });
+    let raced = false;
+    const racing = new Proxy(database, {
+      get(target, prop, receiver) {
+        if (prop !== "put") return Reflect.get(target, prop, receiver);
+        return async (record: DataRecord) => {
+          if (!raced && record.standInRole === "smaller" && record.fidelity === 640) {
+            raced = true;
+            await target.put(
+              createDataRecord(
+                {
+                  type: "image/avif",
+                  originAppId: "photos",
+                  contentHash: "f".repeat(64),
+                  objectStorageKey: dataRecordObjectKey("image/avif", "f".repeat(64)),
+                  sizeBytes: 10,
+                  parentId: parent.id,
+                  originalFilename: null,
+                  standInRole: "smaller",
+                  fidelity: 640,
+                },
+                clock,
+              ),
+            );
+          }
+          return target.put(record);
+        };
+      },
+    });
 
-    const encoder = fakeEncoder();
-    const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
+    const outcome = await derivePage(deps(fakeEncoder().encode, { database: racing }), { limit: 10 });
 
-    expect(outcome.written).toBe(1);
-    // Repaired in place: the same pixels hash to the same key, so the record is
-    // the same record and the write puts its dimensions back.
-    expect((await rungsOf(parent)).get("image-thumb")!.id).toBe(thumb.id);
-    expect(await dimensionsOf(thumb)).toEqual({ width: 640, height: 427 });
+    expect(outcome.failed).toBe(0);
+    expect(outcome.written).toBe(2);
+    expect((await rungsOf(parent)).get("image-thumb")!.contentHash).toBe("f".repeat(64));
   });
 });
 
@@ -736,6 +781,18 @@ describe("deriving one record on demand", () => {
       await deriveForRecord(deps(encoder.encode), parent, 2560);
 
       expect(encoder.decodedAt).toEqual([2560]);
+    });
+
+    it("makes the canonical stand-in when the ceiling reaches the canonical threshold", async () => {
+      const parent = await importOriginal({ width: 6000, height: 4000 });
+      const encoder = fakeEncoder({ ceiling: 4272 });
+
+      const written = await deriveForRecord(deps(encoder.encode), parent, 4272);
+
+      expect(written).toBe(5);
+      const canonical = (await rungsOf(parent)).get("image-large")!;
+      expect(canonical).toMatchObject({ standInRole: "canonical", fidelity: 4272 });
+      expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640, 1280, 2560, 4272]);
     });
 
     it("still refuses a rung that already has a record, however high the ceiling", async () => {

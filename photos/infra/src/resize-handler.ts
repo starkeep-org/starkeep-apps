@@ -26,6 +26,7 @@ interface BrokerPhotoRecord {
   parent_id: string | null;
   mime_type: string | null;
   original_filename: string | null;
+  size_bytes?: number | null;
 }
 
 export async function handler(event: APIGatewayEvent) {
@@ -123,7 +124,7 @@ export async function handler(event: APIGatewayEvent) {
     //
     // No platform decoder and no attempt store: this node has neither a HEIC
     // decoder nor durable local disk. A HEIC record fails here every time, and
-    // that is the accepted asymmetry — such a record stays ladder-incomplete,
+    // that is the accepted asymmetry — such a record has no canonical stand-in,
     // is therefore never archived, and is derived by the laptop when it next
     // reaches it.
     const result = await deriveAndPublish({
@@ -132,6 +133,7 @@ export async function handler(event: APIGatewayEvent) {
         id: record.id,
         originalFilename: record.original_filename,
         mimeType: record.mime_type,
+        sizeBytes: record.size_bytes ?? null,
       },
       loadSource: async () => {
         const fileUrlRes = await call(`/data/records/${targetId}/file-url`);
@@ -162,7 +164,6 @@ export async function handler(event: APIGatewayEvent) {
     return ok({
       ok: true,
       published: result.published,
-      archiveGate: result.archiveGate,
     });
   } catch (e) {
     console.error("[resize] handler error:", e);

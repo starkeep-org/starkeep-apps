@@ -387,16 +387,35 @@ describe("summarizeLibrary", () => {
     expect(summary.records).toBe(12);
   });
 
-  it("does not count renditions, which the grid does not show either", async () => {
+  it("counts neither stand-ins nor derived posters, which the grid does not show either", async () => {
     const parent = await seed("image/jpeg");
-    const rendition = await seed("image/avif");
+    // A stand-in is known by its role column and carries no label.
+    seq += 1;
+    await database.put(
+      createDataRecord(
+        {
+          type: "image/avif",
+          originAppId: "photos",
+          parentId: parent.id,
+          contentHash: String(seq).padStart(64, "0"),
+          objectStorageKey: `shared/image/${seq}`,
+          sizeBytes: 1024,
+          originalFilename: null,
+          standInRole: "smaller",
+          fidelity: 640,
+        },
+        clock,
+      ),
+    );
+    // A poster is a derived record, known by Photos' own label.
+    const poster = await seed("image/jpeg");
     await database.upsertLabels([
       {
-        recordId: rendition.id,
+        recordId: poster.id,
         appId: "photos",
-        key: "rendition",
-        value: "image-thumb",
-        recordType: rendition.type,
+        key: "derived",
+        value: "video-poster-thumb",
+        recordType: poster.type,
         hlc: clock.now(),
       },
     ]);
@@ -405,7 +424,7 @@ describe("summarizeLibrary", () => {
     const page = await listLibrary(deps(), { limit: 10 });
 
     // The count and the grid have to agree about what a record is: five
-    // renditions per photograph would otherwise report six times the library.
+    // stand-ins per photograph would otherwise report six times the library.
     expect(summary.records).toBe(1);
     expect(page.items.map((i) => i.record.id)).toEqual([parent.id]);
   });

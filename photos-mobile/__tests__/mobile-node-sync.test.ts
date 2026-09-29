@@ -76,6 +76,9 @@ const record = (over: Partial<DataRecord> = {}): DataRecord => {
     originAppId: "photos",
     parentId: null,
     originalFilename: `photo-${seq}.jpg`,
+    // Small enough to stand in for itself and within the phone's ceiling, so
+    // residency lets it through and these cases test the exchange alone.
+    fidelity: 1000,
     ...over,
   } as DataRecord;
 };

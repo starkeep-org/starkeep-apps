@@ -54,6 +54,7 @@ export async function POST(req: Request) {
       parent_id: string | null;
       mime_type: string | null;
       original_filename: string | null;
+      size_bytes?: number | null;
     };
   };
 
@@ -89,6 +90,7 @@ export async function POST(req: Request) {
       id: record.id,
       originalFilename: record.original_filename,
       mimeType: mediaType,
+      sizeBytes: record.size_bytes ?? null,
     },
     // Only called when there is work needing the bytes. The file-url endpoint
     // returns a self-signed token URL that needs no HMAC of its own.
@@ -127,6 +129,5 @@ export async function POST(req: Request) {
   return Response.json({
     ok: true,
     published: result.published,
-    archiveGate: result.archiveGate,
   });
 }

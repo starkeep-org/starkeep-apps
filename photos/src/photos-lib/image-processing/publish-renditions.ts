@@ -4,20 +4,22 @@
  * Shared by the Next `/api/resize` route and the cloud resize Lambda, which are
  * otherwise line-for-line copies of each other — the codebase's existing rule
  * is that anything kept in both eventually gets fixed in only one, and this is
- * a multi-step flow (presign → PUT → register → metadata) where a divergence
+ * a multi-step flow (presign → PUT → register) where a divergence
  * would be silent.
  *
- * ## Renditions are shared image records, not app-private data
+ * ## Renditions are platform stand-ins
  *
- * They are child records with `parent_id` set, exactly as thumbnails were,
- * because after originals are archived the renditions *are* the accessible form
- * of the library — so any image-granted app needs them. Two costs were accepted
- * for that: they outlive a Photos uninstall, and the label namespace stays
- * `photos/`.
+ * Each rung is a shared record whose `parent_id` names the original and whose
+ * `standIn` says what it is — the canonical stand-in or a smaller one, at a
+ * standard size. After originals are archived the stand-ins *are* the
+ * accessible form of the library, so any image-granted app reads them, and the
+ * platform itself reads the canonical one to decide when the original may
+ * archive. They carry no Photos label: the role and fidelity columns say what
+ * they are to every app.
  */
 
 import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS } from "../labels";
-import { renditionFileName } from "../ladder";
+import { classForStandIn, renditionFileName, standInFieldsFor, type SizeClass } from "../ladder";
 import type { DerivedRendition } from "./derive-ladder";
 
 /**
@@ -35,6 +37,12 @@ export { renditionFileName };
 export interface RenditionParent {
   readonly id: string;
   readonly originalFilename: string | null;
+  /**
+   * The original's long edge, as the decode measured it. Reported to the
+   * platform with every stand-in as the original's fidelity, which the
+   * platform records once — so whichever rung lands first carries it.
+   */
+  readonly sourceLongEdge?: number;
 }
 
 /**
@@ -57,6 +65,12 @@ export interface PublishedRendition {
   readonly recordId: string;
   readonly contentHash: string;
   readonly sizeBytes: number;
+  /**
+   * True when the platform already held a stand-in in this slot — made by
+   * another node or another app — and this one was not registered. The rung
+   * exists either way, which is all a caller needs.
+   */
+  readonly reused?: boolean;
 }
 
 export class RenditionPublishError extends Error {
@@ -72,35 +86,18 @@ export class RenditionPublishError extends Error {
 }
 
 /**
- * Publish one derived rendition: upload the bytes, then register the record
- * with its dimensions.
+ * Publish one derived rendition: upload the bytes, then register the stand-in.
  *
  * Bytes go up via presigned PUT rather than inline, because the API Gateway
  * body cap is 7 MB and an `image-large` AVIF can approach it — but more
  * importantly because that is the path where the broker pins a checksum, so the
  * upload is verified rather than merely accepted.
  *
- * Dimensions are written because variant resolution orders renditions by long
- * edge. A rendition with no dimensions is invisible to resolution — it cannot
- * be ordered, so it is excluded — which would make it storage nobody ever
- * reads. Hence the dimensions are **not** best-effort here, unlike the
- * caption-style metadata elsewhere.
- *
- * ## The dimensions ride the create, they are not a second call
- *
- * They used to be: register, then `POST /data/records/:id/metadata`. That left
- * a window in which the record was visible to a sync scan and its dimensions
- * were not, and a round landing inside the window shipped the rendition to the
- * cloud with no dimensions at all — where the cloud dropped it as an
- * unorderable candidate and reported the original as having *no renditions*.
- * Indistinguishable from "nothing derived yet", which is what sent this app
- * into a derivation loop against a complete ladder.
- *
- * The window is closed at its source by writing both in one call. It is also
- * closed on the sync side — a metadata write now moves the record's clock, so a
- * late write reaches a peer on the next round — and both matter: this is the
- * hot path of every derivation, and that is the repair for everything written
- * some other way.
+ * No dimensions ride the create any more. Resolution orders stand-ins by their
+ * fidelity, a column the create itself writes, so there is no window in which
+ * a stand-in exists without the one fact that makes it usable — the window a
+ * separate metadata write used to leave open. The platform refuses metadata on
+ * a stand-in for the same reason: the original's row describes the item.
  */
 export async function publishRendition(
   signedFetch: SignedFetch,
@@ -164,71 +161,98 @@ export async function publishRendition(
     );
   }
 
-  const createRes = await signedFetch(`/data/records`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: rendition.type,
-      fileName: renditionFileName(parent.originalFilename, rendition.sizeClass),
-      contentType: rendition.contentType,
-      contentHash,
-      sizeBytes: rendition.data.byteLength,
-      parentId: parent.id,
-      // `parent_id` says *which* record this came from; the label says *how*,
-      // which the column alone cannot express — without it a crop is
-      // indistinguishable from a rendition. The `photos/` namespace comes from
-      // the authenticated identity, so no prefix is sent.
-      labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: rendition.sizeClass }],
-      // Written with the record rather than after it. The server validates
-      // these column names against the image category's declaration and gates
-      // them on the same `metadataWrite` grant the metadata route uses — the
-      // platform declares which columns exist, this app decides what goes in
-      // them.
-      metadata: { width: rendition.width, height: rendition.height },
-    }),
+  return registerStandIn(signedFetch, parent, {
+    sizeClass: rendition.sizeClass,
+    type: rendition.type,
+    contentType: rendition.contentType,
+    fileName: renditionFileName(parent.originalFilename, rendition.sizeClass),
+    contentHash,
+    sizeBytes: rendition.data.byteLength,
   });
+}
+
+/**
+ * Register an uploaded rung as a stand-in of its original.
+ *
+ * The request says what the rung is — `standIn: { role, fidelity }` — and
+ * reports the original's fidelity alongside, which the platform records the
+ * first time. Two answers mean the work is already done and are successes
+ * here:
+ *
+ * - **A dedup** — this node registered these exact bytes before.
+ * - **`StandInExists`** — another node or another app holds the slot. Its
+ *   stand-in meets the same standard, so Photos reuses it rather than making a
+ *   second: the platform keeps one per size per original.
+ *
+ * One answer is retried: a disagreement about the original's fidelity. The
+ * platform's record is authoritative, and the rung is still wanted, so the
+ * second attempt reports nothing and lets the platform check against what it
+ * holds.
+ */
+export async function registerStandIn(
+  signedFetch: SignedFetch,
+  parent: RenditionParent,
+  upload: {
+    readonly sizeClass: SizeClass;
+    readonly type: string;
+    readonly contentType: string;
+    readonly fileName: string;
+    readonly contentHash: string;
+    readonly sizeBytes: number;
+  },
+): Promise<PublishedRendition> {
+  const standIn = standInFieldsFor(upload.sizeClass, parent.sourceLongEdge ?? 0);
+  if (!standIn) {
+    throw new RenditionPublishError("register", upload.sizeClass, 0, "not a stand-in rung");
+  }
+  const attempt = (reportFidelity: boolean) =>
+    signedFetch(`/data/records`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: upload.type,
+        fileName: upload.fileName,
+        contentType: upload.contentType,
+        contentHash: upload.contentHash,
+        sizeBytes: upload.sizeBytes,
+        parentId: parent.id,
+        standIn,
+        ...(reportFidelity && parent.sourceLongEdge ? { parentFidelity: parent.sourceLongEdge } : {}),
+      }),
+    });
+
+  let createRes = await attempt(true);
+  if (createRes.status === 409) {
+    const conflict = (await createRes.clone().json().catch(() => ({}))) as {
+      error?: string;
+      code?: string;
+      existing?: string;
+    };
+    if (conflict.error === "StandInExists" && conflict.existing) {
+      return {
+        sizeClass: upload.sizeClass,
+        recordId: conflict.existing,
+        contentHash: upload.contentHash,
+        sizeBytes: upload.sizeBytes,
+        reused: true,
+      };
+    }
+    if (conflict.code === "parent-fidelity-mismatch") createRes = await attempt(false);
+  }
   if (!createRes.ok) {
     throw new RenditionPublishError(
       "register",
-      rendition.sizeClass,
+      upload.sizeClass,
       createRes.status,
       await createRes.text().catch(() => ""),
     );
   }
-  const { record, deduped } = (await createRes.json()) as {
-    record: { id: string };
-    deduped?: boolean;
-  };
-
-  // A dedup hit is somebody else's record, and both servers decline to rewrite
-  // its derived columns — which is right, since byte-identical renditions have
-  // identical dimensions and there is normally nothing to write. The one case
-  // that is not normal is a first registration whose metadata write failed
-  // after the row landed, leaving a rendition invisible to variant resolution
-  // forever. One extra call on the cold path repairs it; the hot path is
-  // untouched.
-  if (deduped) {
-    const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        typeId: "image",
-        metadata: { width: rendition.width, height: rendition.height },
-      }),
-    });
-    if (!metaRes.ok) {
-      console.warn(
-        `[renditions] dimensions write failed for ${rendition.sizeClass} of ${parent.id} ` +
-          `(${metaRes.status}) — this rendition is invisible to variant resolution until repaired`,
-      );
-    }
-  }
-
+  const { record } = (await createRes.json()) as { record: { id: string } };
   return {
-    sizeClass: rendition.sizeClass,
+    sizeClass: upload.sizeClass,
     recordId: record.id,
-    contentHash,
-    sizeBytes: rendition.data.byteLength,
+    contentHash: upload.contentHash,
+    sizeBytes: upload.sizeBytes,
   };
 }
 
@@ -272,81 +296,79 @@ export async function publishThumbHash(
 }
 
 /**
- * Tell the platform this record's derived ladder is complete.
+ * Tell the platform an original's fidelity — its long edge — measured from a
+ * decode Photos was doing anyway.
  *
- * The decision is deliberately split. Only Photos knows what a complete ladder
- * *is* — the platform must never learn what `image-medium` means, and a
- * platform-side check would have to. So the app asserts completeness, and the
- * platform independently applies its own floors (object size, cloud exclusion)
- * before tagging. Neither side alone can freeze anything: an app that is wrong
- * about its ladder still cannot archive a small file, and a platform that
- * wanted to be clever still cannot archive a record whose renditions do not
- * exist.
- *
- * Tagging is not transitioning. The lifecycle rule performs the move after the
- * hold period, which is what buys a week to catch a derivation bug before the
- * input is behind a 48-hour thaw.
- *
- * Best-effort: a record that stays un-tagged simply stays in the instant tier,
- * costing a little more and behaving identically. Failing an ingest because an
- * optimisation did not apply would be the wrong trade.
+ * Every stand-in reports it too, so this matters for the original that takes
+ * none: one too small for any standard size. Without a reported fidelity the
+ * platform cannot tell such an original stands in for itself, and no node
+ * receives it by default. The platform records the value once; a repeat is a
+ * no-op. Best-effort: a failure leaves the value for the next decode.
  */
-export async function assertLadderComplete(
+export async function reportOriginalFidelity(
   signedFetch: SignedFetch,
-  parentId: string,
-): Promise<{ tagged: boolean; refusals: string[] }> {
-  const res = await signedFetch(`/data/records/${parentId}/archive-gate`, {
+  recordId: string,
+  longEdge: number,
+): Promise<void> {
+  if (!(longEdge > 0)) return;
+  const res = await signedFetch(`/data/records/${recordId}/fidelity`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ladderComplete: true }),
+    body: JSON.stringify({ fidelity: longEdge }),
   });
-  if (!res.ok) {
-    console.warn(`[renditions] archive gate for ${parentId} returned ${res.status}`);
-    return { tagged: false, refusals: [`gate returned ${res.status}`] };
+  if (!res.ok && res.status !== 409) {
+    console.warn(`[renditions] fidelity report for ${recordId} failed (${res.status})`);
   }
-  const body = (await res.json()) as { tagged?: boolean; refusals?: string[] };
-  return { tagged: body.tagged === true, refusals: body.refusals ?? [] };
 }
 
-/** The label ref a caller uses to ask the server which rungs a record has. */
-export const RENDITION_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}`;
+/**
+ * The label ref for Photos' derived records — poster frames and skims — which
+ * are not stand-ins and so carry no role for the platform to report. Listings
+ * ask for these as `variant` candidates; see `stand-in-candidates.ts`.
+ */
+export const DERIVED_LABEL_REF = `${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.derived}`;
 
 /**
  * Which rungs already exist for a record, read from the server.
  *
- * The `parentId` + `label` combination is one indexed lookup — this is the
- * query that makes "derivation state is a query, not a field" affordable, and
- * it is the same query the ladder-complete gate needs, so the two cannot
- * disagree.
+ * Stand-ins by their columns — one indexed lookup on parent and role, with no
+ * label to wait for — and derived records by Photos' own label. A stand-in at
+ * a size this ladder does not name, which another app may have made, is not a
+ * rung of Photos' ladder and is left out.
  */
 export async function existingRenditionClasses(
   signedFetch: SignedFetch,
   parentId: string,
-  options: { requireDimensions?: boolean } = {},
-): Promise<string[]> {
-  const res = await signedFetch(
-    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
-      `&label=${RENDITION_LABEL_REF}` +
-      `&include=${options.requireDimensions ? "labels,metadata" : "labels"}&limit=50`,
+): Promise<SizeClass[]> {
+  const classes: SizeClass[] = [];
+  const standInsRes = await signedFetch(
+    `/data/records?where=${encodeURIComponent(
+      JSON.stringify({ parent_id: parentId, stand_in_role: { in: ["canonical", "smaller"] } }),
+    )}&limit=50`,
   );
-  if (!res.ok) return [];
-  const { records } = (await res.json()) as {
-    records: Array<{
-      metadata?: { width?: number | null; height?: number | null } | null;
-      labels?: Array<{ app_id: string; key: string; value?: string }>;
-    }>;
-  };
-  const classes: string[] = [];
-  for (const record of records) {
-    if (
-      options.requireDimensions &&
-      !((record.metadata?.width ?? 0) > 0 && (record.metadata?.height ?? 0) > 0)
-    ) {
-      continue;
+  if (standInsRes.ok) {
+    const { records } = (await standInsRes.json()) as {
+      records: Array<{ type: string; stand_in_role: "canonical" | "smaller"; fidelity: number }>;
+    };
+    for (const record of records) {
+      const category = record.type.startsWith("video/") ? "video" : "image";
+      const sizeClass = classForStandIn(category, record.stand_in_role, record.fidelity);
+      if (sizeClass) classes.push(sizeClass);
     }
-    for (const label of record.labels ?? []) {
-      if (label.app_id === PHOTOS_APP_ID && label.key === PHOTOS_LABEL_KEYS.rendition) {
-        if (label.value) classes.push(label.value);
+  }
+  const derivedRes = await signedFetch(
+    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
+      `&label=${DERIVED_LABEL_REF}&include=labels&limit=50`,
+  );
+  if (derivedRes.ok) {
+    const { records } = (await derivedRes.json()) as {
+      records: Array<{ labels?: Array<{ app_id: string; key: string; value?: string }> }>;
+    };
+    for (const record of records) {
+      for (const label of record.labels ?? []) {
+        if (label.app_id === PHOTOS_APP_ID && label.key === PHOTOS_LABEL_KEYS.derived && label.value) {
+          classes.push(label.value as SizeClass);
+        }
       }
     }
   }

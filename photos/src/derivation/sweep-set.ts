@@ -24,6 +24,10 @@ import {
   STILL_LADDER,
   type SizeClass,
 } from "../photos-lib/ladder";
+import {
+  withStandInCandidates,
+  type WireStandInSummary,
+} from "../photos-lib/stand-in-candidates";
 
 const MEDIUM_CLASS = STILL_LADDER.find((spec) => spec.sizeClass === "image-medium")!;
 
@@ -37,6 +41,12 @@ export interface SweepRecord {
   type?: string;
   mime_type: string | null;
   original_filename: string | null;
+  /** Decides, with the long edge, whether the original takes a canonical rung. */
+  size_bytes?: number | null;
+  /** The original's fidelity as the platform records it; null when unreported. */
+  fidelity?: number | null;
+  /** The platform's size summary; folded into `variant_candidates` on fetch. */
+  stand_ins?: WireStandInSummary;
   metadata?: {
     width?: number | null;
     height?: number | null;
@@ -68,16 +78,13 @@ export interface SweepRecord {
 export function missingClasses(record: SweepRecord): SizeClass[] | "unknown" {
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
   if (sourceLongEdge <= 0) return "unknown";
-  // Record existence is not local byte availability. Reinstalls and sync can
-  // leave a child record present while its object is absent on this node; that
-  // rung still needs local derivation. Only an explicit availability claim is
-  // enough to suppress work.
-  const have = new Set(
-    (record.variant_candidates ?? [])
-      .filter((c) => c.available_here)
-      .map((c) => c.long_edge),
-  );
-  return applicableStillClasses(sourceLongEdge)
+  // A rung that exists anywhere is a rung this node need not derive. The
+  // platform keeps one stand-in per size per original, so a second encode here
+  // would be refused and reused rather than stored; and whether its bytes sit
+  // on this node is the platform's residency decision — a stand-in within the
+  // node's ceiling arrives by sync, one above it arrives when asked for.
+  const have = new Set((record.variant_candidates ?? []).map((c) => c.long_edge));
+  return applicableStillClasses(sourceLongEdge, record.size_bytes)
     .filter((spec) => !have.has(renditionLongEdge(spec, sourceLongEdge)))
     .map((spec) => spec.sizeClass);
 }
@@ -110,11 +117,7 @@ export function stageHasWork(
     // The first pass supplies these facts. Until they exist, no duplicated
     // approximation of the ladder can safely decide which rungs apply.
     if (longEdge <= 0) return true;
-    const have = new Set(
-      (record.variant_candidates ?? [])
-        .filter((c) => c.available_here)
-        .map((c) => c.label_value),
-    );
+    const have = new Set((record.variant_candidates ?? []).map((c) => c.label_value));
     const bitrate = record.metadata?.bitrate ?? Number.POSITIVE_INFINITY;
     return applicableVideoClasses({ longEdge, bitrate, durationSeconds: 0 }).some(
       (spec) => !have.has(spec.sizeClass),
@@ -124,7 +127,12 @@ export function stageHasWork(
   const missing = missingClasses(record);
   if (missing === "unknown") return true;
   const cheap = new Set(cheapClasses);
-  if (stage === "cheap") return needsRecordFacts(record) || missing.some((c) => cheap.has(c));
+  if (stage === "cheap") {
+    // An unreported fidelity is cheap work: the stored dimensions answer it
+    // without a decode, and until it is reported the platform cannot place the
+    // original against any node's ceiling.
+    return needsRecordFacts(record) || record.fidelity === null || missing.some((c) => cheap.has(c));
+  }
   return missing.some((sizeClass) => stillStage(sizeClass, cheap) === stage);
 }
 
@@ -168,15 +176,18 @@ export interface SweepPage {
  */
 export async function fetchSweepPage(
   fetchRecords: RecordFetcher,
-  renditionLabelRef: string,
+  derivedLabelRef: string,
   cursor: string | null,
   pageSize: number = RECORDS_PER_PAGE,
 ): Promise<SweepPage> {
   const params = [
     `limit=${pageSize}`,
     "include=metadata,labels",
-    `notLabel=${encodeURIComponent(renditionLabelRef)}`,
-    `variant=${encodeURIComponent(renditionLabelRef)}`,
+    // The platform leaves stand-ins out and summarises them on each original;
+    // posters and skims are derived records, so Photos leaves out its own and
+    // asks for them as candidates.
+    `notLabel=${encodeURIComponent(derivedLabelRef)}`,
+    `variant=${encodeURIComponent(derivedLabelRef)}`,
   ];
   if (cursor) params.push(`page_token=${encodeURIComponent(cursor)}`);
   const res = await fetchRecords(`/data/records?${params.join("&")}`);
@@ -188,5 +199,8 @@ export async function fetchSweepPage(
   // A short page is not the end — only an exhausted cursor is. `?? null`
   // because a server older than the contract omits the field entirely, and
   // `undefined !== null` loops forever.
-  return { records: body.records, nextCursor: body.nextCursor ?? null };
+  return {
+    records: body.records.map((record) => withStandInCandidates(record)),
+    nextCursor: body.nextCursor ?? null,
+  };
 }

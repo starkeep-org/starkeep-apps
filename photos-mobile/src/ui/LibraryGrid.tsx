@@ -138,21 +138,13 @@ export interface ViewerHost {
    */
   readonly onOpenForViewer: (item: LibraryItem, stage: Box) => Promise<LibraryItem>;
   /**
-   * Keep this record on this device regardless of budget, or stop.
+   * Keep this record on this device, or stop.
    *
    * Returns the state afterwards so the control can reflect it without the
    * whole library being reloaded for one toggle.
    */
   readonly onSetPinned: (recordId: string, pinned: boolean) => boolean;
   readonly isPinned: (recordId: string) => boolean;
-  /**
-   * Someone looked at this record.
-   *
-   * Reported from here rather than inferred, because opening a photo is the
-   * event — not fetching it, which is what used to be recorded and which only
-   * ever happened for records this device had already declined.
-   */
-  readonly onOpened: (recordId: string) => void;
   /**
    * The clip inside a Motion Photo, materialised for one viewing.
    *
@@ -161,14 +153,6 @@ export interface ViewerHost {
    * when the viewer closes; the scratch file lasts exactly one viewing by design.
    */
   readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
-  /**
-   * The viewer closed.
-   *
-   * The end of a viewing burst, which is the moment nothing is waiting on the
-   * disk — so it is the cheapest time to run an eviction pass, and the phone has
-   * just spent budget on whatever it fetched to show. See `reclaimAfterViewing`.
-   */
-  readonly onClosed: () => void;
 }
 
 /**
@@ -385,9 +369,7 @@ export function useLibraryViewer(
     onOpenForViewer,
     onSetPinned,
     isPinned,
-    onOpened,
     onOpenMotion,
-    onClosed,
   }: ViewerHost,
   items: readonly LibraryItem[],
 ): { open: (item: LibraryItem) => void; element: React.ReactElement } {
@@ -457,21 +439,10 @@ export function useLibraryViewer(
       setPinned(false);
       perf("show:setItem");
 
-      // **Three database writes and a lookup that used to run in front of the
-      // first paint.** None has a reader in the frame it was blocking: the two
-      // `onOpened` calls feed an eviction order, and `isPinned` fills in a
-      // control nobody is looking at yet. So they go after the interaction,
-      // which is where the close path already puts its eviction pass.
+      // The pin lookup fills in a control nobody is looking at yet, so it runs
+      // after the interaction rather than in front of the first paint.
       InteractionManager.runAfterInteractions(() => {
         if (showing.current !== opened.record.id) return;
-        onOpened(opened.record.id);
-        // **The rendition too, not only the parent.** Eviction is an LRU over
-        // `last_opened_at_ms`, so a rung painted from disk that nothing ever
-        // records as opened sorts with the never-opened rows — and the pass
-        // evicts the very rendition the grid is drawing from. See
-        // `LibraryItem.paintedRendition`.
-        if (opened.paintedRendition) onOpened(opened.paintedRendition);
-        perf("show:noted");
         setPinned(isPinned(opened.record.id));
         perf("show:pinned");
       });
@@ -518,7 +489,7 @@ export function useLibraryViewer(
         if (!samePicture(better, resolved)) setItem(better);
       })();
     },
-    [onOpened, isPinned, onOpenForViewer, onFetchRendition, onDeriveNow],
+    [isPinned, onOpenForViewer, onFetchRendition, onDeriveNow],
   );
 
   /** Where the open record sits in the page, or -1 once a reload has dropped it. */
@@ -572,14 +543,6 @@ export function useLibraryViewer(
         showing.current = null;
         setItem(null);
         perf("close:cleared");
-        // **After the dismissal, not in front of it.** `onClosed` runs an
-        // eviction pass, and calling it here ran it on the JavaScript thread
-        // before React could render the unmount — half a second on a Pixel 5
-        // between the tap on Close and the viewer going away. The pass is not
-        // urgent and the dismissal is, so the interaction goes first.
-        InteractionManager.runAfterInteractions(() => {
-          void Promise.resolve(onClosed()).then(() => perf("close:reclaimed"));
-        });
       }}
     />
   );

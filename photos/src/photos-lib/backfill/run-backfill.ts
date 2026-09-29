@@ -5,9 +5,9 @@
  * until the visual test replaces them with measured numbers, and backfill is
  * the one job that applies them to the entire library at once. Running it
  * against provisional numbers would derive tens of thousands of renditions at
- * sizes that are about to change — and then, because the archive gate fires on
- * a complete ladder, start freezing originals behind a 48-hour thaw on the
- * strength of them. Built now, run later; {@link assertLadderMeasured} is the
+ * sizes that are about to change — and then, because the platform archives an
+ * original once its canonical stand-in reaches the cloud, start freezing
+ * originals behind a 48-hour thaw on the strength of them. Built now, run later; {@link assertLadderMeasured} is the
  * interlock rather than a note in a document.
  */
 
@@ -61,7 +61,7 @@ export interface BackfillDeps {
     candidate: BackfillCandidate,
     bytes: Uint8Array,
   ) => Promise<{ produced: SizeClass[]; missing: SizeClass[] }>;
-  /** Called when a record's ladder is complete, so the archive gate can fire. */
+  /** Called when a record's ladder is complete. */
   readonly onComplete?: (recordId: string) => Promise<void>;
   /** Classify a derivation failure as "never here" rather than "not now". */
   readonly isUndecodable: (err: unknown) => boolean;
@@ -76,8 +76,8 @@ export interface BackfillProgress {
 /**
  * The interlock for item 9b.
  *
- * Backfill applies the ladder to the whole library in one pass, and the archive
- * gate turns a complete ladder into a frozen original. Doing that on
+ * Backfill applies the ladder to the whole library in one pass, and the
+ * platform turns a canonical stand-in in the cloud into a frozen original. Doing that on
  * provisional numbers is not "a bit wasteful" — it is unrecoverable without
  * paying to thaw everything it froze. So the caller has to state that the
  * numbers are measured, and the default is that they are not.
@@ -87,7 +87,7 @@ export function assertLadderMeasured(ladderMeasured: boolean): void {
     throw new Error(
       "Backfill is gated on item 9b: the ladder's class maxima are still provisional. " +
         "Running now would derive the whole library at sizes that are about to change, and " +
-        "the archive gate would begin freezing originals on the strength of them. " +
+        "the platform would begin archiving originals on the strength of them. " +
         "Run the visual test, replace the numbers, then pass ladderMeasured: true.",
     );
   }

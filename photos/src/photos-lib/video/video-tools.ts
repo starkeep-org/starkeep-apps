@@ -46,16 +46,36 @@ export interface PosterOptions {
   readonly maxLongEdge: number;
 }
 
+/**
+ * A video stand-in, to the platform's video standard: VP9 in WebM at a
+ * constant quality, with an Opus track.
+ *
+ * VP9 rather than H.264 because the standard ranks wide support and freedom
+ * from licensing first — H.264 encoders carry licensing obligations — and VP9
+ * now plays in every current browser, Safari on iOS included. AV1 would be
+ * smaller still but fails the support criterion on older Apple hardware.
+ */
 export interface TranscodeOptions {
   readonly maxLongEdge: number;
-  readonly maxBitrate: number;
   /**
-   * Container/codec pair. H.264 in MP4 by default because it is the only
-   * combination that plays everywhere without a fallback; VP9/WebM is smaller
-   * at equal quality but is a deliberate opt-in, not a default.
+   * libvpx-vp9 constant quality, 0–63, lower is better. Paired with a zero
+   * bitrate, which is what selects constant-quality mode: a nonzero bitrate
+   * caps the file and drops busy scenes below the platform's minimum quality.
    */
-  readonly codec?: "h264" | "vp9";
+  readonly crf: number;
 }
+
+/**
+ * Seconds between forced keyframes. The standard asks for two to four, which
+ * keeps seeking responsive without spending bits on keyframes nobody seeks to.
+ */
+export const STAND_IN_KEYFRAME_SECONDS = 3;
+
+/** The highest frame rate a stand-in keeps; faster sources are reduced to it. */
+export const STAND_IN_MAX_FPS = 60;
+
+/** The Opus bitrate for a video stand-in's audio track. */
+export const STAND_IN_AUDIO_BITRATE = "128k";
 
 export interface SkimOptions {
   readonly maxLongEdge: number;
@@ -279,27 +299,9 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
 
     async transcode(path: string, opts: TranscodeOptions): Promise<DerivedOutput> {
       const facts = await this.probe(path);
-      const vp9 = opts.codec === "vp9";
       return ffmpegToFile(
-        (out) => [
-          "-y",
-          "-i", path,
-          "-vf", `${transposeFilter(facts.rotation)}${scaleFilter(opts.maxLongEdge, facts.height > facts.width)}`,
-          "-c:v", vp9 ? "libvpx-vp9" : "libx264",
-          ...(vp9 ? [] : ["-preset", "medium", "-profile:v", "high", "-pix_fmt", "yuv420p"]),
-          "-b:v", String(opts.maxBitrate),
-          "-maxrate", String(opts.maxBitrate),
-          "-bufsize", String(opts.maxBitrate * 2),
-          "-c:a", vp9 ? "libopus" : "aac",
-          "-b:a", "128k",
-          // Relocate the index to the front so playback can start on the first
-          // range request. Without it a progressive MP4 has to be downloaded in
-          // full before the first frame shows, which defeats ranged serving
-          // entirely — and it is why this cannot be piped.
-          ...(vp9 ? [] : ["-movflags", "+faststart"]),
-          out,
-        ],
-        vp9 ? ".webm" : ".mp4",
+        (out) => transcodeArgs(path, out, opts, facts),
+        ".webm",
       );
     },
 
@@ -342,6 +344,38 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
       );
     },
   };
+}
+
+/**
+ * The ffmpeg arguments for a video stand-in. Exported so a test can pin the
+ * standard — codec, container, constant quality, no bitrate cap — without
+ * running an encoder.
+ */
+export function transcodeArgs(
+  path: string,
+  out: string,
+  opts: TranscodeOptions,
+  facts: Pick<VideoFacts, "rotation" | "width" | "height">,
+): string[] {
+  return [
+    "-y",
+    "-i", path,
+    "-vf", `${transposeFilter(facts.rotation)}${scaleFilter(opts.maxLongEdge, facts.height > facts.width)}`,
+    // Frame rate kept as the source's, up to the cap.
+    "-fpsmax", String(STAND_IN_MAX_FPS),
+    "-c:v", "libvpx-vp9",
+    "-crf", String(opts.crf),
+    // Zero is what selects constant-quality mode; see TranscodeOptions.crf.
+    "-b:v", "0",
+    "-pix_fmt", "yuv420p",
+    // Row-based multithreading: VP9 encodes in software on most machines, at
+    // about real time for 1080p, and this is most of what makes it that fast.
+    "-row-mt", "1",
+    "-force_key_frames", `expr:gte(t,n_forced*${STAND_IN_KEYFRAME_SECONDS})`,
+    "-c:a", "libopus",
+    "-b:a", STAND_IN_AUDIO_BITRATE,
+    out,
+  ];
 }
 
 /**

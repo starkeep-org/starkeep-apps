@@ -43,13 +43,13 @@ import { viewerStageBox } from "../src/photos/render-target";
 const clock = createHLCClock({ nodeId: "phone" });
 
 /**
- * A source big enough that every rung of the still ladder applies.
+ * A source big enough that every smaller standard size applies.
  *
- * 4272 is the ladder's top class maximum, so a source at least that long makes
- * all five rungs applicable and none of them clamp. That keeps every case below
- * about the *rule* rather than about which rungs happened to exist for a small
- * photograph — a distinction `applicableStillClasses` makes and this file
- * deliberately does not exercise.
+ * 4272 is the canonical threshold, so a source that long takes all four
+ * smaller stand-ins and is its own canonical size: it answers above 2560 as
+ * itself. That keeps every case below about the *rule* rather than about which
+ * sizes happened to exist for a small photograph — a distinction
+ * `applicableStillClasses` makes and this file deliberately does not exercise.
  */
 const SOURCE = { width: 4272, height: 2848 };
 
@@ -127,11 +127,13 @@ async function seedParent(options: {
 }
 
 /**
- * A rendition child at one rung, present as a record and optionally as bytes.
+ * A smaller stand-in at one standard size, present as a record and optionally
+ * as bytes.
  *
  * The two flags are the whole point of the fixture. `resident: false` is the
- * ordinary state of a rung that arrived by metadata sync, and it is the state
- * `RenditionChoice.available` cannot see.
+ * ordinary state of a stand-in that arrived by metadata sync, and it is the
+ * state `RenditionChoice.available` cannot see. The role and fidelity columns
+ * are what make the child a stand-in; it carries no label and no metadata row.
  */
 async function seedRendition(
   parent: DataRecord,
@@ -149,28 +151,12 @@ async function seedRendition(
       objectStorageKey: key,
       sizeBytes: longEdge * 100,
       originalFilename: null,
+      standInRole: "smaller",
+      fidelity: longEdge,
     },
     clock,
   );
   await database.put(record);
-  await database.putMetadata(record.type, {
-    recordId: record.id,
-    width: longEdge,
-    height: Math.round((longEdge * SOURCE.height) / SOURCE.width),
-  });
-  // The label is what makes this a *rendition* rather than any other child.
-  // `loadVariantCandidatesForPage` filters on it, and a crop with a parent would
-  // otherwise be offered as an answer to a pixel request.
-  await database.upsertLabels([
-    {
-      recordId: record.id,
-      appId: "photos",
-      key: "rendition",
-      value: String(longEdge),
-      recordType: record.type,
-      hlc: clock.now(),
-    },
-  ]);
   if (options.resident) held.add(key);
   return record;
 }
@@ -439,78 +425,20 @@ describe("orientation", () => {
 });
 
 /**
- * A rung with two records, and what this device asks the network for.
+ * One stand-in per size.
  *
- * Two nodes encoding one class produce different bytes — `avif-coder` against
- * `sharp` — so a class can hold two records under two content-addressed ids.
- * Both are legal: the uniqueness key carries the content hash. Resolution
- * prefers the lower id, and a device holding only the *other* copy holds the
- * pixels all the same.
- *
- * The rule under test is that `missingRendition` asks whether the ideal **rung**
- * is here, not whether one particular record is. Asking the narrower question
- * sends the phone to the network for a picture it can already paint — once per
- * viewer open, because the viewer fetches unconditionally by design.
- *
- * See `renditions-duplicate-rungs-2026-09-05.md`.
+ * Two nodes encoding one size used to leave two records under two
+ * content-addressed ids, and resolution had to pick between them. The slot
+ * index now forbids a second live stand-in at one size, and sync resolves a
+ * cross-node collision to the cloud's first commit, so this device only ever
+ * resolves over one record per size. See `stand-in-dedup.test.ts` in the sync
+ * engine for the collision itself.
  */
-describe("a rung that two nodes derived", () => {
-  it("asks for nothing when the copy on this device is the one not preferred", async () => {
+describe("one stand-in per size", () => {
+  it("refuses a second live stand-in at a size already held", async () => {
     const parent = await seedParent({ bytesHere: true });
-    // Both at the viewer's ideal rung, neither resident yet. Ids are hashes, so
-    // which one resolution prefers is not predictable from seed order — and the
-    // case worth testing is the specific one where the *preferred* copy is the
-    // absent one, so the resident copy is chosen after the fact.
-    const a = await seedRendition(parent, 1280, { resident: false });
-    const b = await seedRendition(parent, 1280, { resident: false });
-    const preferred = a.id < b.id ? a : b;
-    const other = a.id < b.id ? b : a;
-    held.add(other.objectStorageKey!);
-
-    const opened = await resolveForViewer(deps(), await tile(), {
-      stage: STAGE,
-      devicePixelRatio: 3,
-    });
-
-    // The pixels are here. Asking whether *`preferred`'s* bytes are resident —
-    // which is the narrower question this replaced — would send the phone to the
-    // network for a picture it is already painting.
-    expect(opened.missingRendition).toBeNull();
-    expect(opened.paintedRendition).toBe(other.id);
-    expect(opened.uri).toBe(uriOf(other));
-    expect(preferred.id).not.toBe(other.id);
-  });
-
-  it("prefers the lower id when both copies are on this device", async () => {
-    const parent = await seedParent({ bytesHere: true });
-    const a = await seedRendition(parent, 1280, { resident: true });
-    const b = await seedRendition(parent, 1280, { resident: true });
-    const lower = a.id < b.id ? a : b;
-
-    const opened = await resolveForViewer(deps(), await tile(), {
-      stage: STAGE,
-      devicePixelRatio: 3,
-    });
-
-    // Stability is what this buys, and it is what the viewer's layered upgrade
-    // needs: a pick that moved with row order would re-key the `<Image>` and
-    // re-decode for no change in resolution.
-    expect(opened.paintedRendition).toBe(lower.id);
-    expect(opened.missingRendition).toBeNull();
-  });
-
-  it("still asks when neither copy's bytes are here", async () => {
-    // The suppression is about holding the pixels, not about holding two rows.
-    const parent = await seedParent({ bytesHere: false });
     await seedRendition(parent, 1280, { resident: false });
-    await seedRendition(parent, 1280, { resident: false });
-
-    const opened = await resolveForViewer(deps(), await tile(), {
-      stage: STAGE,
-      devicePixelRatio: 3,
-    });
-
-    expect(opened.missingRendition).not.toBeNull();
+    await expect(seedRendition(parent, 1280, { resident: false })).rejects.toThrow(/stand_in_slot/);
   });
 
   it("still asks when what is resident is a smaller rung than the ideal", async () => {

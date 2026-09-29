@@ -334,8 +334,8 @@ function ViewerBody({
         ) : null}
         {/* Offered only when there is genuinely motion in these bytes, which is
             what opening the clip up front buys. The record stays one image
-            everywhere else in the app — it sorts, syncs, counts and evicts as a
-            single still — and this is the only place its bytes behave
+            everywhere else in the app — it sorts, syncs and counts as a single
+            still — and this is the only place its bytes behave
             differently. */}
         {motion ? (
           <Pressable
@@ -357,8 +357,8 @@ function ViewerBody({
         {/* The reversal half of eliding, and the only one there is. A record
             this node declined has already had its watermark advanced past it,
             so no sync round will offer the bytes again — without this button
-            a budget on a phone would be indistinguishable from losing the
-            photo.
+            a file above this device's ceiling would be indistinguishable from
+            a lost photo.
 
             Offered on `bytesHere` alone now, where it used to also check `uri`.
             The two stopped agreeing the moment a rendition could stand in for an
@@ -378,10 +378,9 @@ function ViewerBody({
         )}
         {/* A pin is this device's own preference and travels with nothing —
             deliberately not a label, because a pin shared as a label would let
-            one device's choice silently rewrite every other device's cache
-            policy. It beats every budget and recency rule, and it still counts
-            against the class's budget, so pinning a lot makes the overage
-            visible rather than swallowing it. */}
+            one device's choice silently rewrite every other device's
+            residency. A pinned file arrives even above this device's ceiling,
+            and "Free up space" skips it. */}
         <Pressable onPress={() => onTogglePin(item)} style={{ paddingVertical: 8 }}>
           <Text style={styles.linkLabel}>
             {pinned ? "★ Kept on this device — tap to release" : "☆ Keep on this device"}
@@ -389,8 +388,7 @@ function ViewerBody({
         </Pressable>
         {pinned ? (
           <Text style={styles.muted}>
-            This one stays whatever the storage budget says, and is never chosen when space is
-            reclaimed.
+            This one stays on this device, even when you free up space.
           </Text>
         ) : null}
         <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>

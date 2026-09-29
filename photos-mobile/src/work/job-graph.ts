@@ -50,10 +50,7 @@ export interface JobConstraints {
    * **True only for jobs that put bytes on this device**, which is a narrower
    * rule than it first appears and was corrected against a real handset. The
    * blanket version gated almost everything, and a Pixel at 97% full then did
-   * nothing at all: import was refused, sync was refused, and the one job left
-   * running was an eviction pass that freed nothing, because a phone's own
-   * photographs are aliases to the camera roll and cost the budget nothing to
-   * begin with.
+   * nothing at all: import was refused and sync was refused.
    *
    * That is exactly backwards. A phone that is full is the phone whose
    * photographs most need to be somewhere else, and the work that gets them
@@ -62,12 +59,12 @@ export interface JobConstraints {
    * whatsoever.
    *
    * So the floor belongs on `fetch-blobs` and on derivation, which are the jobs
-   * that actually land bytes here, and eviction stays exempt because it is what
-   * fixes the condition. One gap remains and is deliberate: `MobileNode.sync()`
-   * moves both directions, so a round can still pull a blob on a device with
-   * little room. The residency budget bounds that, the foreground "Sync now"
-   * button has never had a floor either, and the real repair is the same split
-   * the metered constraint needs — a push-only round, expressed in the engine.
+   * that actually land bytes here. One gap remains and is deliberate:
+   * `MobileNode.sync()` moves both directions, so a round can still pull a blob
+   * on a device with little room. The ceiling bounds that, the foreground "Sync
+   * now" button has never had a floor either, and the real repair is the same
+   * split the metered constraint needs — a push-only round, expressed in the
+   * engine.
    */
   readonly requiresStorageNotLow: boolean;
 }
@@ -94,8 +91,6 @@ export type JobId =
   | "derive-ladder-cheap"
   /** The rungs above `image-medium`, which are a real CPU cost. */
   | "derive-ladder-full"
-  /** Drop blobs the budget no longer allows. */
-  | "evict"
   /** Observe MediaStore for new captures. */
   | "scan-media-store";
 
@@ -258,11 +253,9 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     id: "scan-acquirable",
     description: "Find records this device wants bytes for and does not have",
     // No network: this is a walk over the local catalogue joined against the
-    // local resident set. It is the correctness half of the acquisition queue —
-    // the only thing that can find a library that landed before the queue
-    // existed, a blob this device evicted, bytes that went away locally, or
-    // everything a raised budget newly affords — and none of those questions
-    // needs the cloud to answer.
+    // local resident set. It is the only thing that can find a stand-in a raised
+    // ceiling now covers, a record someone pinned, or bytes that went away
+    // locally — and none of those questions needs the cloud to answer.
     constraints: NO_NETWORK,
     // A page of the catalogue per unit, resumed from a cursor. A 60k-item
     // library is not a few seconds' work and is not attempted as such.
@@ -289,25 +282,6 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     // missing. The queue this job drains is written by both of them.
     after: ["sync-metadata", "scan-acquirable"],
     delegatedTransfer: true,
-  },
-  {
-    id: "evict",
-    description: "Drop blobs the budget no longer allows",
-    constraints: {
-      requiresUnmetered: false,
-      requiresNetwork: false,
-      requiresCharging: false,
-      // The one job exempt from the storage floor, because it is what fixes it.
-      // Gating eviction on free space is a deadlock: the phone fills up and
-      // then cannot run the job that would empty it.
-      requiresStorageNotLow: false,
-    },
-    targetSecondsPerUnit: 2,
-    resumable: true,
-    // Eviction must know what is durable elsewhere before dropping anything,
-    // and that is what the metadata round establishes.
-    after: ["sync-metadata"],
-    delegatedTransfer: false,
   },
 ];
 

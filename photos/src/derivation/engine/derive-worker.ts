@@ -42,7 +42,7 @@ import { deriveAndPublish } from "../../photos-lib/image-processing/derive-and-p
 import { createSipsDecoder } from "../../photos-lib/image-processing/platform-decoder";
 import { deriveAndPublishVideo, isTerminalVideoError } from "../../photos-lib/video/derive-and-publish";
 import { createFfmpegTools } from "../../photos-lib/video/video-tools";
-import { RENDITION_LABEL_REF } from "../../photos-lib/image-processing/publish-renditions";
+import { DERIVED_LABEL_REF } from "../../photos-lib/image-processing/publish-renditions";
 import {
   CHEAP_STILL_CLASSES,
   CHEAP_TARGET_LONG_EDGE,
@@ -140,7 +140,7 @@ async function runSweep(command: Extract<SweepCommand, { type: "start" }>): Prom
       }
       const page = await fetchSweepPage(
         (path) => signedFetch(creds, path),
-        RENDITION_LABEL_REF,
+        DERIVED_LABEL_REF,
         cursor,
       );
       const work = page.records.filter((r) => stageHasWork(r, stage, CHEAP_STILL_CLASSES));
@@ -190,6 +190,8 @@ async function deriveOne(
         id: record.id,
         originalFilename: record.original_filename,
         mimeType: record.mime_type ?? record.type ?? null,
+        sizeBytes: record.size_bytes ?? null,
+        ...(record.fidelity !== undefined ? { fidelity: record.fidelity } : {}),
       },
       loadSource: () => fetchSourceBytes(creds, record.id),
       // Targeted derivation includes the cheap rungs in its wanted set, while
@@ -266,11 +268,16 @@ async function deriveOneVideo(
   }
 }
 
+/**
+ * The rungs this record already has, anywhere. A rung whose bytes sit only in
+ * the cloud is still a rung this node need not make: the platform keeps one
+ * per size, and residency — not re-derivation — is what brings bytes here.
+ */
 function locallyAvailableClasses(record: SweepRecord): SizeClass[] {
   return (record.variant_candidates ?? [])
     .filter(
       (candidate): candidate is typeof candidate & { label_value: SizeClass } =>
-        candidate.available_here && Boolean(candidate.label_value),
+        Boolean(candidate.label_value),
     )
     .map((candidate) => candidate.label_value);
 }

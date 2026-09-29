@@ -21,6 +21,7 @@ import {
   posterTimestamp,
   scaleFilter,
   transposeFilter,
+  transcodeArgs,
   UnsupportedVideoError,
   type VideoTools,
 } from "../src/photos-lib/video/video-tools";
@@ -108,6 +109,33 @@ async function probeBytes(bytes: Uint8Array, name: string) {
     format: { duration: string };
   };
 }
+
+describe("the video stand-in standard", () => {
+  // Pure argument building, pinned exactly: a bitrate cap here would push busy
+  // footage below the platform's minimum quality, and a second codec would make
+  // the fidelity values incomparable across apps.
+  const args = transcodeArgs("/in.mov", "/out.webm", { maxLongEdge: 1280, crf: 31 }, {
+    rotation: 0,
+    width: 1920,
+    height: 1080,
+  });
+  const valueOf = (flag: string) => args[args.indexOf(flag) + 1];
+
+  it("encodes VP9 at constant quality with no bitrate cap", () => {
+    expect(valueOf("-c:v")).toBe("libvpx-vp9");
+    expect(valueOf("-crf")).toBe("31");
+    expect(valueOf("-b:v")).toBe("0");
+    expect(args).not.toContain("-maxrate");
+    expect(args).not.toContain("-bufsize");
+  });
+
+  it("carries Opus audio at 128 kbps, keyframes every three seconds, and at most 60 fps", () => {
+    expect(valueOf("-c:a")).toBe("libopus");
+    expect(valueOf("-b:a")).toBe("128k");
+    expect(valueOf("-force_key_frames")).toBe("expr:gte(t,n_forced*3)");
+    expect(valueOf("-fpsmax")).toBe("60");
+  });
+});
 
 describe("filter construction", () => {
   // Pure string building, so it is worth pinning exactly — these are the
@@ -268,8 +296,22 @@ describe("deriving the ladder", () => {
     const transcode = result.renditions.find((r) => r.sizeClass === "video-720p");
     expect(transcode, `no 720p produced; failures: ${JSON.stringify(result.failures)}`).toBeDefined();
 
-    const probed = await probeBytes(transcode!.bytes, "t.mp4");
+    const probed = await probeBytes(transcode!.bytes, "t.webm");
     expect(Math.max(probed.streams[0]!.width!, probed.streams[0]!.height!)).toBeLessThanOrEqual(1280);
+  }, 240_000);
+
+  // The platform's video standard: VP9 in WebM, so every current browser plays
+  // every stand-in without a licence behind the encoder.
+  ffmpeg()("encodes stand-ins as VP9 in WebM, with the canonical one at the source's own size", async () => {
+    const result = await deriveVideoLadder(landscape, tools);
+    const canonical = result.renditions.find((r) => r.sizeClass === "video-1080p");
+    expect(canonical, `no canonical produced; failures: ${JSON.stringify(result.failures)}`).toBeDefined();
+    expect(canonical!.contentType).toBe("video/webm");
+    const probed = await probeBytes(canonical!.bytes, "c.webm");
+    const video = probed.streams.find((st) => st.codec_type === "video")!;
+    expect(video.codec_name).toBe("vp9");
+    // Never upscaled: a 640x480 source's canonical stand-in is 640 wide.
+    expect(Math.max(video.width!, video.height!)).toBe(640);
   }, 240_000);
 
   // faststart is the whole reason ranged serving buys anything: with the moov
@@ -377,8 +419,9 @@ describe("ladder completeness", () => {
     expect(missing).not.toContain("video-poster-thumb");
   });
 
-  it("excludes optional classes nobody enabled", () => {
-    expect(missingVideoClasses(facts, [])).not.toContain("video-1080p");
-    expect(missingVideoClasses(facts, [], ["video-1080p"])).toContain("video-1080p");
+  // The canonical transcode is what lets a video's original archive, so no
+  // library can leave it out.
+  it("always requires the canonical transcode", () => {
+    expect(missingVideoClasses(facts, [])).toContain("video-1080p");
   });
 });

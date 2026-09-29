@@ -17,6 +17,8 @@
 
 import {
   applicableVideoClasses,
+  transcodeLongEdge,
+  VIDEO_STAND_IN_CRF,
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
   type SizeClass,
@@ -158,12 +160,12 @@ async function deriveOne(
       };
     }
     case "transcode": {
+      // A stand-in: VP9 WebM at the platform's constant quality, at the
+      // class's standard size — or at the source's own long edge for a
+      // canonical stand-in below the threshold, which is never upscaled.
       const out = await tools.transcode(path, {
-        maxLongEdge: spec.maxLongEdge,
-        // applicableVideoClasses only yields a transcode class when it would
-        // change something, so maxBitrate is always set by then. The fallback
-        // exists so a hand-built spec cannot produce `-b:v undefined`.
-        maxBitrate: spec.maxBitrate ?? 1_500_000,
+        maxLongEdge: transcodeLongEdge(spec, source),
+        crf: VIDEO_STAND_IN_CRF,
       });
       return {
         sizeClass: spec.sizeClass,
@@ -171,7 +173,7 @@ async function deriveOne(
         width: out.width,
         height: out.height,
         ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
-        contentType: "video/mp4",
+        contentType: "video/webm",
         kind: "transcode",
         type: "video",
       };
@@ -182,8 +184,8 @@ async function deriveOne(
 /**
  * Which classes a record is still missing.
  *
- * Mirrors the still ladder's equivalent so the archive gate can ask one
- * question of both kinds of media.
+ * Mirrors the still ladder's equivalent, so a sweep asks one question of both
+ * kinds of media.
  */
 export function missingVideoClasses(
   facts: VideoFacts,

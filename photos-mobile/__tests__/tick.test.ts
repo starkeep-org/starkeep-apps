@@ -40,8 +40,7 @@ function fakeNode(over: Partial<MobileNode> = {}): MobileNode {
       stalled: false,
     })),
     scanForAcquirable: vi.fn(async () => ({ queued: 3, complete: true })),
-    acquireQueued: vi.fn(async () => []),
-    reclaimSpace: vi.fn(async () => []),
+    acquireQueued: vi.fn(async () => ({ landed: 0, bytesLanded: 0, dropped: 0, failed: 0 })),
     ...over,
   } as unknown as MobileNode;
 }
@@ -104,7 +103,6 @@ describe("the metered connection", () => {
     const report = await runWorkTick(deps({ device: device({ isUnmetered: false }) }), far());
     expect(find(report, "scan-media-store").ran).toBe(true);
     expect(find(report, "scan-acquirable").ran).toBe(true);
-    expect(find(report, "evict").ran).toBe(true);
   });
 });
 
@@ -119,7 +117,7 @@ describe("the deadline", () => {
 
   it("gives sync a share of the window rather than all of it", async () => {
     // Without a share, a first library upload consumes every window and the
-    // jobs behind sync — eviction most of all — never run at all.
+    // jobs behind sync never run at all.
     let seen = 0;
     const node = fakeNode({
       sync: vi.fn(async (options?: { signal?: { aborted: boolean } }) => {
@@ -202,10 +200,8 @@ describe("derivation", () => {
   });
 
   it("gives derivation a share of what is left rather than the rest of the window", async () => {
-    // Eviction is behind derivation in the graph's order, and eviction is what
-    // frees the space a rendition is written into. A sweep that spent
-    // everything left would be a phone that derives until its disk is full and
-    // then cannot derive again.
+    // Scanning and fetching sit behind derivation in the graph's order, and a
+    // sweep that spent everything left would starve them.
     let signal: { readonly aborted: boolean } | null = null;
     const deriveRenditions = vi.fn(async (s: { readonly aborted: boolean }) => {
       signal = s;
@@ -240,9 +236,8 @@ describe("failure", () => {
     const report = await runWorkTick(deps({ node }), far());
     expect(find(report, "sync-metadata").ran).toBe(false);
     expect(find(report, "sync-metadata").detail).toContain("transport died");
-    // Eviction sits behind sync in the order, and is what frees the space a
-    // failing transfer may be blocked on.
-    expect(find(report, "evict").ran).toBe(true);
+    // The scan sits behind sync in the order and needs no network.
+    expect(find(report, "scan-acquirable").ran).toBe(true);
   });
 
   it("reports a node with no cloud rather than treating it as an error", async () => {

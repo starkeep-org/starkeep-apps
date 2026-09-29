@@ -1,4 +1,5 @@
-import { RENDITION_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
+import { DERIVED_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
+import { withStandInCandidates } from "@/photos-lib/stand-in-candidates";
 import {
   canonicalTarget,
   currentRenditionPolicies,
@@ -102,8 +103,11 @@ export async function POST(req: Request): Promise<Response> {
     // take the route's default — 50 in the cloud — and silently answer half of
     // a 100-record batch as though the rest had no renditions.
     `limit=${recordIds.length}`,
-    "include=metadata",
-    `variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+    // The platform's size summary, with a URL on every size readable now, and
+    // Photos' own derived records — posters and skims — which are not
+    // stand-ins and so are not in it.
+    "include=metadata,stand-in-urls",
+    `variant=${encodeURIComponent(DERIVED_LABEL_REF)}`,
   ];
   const upstream = await authorized.fetch(`/data/records?${params.join("&")}`);
   if (!upstream.ok) {
@@ -113,7 +117,9 @@ export async function POST(req: Request): Promise<Response> {
     });
   }
   const body = (await upstream.json()) as { records: UpstreamRecord[] };
-  const records = new Map(body.records.map((record) => [record.id, record]));
+  const records = new Map(
+    body.records.map((record) => [record.id, withStandInCandidates(record)] as const),
+  );
   const policies = currentRenditionPolicies();
   const cloud = process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
   const localVerdicts = cloud ? null : await loadLocalVerdicts();

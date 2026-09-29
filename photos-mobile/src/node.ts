@@ -15,10 +15,10 @@
  *    says nothing about a handset, so `isCloudNode` is false and such records
  *    are held freely — reading the constraint as "nobody may hold this" would
  *    turn a privacy preference into data loss.
- * 2. **It has a budget that will actually bind.** A laptop with no retention
- *    policy wants every blob; a phone with 8 GB against a 60k-item library is
- *    the only honest consumer of `Elided`, and the reason the media plan calls
- *    this phase the validation of Phase 0's residency work.
+ * 2. **Its ceiling is lower.** The platform's phone row receives image
+ *    stand-ins up to 1280 pixels and no video or audio stand-ins, so a phone
+ *    with 8 GB against a 60k-item library holds the library it can show and
+ *    fetches the rest when asked.
  * 3. **Its rounds are smaller.** See {@link MOBILE_MAX_BYTES}.
  */
 
@@ -32,24 +32,18 @@ import {
   runAcquisition,
   scanForAcquirable,
   type AcquisitionOutcome,
-  type EvictionOutcome,
-  type NodeRetentionPolicy,
-  type OverrideRule,
+  type BlobCandidate,
   type ReplicaProbe,
   type ResidencyManager,
+  type FreeUpSpaceReport,
   type SyncEngine,
   type SyncOptions,
   type SyncResult,
   type VerifyResult,
-  budgetBytesFor,
-  budgetLineFor,
-  parseSizeClass,
-  retentionRowFor,
-  PLATFORM_NAMESPACE,
   type SyncTransport,
 } from "@starkeep/sync-engine";
-import { totalBudgetBytes } from "./retention";
-import type { DataRecord } from "@starkeep/protocol-primitives";
+import type { DataRecord, SyncDownCeilings } from "@starkeep/protocol-primitives";
+import { DEFAULT_SYNC_DOWN_CEILINGS } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
 import { createSqliteMotionIndexStore, type MotionIndexStore } from "./media/motion-index";
@@ -137,37 +131,14 @@ export interface MobileNodeOptions {
     readonly transport: SyncTransport;
     readonly remoteObjectStorage: ObjectStorageAdapter;
   };
-  /**
-   * The phone's retention policy.
-   *
-   * Optional, and its absence means "keep everything" — the same default a
-   * laptop has. That is deliberately the *wrong* setting for a phone and is
-   * still the right default: a node that cannot yet be told its budget must not
-   * silently start declining data, because the failure mode of over-fetching is
-   * a full disk and the failure mode of under-fetching is a photo that is
-   * quietly nowhere.
-   */
-  readonly retention?: NodeRetentionPolicy;
-  /** Per-record overrides as rules over labels. Node-local, like pins. */
-  readonly overrideRules?: readonly OverrideRule[];
-  /**
-   * Which label names a record's size class.
-   *
-   * Defaults to `photos/rendition` because this is the photos app and that is
-   * its own ladder — naming it here is a choice the app is entitled to make.
-   * The same line inside `@starkeep/sync-engine` would be a bug, and was one
-   * until this assembly moved out of core: platform code that names an app has
-   * quietly decided every future app's labels for it.
-   *
-   * Still configurable so the ladder can be respecified without a change here.
-   *
-   * A single entry, unlike a laptop's map of every installed app: an embedded
-   * node has no app registry to read, because it *is* the app. Its budget
-   * covers only its own bytes, so its own ladder is the only one it can see.
-   */
-  readonly sizeClassKeys?: Readonly<Record<string, string>>;
-  /** Replicas elsewhere required before this node may drop its only copy. */
+  /** Replicas elsewhere required before "Free up space" removes a file here. */
   readonly minimumReplicas?: number;
+  /**
+   * This device's sync-down ceilings — the largest stand-in per category it
+   * receives without being asked. The platform's phone row unless the person
+   * changed it: 1280-pixel images, and no video or audio stand-ins.
+   */
+  readonly ceilings?: SyncDownCeilings;
   readonly wallClock?: () => number;
   /**
    * Let this node's object storage read the device's own camera roll.
@@ -259,11 +230,8 @@ export interface MobileNode {
    * nobody has signed in on. Everything else on this node works regardless.
    */
   readonly engine: SyncEngine | null;
-  /**
-   * Null when no retention policy was supplied — meaning this node wants every
-   * blob, exactly as an unconfigured laptop does.
-   */
-  readonly residency: ResidencyManager | null;
+  /** This node's residency: its ceilings, its pins, and what it holds. */
+  readonly residency: ResidencyManager;
   /**
    * Run one exchange round. Safe to abandon; the watermark makes it resumable.
    *
@@ -291,37 +259,20 @@ export interface MobileNode {
    */
   sync(options?: SyncOptions): Promise<SyncResult | null>;
   /**
-   * Work through the acquisition queue: fetch the bytes this device wants most
-   * and does not have, best-first, until the tick's byte budget runs out.
-   *
-   * ## Why this exists at all
-   *
-   * A sync round walks the change log oldest-first, because forward order is
-   * the coverage claim the watermark makes. On a phone, whose budget actually
-   * binds, that used to mean the whole library crossed the network so the newest
-   * budget's worth of it could stay — 400 GB transferred to retain 19 GB, with
-   * the device's flash rewritten a budget at a time on the way. A round now
-   * declines a full line and writes the candidate down; this is what comes back
-   * for it, in the order the device actually wants.
-   *
-   * Safe to abandon and cheap when there is nothing to do: the queue is
-   * best-first, so the first candidate the budget declines proves nothing
-   * behind it can win, and a converged line costs one query.
+   * Work through the acquisition queue: fetch files this device wants and
+   * lacks — stand-ins a raised ceiling now covers, pinned records, bytes that
+   * went missing — until the tick's byte cap runs out.
    *
    * Serialized with {@link sync} for the same reason everything else here is —
    * one engine, one operation at a time.
    */
-  acquireQueued(options?: { readonly maxBytes?: number }): Promise<AcquisitionOutcome[]>;
+  acquireQueued(options?: { readonly maxBytes?: number }): Promise<AcquisitionOutcome | null>;
   /**
    * Walk a page of the catalogue looking for records this device wants bytes
    * for and has none of, and queue them.
    *
-   * The correctness half of the queue. A round can only queue what it is
-   * currently being offered, which leaves out everything that matters most on a
-   * device that has been running for a while: the library that landed before
-   * this shipped, blobs evicted after their round completed, bytes that went
-   * away locally, and everything a raised budget newly affords. This is the one
-   * mechanism that finds any of them, and it is one walk for all four.
+   * A round decides each file once, as the change log offers it. The scan finds
+   * what this device wants and lacks now, whatever the round decided then.
    *
    * Bounded and resumable: it takes a page, remembers where it stopped, and
    * carries on from there next time. `complete` is how a caller tells "this
@@ -346,13 +297,10 @@ export interface MobileNode {
   /**
    * Fetch the bytes of a record this node holds a row for but not a blob.
    *
-   * The reversal half of eliding, and the reason a budget on a phone is a
-   * budget rather than data loss. An elided record advances the watermark — that
-   * is what makes declining a blob a terminal state instead of a permanent
-   * retry — so the cloud will never offer those bytes again and no amount of
-   * syncing brings them back. This is the only route, which is why the phone,
-   * as the only node that actually elides anything, has to be the one that
-   * exposes it.
+   * The reversal half of eliding. An elided record advances the watermark —
+   * that is what makes declining a blob a terminal state instead of a
+   * permanent retry — so the cloud will never offer those bytes again and no
+   * amount of syncing brings them back. This is the only route.
    *
    * Resolves false when there is no cloud to fetch from, when the record has no
    * blob, or when the transfer failed. It does *not* resolve false for a key a
@@ -362,121 +310,69 @@ export interface MobileNode {
    */
   fetchBlob(record: DataRecord): Promise<boolean>;
   /**
-   * Charge a budget for bytes this node produced itself.
-   *
-   * Every other route into local storage is a transfer, and a transfer accounts
-   * for itself — `SyncEngine` calls `onLanded` on arrival. Derivation is the
-   * first route that is not: the rendition pass encodes bytes, writes them, and
-   * would leave them invisible to every budget. `reclaimSpace` names that state
-   * precisely — `unknownKeys`, bytes on disk no line describes — and expects the
-   * count to be zero, which is only true if the producer says so.
-   *
-   * Call it **after** the record and its rendition label are written. The class
-   * is resolved from the record's labels, so charging any earlier resolves every
-   * rung this device makes as an original and puts it in the wrong budget line.
-   *
-   * A no-op on a node with no retention policy, which is a node with no budget
-   * to be over.
+   * Record bytes this node produced itself — a stand-in the derivation pass
+   * encoded — so the Storage section counts them at once rather than after the
+   * next catalogue scan adopts them.
    */
   noteDerived(record: DataRecord): Promise<void>;
   /**
-   * Free space: reconcile what this node believes it holds against what it
-   * actually holds, then run an eviction pass over every class and namespace
-   * that is over budget.
+   * The person's "Free up space": remove originals — and, in the wider scope,
+   * stand-ins above this device's ceiling — largest first, each only after the
+   * cloud is proved to hold it, its original and the original's canonical
+   * stand-in. The one path that removes a file from this device; nothing calls
+   * it on a timer.
    *
-   * ## Why the two are one call
-   *
-   * Eviction chooses its candidates from the resident-set index, and the index
-   * is a *cache* of a fact the filesystem also knows. A pass run against a stale
-   * index deletes keys that are not there (harmless) and, worse, believes a
-   * class is full when its bytes are already gone — so it works to a target it
-   * has already passed. Reconciling first is what makes the pass's arithmetic
-   * describe the disk.
-   *
-   * ## What it will refuse to do
-   *
-   * Delete anything it cannot prove survives elsewhere. The probe is the cloud,
-   * so on a device that has never been paired there is nothing to ask and the
-   * pass frees nothing and says why (`EvictionOutcome.refusal`). That is the
-   * intended behaviour, not a degraded one: this is the only code in the app
-   * that destroys a user's data, and "the budget is full" is not evidence that
-   * a photograph is safe somewhere.
-   *
-   * It also cannot touch a photograph taken on this device. Those are aliases to
-   * the camera roll, so they are not in the index at all, and
-   * `DeviceMediaObjectStorage.delete()` drops an alias rather than an asset even
-   * if something asked.
-   *
-   * Returns one outcome per pass — empty on a node with no retention policy,
-   * where there is no budget to be over.
+   * Photos taken on this device are aliases into the camera roll, so they cost
+   * this device nothing and are never removed here.
    */
-  reclaimSpace(): Promise<EvictionOutcome[]>;
+  freeUpSpace(request: {
+    readonly bytes: number;
+    readonly scope: "originals" | "originals-and-above-ceiling";
+    readonly dryRun?: boolean;
+  }): Promise<FreeUpSpaceReport>;
   /**
-   * Keep this record on this device regardless of budget, or stop doing so.
+   * Keep this record on this device, or stop doing so. A pinned file arrives
+   * even above this device's ceiling, and "Free up space" skips it.
    *
    * Node-local and deliberately not a label: a pin shared as a label would let
-   * one device's preference silently rewrite every other device's cache policy.
-   *
-   * Pins **win** over every budget, and they still count
-   * against the line's budget — so pinning a lot makes the overage visible
-   * rather than swallowing it. They do not beat a record constraint: a
-   * `starkeep/no-cloud` record is refused by the cloud whatever this device
-   * wants.
+   * one device's preference silently rewrite every other device's residency.
+   * A pin does not beat a record constraint.
    */
   setPinned(recordId: string, pinned: boolean): void;
   isPinned(recordId: string): boolean;
   /**
-   * Record that someone looked at this record on this device.
-   *
-   * The strongest signal there is about what a phone should keep, and until this
-   * had a caller on the *viewing* path it was recorded only when a fetch
-   * happened — which meant `last_opened_at_ms` was written exactly for records
-   * this device had already decided it did not want, so the eviction ordering's
-   * never-opened-first tier collapsed into one tier where every candidate tied.
-   *
-   * It matters more now, not less. The column used to be one input among
-   * several — a date window, a keep rule, a budget — and it is now the *primary*
-   * term of the only ordering the system has, on both the eviction side and the
-   * admission side.
-   *
-   * Safe to call for a record whose bytes are not here: the pin table and the
-   * resident-set row are separate things, and a record with no held blob simply
-   * has no row to stamp yet.
-   */
-  noteOpened(recordId: string): void;
-  /**
-   * What this node is holding, per class, against what its policy allows.
+   * What this node holds, by kind of file.
    *
    * The numbers behind the Storage section. Reads the index rather than probing
-   * storage, which is the whole reason the index exists — asking the filesystem
-   * per record is hundreds of thousands of calls once renditions land.
+   * storage — asking the filesystem per record is hundreds of thousands of
+   * calls once stand-ins land.
    */
   storageReport(): StorageReport;
   close(): Promise<void>;
 }
 
-/** One class's line in the Storage section. */
-export interface StorageClassUsage {
-  readonly sizeClass: string;
-  readonly heldBytes: number;
-  /** The budget of the line this class is charged to. Lines can be shared. */
-  readonly budgetBytes: number;
+export interface StorageReport {
   /**
-   * Whether the class is pulled during a sync round.
-   *
-   * False reads as "kept once you open it" in the Storage section, and it is
-   * the whole of what the old four-value keep rule had left to say — the other
-   * three values were predictions of what the eviction order does anyway.
+   * Bytes held per resident-set group: `stand-in:<category>`,
+   * `original:<category>` for an original a stand-in can replace, and `kept`
+   * for every file no stand-in can replace.
    */
-  readonly prefetch: boolean;
+  readonly groups: Readonly<Record<string, number>>;
+  readonly heldBytes: number;
 }
 
-export interface StorageReport {
-  readonly classes: readonly StorageClassUsage[];
-  readonly heldBytes: number;
-  readonly budgetBytes: number;
-  /** False when this node has no retention policy, so nothing binds. */
-  readonly configured: boolean;
+/** A record in the shape the residency decision reads. */
+function candidateOf(record: DataRecord): BlobCandidate {
+  return {
+    recordId: record.id,
+    objectStorageKey: record.objectStorageKey,
+    sizeBytes: record.sizeBytes,
+    type: record.type,
+    parentId: record.parentId,
+    appId: null,
+    standInRole: record.standInRole ?? null,
+    fidelity: record.fidelity ?? null,
+  };
 }
 
 /**
@@ -551,27 +447,24 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     db: databaseAdapter.getRawDatabase(),
   });
 
-  // Without a policy there is no budget to enforce and no class to resolve, so
-  // the engine runs without the hook and every blob is wanted. That is the same
-  // default a laptop has, and it is the right one: a node that has not been told
-  // its budget must not silently start declining data, because the failure mode
-  // of over-fetching is a full disk and the failure mode of under-fetching is a
-  // photo that is quietly nowhere.
-  const residency = options.retention
-    ? createResidencyManager({
-        localDb: databaseAdapter.getRawDatabase(),
-        databaseAdapter,
-        localObjectStorage,
-        sizeClassKeys: options.sizeClassKeys ?? { photos: "rendition" },
-        // A phone is never the cloud node. `starkeep/no-cloud` is a constraint
-        // about cloud storage; a handset holding such a record is the intended
-        // outcome, not a violation.
-        isCloudNode: false,
-        policy: options.retention,
-        overrideRules: options.overrideRules ?? [],
-        durability: { minimumReplicas: options.minimumReplicas ?? 1 },
-      })
-    : null;
+  // Every file no stand-in can replace arrives here; stand-ins arrive up to
+  // this device's ceiling; everything else waits to be asked for. Nothing is
+  // removed except by the person's "Free up space".
+  const residency = createResidencyManager({
+    localDb: databaseAdapter.getRawDatabase(),
+    databaseAdapter,
+    localObjectStorage,
+    // A phone is never the cloud node. `starkeep/no-cloud` is a constraint
+    // about cloud storage; a handset holding such a record is the intended
+    // outcome, not a violation.
+    isCloudNode: false,
+    ceilings: options.ceilings ?? DEFAULT_SYNC_DOWN_CEILINGS.phone,
+    // A camera-roll photograph is an alias: the overlay answers `has()` for
+    // it, but its bytes are the media store's. Removing the key would drop
+    // the alias and free nothing, so "Free up space" never offers it.
+    ...(mediaAliases ? { borrowsBytes: (key: string) => mediaAliases.get(key) !== null } : {}),
+    durability: { minimumReplicas: options.minimumReplicas ?? 1 },
+  });
 
   // No cloud, no engine. Not a stub or an offline transport that queues: there
   // is genuinely nobody to exchange with, and an engine that pretends otherwise
@@ -587,7 +480,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         maxBytes: MOBILE_MAX_BYTES,
         maxItems: MOBILE_MAX_ITEMS,
         transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
-        ...(residency ? { residency: residencyHooks(residency) } : {}),
+        residency: residencyHooks(residency),
       })
     : null;
 
@@ -613,12 +506,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
    * person pressing a button, and someone who presses "Check backup" during a
    * sync wants the check, not a silent no-op.
    */
-  // Only built where there is a policy to scan against: with no budget every
-  // blob is wanted and a round never declines one, so there is nothing to queue
-  // and nothing to sweep for.
-  const scanCursor = residency
-    ? createSqliteScanCursorStore({ db: databaseAdapter.getRawDatabase() })
-    : null;
+  const scanCursor = createSqliteScanCursorStore({ db: databaseAdapter.getRawDatabase() });
 
   let engineLock: Promise<unknown> = Promise.resolve();
   function serialized<T>(body: () => Promise<T>): Promise<T> {
@@ -647,19 +535,14 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       engine ? serialized(() => engine.sync(syncOptions)) : null,
 
     async acquireQueued(acquireOptions) {
-      // No cloud or no policy means no queue: a node that wants every blob
-      // never declines one, and a node with nobody to ask cannot fetch.
-      if (!engine || !residency || !options.retention) return [];
-      // Serialized behind the same lock as a round. Both read the resident set
-      // and both charge budgets, and two of them at once would each see the
-      // same apparent room — the overshoot reservations exist to bound within
-      // one engine, reintroduced between two operations of it.
+      // No cloud means nobody to fetch from.
+      if (!engine) return null;
+      // Serialized behind the same lock as a round: both drive the one engine.
       return serialized(() =>
         runAcquisition({
           engine,
           manager: residency,
           databaseAdapter,
-          policy: options.retention!,
           // One round's worth of bytes per tick, for the reason
           // `MOBILE_MAX_BYTES` gives: the OS decides when the app stops, and a
           // unit that takes a minute is a unit that gets abandoned partway,
@@ -670,14 +553,23 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     },
 
     async scanForAcquirable(scanOptions) {
-      if (!residency || !scanCursor) return { queued: 0, complete: true };
       // Not serialized behind the engine lock: it writes no sync state and
       // transfers nothing. It writes deferred rows, and `index.defer` is
       // structurally unable to disturb a row a concurrent round is landing.
+      const cursor = scanCursor.get();
+      if (cursor === null) {
+        // A new sweep starts by reconciling the index against the disk, so
+        // bytes that went away behind its back read as missing and are queued.
+        try {
+          await residency.reconcile();
+        } catch (err) {
+          console.warn(`[starkeep:residency] could not reconcile: ${String(err)}`);
+        }
+      }
       const result = await scanForAcquirable({
         databaseAdapter,
         consider: (candidate) => residency.considerForAcquisition(candidate),
-        cursor: scanCursor.get(),
+        cursor,
         maxRecords: scanOptions?.maxRecords ?? MOBILE_SCAN_RECORDS,
       });
       // Written after the page rather than before it, so a process killed
@@ -695,11 +587,6 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     // joins that transfer rather than racing it.
     async fetchBlob(record) {
       if (!engine || !record.objectStorageKey) return false;
-      // Opening a photo is the strongest signal there is about what this device
-      // should keep, and it is recorded whether or not the fetch succeeds:
-      // eviction ordering reads it, and a failed network call does not make the
-      // photo less wanted.
-      residency?.markOpened(record.id, Date.now());
       return engine.fetchBlob(
         {
           fileHash: record.contentHash || record.objectStorageKey,
@@ -708,149 +595,35 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
           ...(record.mimeType ? { mimeType: record.mimeType } : {}),
         },
         // The real candidate rather than one derived from the manifest, so the
-        // host's class resolver sees the record's labels and the bytes are
-        // charged to the budget they actually belong to.
-        {
-          recordId: record.id,
-          objectStorageKey: record.objectStorageKey,
-          sizeBytes: record.sizeBytes,
-          type: record.type,
-          parentId: record.parentId,
-          appId: null,
-          // Names the namespace a derivative is charged to when no app has
-          // labelled it with a rung — so an on-demand fetch lands in the same
-          // budget the sync path would have used.
-          originAppId: record.originAppId,
-          recencyAtMs: null,
-          lastOpenedAtMs: Date.now(),
-        },
+        // index records the file under the group it actually belongs to.
+        candidateOf(record),
       );
     },
+
     async noteDerived(record) {
-      if (!residency) return;
-      const candidate = {
-        recordId: record.id,
-        objectStorageKey: record.objectStorageKey,
-        sizeBytes: record.sizeBytes,
-        type: record.type,
-        parentId: record.parentId,
-        appId: null,
-        originAppId: record.originAppId,
-        // Both null, and both honestly so. These bytes have no capture date of
-        // their own — `recencyInputs` walks to the parent for a rendition's,
-        // which is exactly what it does for a synced one — and nobody has opened
-        // them: they exist because a background pass made them, not because
-        // somebody looked at the photograph.
-        recencyAtMs: null,
-        lastOpenedAtMs: null,
-      };
-      // Resolved from the record's labels, which is why the caller writes them
-      // first. A rung charged without its class lands in the originals line, and
-      // an originals line holding renditions is a budget that describes nothing.
-      const sizeClass = await residency.classOf(candidate);
-      await residency.noteArrival(candidate, {
-        decision: "fetch",
-        sizeClass,
-        // The nearest true thing the vocabulary has: these bytes are here
-        // because something outside the policy put them here, not because the
-        // policy chose to fetch them. `SyncEngine.fetchBlob` reports the same
-        // value for the same reason.
-        reason: "explicit-request",
-      });
+      await residency.noteArrival(candidateOf(record));
     },
 
-    async reclaimSpace() {
-      if (!residency) return [];
-      // Reconcile first, always. See the doc comment: a pass run against a
-      // stale index works to a target it may already have passed.
-      //
-      // `unknownKeys` are bytes on disk that no budget knows about — anything
-      // that arrived by a route other than a sync pull. They are *reported* and
-      // not adopted, because charging them to a budget means resolving which
-      // class they belong to, and that needs the record row. Logged rather than
-      // silently dropped: the expected count is zero, and a non-zero one is
-      // worth knowing about before it becomes a budget that no longer describes
-      // the disk.
-      //
-      // The derivation pass is the one producer that could make it non-zero, and
-      // it accounts for itself — see {@link MobileNode.noteDerived}. A count that
-      // climbs with the number of rungs this device has made is that call having
-      // been skipped.
-      try {
-        const report = await residency.reconcile();
-        if (report.corrected > 0 || report.unknownKeys.length > 0) {
-          console.log(
-            `[starkeep:residency] reconciled: ${report.confirmed} confirmed, ` +
-              `${report.corrected} corrected, ${report.unknownKeys.length} unaccounted`,
-          );
-        }
-      } catch (err) {
-        // A reconcile that failed is a reason to be *more* careful, not to skip
-        // the pass: the index is then no less accurate than it was a moment ago,
-        // and the durability predicate is what actually authorizes a deletion.
-        console.warn(`[starkeep:residency] could not reconcile: ${String(err)}`);
-      }
-
-      // The cloud is this device's replica, and the only one it can interrogate.
-      // With no cloud there are no probes, which is not a degraded eviction pass
-      // — it is a pass that will refuse to delete anything needing proof, and
-      // say so. That is the correct behaviour for a handset that has never been
-      // paired: nothing on it is known to exist anywhere else.
+    async freeUpSpace(request) {
       const probes: ReplicaProbe[] = options.cloud
         ? [{ nodeId: "cloud", storage: options.cloud.remoteObjectStorage }]
         : [];
-      return residency.runEviction(probes);
+      return residency.freeUpSpace({ ...request, probes });
     },
 
     setPinned(recordId, pinned) {
-      residency?.setPinned(recordId, pinned);
+      residency.setPinned(recordId, pinned);
     },
 
     isPinned(recordId) {
-      return residency?.isPinned(recordId) ?? false;
-    },
-
-    noteOpened(recordId) {
-      residency?.markOpened(recordId, Date.now());
+      return residency.isPinned(recordId);
     },
 
     storageReport() {
-      if (!residency || !options.retention) {
-        return { classes: [], heldBytes: 0, budgetBytes: 0, configured: false };
-      }
-      const policy = options.retention;
-      const held = residency.usageByClass();
-      // Every class the policy names, plus any class actually holding bytes that
-      // it does not — an unrecognised rung is exactly the thing worth seeing,
-      // and a report built only from the policy would hide it.
-      const named = [
-        ...Object.keys(policy.platform.rows).map((rung) => `${PLATFORM_NAMESPACE}:${rung}`),
-        ...Object.entries(policy.apps).flatMap(([appId, app]) =>
-          Object.keys(app.rows).map((rung) => `${appId}:${rung}`),
-        ),
-      ];
-      const classes = [...new Set([...named, ...Object.keys(held)])]
-        .map((sizeClass) => {
-          const budgetLine = budgetLineFor(policy, parseSizeClass(sizeClass));
-          return {
-            sizeClass,
-            heldBytes: held[sizeClass] ?? 0,
-            // The line's budget, which several classes may share — an
-            // unrecognised rung is pooled with every other one. Reporting it
-            // per class is honest about the cap each is measured against; it
-            // just is not exclusive to that class.
-            budgetBytes: budgetBytesFor(policy, budgetLine),
-            prefetch: retentionRowFor(policy, budgetLine).prefetch,
-          };
-        })
-        // Biggest first: what is filling the disk is the question being asked.
-        .sort((a, b) => b.heldBytes - a.heldBytes);
-
+      const groups = residency.usageByGroup();
       return {
-        classes,
-        heldBytes: classes.reduce((sum, c) => sum + c.heldBytes, 0),
-        budgetBytes: totalBudgetBytes(policy),
-        configured: true,
+        groups,
+        heldBytes: Object.values(groups).reduce((sum, bytes) => sum + bytes, 0),
       };
     },
 

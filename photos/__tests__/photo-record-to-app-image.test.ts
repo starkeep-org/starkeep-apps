@@ -92,17 +92,25 @@ describe("photoRecordToAppImage", () => {
     // `parent_id` says WHICH record an image came from; the label says HOW.
     // Reading `parentId !== null` as "is a thumbnail" — which the grid used to
     // do — rendered every crop as its source's thumbnail.
-    it("types a thumbnail and a crop from their labels", () => {
+    it("types a stand-in, a poster and a crop", () => {
+      // A stand-in says what it is in the platform's own column.
       const thumb = photoRecordToAppImage(
+        { ...record({ parent_id: "PARENT", labels: [] }), stand_in_role: "smaller" } as never,
+        null,
+      );
+      expect(thumb.derivedKind).toBe("thumbnail");
+
+      // A poster is a derived record, which Photos labels itself.
+      const poster = photoRecordToAppImage(
         record({
           parent_id: "PARENT",
           labels: [
-            { app_id: "photos", key: "rendition", value: "image-thumb", label: "photos/rendition" },
+            { app_id: "photos", key: "derived", value: "video-poster-thumb", label: "photos/derived" },
           ],
         }),
         null,
       );
-      expect(thumb.derivedKind).toBe("thumbnail");
+      expect(poster.derivedKind).toBe("thumbnail");
 
       const crop = photoRecordToAppImage(
         record({
@@ -142,7 +150,7 @@ describe("photoRecordToAppImage", () => {
           parent_id: "PARENT",
           labels: [
             { app_id: "other-app", key: "crop", value: "", label: "other-app/crop" },
-            { app_id: "other-app", key: "rendition", value: "image-thumb", label: "other-app/rendition" },
+            { app_id: "other-app", key: "derived", value: "image-thumb", label: "other-app/derived" },
           ],
         }),
         null,
@@ -156,7 +164,7 @@ describe("photoRecordToAppImage", () => {
           parent_id: "PARENT",
           labels: [
             { app_id: "other-app", key: "faces-detected", value: "", label: "other-app/faces-detected" },
-            { app_id: "photos", key: "rendition", value: "image-thumb", label: "photos/rendition" },
+            { app_id: "photos", key: "derived", value: "video-poster-thumb", label: "photos/derived" },
           ],
         }),
         null,

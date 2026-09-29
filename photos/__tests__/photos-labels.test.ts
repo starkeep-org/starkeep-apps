@@ -17,14 +17,23 @@ import {
 type Row = {
   id: string;
   parent_id: string | null;
+  stand_in_role?: string | null;
   labels?: Array<{ app_id: string; key: string }>;
 };
 
 const original = (id: string): Row => ({ id, parent_id: null, labels: [] });
+/** A stand-in: the platform's role column says what it is, with no label. */
 const thumbnailOf = (id: string, parent: string): Row => ({
   id,
   parent_id: parent,
-  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.rendition }],
+  stand_in_role: "smaller",
+  labels: [],
+});
+/** A poster frame: a derived record, which Photos labels itself. */
+const posterOf = (id: string, parent: string): Row => ({
+  id,
+  parent_id: parent,
+  labels: [{ app_id: "photos", key: PHOTOS_LABEL_KEYS.derived }],
 });
 const cropOf = (id: string, parent: string): Row => ({
   id,
@@ -35,6 +44,7 @@ const cropOf = (id: string, parent: string): Row => ({
 describe("derivedKindOf", () => {
   it("distinguishes a thumbnail from a crop — both have a parent", () => {
     expect(derivedKindOf(thumbnailOf("T", "P"))).toBe("thumbnail");
+    expect(derivedKindOf(posterOf("V", "P"))).toBe("thumbnail");
     expect(derivedKindOf(cropOf("C", "P"))).toBe("crop");
   });
 
@@ -49,7 +59,7 @@ describe("derivedKindOf", () => {
   it("ignores another app's key of the same name", () => {
     expect(
       derivedKindOf({
-        labels: [{ app_id: "someone-else", key: PHOTOS_LABEL_KEYS.rendition }],
+        labels: [{ app_id: "someone-else", key: PHOTOS_LABEL_KEYS.derived }],
       }),
     ).toBeNull();
   });

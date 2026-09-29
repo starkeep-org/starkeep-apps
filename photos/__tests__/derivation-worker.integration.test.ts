@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import sharp from "sharp";
 import { workerBundlePath } from "@/derivation/sweep-controller";
-import { STILL_LADDER } from "@/photos-lib/ladder";
+import { STILL_LADDER, applicableStillClasses } from "@/photos-lib/ladder";
 import type { SweepCommand, SweepEvent } from "@/derivation/worker-protocol";
 
 interface StoredRecord {
@@ -34,8 +34,10 @@ interface StoredRecord {
   parent_id: string | null;
   size_bytes: number;
   metadata: Record<string, unknown>;
-  /** The `photos/rendition` label's value, for a derived child. */
-  renditionClass: string | null;
+  /** A stand-in's role and fidelity; null on an original. */
+  standIn: { role: "canonical" | "smaller"; fidelity: number } | null;
+  /** An original's reported fidelity. */
+  fidelity: number | null;
 }
 
 const records = new Map<string, StoredRecord>();
@@ -116,9 +118,12 @@ function handler(
       return;
     }
 
-    if (/^\/data\/records\/[^/]+\/archive-gate$/.test(path) && method === "POST") {
-      await readBody(req);
-      json(res, { tagged: true, refusals: [] });
+    const fidelityReport = /^\/data\/records\/([^/]+)\/fidelity$/.exec(path);
+    if (fidelityReport && method === "POST") {
+      const body = JSON.parse(await readBody(req)) as { fidelity: number };
+      const record = records.get(fidelityReport[1]!);
+      if (record && record.fidelity === null) record.fidelity = body.fidelity;
+      json(res, { recorded: true });
       return;
     }
 
@@ -128,9 +133,20 @@ function handler(
         fileName: string;
         contentType: string;
         sizeBytes: number;
-        labels: Array<{ key: string; value: string }>;
-        metadata?: Record<string, unknown>;
+        standIn?: { role: "canonical" | "smaller"; fidelity: number };
+        parentFidelity?: number;
       };
+      // One stand-in per size per original, as the platform's slot index keeps
+      // it: a second encode of a size is refused and the existing one named.
+      const existing = childrenOf(body.parentId).find(
+        (c) => c.standIn && body.standIn && c.standIn.fidelity === body.standIn.fidelity,
+      );
+      if (existing) {
+        json(res, { error: "StandInExists", existing: existing.id }, 409);
+        return;
+      }
+      const parent = records.get(body.parentId);
+      if (parent && parent.fidelity === null && body.parentFidelity) parent.fidelity = body.parentFidelity;
       const id = `child-${records.size}`;
       records.set(id, {
         id,
@@ -138,58 +154,66 @@ function handler(
         original_filename: body.fileName,
         parent_id: body.parentId,
         size_bytes: body.sizeBytes,
-        // `metadata` rides the registration, and a fake that drops it is not a
-        // dumber server but a *different* one. `publishRendition` sends each
-        // rung's dimensions inline precisely so the record is never visible to
-        // sync without them, and both real servers write them before the record
-        // exists. Dropping them here left every child with no dimensions, so the
-        // sweep's `variant_candidates` came back empty, every record read as
-        // underived, and the second pass rebuilt the whole ladder — which is the
-        // behaviour this file's second case exists to catch.
-        metadata: { ...(body.metadata ?? {}) },
-        renditionClass: body.labels[0]?.value ?? null,
+        metadata: {},
+        standIn: body.standIn ?? null,
+        fidelity: null,
       });
       json(res, { record: { id } });
       return;
     }
 
     if (path === "/data/records" && method === "GET") {
-      // `?where={"parent_id":…}&label=…` is the existence query one derivation
-      // runs to learn which rungs it can skip. Honouring it is not optional
-      // detail: a fake that ignored it would report every record as underived
-      // and the sweep would look like it worked while re-deriving everything.
+      // Photos asks two existence questions of one original: its stand-ins, by
+      // role, and its derived records, by label. Honouring them is not
+      // optional detail: a fake that ignored them would report every record as
+      // underived and the sweep would look like it worked while re-deriving
+      // everything.
       const where = url.searchParams.get("where");
       const parentId = where === null
         ? null
         : ((JSON.parse(where) as { parent_id?: string }).parent_id ?? null);
       if (parentId !== null) {
+        const standIns = where!.includes("stand_in_role");
         json(res, {
-          records: childrenOf(parentId).map((c) => ({
-            labels: [{ app_id: "photos", key: "rendition", value: c.renditionClass }],
-          })),
+          records: childrenOf(parentId)
+            .filter((c) => (standIns ? c.standIn !== null : c.standIn === null))
+            .map((c) => ({
+              type: "image/avif",
+              stand_in_role: c.standIn?.role ?? null,
+              fidelity: c.standIn?.fidelity ?? null,
+              labels: [],
+            })),
         });
         return;
       }
 
-      // The sweep's listing: originals only, each carrying every derived child
-      // with its dimensions.
+      // The sweep's listing: originals only, each carrying the platform's size
+      // summary of its stand-ins.
       const parents = [...records.values()].filter((r) => r.parent_id === null);
       json(res, {
         records: parents.map((r) => ({
           id: r.id,
           mime_type: r.mime_type,
           original_filename: r.original_filename,
+          size_bytes: r.size_bytes,
+          fidelity: r.fidelity,
           metadata: Object.keys(r.metadata).length > 0 ? r.metadata : null,
-          variant_candidates: childrenOf(r.id)
-            .filter((c) => typeof c.metadata.width === "number")
-            .map((c) => ({
-              // `label_value` is what names the rung. The sweep reads it to
-              // decide which classes this node can already serve, so a
-              // candidate without one is a rung the worker cannot recognise.
-              label_value: c.renditionClass,
-              long_edge: Math.max(c.metadata.width as number, c.metadata.height as number),
-              available_here: true,
-            })),
+          stand_ins: {
+            category: "image",
+            fidelity: r.fidelity,
+            status: r.fidelity === null ? "fidelity-unknown" : "archivable",
+            top: r.fidelity === null ? null : 4272,
+            sizes: childrenOf(r.id)
+              .filter((c) => c.standIn !== null)
+              .map((c) => ({
+                fidelity: c.standIn!.fidelity,
+                role: c.standIn!.role,
+                record_id: c.id,
+                type: "image/avif",
+                size_bytes: c.size_bytes,
+                placement: "here",
+              })),
+          },
         })),
         nextCursor: null,
       });
@@ -281,7 +305,8 @@ describe("a cold library, swept by the real worker", () => {
       parent_id: null,
       size_bytes: sourceBytes.byteLength,
       metadata: {},
-      renditionClass: null,
+      standIn: null,
+      fidelity: null,
     });
 
     const event = await runWorker({
@@ -301,8 +326,16 @@ describe("a cold library, swept by the real worker", () => {
     // import date and then silently reorders as photos are opened one by one.
     expect(new Date(parent.metadata.captured_at as string).getFullYear()).toBe(2019);
 
-    // Both stages ran, so the whole applicable ladder exists.
-    expect(childrenOf("orig-1")).toHaveLength(STILL_LADDER.length);
+    // Both stages ran, so every stand-in this original takes exists — which,
+    // for a flat fixture under the platform's size floor, is every standard
+    // size and no canonical stand-in.
+    const expected = applicableStillClasses(SOURCE_EDGE, sourceBytes.byteLength);
+    expect(childrenOf("orig-1")).toHaveLength(expected.length);
+    expect(childrenOf("orig-1").map((c) => c.standIn!.fidelity).sort((a, b) => a - b)).toEqual(
+      expected.map((spec) => spec.maxLongEdge),
+    );
+    // And the platform learned the original's fidelity from the first write.
+    expect(parent.fidelity).toBe(SOURCE_EDGE);
   }, 180_000);
 
   it("finds nothing to do on a second pass", async () => {

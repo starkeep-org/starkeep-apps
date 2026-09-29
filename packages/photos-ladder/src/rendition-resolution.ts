@@ -46,6 +46,7 @@
 import {
   applicableStillClasses,
   renditionLongEdge,
+  stillTakesCanonical,
   type StillClassSpec,
 } from "./ladder";
 
@@ -110,6 +111,12 @@ export interface DerivedChild {
 export interface ResolveOptions {
   /** The original's long edge, from its stored dimensions. */
   readonly sourceLongEdge: number;
+  /**
+   * The original's size in bytes, when known. With the long edge it decides
+   * whether the original archives behind a canonical stand-in or stands in
+   * for itself — see `stillTakesCanonical`.
+   */
+  readonly sourceSizeBytes?: number | null;
   readonly candidates: readonly DerivedChild[];
   /**
    * Why an unavailable rung is unavailable. Defaults to `pending`, which is
@@ -138,14 +145,21 @@ export function resolveRendition(
   target: number,
   options: ResolveOptions,
 ): RenditionChoice {
-  const applicable = applicableStillClasses(options.sourceLongEdge);
+  const applicable = applicableStillClasses(options.sourceLongEdge, options.sourceSizeBytes);
   const edges = applicable.map((spec) => effectiveLongEdge(spec, options.sourceLongEdge));
+  // A self-canonical original is its own top rung: it serves every size above
+  // its largest stand-in, so it is what a large request resolves to — as a
+  // candidate at its own long edge, which the caller supplies when it can
+  // display the original's format.
+  if (!stillTakesCanonical(options.sourceLongEdge, options.sourceSizeBytes)) {
+    edges.push(options.sourceLongEdge);
+  }
 
   // The smallest applicable rung that reaches the target; the top one when
   // none does. Compared against effective edges, never class maxima — a class
   // never upscales, so what it will actually emit is what resolution is about.
   let idealIndex = edges.findIndex((edge) => edge >= target);
-  if (idealIndex === -1) idealIndex = applicable.length - 1;
+  if (idealIndex === -1) idealIndex = edges.length - 1;
   const idealEdge = edges[idealIndex]!;
 
   // Sorted by long edge, then by id — the same rule and the same reason as

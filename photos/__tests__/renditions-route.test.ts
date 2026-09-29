@@ -28,17 +28,23 @@ describe("POST /api/photos/renditions", () => {
         type: "image/jpeg",
         mime_type: "image/jpeg",
         metadata: { width: 4000, height: 3000 },
-        variant_candidates: [{
-          id: "rend-1280",
-          type: "image/webp",
-          label_value: "image-medium",
-          width: 1280,
-          height: 960,
-          long_edge: 1280,
-          available_here: false,
-          url: "https://example.test/rendition",
-          url_lifetime: { kind: "expires", expires_at: "2026-08-28T00:00:00.000Z" },
-        }],
+        size_bytes: 8 * 1024 * 1024,
+        // The platform's size summary, which the route folds into candidates.
+        stand_ins: {
+          category: "image",
+          fidelity: 4000,
+          status: "self-canonical",
+          top: 4000,
+          sizes: [{
+            fidelity: 1280,
+            role: "smaller",
+            record_id: "rend-1280",
+            type: "image/avif",
+            size_bytes: 120_000,
+            placement: "cloud",
+            url: "https://example.test/rendition",
+          }],
+        },
       }],
     }), { status: 200 }));
 
@@ -56,8 +62,8 @@ describe("POST /api/photos/renditions", () => {
     const path = upstreamFetch.mock.calls[0]![0] as string;
     const params = new URLSearchParams(path.split("?")[1]);
     expect(JSON.parse(params.get("where")!)).toEqual({ id: { in: ["rec-1"] } });
-    expect(params.get("include")).toBe("metadata");
-    expect(params.get("variant")).toBe("photos/rendition");
+    expect(params.get("include")).toBe("metadata,stand-in-urls");
+    expect(params.get("variant")).toBe("photos/derived");
     const body = await response.json();
     const result = body.results[0];
     expect(result.policyVersion).toBe(currentRenditionPolicies().still.version);

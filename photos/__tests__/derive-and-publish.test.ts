@@ -21,21 +21,22 @@ import sharp from "sharp";
 import { deriveAndPublish } from "../src/photos-lib/image-processing/derive-and-publish";
 import type { DerivationAttempt } from "../src/photos-lib/image-processing/derivation-attempts";
 import type { SignedFetchInit } from "../src/photos-lib/image-processing/publish-renditions";
-import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS } from "../src/photos-lib/labels";
-import { STILL_LADDER, applicableStillClasses } from "../src/photos-lib/ladder";
+import { STILL_LADDER, applicableStillClasses, classForStandIn } from "../src/photos-lib/ladder";
 
 /**
- * A data plane just real enough for this flow: renditions are child records
- * carrying the rendition label, metadata is a per-record bag, and presigned
- * uploads succeed.
+ * A data plane just real enough for this flow: renditions are stand-ins with a
+ * role and a fidelity, metadata is a per-record bag, the original's reported
+ * fidelity is kept, and presigned uploads succeed.
  */
 class FakePlane {
   calls: string[] = [];
+  /** Rungs registered, by size class. */
   renditions: string[] = [];
+  /** What each registration said about itself, by size class. */
+  standIns: Record<string, { standIn: { role: string; fidelity: number }; parentFidelity?: number; metadata?: unknown; labels?: unknown }> = {};
   metadata: Record<string, unknown> = {};
-  /** Metadata supplied inline on `POST /data/records`, by size class. */
-  renditionMetadata: Record<string, Record<string, unknown>> = {};
-  gateAsserted = false;
+  /** The original's fidelity, as reported to the fidelity route. */
+  reportedFidelity: number | null = null;
   uploads = 0;
 
   constructor(readonly parentId: string) {}
@@ -46,11 +47,17 @@ class FakePlane {
     const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
 
     if (path.startsWith("/data/records?")) {
-      return json({
-        records: this.renditions.map((sizeClass) => ({
-          labels: [{ app_id: PHOTOS_APP_ID, key: PHOTOS_LABEL_KEYS.rendition, value: sizeClass }],
-        })),
-      });
+      // Photos asks two questions: its stand-ins, by role, and its derived
+      // records, by label. A still has no derived records.
+      if (decodeURIComponent(path).includes("stand_in_role")) {
+        return json({
+          records: this.renditions.map((sizeClass) => {
+            const spec = STILL_LADDER.find((s) => s.sizeClass === sizeClass)!;
+            return { type: "image/avif", stand_in_role: spec.role, fidelity: spec.maxLongEdge };
+          }),
+        });
+      }
+      return json({ records: [] });
     }
     if (path.endsWith("/metadata/image")) {
       const known = Object.keys(this.metadata).length > 0 ? this.metadata : null;
@@ -60,21 +67,19 @@ class FakePlane {
       Object.assign(this.metadata, body.metadata as Record<string, unknown>);
       return json({ ok: true });
     }
+    if (path.endsWith("/fidelity")) {
+      this.reportedFidelity = body.fidelity as number;
+      return json({ recorded: true });
+    }
     if (path === "/files/presign") {
       return json({ url: "https://uploads.invalid/put" });
     }
     if (path === "/data/records") {
-      const labels = (body.labels ?? []) as Array<{ key: string; value: string }>;
-      const sizeClass = labels[0]!.value;
+      const standIn = body.standIn as { role: "canonical" | "smaller"; fidelity: number };
+      const sizeClass = classForStandIn("image", standIn.role, standIn.fidelity)!;
       this.renditions.push(sizeClass);
-      if (body.metadata) {
-        this.renditionMetadata[sizeClass] = body.metadata as Record<string, unknown>;
-      }
+      this.standIns[sizeClass] = body as never;
       return json({ record: { id: `${this.parentId}-${sizeClass}` } });
-    }
-    if (path.endsWith("/archive-gate")) {
-      this.gateAsserted = true;
-      return json({ tagged: true, refusals: [] });
     }
     throw new Error(`unexpected call: ${method} ${path}`);
   };
@@ -174,24 +179,22 @@ describe("a record with nothing derived yet", () => {
     expect(plane.metadata.camera_make).toBe("TestMake");
   }, 60_000);
 
-  it("registers each rung with its dimensions, in one call", async () => {
+  it("registers each rung as a stand-in, with its role, its fidelity and the original's", async () => {
     await run();
-
-    // Dimensions used to be a second request. The gap between the two was
-    // enough for a sync round to ship the rendition without them, and a
-    // rendition with no dimensions cannot be ordered by long edge — so variant
-    // resolution excluded it and the original reported no renditions at all.
-    for (const sizeClass of plane.renditions) {
-      const meta = plane.renditionMetadata[sizeClass];
-      expect(meta, sizeClass).toBeDefined();
-      expect(meta!["width"]).toBeGreaterThan(0);
-      expect(meta!["height"]).toBeGreaterThan(0);
+    const sourceLongEdge = STILL_LADDER[STILL_LADDER.length - 1]!.maxLongEdge + 100;
+    for (const spec of STILL_LADDER) {
+      const registered = plane.standIns[spec.sizeClass];
+      expect(registered, spec.sizeClass).toBeDefined();
+      expect(registered!.standIn).toEqual({ role: spec.role, fidelity: spec.maxLongEdge });
+      expect(registered!.parentFidelity).toBe(sourceLongEdge);
+      // A stand-in carries no label and no metadata row: the platform's
+      // columns say what it is.
+      expect(registered!.labels).toBeUndefined();
+      expect(registered!.metadata).toBeUndefined();
     }
-    // And no per-rendition metadata request survives on the hot path.
-    const childWrites = plane.calls.filter(
-      (c) => c.startsWith("POST /data/records/REC1-") && c.endsWith("/metadata"),
-    );
-    expect(childWrites).toEqual([]);
+    // And the original's fidelity is reported on its own, for an original too
+    // small to take any stand-in.
+    expect(plane.reportedFidelity).toBe(sourceLongEdge);
   }, 60_000);
 
   it("publishes rungs smallest first", async () => {
@@ -203,9 +206,9 @@ describe("a record with nothing derived yet", () => {
     expect(order.length).toBe(applicableStillClasses(Number.MAX_SAFE_INTEGER).length);
   }, 60_000);
 
-  it("asserts the archive gate once the ladder is complete", async () => {
+  it("never asks for archiving: the platform decides that from the canonical stand-in", async () => {
     await run();
-    expect(plane.gateAsserted).toBe(true);
+    expect(plane.calls.some((c) => c.includes("archive"))).toBe(false);
   }, 60_000);
 });
 
@@ -286,8 +289,6 @@ describe("asking for one size rather than the whole ladder", () => {
     const result = await run({ targetLongEdge: STILL_LADDER[1]!.maxLongEdge });
     const got = result.published.map((p) => p.sizeClass).sort();
     expect(got).toEqual(["image-thumb", "image-xsmall"]);
-    // And it does not claim a ladder it did not finish.
-    expect(plane.gateAsserted).toBe(false);
   }, 60_000);
 
   it("is still idempotent — a second ask publishes nothing", async () => {
@@ -336,5 +337,46 @@ describe("a source this node cannot decode", () => {
     // The one that matters. Without it, a sweep re-downloads and re-fails on
     // every HEIC in the library on every pass, forever.
     expect(loads).toBe(before);
+  }, 60_000);
+});
+
+describe("the platform's stand-in rules, as Photos applies them", () => {
+  it("makes no canonical stand-in for an original under the size floor", async () => {
+    const result = await run({
+      parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", sizeBytes: 200_000 },
+    });
+    const got = result.published.map((p) => p.sizeClass);
+    expect(got).not.toContain("image-large");
+    expect(got).toContain("image-screen");
+  }, 60_000);
+
+  it("reports a stored original's fidelity without decoding it when the platform lacks it", async () => {
+    await run();
+    const before = loads;
+    plane.reportedFidelity = null;
+    await run({
+      parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", fidelity: null },
+    });
+    expect(loads).toBe(before);
+    expect(plane.reportedFidelity).toBe(STILL_LADDER[STILL_LADDER.length - 1]!.maxLongEdge + 100);
+  }, 60_000);
+
+  it("reuses a stand-in another node already made rather than failing", async () => {
+    const original = plane.fetch;
+    plane.fetch = async (path, init) => {
+      if (path === "/data/records" && init?.method === "POST") {
+        const body = JSON.parse(init.body!) as { standIn: { fidelity: number } };
+        if (body.standIn.fidelity === STILL_LADDER[0]!.maxLongEdge) {
+          return new Response(JSON.stringify({ error: "StandInExists", existing: "ELSEWHERE" }), { status: 409 });
+        }
+      }
+      return original(path, init);
+    };
+    const result = await run({ targetLongEdge: STILL_LADDER[0]!.maxLongEdge });
+    expect(result.outcome).toBe("complete");
+    expect(result.published.find((p) => p.sizeClass === STILL_LADDER[0]!.sizeClass)).toMatchObject({
+      recordId: "ELSEWHERE",
+      reused: true,
+    });
   }, 60_000);
 });

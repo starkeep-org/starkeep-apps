@@ -229,6 +229,9 @@ export function VisionPanel({ onClose, onOpenPeople }: VisionPanelProps) {
                   {processed} / {eligible || status.store.processed} processed
                   {status.scan.skipped > 0 ? ` · ${status.scan.skipped} already done` : ""}
                   {status.scan.failed > 0 ? ` · ${status.scan.failed} failed` : ""}
+                  {(status.scan.waiting ?? 0) > 0
+                    ? ` · ${status.scan.waiting} waiting for a preview on this machine`
+                    : ""}
                 </span>
               </div>
               <div style={statLineStyle}>

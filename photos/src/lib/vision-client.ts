@@ -25,6 +25,8 @@ export interface VisionScanState {
   skipped: number;
   processed: { faces?: number };
   failed: number;
+  /** Originals with no size on this machine yet; a later scan reads them. */
+  waiting?: number;
   startedAt: string | null;
   finishedAt: string | null;
   error: string | null;

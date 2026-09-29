@@ -447,7 +447,10 @@ function photosSteps(ctx: JourneyContext): void {
 
     // The assertion the 2026-08-27 failure would fail, restated for stand-ins:
     // the original's size summary in the cloud names every rung that arrived.
-    // This is also the listing the Photos client resolves a tile from.
+    // This is also the listing the Photos client resolves a tile from. The
+    // fixture sits under the size floor, so it is self-canonical and the
+    // summary names the original itself as its top size, with role
+    // `original`; that entry is not a stand-in and is not counted.
     const resolvedRes = await cloudPhotos.fetch(
       `/data/records?where=${encodeURIComponent(JSON.stringify({ id: { in: [ladderRecordId] } }))}` +
         `&limit=1&include=metadata`,
@@ -456,13 +459,17 @@ function photosSteps(ctx: JourneyContext): void {
     const { records: parents } = (await resolvedRes.json()) as {
       records: Array<{
         id: string;
-        stand_ins?: { sizes: Array<{ record_id: string | null; placement: string }> };
+        stand_ins?: {
+          sizes: Array<{ role: string; record_id: string | null; placement: string }>;
+        };
       }>;
     };
     const parent = parents.find((r) => r.id === ladderRecordId);
     expect(parent, "the original must be readable in the cloud").toBeDefined();
     expect(
-      parent!.stand_ins?.sizes.filter((size) => size.record_id !== null && size.placement !== "missing").length ?? 0,
+      parent!.stand_ins?.sizes.filter(
+        (size) => size.role !== "original" && size.record_id !== null && size.placement !== "missing",
+      ).length ?? 0,
       "the cloud's size summary names fewer stand-ins than arrived",
     ).toBe(expected);
 

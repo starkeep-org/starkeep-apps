@@ -78,6 +78,11 @@ export interface ScanState {
   processed: Partial<Record<VisionTaskId, number>>;
   /** Images the engine threw on. Counted, not retried within a pass. */
   failed: number;
+  /**
+   * Originals with no size resident here yet, left for a later pass. Vision
+   * reads only what this machine holds — see `source.ts`.
+   */
+  waiting: number;
   startedAt: string | null;
   finishedAt: string | null;
   /** Set when the pass ended abnormally; null on a clean finish. */
@@ -91,6 +96,7 @@ export function emptyScanState(): ScanState {
     skipped: 0,
     processed: {},
     failed: 0,
+    waiting: 0,
     startedAt: null,
     finishedAt: null,
     error: null,

@@ -15,11 +15,12 @@
  */
 
 import { parentPort } from "node:worker_threads";
-import { loadAppCredentials, signedFetch, type AppCredentials } from "@starkeep/app-client";
+import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { assignUnclusteredFaces, reconcilePeopleToStore } from "../clustering";
 import { emptyScanState, type ScanState, type VisionConfig } from "../types";
 import { readScanState, writeScanState } from "../scan-state";
 import { listOriginals } from "../scan-set";
+import { fetchResidentImage } from "../source";
 import { reapOrphanSidecars } from "../sidecars";
 import { PROGRESS_INTERVAL_MS, type ScanCommand, type ScanEvent } from "../worker-protocol";
 import { FaceEngine } from "./face-engine";
@@ -31,16 +32,6 @@ let running = false;
 
 function post(event: ScanEvent): void {
   parentPort?.postMessage(event);
-}
-
-async function fetchImageBytes(creds: AppCredentials, recordId: string): Promise<Uint8Array> {
-  const urlRes = await signedFetch(creds, `/data/records/${recordId}/file-url`);
-  if (!urlRes.ok) throw new Error(`file-url failed: ${urlRes.status}`);
-  const { url } = (await urlRes.json()) as { url: string };
-  // A self-signed token URL — no HMAC needed, same as the resize route.
-  const fileRes = await fetch(url);
-  if (!fileRes.ok) throw new Error(`file fetch failed: ${fileRes.status}`);
-  return new Uint8Array(await fileRes.arrayBuffer());
 }
 
 async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promise<void> {
@@ -111,10 +102,16 @@ async function runScan(command: Extract<ScanCommand, { type: "start" }>): Promis
         state.skipped++;
       } else {
         try {
-          const bytes = await fetchImageBytes(creds, recordId);
-          for (const task of pending) {
-            await task.run(recordId, bytes);
-            state.processed[task.id] = (state.processed[task.id] ?? 0) + 1;
+          // A size already on this machine, never a downloaded original. With
+          // nothing here yet, no sidecar is written, so a later pass retries.
+          const image = await fetchResidentImage((path) => signedFetch(creds, path), recordId);
+          if (image === null) {
+            state.waiting++;
+          } else {
+            for (const task of pending) {
+              await task.run(recordId, image.bytes);
+              state.processed[task.id] = (state.processed[task.id] ?? 0) + 1;
+            }
           }
         } catch (err) {
           // One unreadable or undecodable photo must not end a 10k-image pass.

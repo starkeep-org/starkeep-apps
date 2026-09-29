@@ -553,6 +553,72 @@ describe("GET /api/vision/face-crop/[id]", () => {
     expect((await faceCropGet(request("0"), params("a"))).status).toBe(502);
   });
 
+  it("404s when no size of the photo is on this machine, and downloads nothing", async () => {
+    seed("a", [0]);
+    signedFetch.mockResolvedValue(
+      Response.json({
+        records: [
+          {
+            id: "a",
+            stand_ins: {
+              category: "image",
+              fidelity: 6000,
+              status: "archivable",
+              top: 4272,
+              sizes: [{ fidelity: 2560, role: "smaller", record_id: "s", type: "image/avif", size_bytes: 1, placement: "cloud" }],
+            },
+          },
+        ],
+      }),
+    );
+    expect((await faceCropGet(request("0"), params("a"))).status).toBe(404);
+    const paths = signedFetch.mock.calls.map((c) => String(c[1]));
+    expect(paths.some((p) => p.includes("file-url"))).toBe(false);
+  });
+
+  it("crops a resident stand-in smaller than the image the scan measured", async () => {
+    // The scan measured 640 across; the stand-in here is 320. A face at the
+    // right edge lands inside the stand-in only once the box is scaled.
+    writeFaceSidecar("a", {
+      v: FACE_SIDECAR_VERSION,
+      model: FACE_MODEL_ID,
+      processedAt: "2026-07-28T00:00:00.000Z",
+      w: 640,
+      h: 480,
+      faces: [{ ...face(0), bbox: [560, 400, 60, 60] }],
+    });
+    const { default: sharp } = await import("sharp");
+    const standIn = await sharp({ create: { width: 320, height: 240, channels: 3, background: "#888" } })
+      .jpeg()
+      .toBuffer();
+    signedFetch.mockResolvedValue(
+      Response.json({
+        records: [
+          {
+            id: "a",
+            stand_ins: {
+              category: "image",
+              fidelity: 640,
+              status: "self-canonical",
+              top: 640,
+              sizes: [
+                { fidelity: 320, role: "smaller", record_id: "s", type: "image/jpeg", size_bytes: standIn.length, placement: "here", url: "http://127.0.0.1/data/files/t" },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(standIn))));
+    try {
+      const res = await faceCropGet(request("0"), params("a"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/jpeg");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("writes no record — it is display-only", async () => {
     // The reason this is not `/api/photos/crop`: that route creates a
     // DataRecord, and the People view asks for one of these per face.

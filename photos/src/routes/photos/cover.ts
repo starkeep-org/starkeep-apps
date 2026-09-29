@@ -55,22 +55,31 @@ export async function PUT(req: Request): Promise<Response> {
     return Response.json({ error: "Cover image too large (20 MB limit)" }, { status: 413 });
   }
 
-  // 1. Presign — the platform builds the storage key from appId + subKey.
+  // 1. Presign — the platform builds the storage key from appId + subKey and
+  //    pins the hash, so the store keeps a whole-file SHA-256 for the cover.
+  const contentHash = sha256Hex(bytes);
   const presignRes = await signedFetch(creds, `/app-data/files/presign`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subKey: COVER_SUBKEY, contentType: mimeType }),
+    body: JSON.stringify({ subKey: COVER_SUBKEY, contentType: mimeType, contentHash }),
   });
   if (!presignRes.ok) {
     const detail = await presignRes.text().catch(() => "");
     return Response.json({ error: detail || "Failed to presign cover upload" }, { status: 502 });
   }
-  const { url: uploadUrl } = (await presignRes.json()) as { url: string };
+  const { url: uploadUrl, checksumSha256 } = (await presignRes.json()) as {
+    url: string;
+    checksumSha256?: string;
+  };
 
   // 2. Upload bytes straight to storage (no app HMAC — the URL is the grant).
+  //    The checksum header is part of the cloud's signature when it pinned one.
   const uploaded = await fetch(uploadUrl, {
     method: "PUT",
-    headers: { "Content-Type": mimeType },
+    headers: {
+      "Content-Type": mimeType,
+      ...(checksumSha256 ? { "x-amz-checksum-sha256": checksumSha256 } : {}),
+    },
     body: bytes as unknown as BodyInit,
   });
   if (!uploaded.ok) {
@@ -86,7 +95,7 @@ export async function PUT(req: Request): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contentHash: sha256Hex(bytes),
+      contentHash,
       mimeType,
       sizeBytes: bytes.length,
     }),

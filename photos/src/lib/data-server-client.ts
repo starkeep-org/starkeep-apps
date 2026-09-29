@@ -3,7 +3,6 @@ import { withBasePath } from "./base-path";
 import { starkeepTypeFromFilename } from "./file-extension";
 import { extractExif } from "../photos-lib/metadata/exif-reader";
 import { exifColumnFacts } from "../photos-lib/metadata/exif-generator";
-import { RENDITION_LABEL_REF } from "../photos-lib/image-processing/publish-renditions";
 import type { RenditionChoice } from "../photos-lib/rendition-resolution";
 import type { RenditionPolicies } from "../photos-lib/rendition-policy";
 
@@ -237,14 +236,9 @@ export async function addPhotoFromPath(
     body: JSON.stringify({
       key: objectStorageKey,
       contentType: mimeType,
-      // The original is the one thing in the library that can tolerate a slow
-      // read: once its derived ladder exists, nothing interactive ever needs
-      // it — export, print and re-derivation do, and all three can wait.
-      //
-      // Declaring `archive` does not freeze anything by itself. It tags the
-      // object; the transition happens only after the archive gate confirms
-      // the ladder is complete and the hold period has passed.
-      intent: "archive",
+      // No retrieval intent: the platform decides and performs archiving, once
+      // the original's canonical stand-in is in the cloud and no app advises
+      // against it. An upload declares nothing about it.
     }),
   });
 
@@ -271,6 +265,21 @@ export async function addPhotoFromPath(
     throw new Error(`S3 PUT failed: ${s3Res.status} ${s3Res.statusText}`);
   }
 
+  // Dimensions and EXIF, read in the browser — dimensions via
+  // createImageBitmap, EXIF via exifr — before the record is registered, so
+  // the original's fidelity rides the registration: the platform needs it to
+  // decide whether this photo archives behind a canonical stand-in, and the
+  // app that writes an original reports it when it knows it. Best-effort: a
+  // format the browser cannot decode leaves the value for the first stand-in
+  // to report.
+  let metadata: Record<string, unknown> | null = null;
+  try {
+    metadata = await extractImageMetadata(fileBytes, mimeType);
+  } catch (err) {
+    console.warn("[data-server-client] image metadata read failed:", err);
+  }
+  const longEdge = Math.max(Number(metadata?.width ?? 0), Number(metadata?.height ?? 0));
+
   const result = await request<{ record: PhotoRecord; deduped?: boolean }>("/data/records", source, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -280,18 +289,16 @@ export async function addPhotoFromPath(
       contentType: mimeType,
       contentHash,
       sizeBytes: fileBytes.byteLength,
+      ...(longEdge > 0 ? { fidelity: longEdge } : {}),
     }),
   });
 
   // Write EXIF + dimensions into the shared image metadata table. Without this
   // the mounted UI's uploads carried no width/height/EXIF (the metadataWrite
-  // the manifest requests). Extraction runs in the browser — dimensions via
-  // createImageBitmap, EXIF via exifr — so it works through the same `source`
-  // proxy as the rest of this flow (preserving the local/remote selection).
-  // Best-effort: a metadata failure must not fail the upload (the record +
-  // bytes are durable).
+  // the manifest requests). Best-effort: a metadata failure must not fail the
+  // upload (the record + bytes are durable).
   try {
-    const metadata = await extractImageMetadata(fileBytes, mimeType);
+    if (!metadata) throw new Error("no metadata was read");
     await request(`/data/records/${result.record.id}/metadata`, source, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -98,6 +98,13 @@ export interface DeriveLadderOptions {
   readonly sourceType?: string;
   /** Used only for HEIC/HEIF; ignored for everything else. */
   readonly platformDecoder?: PlatformDecoder;
+  /**
+   * The original's size in bytes. With its long edge it decides whether the
+   * original archives behind a canonical stand-in — `image-large` — or stands
+   * in for itself. Omitted, an original above the threshold is treated as past
+   * the size floor.
+   */
+  readonly sourceSizeBytes?: number | null;
 }
 
 const CODEC_TYPES: Record<NonNullable<DeriveLadderOptions["codec"]>, {
@@ -254,7 +261,7 @@ function rungsFor(
   decoded: DecodedImage,
   options: DeriveLadderOptions,
 ): StillClassSpec[] {
-  const classes = applicableStillClasses(decoded.source.longEdge);
+  const classes = applicableStillClasses(decoded.source.longEdge, options.sourceSizeBytes);
   if (!options.only) return classes;
   const wanted = new Set(options.only);
   return classes.filter((c) => wanted.has(c.sizeClass));
@@ -366,39 +373,20 @@ async function encodeOne(
 /**
  * Which rungs a record is still missing.
  *
- * **Derivation state is a query, not a field.** There is no `needs-derivation`
- * flag anywhere: a missing class is simply the absence of a child record
- * carrying `photos/rendition=<class>`, which the parentId filter makes cheap —
- * and it is the same query the ladder-complete gate needs, so the two cannot
- * disagree.
- *
- * A shared mutable "somebody should fix this" flag was considered and rejected:
- * it invites two nodes to derive the same record and produce two children,
- * which is worse than the problem it solves.
+ * **Derivation state is a query, not a field.** A missing rung is simply the
+ * absence of a stand-in at that size — which the platform's slot index keeps
+ * to one per size per original, so two nodes deriving the same record cannot
+ * leave two behind.
  */
 export function missingRenditionClasses(
   originalLongEdge: number,
   existingClasses: readonly string[],
+  sizeBytes?: number | null,
 ): SizeClass[] {
   const have = new Set(existingClasses);
-  return applicableStillClasses(originalLongEdge)
+  return applicableStillClasses(originalLongEdge, sizeBytes)
     .map((s) => s.sizeClass)
     .filter((c) => !have.has(c));
-}
-
-/**
- * True when every applicable rung exists.
- *
- * This is the archive gate's predicate. An original may only be frozen once
- * something cheaper is readable in its place — which is also what makes the
- * cloud derivation fallback guaranteed thaw-free, since an incomplete original
- * is by construction still instantly readable.
- */
-export function ladderIsComplete(
-  originalLongEdge: number,
-  existingClasses: readonly string[],
-): boolean {
-  return missingRenditionClasses(originalLongEdge, existingClasses).length === 0;
 }
 
 /**

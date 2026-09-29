@@ -26,6 +26,10 @@
  *    whole ladder waits about sixty times longer than the tile it is painting
  *    needs.
  *
+ * Archiving is the platform's decision now. Once the canonical stand-in —
+ * `image-large` — reaches the cloud, the platform tags the original itself;
+ * nothing here asks.
+ *
  * ## Why the metadata write is not incidental
  *
  * Without `captured_at`, a record falls back to its `created_at` for display
@@ -49,17 +53,16 @@ import {
   computeThumbHash,
   decodeForDerivation,
   deriveStillLadderStream,
-  ladderIsComplete,
   type DeriveLadderOptions,
 } from "./derive-ladder";
 import type { DerivationAttempt, AttemptOutcome } from "./derivation-attempts";
 import { recordAttempt } from "./derivation-attempts";
 import type { PlatformDecoder } from "./platform-decoder";
 import {
-  assertLadderComplete,
   existingRenditionClasses,
   publishRendition,
   publishThumbHash,
+  reportOriginalFidelity,
   type PublishedRendition,
   type SignedFetch,
 } from "./publish-renditions";
@@ -76,6 +79,19 @@ export interface DeriveAndPublishParams {
     readonly id: string;
     readonly originalFilename: string | null;
     readonly mimeType: string | null;
+    /**
+     * The original's size in bytes, which with its long edge decides whether
+     * it takes a canonical stand-in. Omitted, an original above the threshold
+     * is treated as past the size floor.
+     */
+    readonly sizeBytes?: number | null;
+    /**
+     * The original's fidelity as the platform records it: null when nobody
+     * has reported it, undefined when the caller does not know. A null lets a
+     * record whose facts are already stored report its long edge without a
+     * decode.
+     */
+    readonly fidelity?: number | null;
   };
   /**
    * Fetches the original's bytes. Called at most once, and only when there is
@@ -115,7 +131,6 @@ export interface DeriveAndPublishResult {
   readonly published: PublishedRendition[];
   /** Which classes were already present and therefore skipped. */
   readonly skipped: SizeClass[];
-  readonly archiveGate: { tagged: boolean; refusals: string[] } | null;
   /** Free text for logs and error responses. */
   readonly detail?: string;
 }
@@ -143,7 +158,6 @@ export async function deriveAndPublish(
       outcome: "undecodable-here",
       published: [],
       skipped: [],
-      archiveGate: null,
       detail: priorAttempt.detail ?? "this node cannot decode this format",
     };
   }
@@ -165,12 +179,15 @@ export async function deriveAndPublish(
   const storedLongEdge = Math.max(metadata?.width ?? 0, metadata?.height ?? 0);
   const metadataComplete = storedLongEdge > 0 && Boolean(metadata?.thumb_hash);
   const missing = metadataComplete
-    ? applicableStillClasses(storedLongEdge)
+    ? applicableStillClasses(storedLongEdge, parent.sizeBytes)
         .map((s) => s.sizeClass)
         .filter((c) => !already.includes(c) && wanted.has(c))
     : null;
 
   if (missing !== null && missing.length === 0) {
+    // Nothing to derive, but the platform may still lack the one fact that
+    // lets it place this original — see `reportOriginalFidelity`.
+    if (parent.fidelity === null) await reportOriginalFidelity(signedFetch, parent.id, storedLongEdge);
     // Nothing to derive. The gate is still asserted, because a previous run may
     // have published the last rung and then failed to assert — and leaving an
     // original hot is cheap while leaving it un-archivable is permanent.
@@ -178,7 +195,6 @@ export async function deriveAndPublish(
       outcome: "complete",
       published: [],
       skipped: [...already] as SizeClass[],
-      archiveGate: await gateIfComplete(signedFetch, parent.id, storedLongEdge, already),
     };
   }
 
@@ -198,7 +214,6 @@ export async function deriveAndPublish(
       outcome,
       published: [],
       skipped: [],
-      archiveGate: null,
       detail: (err as Error).message,
     };
   }
@@ -207,8 +222,9 @@ export async function deriveAndPublish(
   // come out of the decode that just happened, so the only thing standing
   // between a cold library and a legible grid is one metadata write.
   await writeParentFacts(signedFetch, parent.id, decoded, sourceBytes, metadata);
+  await reportOriginalFidelity(signedFetch, parent.id, decoded.source.longEdge);
 
-  const toDerive = applicableStillClasses(decoded.source.longEdge)
+  const toDerive = applicableStillClasses(decoded.source.longEdge, parent.sizeBytes)
     .map((s) => s.sizeClass)
     .filter((c) => !already.includes(c) && wanted.has(c));
 
@@ -216,13 +232,20 @@ export async function deriveAndPublish(
   try {
     for await (const rendition of deriveStillLadderStream(decoded, {
       only: toDerive,
+      sourceSizeBytes: parent.sizeBytes ?? null,
       ...(params.codec ? { codec: params.codec } : {}),
     })) {
       const contentHash = createHash("sha256").update(rendition.data).digest("hex");
       published.push(
         await publishRendition(
           signedFetch,
-          { id: parent.id, originalFilename: parent.originalFilename },
+          {
+            id: parent.id,
+            originalFilename: parent.originalFilename,
+            // Reported to the platform as the original's fidelity with every
+            // rung; the platform records it the first time.
+            sourceLongEdge: decoded.source.longEdge,
+          },
           rendition,
           contentHash,
           dataRecordObjectKey("image", contentHash),
@@ -238,25 +261,15 @@ export async function deriveAndPublish(
       outcome: "publish-failed",
       published,
       skipped: already.filter((c) => wanted.has(c as SizeClass)) as SizeClass[],
-      archiveGate: null,
       detail: (err as Error).message,
     };
   }
 
-  const finalClasses = params.availableRenditionClasses
-    ? [...new Set([...already, ...published.map((item) => item.sizeClass)])]
-    : await existingRenditionClasses(signedFetch, parent.id);
   await noteAttempt(params, priorAttempt, "complete");
   return {
     outcome: "complete",
     published,
     skipped: already.filter((c) => wanted.has(c as SizeClass)) as SizeClass[],
-    archiveGate: await gateIfComplete(
-      signedFetch,
-      parent.id,
-      decoded.source.longEdge,
-      finalClasses,
-    ),
   };
 }
 
@@ -340,25 +353,6 @@ async function readParentMetadata(
   if (!res.ok) return null;
   const { metadata } = (await res.json()) as { metadata: ParentMetadata | null };
   return metadata;
-}
-
-/**
- * Assert the archive gate, but only when every applicable rung genuinely
- * exists.
- *
- * The platform trusts this claim — that is the point of the split — so making
- * it loosely is the one way an app could freeze an original with nothing
- * readable in its place.
- */
-async function gateIfComplete(
-  signedFetch: SignedFetch,
-  parentId: string,
-  sourceLongEdge: number,
-  classes: readonly string[],
-): Promise<{ tagged: boolean; refusals: string[] } | null> {
-  if (sourceLongEdge <= 0) return null;
-  if (!ladderIsComplete(sourceLongEdge, classes)) return null;
-  return assertLadderComplete(signedFetch, parentId);
 }
 
 async function noteAttempt(

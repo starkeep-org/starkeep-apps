@@ -16,8 +16,17 @@ import {
   applicableVideoClasses,
   renditionLongEdge,
   topApplicableStillClass,
-  transcodeWouldChangeAnything,
   skimDurationSeconds,
+  stillTakesCanonical,
+  stillTopLongEdge,
+  standInFieldsFor,
+  classForStandIn,
+  transcodeLongEdge,
+  ARCHIVE_SIZE_FLOOR_BYTES,
+  IMAGE_CANONICAL_THRESHOLD,
+  STAND_IN_MIN_QUALITY,
+  VIDEO_CANONICAL_THRESHOLD,
+  VIDEO_STAND_IN_CRF,
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
   type VideoSource,
@@ -60,32 +69,48 @@ describe("Rule 1 — a class never upscales", () => {
   });
 });
 
-describe("Rule 2 — generate when the original exceeds the next lower maximum", () => {
-  // The bottom rung is unconditional, so every record has an instantly readable
-  // copy and the grid needs no fallback path.
-  it("always generates the bottom rung, however small the original", () => {
-    for (const original of [1, 10, 399, 400, 100_000]) {
-      expect(classesFor(original)[0]).toBe(STILL_LADDER[0]!.sizeClass);
+describe("stand-ins — a rung only below the original, the canonical rung only when it archives", () => {
+  const CANONICAL = STILL_LADDER.find((s) => s.role === "canonical")!;
+  const SMALLER = STILL_LADDER.filter((s) => s.role === "smaller");
+  const BIG_FILE = ARCHIVE_SIZE_FLOOR_BYTES * 8;
+
+  it("makes the top rung the canonical stand-in, at the platform's threshold", () => {
+    expect(STILL_LADDER[STILL_LADDER.length - 1]).toBe(CANONICAL);
+    expect(CANONICAL.maxLongEdge).toBe(IMAGE_CANONICAL_THRESHOLD);
+  });
+
+  it("encodes every rung at the platform's minimum quality", () => {
+    for (const spec of STILL_LADDER) expect(spec.quality, spec.sizeClass).toBe(STAND_IN_MIN_QUALITY);
+  });
+
+  it("takes a smaller rung exactly when the original is larger, with no clamping", () => {
+    for (const spec of SMALLER) {
+      expect(classesFor(spec.maxLongEdge)).not.toContain(spec.sizeClass);
+      expect(classesFor(spec.maxLongEdge + 1)).toContain(spec.sizeClass);
     }
   });
 
-  it("adds a class exactly when the original passes the class below it", () => {
-    for (let i = 1; i < STILL_LADDER.length; i++) {
-      const below = STILL_LADDER[i - 1]!;
-      const spec = STILL_LADDER[i]!;
-      // No offset, no margin: at the boundary the class is not generated, one
-      // pixel past it, it is.
-      expect(classesFor(below.maxLongEdge)).not.toContain(spec.sizeClass);
-      expect(classesFor(below.maxLongEdge + 1)).toContain(spec.sizeClass);
-    }
+  it("takes nothing for an original at or below the bottom rung, which serves itself", () => {
+    expect(classesFor(STILL_LADDER[0]!.maxLongEdge)).toEqual([]);
+    expect(topApplicableStillClass(STILL_LADDER[0]!.maxLongEdge)).toBeNull();
   });
 
-  // The property the rest of the system reads "top applicable class" off. Both
-  // the ladder-complete gate and the derivation sweeper rely on it, and neither
-  // would be expressible if the set could have holes.
+  it("takes the canonical rung only above the threshold and past the size floor", () => {
+    expect(classesFor(CANONICAL.maxLongEdge)).not.toContain(CANONICAL.sizeClass);
+    expect(classesFor(CANONICAL.maxLongEdge + 1)).toContain(CANONICAL.sizeClass);
+    expect(
+      applicableStillClasses(CANONICAL.maxLongEdge + 1, ARCHIVE_SIZE_FLOOR_BYTES).map((s) => s.sizeClass),
+    ).not.toContain(CANONICAL.sizeClass);
+    expect(stillTakesCanonical(CANONICAL.maxLongEdge + 1, BIG_FILE)).toBe(true);
+  });
+
+  it("answers large requests with the canonical stand-in, or the original itself", () => {
+    expect(stillTopLongEdge(9000, BIG_FILE)).toBe(IMAGE_CANONICAL_THRESHOLD);
+    expect(stillTopLongEdge(3000, BIG_FILE)).toBe(3000);
+    expect(stillTopLongEdge(9000, 1000)).toBe(9000);
+  });
+
   it("produces a contiguous prefix from the bottom, never a gap", () => {
-    // Boundaries read off the ladder rather than written out, so a rung added
-    // or respecified is exercised at its own edges without editing this list.
     const boundaries = STILL_LADDER.flatMap((s) => [s.maxLongEdge, s.maxLongEdge + 1]);
     for (const original of [1, ...boundaries, 50_000]) {
       const got = classesFor(original);
@@ -95,27 +120,24 @@ describe("Rule 2 — generate when the original exceeds the next lower maximum",
   });
 
   it("generates the whole ladder for a large enough original", () => {
-    const huge = STILL_LADDER[STILL_LADDER.length - 1]!.maxLongEdge + 1;
+    const huge = CANONICAL.maxLongEdge + 1;
     expect(classesFor(huge)).toEqual(STILL_LADDER.map((s) => s.sizeClass));
   });
 
   it("reports the top applicable class, which describes the whole set", () => {
-    for (const original of [1, 401, 1281, 2561, 99_999]) {
+    for (const original of [401, 1281, 2561, 99_999]) {
       const all = applicableStillClasses(original);
       expect(topApplicableStillClass(original)).toBe(all[all.length - 1]);
     }
   });
-});
 
-describe("an original at or below the bottom rung", () => {
-  // The floor on archiving, stated as the property rather than as a predicate:
-  // freezing such an original saves nothing, because the thing that would be
-  // read instead is the same size.
-  it("means every generated class is the same size as the original", () => {
-    const small = STILL_LADDER[0]!.maxLongEdge - 50;
-    for (const spec of applicableStillClasses(small)) {
-      expect(renditionLongEdge(spec, small)).toBe(small);
+  it("describes each rung to the platform as a role and a fidelity, and reads one back", () => {
+    for (const spec of STILL_LADDER) {
+      const fields = standInFieldsFor(spec.sizeClass, 99_999)!;
+      expect(fields).toEqual({ role: spec.role, fidelity: spec.maxLongEdge });
+      expect(classForStandIn("image", fields.role, fields.fidelity)).toBe(spec.sizeClass);
     }
+    expect(classForStandIn("image", "smaller", 500)).toBeNull();
   });
 });
 
@@ -131,32 +153,43 @@ const source = (over: Partial<VideoSource> = {}): VideoSource => ({
 const videoClassesFor = (s: VideoSource, enabled: string[] = []) =>
   applicableVideoClasses(s, enabled as never).map((v) => v.sizeClass);
 
-describe("video — bitrate is a second maximum", () => {
-  it("transcodes when resolution drops even if bitrate is already low", () => {
-    const spec = VIDEO_LADDER.find((v) => v.sizeClass === "video-720p")!;
-    expect(
-      transcodeWouldChangeAnything(spec, source({ longEdge: 1920, bitrate: 500_000 })),
-    ).toBe(true);
+describe("video — transcodes are stand-ins", () => {
+  const canonical = VIDEO_LADDER.find((v) => v.role === "canonical")!;
+  const smaller = VIDEO_LADDER.find((v) => v.kind === "transcode" && v.role === "smaller")!;
+
+  it("gives every video a canonical stand-in, even one that needs no smaller size", () => {
+    for (const longEdge of [320, 640, 1280, 1920, 3840]) {
+      expect(videoClassesFor(source({ longEdge, bitrate: 300_000 })), `${longEdge}`).toContain(
+        canonical.sizeClass,
+      );
+    }
   });
 
-  it("transcodes when bitrate drops even if resolution is already low", () => {
-    const spec = VIDEO_LADDER.find((v) => v.sizeClass === "video-720p")!;
-    expect(
-      transcodeWouldChangeAnything(spec, source({ longEdge: 640, bitrate: 20_000_000 })),
-    ).toBe(true);
+  it("puts the canonical stand-in at the video's own long edge up to the threshold", () => {
+    expect(transcodeLongEdge(canonical, { longEdge: 1280 })).toBe(1280);
+    expect(transcodeLongEdge(canonical, { longEdge: 3840 })).toBe(VIDEO_CANONICAL_THRESHOLD);
+    expect(standInFieldsFor(canonical.sizeClass, 1440)).toEqual({ role: "canonical", fidelity: 1440 });
   });
 
-  // The no-op clause. Re-encoding a 480p 800 kbps clip into "720p" produces a
-  // file that is no better, probably larger, and definitely lossier — such a
-  // clip is its own video-720p.
-  it("does not transcode when neither axis would change", () => {
-    const spec = VIDEO_LADDER.find((v) => v.sizeClass === "video-720p")!;
-    expect(
-      transcodeWouldChangeAnything(spec, source({ longEdge: 640, bitrate: 800_000 })),
-    ).toBe(false);
-    expect(videoClassesFor(source({ longEdge: 640, bitrate: 800_000 }))).not.toContain(
-      "video-720p",
-    );
+  it("takes the smaller transcode only below the source", () => {
+    expect(videoClassesFor(source({ longEdge: smaller.maxLongEdge }))).not.toContain(smaller.sizeClass);
+    expect(videoClassesFor(source({ longEdge: smaller.maxLongEdge + 1 }))).toContain(smaller.sizeClass);
+  });
+
+  it("caps no bitrate, and encodes at the platform's constant quality", () => {
+    for (const spec of VIDEO_LADDER) expect("maxBitrate" in spec, spec.sizeClass).toBe(false);
+    expect(VIDEO_STAND_IN_CRF).toBe(31);
+  });
+
+  it("reads a video stand-in back to its rung", () => {
+    expect(classForStandIn("video", "canonical", 1440)).toBe(canonical.sizeClass);
+    expect(classForStandIn("video", "smaller", 1280)).toBe(smaller.sizeClass);
+  });
+
+  it("describes posters and skims as derived records, not stand-ins", () => {
+    for (const spec of VIDEO_LADDER.filter((v) => v.kind !== "transcode")) {
+      expect(standInFieldsFor(spec.sizeClass, 1920)).toBeNull();
+    }
   });
 });
 
@@ -214,17 +247,8 @@ describe("video — posters", () => {
   });
 });
 
-describe("video — optional classes", () => {
-  it("leaves 1080p out unless the library opts in", () => {
-    expect(DEFAULT_DISABLED_CLASSES).toContain("video-1080p");
-    const big = source({ longEdge: 3840, bitrate: 40_000_000 });
-    expect(videoClassesFor(big)).not.toContain("video-1080p");
-    expect(videoClassesFor(big, ["video-1080p"])).toContain("video-1080p");
-  });
-
-  it("still honours the maxima once enabled", () => {
-    // A 720p source has nothing to gain from a 1080p rung.
-    const small = source({ longEdge: 1280, bitrate: 1_000_000 });
-    expect(videoClassesFor(small, ["video-1080p"])).not.toContain("video-1080p");
+describe("video — no optional classes", () => {
+  it("disables nothing by default: the canonical transcode is what lets a video archive", () => {
+    expect(DEFAULT_DISABLED_CLASSES).toEqual([]);
   });
 });

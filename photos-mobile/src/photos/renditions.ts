@@ -23,29 +23,26 @@
  *
  * ## And why the *gathering* is not
  *
- * `loadVariantCandidatesForPage` is the platform's, and it is the same call the
- * two data servers make. It answers one app-agnostic question — what derived
- * children does this record have, and how big is each — over child records, a
- * label key and the width/height columns. It names no class, so it belongs
- * below this boundary rather than above it.
+ * `loadStandInsForPage` is the platform's, and it is the same query the two
+ * data servers answer a listing's size summary from. It answers one
+ * app-agnostic question — which stand-ins does each original have, and at what
+ * fidelity — over the role and fidelity columns. It names no class, so it
+ * belongs below this boundary rather than above it.
  */
 
 import type { DataRecord, MetadataRow, StarkeepId } from "@starkeep/protocol-primitives";
-import { loadVariantCandidatesForPage } from "@starkeep/storage-adapter";
+import { loadStandInsForPage } from "@starkeep/storage-adapter";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import {
   resolveRenditions,
   resolveWithoutDimensions,
+  stillTakesCanonical,
   type DerivedChild,
   type RenditionChoice,
 } from "@starkeep/photos-ladder";
 
 /** Photos' app id — the namespace its own labels land in. */
 export const PHOTOS_APP_ID = "photos";
-/** Which label key names a rung of the ladder. */
-export const PHOTOS_RENDITION_KEY = "rendition";
-
-const RENDITION_LABEL = { appId: PHOTOS_APP_ID, key: PHOTOS_RENDITION_KEY };
 
 /**
  * What one record's tile or stage should do about renditions.
@@ -149,41 +146,44 @@ export async function resolveLibraryRenditions(
   const out = new Map<StarkeepId, ResolvedRendition>();
   if (records.length === 0) return out;
 
-  const candidatesByParent = await loadVariantCandidatesForPage(
-    database,
-    records,
-    RENDITION_LABEL,
-  );
+  // The page's stand-ins, by their columns — the platform's own loader, the
+  // same query both data servers answer a listing's size summary from.
+  const standInsByParent = await loadStandInsForPage(database, records);
 
   for (const record of records) {
     const target = options.targetFor(record);
     if (target === null) continue;
 
-    const keyById = new Map<string, string>();
-    const candidates: DerivedChild[] = [];
-    const resident: DerivedChild[] = [];
-    for (const c of candidatesByParent.get(record.id) ?? []) {
-      // A candidate with no dimensions has no position on the ladder, so it
-      // cannot answer a pixel request and is not one. A candidate with no key
-      // names no bytes.
-      if (!((c.width ?? 0) > 0 && (c.height ?? 0) > 0) || !c.objectStorageKey) continue;
-      const child: DerivedChild = {
-        id: c.id,
-        longEdge: Math.max(c.width!, c.height!),
-        width: c.width!,
-        height: c.height!,
-        type: c.type,
-      };
-      keyById.set(c.id, c.objectStorageKey);
-      candidates.push(child);
-      if (options.isResident(c.objectStorageKey)) resident.push(child);
-    }
-
     const dims = options.dimensionsOf(record);
     const sourceLongEdge = Math.max(dims?.width ?? 0, dims?.height ?? 0);
 
-    const known = resolveOne(target, sourceLongEdge, candidates);
-    const here = resolveOne(target, sourceLongEdge, resident);
+    const keyById = new Map<string, string>();
+    const candidates: DerivedChild[] = [];
+    const resident: DerivedChild[] = [];
+    const add = (id: string, longEdge: number, type: string, key: string) => {
+      const child: DerivedChild = { id, longEdge, ...dimensionsAt(longEdge, dims), type };
+      keyById.set(id, key);
+      candidates.push(child);
+      if (options.isResident(key)) resident.push(child);
+    };
+    for (const c of standInsByParent.get(record.id) ?? []) {
+      // A stand-in's fidelity is its long edge. One with no key names no bytes.
+      if (c.fidelity === null || !c.objectStorageKey) continue;
+      add(c.id, c.fidelity, c.type, c.objectStorageKey);
+    }
+    // A self-canonical original stands in for itself above its largest
+    // stand-in — `resolveRendition` names it as the ideal for a big enough
+    // target — so it is a candidate at its own long edge.
+    if (
+      sourceLongEdge > 0 &&
+      record.objectStorageKey &&
+      !stillTakesCanonical(sourceLongEdge, record.sizeBytes)
+    ) {
+      add(record.id, sourceLongEdge, record.type, record.objectStorageKey);
+    }
+
+    const known = resolveOne(target, sourceLongEdge, candidates, record.sizeBytes);
+    const here = resolveOne(target, sourceLongEdge, resident, record.sizeBytes);
 
     // Rules 1 and 2 in one expression, because `resolveRendition` has already
     // applied them: over the resident subset the ideal is available exactly when
@@ -238,12 +238,26 @@ function resolveOne(
   target: number,
   sourceLongEdge: number,
   candidates: readonly DerivedChild[],
+  sourceSizeBytes: number,
 ): RenditionChoice {
   const resolved =
     sourceLongEdge > 0
-      ? resolveRenditions([target], { sourceLongEdge, candidates })
+      ? resolveRenditions([target], { sourceLongEdge, sourceSizeBytes, candidates })
       : resolveWithoutDimensions([target], candidates);
   return resolved[String(target)]!;
+}
+
+/**
+ * A stand-in's dimensions from its long edge and the original's aspect ratio.
+ * A stand-in carries no metadata row — its fidelity is its size — and keeps
+ * its original's shape.
+ */
+function dimensionsAt(longEdge: number, dims: RecordDimensions | null): { width: number; height: number } {
+  const width = dims?.width ?? 0;
+  const height = dims?.height ?? 0;
+  if (width <= 0 || height <= 0) return { width: longEdge, height: longEdge };
+  if (width >= height) return { width: longEdge, height: Math.max(1, Math.round((longEdge * height) / width)) };
+  return { width: Math.max(1, Math.round((longEdge * width) / height)), height: longEdge };
 }
 
 /**

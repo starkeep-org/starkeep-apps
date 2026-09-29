@@ -130,21 +130,31 @@ describe("a source smaller than the size asked for", () => {
   // than I asked for" would wait forever for a rung nobody will derive.
   const SMALL = BOTTOM.maxLongEdge + 1;
 
-  it("names the record's top rung as the ideal", () => {
+  it("names the original itself as the ideal — a self-canonical original serves every larger size", () => {
     const edges = ladderEdges(SMALL);
     const huge = TOP.maxLongEdge * 2;
     const { ideal } = resolveRendition(huge, {
       sourceLongEdge: SMALL,
-      candidates: edges.map(child),
+      candidates: [...edges.map(child), child(SMALL)],
     });
-    expect(ideal.longEdge).toBe(edges[edges.length - 1]);
+    expect(ideal.longEdge).toBe(SMALL);
     // Available, not pending. It exists and nothing better is coming.
     expect(ideal.available).toBe(true);
   });
 
-  it("clamps that rung to the source rather than to the class maximum", () => {
+  it("never clamps a rung to the source: every stand-in sits below it", () => {
     const edges = ladderEdges(SMALL);
-    expect(Math.max(...edges)).toBe(SMALL);
+    expect(Math.max(...edges)).toBeLessThan(SMALL);
+  });
+
+  it("names the canonical stand-in as the ideal for an archivable original", () => {
+    const big = TOP.maxLongEdge * 2;
+    const { ideal } = resolveRendition(big * 2, {
+      sourceLongEdge: big,
+      sourceSizeBytes: 50 * 1024 * 1024,
+      candidates: ladderEdges(big).map(child),
+    });
+    expect(ideal.longEdge).toBe(TOP.maxLongEdge);
   });
 });
 

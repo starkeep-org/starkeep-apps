@@ -1,15 +1,17 @@
 /**
  * Publishing a video's probed facts and derived renditions.
  *
- * Mirrors the still path (`publish-renditions.ts`) deliberately — same presign →
- * PUT → register → metadata sequence, same `photos/rendition` label, same
- * "renditions are shared child records" decision. The differences are the ones
- * video actually forces, and each is called out where it happens.
+ * Mirrors the still path (`publish-renditions.ts`) deliberately. A transcode is
+ * a stand-in, registered through the same `registerStandIn` with a role and a
+ * fidelity and no label. A poster or skim is a derived record: a shared child
+ * carrying the `photos/derived` label and its own dimensions. The differences
+ * are the ones video actually forces, and each is called out where it happens.
  */
 
 import { PHOTOS_LABEL_KEYS } from "../labels";
 import {
   RenditionPublishError,
+  registerStandIn,
   type PublishedRendition,
   type RenditionParent,
   type SignedFetch,
@@ -132,17 +134,43 @@ export async function publishVideoRendition(
     );
   }
 
+  const fileName = renditionFileName(parent.originalFilename, rendition.sizeClass, rendition.kind);
+
+  // A transcode is a stand-in: the platform's columns say what it is, and it
+  // takes no metadata row. Posters and skims are derived records — they cannot
+  // stand in for the video — so they keep Photos' own label and their
+  // dimensions, which is how the grid lays a video's tile out.
+  if (rendition.kind === "transcode") {
+    return registerStandIn(signedFetch, parent, {
+      sizeClass: rendition.sizeClass,
+      type: "video/webm",
+      contentType: rendition.contentType,
+      fileName,
+      contentHash,
+      sizeBytes: rendition.bytes.byteLength,
+    });
+  }
+
   const createRes = await signedFetch(`/data/records`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       type: rendition.type === "image" ? "image/jpeg" : "video/mp4",
-      fileName: renditionFileName(parent.originalFilename, rendition.sizeClass, rendition.type),
+      fileName,
       contentType: rendition.contentType,
       contentHash,
       sizeBytes: rendition.bytes.byteLength,
       parentId: parent.id,
-      labels: [{ key: PHOTOS_LABEL_KEYS.rendition, value: rendition.sizeClass }],
+      labels: [{ key: PHOTOS_LABEL_KEYS.derived, value: rendition.sizeClass }],
+      // With the record rather than after it, so no sync round ever carries a
+      // poster the grid cannot size.
+      metadata: {
+        width: rendition.width,
+        height: rendition.height,
+        ...(rendition.type === "video" && rendition.durationMs !== undefined
+          ? { duration_ms: rendition.durationMs }
+          : {}),
+      },
     }),
   });
   if (!createRes.ok) {
@@ -155,34 +183,6 @@ export async function publishVideoRendition(
   }
   const { record } = (await createRes.json()) as { record: { id: string } };
 
-  // Same reasoning as the still path: variant resolution orders by long edge,
-  // so a rendition without dimensions cannot be ordered and is excluded
-  // entirely. This is part of publication, not best-effort. Returning success
-  // here would let the archive gate count an unreadable child as a completed
-  // rung.
-  const metaRes = await signedFetch(`/data/records/${record.id}/metadata`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      typeId: rendition.type,
-      metadata: {
-        width: rendition.width,
-        height: rendition.height,
-        ...(rendition.type === "video" && rendition.durationMs !== undefined
-          ? { duration_ms: rendition.durationMs }
-          : {}),
-      },
-    }),
-  });
-  if (!metaRes.ok) {
-    throw new RenditionPublishError(
-      "metadata",
-      rendition.sizeClass,
-      metaRes.status,
-      await metaRes.text().catch(() => ""),
-    );
-  }
-
   return {
     sizeClass: rendition.sizeClass,
     recordId: record.id,
@@ -194,11 +194,12 @@ export async function publishVideoRendition(
 function renditionFileName(
   originalFilename: string | null,
   sizeClass: string,
-  type: "image" | "video",
+  kind: DerivedVideoRendition["kind"],
 ): string {
   const base = originalFilename ?? "video";
   // The extension has to match what was actually produced: a poster named
   // `.mov` is a JPEG that half the world will refuse to open.
   const stripped = base.replace(/\.[^.]+$/, "");
-  return `${sizeClass}_${stripped}${type === "image" ? ".jpg" : ".mp4"}`;
+  const extension = kind === "poster" ? ".jpg" : kind === "transcode" ? ".webm" : ".mp4";
+  return `${sizeClass}_${stripped}${extension}`;
 }

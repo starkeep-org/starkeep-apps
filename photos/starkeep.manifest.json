@@ -55,14 +55,13 @@
         ],
         "access": "readwrite",
         "metadataWrite": true,
-        "rationale": "A phone camera roll is photos and clips together, and a library that showed only half of it would not be a library. Photos writes duration, dimensions, codec and capture time extracted from the container into the video metadata table, and stores derived posters and transcodes as child records."
+        "rationale": "A phone camera roll is photos and clips together, and a library that showed only half of it would not be a library. Photos writes duration, dimensions, codec and capture time extracted from the container into the video metadata table, stores poster frames and skims as derived child records, and produces each clip's stand-ins as VP9 WebM."
       }
     ],
     "labelKeys": [
       {
-        "key": "rendition",
-        "sizeClass": true,
-        "description": "Which rung of the derived size ladder this record is (image-thumb, image-medium, video-720p, ...). Single-valued and written through the set-valued endpoint, so a respec replaces the rung rather than leaving two. Its presence is what marks a record as derived rather than something the user added, so other image apps can filter renditions out of a library view; its value is an implementation detail of Photos' ladder and consumers should ask for a pixel size instead."
+        "key": "derived",
+        "description": "Which derived rung a video's poster frame or skim is (video-poster-thumb, video-poster-720p, video-skim). These are derived records, not stand-ins: they cannot replace the video, so the platform lists them, and this label is how a library view leaves them out. Photos' stand-ins carry no label; the platform's stand_in_role and fidelity columns describe them to every app."
       },
       {
         "key": "crop",

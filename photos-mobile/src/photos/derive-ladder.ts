@@ -18,23 +18,20 @@
  * than a constant this file reads, because it bounds a *budget* and a sweep and
  * an open have different ones — {@link deriveForRecord} is where that is argued.
  *
- * **Nothing to the archive gate.** This pass never asserts it — the gate is
- * asserted by a node running Photos' web derivation, against the rungs a record
- * actually has. A ladder this device completes is a ladder that is complete, so
- * there is nothing here for the gate to be told and nothing about it to guard.
- *
- * Raising the ceiling does mean a phone can now complete a ladder a `sharp` node
- * used to have to finish. That changes which node does the work and not what the
- * gate is told: both encoders are libavif over aom at the same quality and the
- * same 4:2:0 chroma, so a rung is a rung whoever made it.
+ * **Nothing about archiving.** The platform decides when an original goes to
+ * deep archive, from the canonical stand-in's arrival in the cloud. A sweep
+ * never makes the canonical stand-in, so a photograph this device derives stays
+ * out of deep archive until a node running `sharp` makes it — or until a viewer
+ * that raised the ceiling far enough made it here. Both encoders are libavif
+ * over aom at the same quality and the same 4:2:0 chroma, so a stand-in is a
+ * stand-in whoever made it.
  *
  * **Nothing derived from a rendition.** The source is always an original whose
  * bytes are on this device, reached through the media alias — which is also what
  * keeps this pass to one rule about where bytes come from rather than two. The
  * case a rendition source would serve barely exists: the ladder is a contiguous
  * prefix, so a device holding a rung *above* the one it wants has almost always
- * had the one it wants derived alongside it. See
- * `renditions-duplicate-rungs-2026-09-05.md`.
+ * had the one it wants derived alongside it.
  *
  * **Nothing to a video.** A poster is a frame extraction and a skim is a
  * transcode; neither is an AVIF encode of a decoded still, so neither belongs in
@@ -76,25 +73,29 @@
  */
 
 import {
+  checkStandInWrite,
   createDataRecord,
   dataRecordObjectKey,
+  DEFAULT_STAND_IN_STANDARDS,
   typeCategory,
   type DataRecord,
   type HLCClock,
   type StarkeepId,
 } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
-import { loadVariantCandidatesForPage } from "@starkeep/storage-adapter";
+import { isStandInSlotConflict, loadStandInsForPage } from "@starkeep/storage-adapter";
 import {
   applicableStillClasses,
+  classForStandIn,
   renditionFileName,
   renditionLongEdge,
+  standInFieldsFor,
   STILL_LADDER,
   type StillClassSpec,
 } from "@starkeep/photos-ladder";
 import type { MediaAliasStore } from "../media/media-alias";
 import type { ScanCursorStore } from "../work/scan-cursor";
-import { PHOTOS_APP_ID, PHOTOS_RENDITION_KEY } from "./renditions";
+import { PHOTOS_APP_ID } from "./renditions";
 
 /**
  * The largest rung a background sweep will produce.
@@ -264,8 +265,6 @@ export interface DeriveLadderOutcome {
   readonly resumeAfter: string | null;
 }
 
-const RENDITION_LABEL = { appId: PHOTOS_APP_ID, key: PHOTOS_RENDITION_KEY };
-
 /**
  * Walk this device's own originals from the cursor, deriving what is missing.
  *
@@ -378,11 +377,7 @@ export async function derivePage(
   // nothing missing costs no decode: the dimensions that decide which rungs
   // apply, and the children that say which of them already exist.
   const dimensions = await deps.database.getMetadataByIds("image", [...stills.keys()]);
-  const existing = await loadVariantCandidatesForPage(
-    deps.database,
-    [...stills.values()],
-    RENDITION_LABEL,
-  );
+  const existing = await loadStandInsForPage(deps.database, [...stills.values()]);
 
   const budget = options.maxRecords ?? Number.POSITIVE_INFINITY;
   let scanned = 0;
@@ -411,6 +406,11 @@ export async function derivePage(
     const width = typeof row?.["width"] === "number" ? row["width"] : 0;
     const height = typeof row?.["height"] === "number" ? row["height"] : 0;
     const sourceLongEdge = Math.max(width, height);
+    // The original's fidelity, before anything is decided about its rungs. An
+    // original too small to take any stand-in is the case that needs it most:
+    // without it no node can tell the original is self-canonical, and every
+    // other node treats it as above its ceiling.
+    const current = record && sourceLongEdge > 0 ? await recordFidelity(deps, record, sourceLongEdge) : record;
     // Three ways a record needs nothing from this pass, and all three cost no
     // decode. It is not a still, or the database has lost it — the
     // interrupted-import window `import.ts` is built around, which the next
@@ -419,10 +419,11 @@ export async function derivePage(
     // since the EXIF backfill writes them and every import since has written
     // them inline. Or it already has every rung this device makes.
     const missing =
-      record && sourceLongEdge > 0
+      current && sourceLongEdge > 0
         ? missingClasses(
             sourceLongEdge,
-            existing.get(record.id) ?? [],
+            current.sizeBytes,
+            existing.get(current.id) ?? [],
             // The sweep keeps the standing ceiling. It runs over a whole camera
             // roll on a background window's budget, which is the case the
             // ceiling was written for — see `deriveForRecord` for the one
@@ -431,12 +432,12 @@ export async function derivePage(
           )
         : [];
 
-    if (record && missing.length > 0) {
+    if (current && missing.length > 0) {
       scanned += 1;
       try {
         const rungs = await deriveOne(
           deps,
-          record,
+          current,
           alias.contentUri,
           sourceLongEdge,
           missing,
@@ -558,39 +559,71 @@ export async function deriveForRecord(
   const sourceLongEdge = Math.max(width, height);
   if (sourceLongEdge <= 0) return null;
 
-  const existing = await loadVariantCandidatesForPage(deps.database, [record], RENDITION_LABEL);
+  const current = await recordFidelity(deps, record, sourceLongEdge);
+  const existing = await loadStandInsForPage(deps.database, [current]);
   const missing = missingClasses(
     sourceLongEdge,
-    existing.get(record.id) ?? [],
+    current.sizeBytes,
+    existing.get(current.id) ?? [],
     ceilingLongEdge,
   );
   if (missing.length === 0) return 0;
 
-  return deriveOne(deps, record, alias.contentUri, sourceLongEdge, missing, ceilingLongEdge);
+  return deriveOne(deps, current, alias.contentUri, sourceLongEdge, missing, ceilingLongEdge);
+}
+
+/**
+ * Record an original's fidelity when nothing has, and answer the record as it
+ * now stands.
+ *
+ * A platform write onto the original's row under a fresh clock, so the value
+ * reaches every other node, and so a peer applying this row and a stand-in in
+ * clock order meets the fidelity first. That order is what lets the cloud
+ * decide archiving the moment the canonical stand-in lands. Called once per
+ * record, before any stand-in is written — never per rung, which would move the
+ * original's clock once for every size.
+ *
+ * The long edge comes from the stored dimensions, which is the displayed long
+ * edge whatever the EXIF orientation says: a quarter turn swaps width and
+ * height but not the larger of the two.
+ */
+async function recordFidelity(
+  deps: DeriveLadderDeps,
+  record: DataRecord,
+  sourceLongEdge: number,
+): Promise<DataRecord> {
+  if (record.fidelity !== null) return record;
+  const updated: DataRecord = {
+    ...record,
+    fidelity: sourceLongEdge,
+    updatedAt: deps.clock.now(),
+    version: record.version + 1,
+  };
+  await deps.database.put(updated);
+  return updated;
 }
 
 /**
  * Which rungs this device should make for this original and has not.
  *
- * Three filters, in this order: the ladder's own applicability rule, this
- * device's ceiling, and what already exists.
- *
- * A rung counts as existing only when it has dimensions. One without them is
- * invisible to variant resolution — it cannot be ordered, so it is dropped — and
- * re-deriving it is what repairs it: the bytes are the same, so the record is
- * content-addressed to the same id and the write puts the dimensions back.
+ * Three filters, in this order: the ladder's own applicability rule — which
+ * with the original's size decides whether it takes a canonical stand-in at
+ * all — this device's ceiling, and what already exists. A stand-in exists when
+ * any node or app made it: the platform keeps one per size per original, so a
+ * second encode here would only be refused.
  */
 function missingClasses(
   sourceLongEdge: number,
-  candidates: readonly { labelValue: string; width: number | null; height: number | null }[],
+  sourceSizeBytes: number,
+  standIns: readonly DataRecord[],
   ceilingLongEdge: number,
 ): StillClassSpec[] {
   const have = new Set(
-    candidates
-      .filter((c) => (c.width ?? 0) > 0 && (c.height ?? 0) > 0)
-      .map((c) => c.labelValue),
+    standIns
+      .filter((s) => s.standInRole !== null && s.fidelity !== null)
+      .map((s) => classForStandIn("image", s.standInRole!, s.fidelity!)),
   );
-  return applicableStillClasses(sourceLongEdge)
+  return applicableStillClasses(sourceLongEdge, sourceSizeBytes)
     .filter((spec) => spec.maxLongEdge <= ceilingLongEdge)
     .filter((spec) => !have.has(spec.sizeClass));
 }
@@ -622,8 +655,7 @@ async function deriveOne(
         renditionLongEdge(spec, sourceLongEdge),
         spec.quality,
       );
-      await publishRendition(deps, parent, spec, encoded);
-      written += 1;
+      if (await publishStandIn(deps, parent, spec, sourceLongEdge, encoded)) written += 1;
     }
   } finally {
     decoded.release();
@@ -632,8 +664,8 @@ async function deriveOne(
 }
 
 /**
- * Write one derived rung: the bytes, then its dimensions, then its label, then
- * the record.
+ * Write one rung as a stand-in: the bytes, then the record. Returns false when
+ * another node's stand-in already holds the slot.
  *
  * ## The order is the whole of this function
  *
@@ -641,36 +673,46 @@ async function deriveOne(
  * here — and a sync round would offer to fetch from the cloud bytes that are
  * sitting in local storage one write away.
  *
- * **Dimensions before the record.** Metadata rides the record over the wire,
- * read once per shipment after a round is cut, so a row written *after* `put` is
- * invisible to any round that cuts in between. That window is exactly the one
- * `publish-renditions.ts` documents at length: a rendition shipped without
- * dimensions is an unorderable candidate the far side drops, and a record whose
- * rungs are all dropped is indistinguishable from one with no rungs at all.
+ * The original's fidelity is already on its row — {@link recordFidelity} runs
+ * before any decode — so the rules below read a parent that says how big it is.
  *
- * **The label before the record too, and stamped after it.** Two different
- * things: the *write* goes first so no reader ever sees this child without the
- * label that makes it a rendition, and the *timestamp* comes from a later
- * `clock.now()` than the record's, so a round cut cannot ship the label ahead of
- * the record it describes. `round-cut.ts` records what that cost the last time
- * it happened — a handset holding rendition records whose label had been cut
- * away, unclassifiable to residency and invisible to the grid.
+ * **Then the record,** carrying its role and fidelity as columns. There is no
+ * label to write and no metadata row: the columns are what every reader, and
+ * the platform's own rules, read a stand-in by.
  *
- * The interrupted states are all self-repairing, and that is why this order is
- * safe without a transaction. A metadata row or a label whose record was never
- * written names an id nothing resolves; the next pass finds the rung still
- * missing, re-derives it from the same pixels, and the same content hash mints
- * the same id onto the same rows.
+ * The rules the servers check at write are checked here too — this device is
+ * its own data plane — and a refused rung is skipped rather than written.
  */
-async function publishRendition(
+async function publishStandIn(
   deps: DeriveLadderDeps,
   parent: DataRecord,
   spec: StillClassSpec,
+  sourceLongEdge: number,
   encoded: EncodedRendition,
-): Promise<void> {
+): Promise<boolean> {
+  const fields = standInFieldsFor(spec.sizeClass, sourceLongEdge);
+  if (!fields) return false;
+
+  const verdict = checkStandInWrite(
+    {
+      type: RENDITION_TYPE,
+      role: fields.role,
+      fidelity: fields.fidelity,
+      parent,
+      parentIdGiven: true,
+      existingCanonical: null,
+    },
+    DEFAULT_STAND_IN_STANDARDS,
+  );
+  if (verdict.refusals.length > 0) {
+    console.warn(
+      `[derive] ${spec.sizeClass} of ${parent.id} refused: ${verdict.refusals.map((r) => r.code).join(", ")}`,
+    );
+    return false;
+  }
+
   const contentHash = await deps.hash(encoded.bytes);
   const objectStorageKey = dataRecordObjectKey(RENDITION_TYPE, contentHash);
-
   await deps.objectStorage.put(objectStorageKey, encoded.bytes, {
     contentType: RENDITION_TYPE,
   });
@@ -688,30 +730,21 @@ async function publishRendition(
       // content-addressed id, so spelling it differently here would be a second
       // naming rule producing a second id for the same rung of the same photo.
       originalFilename: renditionFileName(parent.originalFilename, spec.sizeClass),
+      standInRole: fields.role,
+      fidelity: fields.fidelity,
     },
     deps.clock,
   );
+  try {
+    await deps.database.put(record);
+  } catch (err) {
+    // Another node's stand-in holds the slot; the platform keeps that one.
+    if (isStandInSlotConflict(err)) return false;
+    throw err;
+  }
 
-  await deps.database.putMetadata(record.type, {
-    recordId: record.id,
-    width: encoded.width,
-    height: encoded.height,
-  });
-  await deps.database.upsertLabels([
-    {
-      recordId: record.id,
-      appId: PHOTOS_APP_ID,
-      key: PHOTOS_RENDITION_KEY,
-      value: spec.sizeClass,
-      recordType: record.type,
-      // Strictly above the record's own timestamp — see this function's header.
-      hlc: deps.clock.now(),
-    },
-  ]);
-  await deps.database.put(record);
-
-  // Last, and after the record exists: the class these bytes are charged to is
-  // read from the label rows above, so charging any earlier would resolve every
-  // rendition this device makes as an original.
+  // After the record exists, so the class these bytes are charged to is read
+  // from the record's own role.
   await deps.noteDerived?.(record);
+  return true;
 }

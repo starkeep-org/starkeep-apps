@@ -11,7 +11,6 @@
 import { describe, it, expect } from "vitest";
 import {
   missingRenditionClasses,
-  ladderIsComplete,
   cloudCanDecode,
   CLOUD_DECODABLE_TYPES,
 } from "../src/photos-lib/image-processing/derive-ladder";
@@ -37,34 +36,37 @@ describe("derivation state is a query, not a field", () => {
   it("reports nothing missing once every applicable rung exists", () => {
     const big = 5000;
     expect(missingRenditionClasses(big, allClassesFor(big))).toEqual([]);
-    expect(ladderIsComplete(big, allClassesFor(big))).toBe(true);
   });
 
-  // The archive gate's predicate. An original may only be frozen once something
-  // cheaper is readable in its place, so a ladder that reports complete while a
-  // rung is missing puts the only readable copy behind a 48-hour thaw.
-  it("is not complete while any applicable rung is absent", () => {
+  it("names exactly the absent rung", () => {
     const big = 5000;
     const all = allClassesFor(big);
     for (let i = 0; i < all.length; i++) {
       const missingOne = all.filter((_, j) => j !== i);
-      expect(ladderIsComplete(big, missingOne), all[i]).toBe(false);
+      expect(missingRenditionClasses(big, missingOne), all[i]).toEqual([all[i]]);
     }
   });
 
-  // A small original applies fewer rungs, so it is complete with fewer of them.
-  // Requiring the whole ladder would leave every small photo permanently
-  // ineligible for archiving — and permanently re-attempted by the sweeper.
-  it("does not demand rungs that do not apply to a small original", () => {
+  // A small original takes no rung at all — it serves itself at every size —
+  // so it is never missing anything, and the sweeper never re-attempts it.
+  it("demands nothing of an original at or below the smallest standard size", () => {
     const small = STILL_LADDER[0]!.maxLongEdge;
-    expect(ladderIsComplete(small, [STILL_LADDER[0]!.sizeClass])).toBe(true);
+    expect(missingRenditionClasses(small, [])).toEqual([]);
   });
 
-  // Extra classes are not an error: a respec can leave a superseded rung around
-  // until the reaper takes it, and that must not read as incomplete.
+  // The canonical rung depends on the file's size as well as its pixels: an
+  // original under the platform's size floor never archives, so it takes none.
+  it("asks for the canonical rung only when the original archives behind one", () => {
+    const big = 5000;
+    expect(missingRenditionClasses(big, [], 50 * 1024 * 1024)).toContain("image-large");
+    expect(missingRenditionClasses(big, [], 200 * 1024)).not.toContain("image-large");
+  });
+
+  // Extra classes are not an error: another node's stand-in at a rung this
+  // original no longer takes must not read as missing work.
   it("ignores classes it did not ask for", () => {
-    const small = STILL_LADDER[0]!.maxLongEdge;
-    expect(ladderIsComplete(small, [STILL_LADDER[0]!.sizeClass, "image-large"])).toBe(true);
+    const small = STILL_LADDER[1]!.maxLongEdge;
+    expect(missingRenditionClasses(small, [STILL_LADDER[0]!.sizeClass, "image-large"])).toEqual([]);
   });
 });
 

@@ -34,7 +34,7 @@ import { THUMB_HASH_BACKFILL_LIMIT } from "../media/thumb-hash";
 import type { NodeIdentity } from "../node-identity";
 import type { DeviceKey } from "../auth/device-key";
 import type { MobileNode, StorageReport } from "../node";
-import type { EvictionOutcome } from "@starkeep/sync-engine";
+import type { FreeUpSpaceReport } from "@starkeep/sync-engine";
 import {
   backfillImageExifFor,
   backfillThumbHashesFor,
@@ -554,47 +554,38 @@ export interface LibraryState {
    * `resolveForViewer`.
    */
   openForViewer: (item: LibraryItem, stage: Box) => Promise<LibraryItem>;
-  /**
-   * Run an eviction pass, because a viewing burst just ended.
-   *
-   * The viewer's close is when a person stops asking for bytes, so it is the
-   * moment nothing is waiting on the disk — which makes it the cheapest time to
-   * spend it. `SyncEngine.fetchBlob` deliberately charges bytes on arrival
-   * without asking whether they fit, so a burst of opens leaves the budget over
-   * and this is what brings it back.
-   */
-  reclaimAfterViewing: () => Promise<void>;
   /** Pin or release a record on this device. Returns the state afterwards. */
   setPinned: (recordId: string, pinned: boolean) => boolean;
   isPinned: (recordId: string) => boolean;
-  /** Someone opened this record. Feeds the recency rules and eviction order. */
-  noteOpened: (recordId: string) => void;
 }
 
 /** What the Storage section shows, and the action that changes it. */
 export interface StorageState {
   readonly report: StorageReport | null;
+  /** Whether a "Free up space" is running. */
   readonly reclaiming: boolean;
-  /** Result of the last pass, for the line under the button. */
-  readonly lastPass: readonly EvictionOutcome[] | null;
+  /** Result of the last "Free up space", for the line under its button. */
+  readonly lastFreed: FreeUpSpaceReport | null;
   readonly error: string | null;
   refresh: () => void;
-  reclaim: () => Promise<void>;
+  /**
+   * The person's "Free up space": every original — and, in the wider scope,
+   * every stand-in above this device's ceiling — whose cloud copies are proved.
+   */
+  freeUp: (scope: "originals" | "originals-and-above-ceiling") => Promise<void>;
 }
 
 /**
- * What this node is holding against what its policy allows, and the action that
- * brings the two back together.
+ * What this node is holding, and the person's "Free up space".
  *
  * A hook of its own rather than a field on {@link LibraryState}, because the two
  * change for different reasons: the library changes when records arrive, and
  * this changes when *bytes* do. Folding them together would reload a grid of
- * sixty tiles every time an eviction pass moved a number.
+ * sixty tiles every time a number moved.
  */
 export function useStorage(node: NodeState): StorageState {
   const [report, setReport] = useState<StorageReport | null>(null);
   const [reclaiming, setReclaiming] = useState(false);
-  const [lastPass, setLastPass] = useState<readonly EvictionOutcome[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const ready = node.status === "ready" ? node : null;
@@ -613,22 +604,27 @@ export function useStorage(node: NodeState): StorageState {
     refresh();
   }, [refresh]);
 
-  const reclaim = useCallback(async () => {
-    if (!ready) return;
-    setReclaiming(true);
-    try {
-      const outcomes = await ready.node.reclaimSpace();
-      setLastPass(outcomes);
-      setError(null);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setReclaiming(false);
-      refresh();
-    }
-  }, [ready, refresh]);
+  const [lastFreed, setLastFreed] = useState<FreeUpSpaceReport | null>(null);
+  const freeUp = useCallback(
+    async (scope: "originals" | "originals-and-above-ceiling") => {
+      if (!ready) return;
+      setReclaiming(true);
+      try {
+        // Everything the proofs allow: a phone has no amount to type, and the
+        // pass removes largest first and only what the cloud is proved to hold.
+        setLastFreed(await ready.node.freeUpSpace({ bytes: Number.MAX_SAFE_INTEGER, scope }));
+        setError(null);
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setReclaiming(false);
+        refresh();
+      }
+    },
+    [ready, refresh],
+  );
 
-  return { report, reclaiming, lastPass, error, refresh, reclaim };
+  return { report, reclaiming, lastFreed, error, refresh, freeUp };
 }
 
 /** The node's records, and the action that adds the camera roll to them. */
@@ -1354,23 +1350,6 @@ export function useLibrary(node: NodeState): LibraryState {
     };
   }, [ready, items, fetchRendition, deriveNow]);
 
-  /**
-   * Give the budget back after a viewing burst.
-   *
-   * Errors are swallowed, and that is the difference from the Storage screen's
-   * own reclaim button. That one is a person asking what happened; this fires on
-   * closing a photograph, and a red line appearing under the grid because a
-   * housekeeping pass failed would describe the wrong thing entirely.
-   */
-  const reclaimAfterViewing = useCallback(async () => {
-    if (!ready) return;
-    try {
-      await ready.node.reclaimSpace();
-    } catch {
-      // The next pass — a tick's, or the Storage button's — runs the same rule.
-    }
-  }, [ready]);
-
   const setPinned = useCallback(
     (recordId: string, pinned: boolean) => {
       if (!ready) return false;
@@ -1382,11 +1361,6 @@ export function useLibrary(node: NodeState): LibraryState {
 
   const isPinned = useCallback(
     (recordId: string) => ready?.node.isPinned(recordId) ?? false,
-    [ready],
-  );
-
-  const noteOpened = useCallback(
-    (recordId: string) => ready?.node.noteOpened(recordId),
     [ready],
   );
 
@@ -1416,9 +1390,7 @@ export function useLibrary(node: NodeState): LibraryState {
     fetchRendition,
     deriveNow,
     openForViewer,
-    reclaimAfterViewing,
     setPinned,
     isPinned,
-    noteOpened,
   };
 }

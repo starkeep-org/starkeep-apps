@@ -64,33 +64,28 @@ describe("which rungs are missing", () => {
     expect(missing).toEqual([]);
   });
 
-  it("names a rung whose record exists but whose bytes are absent here", () => {
+  // A rung that exists anywhere is done: the platform keeps one stand-in per
+  // size, so encoding it again here would be refused, and whether its bytes
+  // come to this node is residency's call, not the sweeper's.
+  it("counts a rung whose bytes are only in the cloud as present", () => {
     const edges = edgesFor(BIG);
-    const unavailableEdge = edges[1]!;
     const missing = missingClasses(
       record({
-        variant_candidates: edges.map((long_edge) => ({
+        variant_candidates: edges.map((long_edge, i) => ({
           long_edge,
-          available_here: long_edge !== unavailableEdge,
+          available_here: i % 2 === 0,
         })),
       }),
     );
-
-    expect(missing).toEqual([
-      applicableStillClasses(BIG).find(
-        (spec) => renditionLongEdge(spec, BIG) === unavailableEdge,
-      )!.sizeClass,
-    ]);
+    expect(missing).toEqual([]);
   });
 
-  // Matching is by effective long edge, because that is what the platform can
-  // report without knowing a ladder exists. It is unambiguous: a class applies
-  // only when the source exceeds the class below it, so its clamped edge
-  // exceeds that class's edge too, and an edge names exactly one rung.
-  it("matches a rung clamped to a small source, not to the class maximum", () => {
+  // Every rung sits below the source now — none is clamped to it — so a
+  // source just above the bottom rung takes the bottom rung and nothing else.
+  it("takes only the rungs below a small source, never one clamped to it", () => {
     const small = STILL_LADDER[0]!.maxLongEdge + 1;
     const edges = edgesFor(small);
-    expect(Math.max(...edges)).toBe(small);
+    expect(edges).toEqual([STILL_LADDER[0]!.maxLongEdge]);
     const missing = missingClasses(
       record({
         metadata: { width: small, height: small, thumb_hash: "abc" },
@@ -98,6 +93,11 @@ describe("which rungs are missing", () => {
       }),
     );
     expect(missing).toEqual([]);
+  });
+
+  it("asks for the canonical rung only of an original that archives behind one", () => {
+    expect(missingClasses(record({ size_bytes: 50 * 1024 * 1024 }))).toContain(TOP.sizeClass);
+    expect(missingClasses(record({ size_bytes: 300 * 1024 }))).not.toContain(TOP.sizeClass);
   });
 
   it("cannot rule anything out without the source's dimensions", () => {
@@ -203,28 +203,39 @@ describe("which stage has work", () => {
         { long_edge: 1280, label_value: "video-poster-720p", available_here: true },
         { long_edge: 640, label_value: "video-skim", available_here: true },
         { long_edge: 1280, label_value: "video-720p", available_here: true },
+        { long_edge: 1920, label_value: "video-1080p", available_here: true },
       ],
     });
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
   });
 
-  it("rebuilds a video rendition whose record exists without local bytes", () => {
+  it("gives a video without its canonical stand-in work, whatever else it has", () => {
     const video = record({
       mime_type: "video/mp4",
       metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
       variant_candidates: [
         { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
-        {
-          long_edge: 1280,
-          label_value: "video-poster-720p",
-          available_here: false,
-        },
+        { long_edge: 1280, label_value: "video-poster-720p", available_here: true },
         { long_edge: 640, label_value: "video-skim", available_here: true },
         { long_edge: 1280, label_value: "video-720p", available_here: true },
       ],
     });
-
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(true);
+  });
+
+  it("counts a video rung that exists without local bytes as present", () => {
+    const video = record({
+      mime_type: "video/mp4",
+      metadata: { width: 1920, height: 1080, bitrate: 8_000_000 },
+      variant_candidates: [
+        { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
+        { long_edge: 1280, label_value: "video-poster-720p", available_here: false },
+        { long_edge: 640, label_value: "video-skim", available_here: true },
+        { long_edge: 1280, label_value: "video-720p", available_here: true },
+        { long_edge: 1920, label_value: "video-1080p", available_here: false },
+      ],
+    });
+    expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);
   });
 
   it("does not invent a 720p poster requirement for a completed small video", () => {
@@ -234,6 +245,7 @@ describe("which stage has work", () => {
       variant_candidates: [
         { long_edge: 400, label_value: "video-poster-thumb", available_here: true },
         { long_edge: 320, label_value: "video-skim", available_here: true },
+        { long_edge: 400, label_value: "video-1080p", available_here: true },
       ],
     });
     expect(stageHasWork(video, "video", CHEAP_STILL_CLASSES)).toBe(false);

@@ -50,7 +50,7 @@ import {
   type MetadataRow,
   type StarkeepId,
 } from "@starkeep/protocol-primitives";
-import type { DatabaseAdapter, ObjectStorageAdapter, SortField } from "@starkeep/storage-adapter";
+import type { DatabaseAdapter, ObjectStorageAdapter, Query, SortField } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
 import type { MotionIndexStore } from "./media/motion-index";
 import {
@@ -189,10 +189,7 @@ export interface LibraryItem {
   /**
    * The rendition actually being painted, or null when nothing is.
    *
-   * Two callers need it and neither can derive it from {@link uri}. The
-   * eviction order needs it — `noteOpened` on the parent alone leaves a rung
-   * painted from disk looking untouched, so the LRU evicts the very rendition
-   * the grid is drawing from. And the tile's fetch rule needs it: a tile fires a
+   * The tile's fetch rule needs it, and cannot derive it from {@link uri}: a tile fires a
    * request only when it has *no* resident rung at all, because a grid that
    * issued one per tile per scroll would be a request storm, and the rungs the
    * sync prefetches exist so the grid draws from disk.
@@ -265,6 +262,15 @@ export interface LibraryQuery {
  * `record-queries.ts` in `@starkeep/storage-adapter` for why, and
  * `backfillImageExif` for what shrinks that bucket to nothing.
  */
+/**
+ * What makes a record an item of the library rather than a size of one: no
+ * stand-in role, and no `photos/derived` label.
+ */
+const ORIGINALS_ONLY = {
+  filters: [{ field: "standInRole", operator: "isNull" }],
+  excludeLabel: { appId: "photos", key: "derived" },
+} satisfies Pick<Query, "filters" | "excludeLabel">;
+
 const LIBRARY_ORDER: SortField[] = [
   { field: "capturedAt", direction: "desc" },
   { field: "createdAt", direction: "desc" },
@@ -290,10 +296,11 @@ export async function listLibrary(
     sort: LIBRARY_ORDER,
     limit: query.limit,
     ...(query.cursor ? { cursor: query.cursor } : {}),
-    // Renditions are child records carrying `photos/rendition`. Excluding them
-    // here rather than later means the grid does not show thumbnails as separate
-    // items now that this device derives some of its own.
-    excludeLabel: { appId: "photos", key: "rendition" },
+    // Stand-ins carry a role and derived posters and skims carry
+    // `photos/derived`, and neither is an item of the library. Excluding both
+    // here rather than later means the grid does not show thumbnails as
+    // separate items now that this device derives some of its own.
+    ...ORIGINALS_ONLY,
   });
 
   return {
@@ -615,12 +622,10 @@ export async function summarizeLibrary(deps: LibraryDeps): Promise<LibrarySummar
   // happened to sort. The adapter answers counts now, which is where the old
   // comment here said the number belonged.
   //
-  // The same `excludeLabel` the page query carries, so the count and the grid
-  // agree about what a record is: a rendition is a child record, and counting
+  // The same exclusions the page query carries, so the count and the grid
+  // agree about what a record is: a stand-in is a child record, and counting
   // it would report five numbers for every photograph.
-  const records = await deps.database.countRecords({
-    excludeLabel: { appId: "photos", key: "rendition" },
-  });
+  const records = await deps.database.countRecords({ ...ORIGINALS_ONLY });
 
   return { records, aliasedBytes: deps.aliases?.totalBytes() ?? 0 };
 }

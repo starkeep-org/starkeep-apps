@@ -14,6 +14,7 @@
  */
 
 import type { DerivedKind } from "./types/app-image";
+import { STILL_LADDER } from "./ladder";
 
 /** Photos' app id — the namespace its own labels land in. */
 export const PHOTOS_APP_ID = "photos";
@@ -33,22 +34,17 @@ export const PHOTOS_APP_ID = "photos";
  */
 export const PHOTOS_LABEL_KEYS = {
   /**
-   * Which rung of the rendition ladder this child is — `image-medium`,
-   * `video-720p`, and so on. See `ladder.ts` for the vocabulary.
+   * Which derived rung a poster frame or a skim is — `video-poster-thumb`,
+   * `video-skim`. Written with the record, once.
    *
-   * Replaces the old bare `thumbnail` flag, which could only express one
-   * derived size. It is **single-valued**: a record is one rung, so it is
-   * written through the set-valued endpoint (`POST /data/labels/values`), which
-   * upserts the new value and tombstones the rest. A plain label write would
-   * leave the old rung sitting beside the new one after a respec, with nothing
-   * to say which is current.
-   *
-   * There is deliberately no `native` value. The original is not a rendition —
-   * it is the thing renditions are derived *from* — and giving it a rung would
-   * make "every applicable class is present" unsatisfiable and let variant
-   * resolution serve an archived original.
+   * Stand-ins carry no label. The platform's `stand_in_role` and `fidelity`
+   * columns say what a stand-in is, to every app, and a label beside them
+   * would be a second answer that could disagree. A poster or a skim is a
+   * derived record rather than a stand-in — it cannot replace the video — so
+   * the platform has no column for it, and this label is how Photos finds its
+   * own and leaves them out of the library.
    */
-  rendition: "rendition",
+  derived: "derived",
   /** The child is a user-made crop of its parent. */
   crop: "crop",
   /**
@@ -106,6 +102,9 @@ export const PHOTOS_LABEL_KEYS = {
  */
 export const THUMBNAIL_SIZE_CLASS = "image-thumb";
 
+/** The thumbnail rung's standard size — its stand-in fidelity. */
+const THUMBNAIL_FIDELITY = STILL_LADDER.find((s) => s.sizeClass === THUMBNAIL_SIZE_CLASS)!.maxLongEdge;
+
 export const LABEL_VALUE_MAX_BYTES = 128;
 export const LABEL_VALUES_PER_KEY_MAX = 32;
 
@@ -119,6 +118,8 @@ export const LABEL_VALUES_PER_KEY_MAX = 32;
  */
 export interface LabelledRecord {
   labels?: Array<{ app_id: string; key: string; value?: string }>;
+  /** The platform's stand-in role, when the record is a stand-in. */
+  stand_in_role?: string | null;
 }
 
 /**
@@ -135,9 +136,12 @@ export interface LabelledRecord {
  * rather than a mis-typed edge.
  */
 export function derivedKindOf(record: LabelledRecord): DerivedKind | null {
+  // A stand-in is a rung of the ladder whoever made it; the column says so
+  // with no label to wait for.
+  if (record.stand_in_role) return "thumbnail";
   for (const label of record.labels ?? []) {
     if (label.app_id !== PHOTOS_APP_ID) continue;
-    if (label.key === PHOTOS_LABEL_KEYS.rendition) return "thumbnail";
+    if (label.key === PHOTOS_LABEL_KEYS.derived) return "thumbnail";
     if (label.key === PHOTOS_LABEL_KEYS.crop) return "crop";
   }
   return null;
@@ -153,7 +157,7 @@ export function derivedKindOf(record: LabelledRecord): DerivedKind | null {
 export function renditionClassOf(record: LabelledRecord): string | null {
   for (const label of record.labels ?? []) {
     if (label.app_id !== PHOTOS_APP_ID) continue;
-    if (label.key === PHOTOS_LABEL_KEYS.rendition) return label.value ?? null;
+    if (label.key === PHOTOS_LABEL_KEYS.derived) return label.value ?? null;
   }
   return null;
 }
@@ -201,14 +205,14 @@ export async function precheckThumbnail(
     alreadyThumbnail = isThumbnail(record);
   }
 
-  // Q2: does a thumbnail child already exist? The label filter and the parent
-  // filter combined — "a thumbnail *of this record*" — which is one indexed
-  // lookup rather than a scan. A crop of the same parent does not match, which
-  // is the bug `parent_id` alone used to have.
+  // Q2: does a thumbnail child already exist? The thumbnail is the stand-in at
+  // the thumbnail rung's standard size, so the question is three columns —
+  // parent, role, fidelity — and one indexed lookup. A crop of the same parent
+  // has no role, which is the bug `parent_id` alone used to have.
   const existingRes = await fetchPath(
-    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: targetId }))}` +
-      `&label=${PHOTOS_APP_ID}/${PHOTOS_LABEL_KEYS.rendition}` +
-      `&labelValue=${THUMBNAIL_SIZE_CLASS}&limit=1`,
+    `/data/records?where=${encodeURIComponent(
+      JSON.stringify({ parent_id: targetId, stand_in_role: "smaller", fidelity: THUMBNAIL_FIDELITY }),
+    )}&limit=1`,
   );
   let existingThumbnailId: string | null = null;
   if (existingRes.ok) {

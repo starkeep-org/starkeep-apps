@@ -165,7 +165,7 @@ describe("cloud data path (client → proxy → data server)", () => {
     expect(params.get("order")).toBe(LIBRARY_ORDER);
     // Renditions are excluded server-side — a page mixing them with originals
     // is a page the client cannot page through.
-    expect(params.get("notLabel")).toBe("photos/rendition");
+    expect(params.get("notLabel")).toBe("photos/derived");
     expect(params.get("variant")).toBeNull();
     expect(params.get("variantLongEdge")).toBeNull();
     expect(params.get("targets")).toBeNull();
@@ -236,17 +236,21 @@ describe("cloud data path (client → proxy → data server)", () => {
       mime_type: "image/jpeg",
       original_filename: "visible.jpg",
       metadata: { width: 4000, height: 3000 },
-      variant_candidates: [{
-        id: "rendition-medium",
-        type: "image/webp",
-        label_value: "image-medium",
-        width: 1280,
-        height: 960,
-        long_edge: 1280,
-        available_here: true,
-        url: "https://files.test/rendition-medium",
-        url_lifetime: { kind: "expires", expires_at: "2026-08-28T00:00:00.000Z" },
-      }],
+      stand_ins: {
+        category: "image",
+        fidelity: 4000,
+        status: "self-canonical",
+        top: 4000,
+        sizes: [{
+          fidelity: 1280,
+          role: "smaller",
+          record_id: "rendition-medium",
+          type: "image/avif",
+          size_bytes: 120_000,
+          placement: "here",
+          url: "https://files.test/rendition-medium",
+        }],
+      },
     });
 
     const body = await requestOwnApi<{
@@ -269,8 +273,8 @@ describe("cloud data path (client → proxy → data server)", () => {
     const upstream = received[0]!;
     const params = new URLSearchParams(upstream.path.split("?")[1]);
     expect(JSON.parse(params.get("where")!)).toEqual({ id: { in: ["rec-visible"] } });
-    expect(params.get("include")).toBe("metadata");
-    expect(params.get("variant")).toBe("photos/rendition");
+    expect(params.get("include")).toBe("metadata,stand-in-urls");
+    expect(params.get("variant")).toBe("photos/derived");
     expect(upstream.headers.appId).toBe("photos");
     expect(upstream.headers.sig).toBeTruthy();
     expect(body.results[0]).toMatchObject({

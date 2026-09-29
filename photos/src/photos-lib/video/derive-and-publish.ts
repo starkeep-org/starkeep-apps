@@ -7,10 +7,11 @@
  * library would hold a record it could not lay out, thumbnail, or play.
  */
 
-import { assertLadderComplete, type SignedFetch } from "../image-processing/publish-renditions";
+import { reportOriginalFidelity, type SignedFetch } from "../image-processing/publish-renditions";
 import { existingRenditionClasses } from "../image-processing/publish-renditions";
 import type { RenditionParent, PublishedRendition } from "../image-processing/publish-renditions";
 import { deriveVideoLadder, videoLadderIsComplete } from "./derive-video-ladder";
+import { displayLongEdge } from "./probe";
 import { publishVideoFacts, publishVideoRendition } from "./publish-video";
 import { UnsupportedVideoError, type VideoTools } from "./video-tools";
 import type { SizeClass } from "../ladder";
@@ -20,7 +21,6 @@ export interface VideoIngestResult {
   readonly published: readonly PublishedRendition[];
   readonly failed: readonly { sizeClass: SizeClass; reason: string }[];
   readonly ladderComplete: boolean;
-  readonly archiveTagged: boolean;
 }
 
 export interface VideoIngestDeps {
@@ -55,16 +55,12 @@ export async function deriveAndPublishVideo(
   parent: RenditionParent,
   deps: VideoIngestDeps,
 ): Promise<VideoIngestResult> {
-  // A label alone is not a usable rendition. Candidate resolution drops a
-  // child without dimensions, so counting one here could archive the original
-  // while every reader remains unable to select its replacement. Re-deriving
-  // such a child is safe: record registration deduplicates by parent and hash,
-  // then the metadata write repairs the existing record.
+  // What already exists, whoever made it: stand-ins by the platform's columns,
+  // posters and skims by Photos' own label. A transcode another node already
+  // made is reused rather than repeated — the platform keeps one per size.
   const existing = deps.availableRenditionClasses
     ? [...deps.availableRenditionClasses]
-    : await existingRenditionClasses(deps.signedFetch, parent.id, {
-        requireDimensions: true,
-      });
+    : await existingRenditionClasses(deps.signedFetch, parent.id);
   const missing = new Set<SizeClass>(
     VIDEO_LADDER.map((spec) => spec.sizeClass)
       .filter((sizeClass) => !existing.includes(sizeClass)),
@@ -77,6 +73,7 @@ export async function deriveAndPublishVideo(
   // placeholder, whereas renditions with no facts is one the layout cannot
   // place at all.
   await publishVideoFacts(deps.signedFetch, parent.id, result.facts);
+  await reportOriginalFidelity(deps.signedFetch, parent.id, displayLongEdge(result.facts));
 
   const published: PublishedRendition[] = [];
   const failed = result.failures.map((f) => ({ sizeClass: f.sizeClass, reason: f.reason }));
@@ -87,7 +84,10 @@ export async function deriveAndPublishVideo(
       published.push(
         await publishVideoRendition(
           deps.signedFetch,
-          parent,
+          // The probed long edge is the original's fidelity, reported with
+          // each stand-in, and the size a canonical stand-in below the
+          // threshold takes.
+          { ...parent, sourceLongEdge: displayLongEdge(result.facts) },
           rendition,
           contentHash,
           objectStorageKey,
@@ -106,15 +106,9 @@ export async function deriveAndPublishVideo(
     deps.enabledOptional ?? [],
   );
 
-  // The gate is only worth asking when the ladder is actually complete. Claiming
-  // completeness with a rung missing is how an original gets frozen behind a
-  // 48-hour thaw while the thing that would be read instead does not exist.
-  let archiveTagged = false;
-  if (ladderComplete) {
-    archiveTagged = (await assertLadderComplete(deps.signedFetch, parent.id)).tagged;
-  }
-
-  return { published, failed, ladderComplete, archiveTagged };
+  // Archiving is the platform's decision: once the canonical transcode reaches
+  // the cloud, the platform tags the original itself.
+  return { published, failed, ladderComplete };
 }
 
 /** Whether a derivation error means "never retry this file". */

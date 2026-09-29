@@ -64,7 +64,7 @@ export interface TickReport {
  * Jobs the graph declares and this device cannot yet perform.
  *
  * Named here rather than silently skipped, so the report says which of the
- * graph's eight jobs are actually wired.
+ * graph's seven jobs are actually wired.
  *
  * One job left this list when the phone gained an encoder.
  * `derive-ladder-full` stays: the rungs above `image-medium` are 2560 and 4272
@@ -147,8 +147,7 @@ export interface TickOptions {
  *
  * Sync is the only unbounded job here — a first library upload is hundreds of
  * rounds — so without a share of its own it would consume every window and the
- * jobs after it would never run. Eviction in particular has to keep running on
- * a phone whose budget is full, and eviction sits behind sync in the order.
+ * jobs after it would never run.
  */
 export const SYNC_DEADLINE_SHARE = 0.8;
 
@@ -171,10 +170,8 @@ export const IMPORT_DEADLINE_SHARE = 0.25;
  * in the graph's order.
  *
  * A share at all, rather than the rest of the window, because the jobs behind
- * this one are the ones that keep a full phone working: `evict` is what frees
- * the space a rendition is written into, and it is last in the order. A pass
- * that spent everything left would be a phone that derives until its disk is
- * full and then cannot derive again.
+ * this one still need time: scanning and fetching are what bring down the
+ * stand-ins this device wants.
  *
  * Half rather than a smaller fraction because the unit is coarse. One record is
  * a decode and up to three encodes — `derive-ladder-cheap` budgets ten seconds
@@ -230,8 +227,7 @@ export function inFlightJob(snapshot: TickReport): JobId | null {
  * the deadline.
  *
  * Never throws. One job failing is one job's outcome, not the window's: a
- * transfer that cannot complete must not stop the eviction pass that would free
- * the space it needs.
+ * transfer that cannot complete must not stop the jobs behind it.
  */
 export async function runWorkTick(deps: TickDeps, options: TickOptions): Promise<TickReport> {
   const now = deps.now ?? Date.now;
@@ -350,7 +346,7 @@ async function runJob(
     }
 
     // Already done by the `sync-metadata` branch, which moves both. Reported
-    // rather than dropped, so the graph's eight jobs all appear in the report
+    // rather than dropped, so the graph's seven jobs all appear in the report
     // and nobody reads a missing line as a job that failed.
     case "push-blobs":
       return "covered by the sync round above";
@@ -361,23 +357,9 @@ async function runJob(
     }
 
     case "fetch-blobs": {
-      const outcomes = await node.acquireQueued();
-      return `acquired=${outcomes.length}`;
-    }
-
-    case "evict": {
-      const outcomes = await node.reclaimSpace();
-      const triggered = outcomes.filter((o) => o.triggered);
-      const freed = triggered.reduce((sum, o) => sum + (o.bytesBefore - o.bytesAfter), 0);
-      // The refusal is carried rather than counted. On a device with no peer to
-      // ask, eviction frees nothing *and says why* — and "the budget is full"
-      // with no explanation is the report that sends someone looking for a bug
-      // in the pass that is behaving correctly.
-      const refused = outcomes.find((o) => o.refusal !== null)?.refusal;
-      return (
-        `passes=${outcomes.length} triggered=${triggered.length} freedBytes=${freed}` +
-        (refused ? ` refused=${refused}` : "")
-      );
+      const outcome = await node.acquireQueued();
+      if (outcome === null) return "no cloud to fetch from";
+      return `landed=${outcome.landed} dropped=${outcome.dropped} failed=${outcome.failed}`;
     }
 
     default:

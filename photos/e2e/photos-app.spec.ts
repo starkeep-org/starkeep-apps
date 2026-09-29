@@ -31,10 +31,7 @@ import {
 import { jpegWithExif } from "../__tests__/jpeg-fixture";
 import { applicableStillClasses } from "../src/photos-lib/ladder";
 import { DEFAULT_RENDITION_TYPE } from "../src/photos-lib/image-processing/derive-ladder";
-import {
-  RENDITION_LABEL_REF,
-  renditionFileName,
-} from "../src/photos-lib/image-processing/publish-renditions";
+import { renditionFileName } from "../src/photos-lib/image-processing/publish-renditions";
 
 test.describe.configure({ mode: "serial" });
 
@@ -218,90 +215,48 @@ test("a JPEG upload carries EXIF camera fields into shared image metadata", asyn
   expect(meta.height).toBe(8);
 });
 
-test("the applicable rendition ladder is registered as shared child records with parentId", async () => {
-  // Derivation needs no tab: `instrumentation.register` starts the ingest watch
-  // when the app's server starts, and every write on the data server kicks a
-  // sweep. A tile waiting on a rung asks for the same work through /api/resize.
-  // Both paths publish through derive-and-publish, so this waits on the result
-  // rather than on whichever one got there first.
-  //
+test("a small original takes no stand-ins, and the platform says it stands in for itself", async () => {
   // Which rungs apply is a question about the source's size, so it is asked
-  // rather than written down. A respec that adds or moves a rung moves this
-  // expectation with it; a literal list would have to be found and edited by
-  // the same change that made it wrong.
+  // rather than written down. The PNG fixture is far below the smallest
+  // standard size, so the answer is none: an original that small serves
+  // itself at every size, and a stand-in above it would be refused.
   const expectedClasses = applicableStillClasses(PNG_EDGE).map((spec) => spec.sizeClass);
+  expect(expectedClasses).toEqual([]);
 
-  const children = await eventually(
+  // Give the ingest sweep time to reach the record, then check it made
+  // nothing: no stand-in, and no derived record either.
+  const summary = await eventually(
     async () => {
       const records = (await listRecords(
         photosApp,
-        "?include=labels&limit=1000",
-      )) as unknown as SharedRecord[];
-      const found = records.filter((r) => r.parent_id === pngRecordId);
-      if (found.length < expectedClasses.length) {
-        throw new Error(
-          `${found.length} of ${expectedClasses.length} rungs registered so far`,
-        );
+        `?where=${encodeURIComponent(JSON.stringify({ id: pngRecordId }))}&include=metadata`,
+      )) as unknown as Array<SharedRecord & { stand_ins?: { status: string; top: number | null; sizes: Array<{ role: string; record_id: string | null }> } }>;
+      const record = records[0];
+      // The sweep reports the original's fidelity with its first write; until
+      // then the summary cannot place the original.
+      if (!record?.stand_ins || record.stand_ins.status === "fidelity-unknown") {
+        throw new Error("the original's fidelity has not been reported yet");
       }
-      return found;
+      return record.stand_ins;
     },
     { timeoutMs: 60_000 },
-  );
-  // One child per applicable rung and nothing else: a ladder with a spare child
-  // is a record whose archive gate can never be reasoned about.
-  expect(children).toHaveLength(expectedClasses.length);
+  ).catch(() => null);
 
-  // Each rung carries Photos' rendition marker, so other image-declaring apps
-  // can filter derived images out of a library view. Photos writes it as a
-  // cross-app label in the same request as the record (see publish-renditions) —
-  // the `photos/` namespace comes from its authenticated identity, never from
-  // the body. The rung is the label's VALUE: the old bare `photos/thumbnail`
-  // flag could name only one derived size, and the manifest no longer declares
-  // it, so the platform now rejects a write of it.
-  const rungs = children.map((child) => {
-    expect(child.labels).toHaveLength(1);
-    const label = child.labels![0]!;
-    expect(label.app_id).toBe("photos");
-    expect(label.key).toBe("rendition");
-    expect(label.label).toBe(RENDITION_LABEL_REF);
-    return { child, sizeClass: label.value };
-  });
-  expect(rungs.map((r) => r.sizeClass).sort()).toEqual([...expectedClasses].sort());
-
-  // Re-encoded by the ladder's default codec and named for its rung, which is
-  // what makes two rungs of one original distinguishable in a file listing.
-  for (const { child, sizeClass } of rungs) {
-    expect(child.type).toBe(DEFAULT_RENDITION_TYPE);
-    expect(child.original_filename).toBe(renditionFileName(PNG_NAME, sizeClass!));
-  }
-
-  // Shared semantics: another app with image access (Drive) sees the rungs,
-  // their parent link, AND their labels — labels are platform data, not
-  // photos-private, and any app that can read the type sees every app's
-  // labels on it.
-  const drive = await driveCreds(ldsUrl());
-  const driveView = (await listRecords(
-    drive,
-    "?include=labels&limit=1000",
+  const children = (await listRecords(
+    photosApp,
+    `?where=${encodeURIComponent(JSON.stringify({ parent_id: pngRecordId }))}&include=stand-ins&limit=100`,
   )) as unknown as SharedRecord[];
-  for (const { child } of rungs) {
-    const driveChild = driveView.find((r) => r.id === child.id);
-    expect(driveChild?.parent_id).toBe(pngRecordId);
-    expect(driveChild?.labels?.map((l) => l.label)).toEqual([RENDITION_LABEL_REF]);
-  }
-  // …and the original stays unlabelled in the cross-app view.
-  expect(driveView.find((r) => r.id === pngRecordId)?.labels).toEqual([]);
+  expect(children).toHaveLength(0);
 
-  // The reverse query — the one labels exist for. Drive asks "which records did
-  // photos label as renditions?" without knowing anything about Photos.
-  const derived = (await listRecords(
-    drive,
-    `?label=${encodeURIComponent(RENDITION_LABEL_REF)}&limit=1000`,
-  )) as unknown as SharedRecord[];
-  for (const { child } of rungs) {
-    expect(derived.map((r) => r.id)).toContain(child.id);
+  // When the sweep did report the fidelity, the platform names the original
+  // itself as the top — and only — size.
+  if (summary) {
+    expect(summary.status).toBe("self-canonical");
+    expect(summary.top).toBe(PNG_EDGE);
+    expect(summary.sizes.filter((size) => size.record_id !== null)).toEqual([
+      expect.objectContaining({ role: "original", record_id: pngRecordId }),
+    ]);
   }
-  expect(derived.map((r) => r.id)).not.toContain(pngRecordId);
 });
 
 test("captions live in the app-private image_enriched table, not in shared data", async ({

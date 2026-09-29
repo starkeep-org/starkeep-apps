@@ -124,37 +124,57 @@ describe("publishing a rendition", () => {
     expect(create.body.type).toBe("image/jpeg");
   });
 
-  it("registers a transcode as video", async () => {
+  it("registers a transcode as a VP9 WebM stand-in at the canonical size", async () => {
     await publishVideoRendition(
-      signedFetch, parent,
-      rendition({ sizeClass: "video-720p", kind: "transcode", type: "video", contentType: "video/mp4", durationMs: 12_000 }),
+      signedFetch, { ...parent, sourceLongEdge: 1920 },
+      rendition({ sizeClass: "video-1080p", kind: "transcode", type: "video", contentType: "video/webm", durationMs: 12_000 }),
       "hash", "key",
     );
-    expect(calls.find((c) => c.path === "/data/records")!.body.type).toBe("video/mp4");
+    const create = calls.find((c) => c.path === "/data/records")!;
+    expect(create.body.type).toBe("video/webm");
+    expect(create.body.standIn).toEqual({ role: "canonical", fidelity: 1920 });
+    expect(create.body.parentFidelity).toBe(1920);
+    // The platform's columns describe a stand-in: no label, no metadata row.
+    expect(create.body.labels).toBeUndefined();
+    expect(create.body.metadata).toBeUndefined();
   });
 
-  // Sending the wrong typeId writes into a table the record has no row in.
-  it("writes dimensions to the metadata table matching the record's type", async () => {
+  it("puts a small video's canonical stand-in at the video's own long edge", async () => {
+    await publishVideoRendition(
+      signedFetch, { ...parent, sourceLongEdge: 1440 },
+      rendition({ sizeClass: "video-1080p", kind: "transcode", type: "video", contentType: "video/webm" }),
+      "hash", "key",
+    );
+    expect(calls.find((c) => c.path === "/data/records")!.body.standIn).toEqual({
+      role: "canonical",
+      fidelity: 1440,
+    });
+  });
+
+  // A poster is a derived record: it carries its dimensions with its create,
+  // in the table matching its type, so no sync round ships a poster the grid
+  // cannot size.
+  it("registers a poster's dimensions with the poster, in the image table's shape", async () => {
     await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
-    const meta = calls.find((c) => c.path === "/data/records/child-1/metadata")!;
-    expect(meta.body.typeId).toBe("image");
-    expect(meta.body.metadata).toMatchObject({ width: 225, height: 400 });
+    const create = calls.find((c) => c.path === "/data/records")!;
+    expect(create.body.metadata).toMatchObject({ width: 225, height: 400 });
+    expect(create.body.standIn).toBeUndefined();
+    expect(calls.some((c) => c.path.endsWith("/metadata"))).toBe(false);
   });
 
-  it("includes duration for moving renditions only", async () => {
+  it("includes duration for moving derived records only", async () => {
     await publishVideoRendition(
       signedFetch, parent,
       rendition({ sizeClass: "video-skim", kind: "skim", type: "video", contentType: "video/mp4", durationMs: 2_000 }),
       "hash", "key",
     );
-    const meta = calls.find((c) => c.path === "/data/records/child-1/metadata")!;
-    expect(meta.body.metadata).toMatchObject({ duration_ms: 2_000 });
+    expect(calls.find((c) => c.path === "/data/records")!.body.metadata).toMatchObject({ duration_ms: 2_000 });
   });
 
-  it("labels the rung so resolution can find it", async () => {
+  it("labels a derived record so the library can leave it out", async () => {
     await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
     expect(calls.find((c) => c.path === "/data/records")!.body.labels).toEqual([
-      { key: "rendition", value: "video-poster-thumb" },
+      { key: "derived", value: "video-poster-thumb" },
     ]);
   });
 
@@ -171,13 +191,13 @@ describe("publishing a rendition", () => {
     expect(calls.find((c) => c.path === "/files/presign")!.body.intent).toBe("instant");
   });
 
-  it("does not report publication success when dimensions cannot be stored", async () => {
+  it("does not report publication success when the registration fails", async () => {
     const failing = makeSignedFetch({
-      "/data/records/child-1/metadata": () => new Response("nope", { status: 500 }),
+      "/data/records": () => new Response("nope", { status: 500 }),
     });
     await expect(
       publishVideoRendition(failing, parent, rendition(), "hash", "key"),
-    ).rejects.toMatchObject({ stage: "metadata", sizeClass: "video-poster-thumb" });
+    ).rejects.toMatchObject({ stage: "register", sizeClass: "video-poster-thumb" });
   });
 });
 
@@ -208,23 +228,53 @@ describe("the ingest path", () => {
     expect(factsAt).toBeLessThan(firstUpload);
   });
 
-  it("publishes every applicable rung", async () => {
+  it("publishes every applicable rung, the canonical stand-in included", async () => {
     const result = await deriveAndPublishVideo("/clip.mov", parent, deps());
     expect(result.published.map((p) => p.sizeClass).sort()).toEqual(
-      ["video-720p", "video-poster-720p", "video-poster-thumb", "video-skim"].sort(),
+      ["video-1080p", "video-720p", "video-poster-720p", "video-poster-thumb", "video-skim"].sort(),
     );
   });
 
-  it("does not re-encode or republish rungs that already exist", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records?": () => new Response(JSON.stringify({
-        records: ["video-poster-thumb", "video-poster-720p", "video-skim", "video-720p"]
-          .map((value) => ({
-            metadata: { width: 1280, height: 720 },
-            labels: [{ app_id: "photos", key: "rendition", value }],
-          })),
-      }), { status: 200 }),
+  it("reports the video's long edge as the original's fidelity", async () => {
+    await deriveAndPublishVideo("/clip.mov", parent, deps());
+    expect(calls.find((c) => c.path === "/data/records/rec-1/fidelity")!.body).toEqual({ fidelity: 1920 });
+    const transcodes = calls.filter((c) => c.path === "/data/records" && c.body.standIn);
+    expect(transcodes.map((c) => c.body.standIn)).toEqual([
+      { role: "smaller", fidelity: 1280 },
+      { role: "canonical", fidelity: 1920 },
+    ]);
+  });
+
+  function planeHolding(standIns: Array<[string, number]>, derived: string[]) {
+    return vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
+      calls.push({
+        path,
+        method: init?.method ?? "GET",
+        body: init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {},
+      });
+      if (path.startsWith("/data/records?")) {
+        const decoded = decodeURIComponent(path);
+        if (decoded.includes("stand_in_role")) {
+          return new Response(JSON.stringify({
+            records: standIns.map(([role, fidelity]) => ({ type: "video/webm", stand_in_role: role, fidelity })),
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          records: derived.map((value) => ({ labels: [{ app_id: "photos", key: "derived", value }] })),
+        }), { status: 200 });
+      }
+      if (path === "/files/presign") {
+        return new Response(JSON.stringify({ url: "https://upload.example/put" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ record: { id: "child-1" } }), { status: 200 });
     });
+  }
+
+  it("does not re-encode or republish rungs that already exist, wherever they were made", async () => {
+    signedFetch = planeHolding(
+      [["smaller", 1280], ["canonical", 1920]],
+      ["video-poster-thumb", "video-poster-720p", "video-skim"],
+    );
     const extractPoster = vi.fn();
     const skim = vi.fn();
     const transcode = vi.fn();
@@ -240,78 +290,48 @@ describe("the ingest path", () => {
     expect(result.ladderComplete).toBe(true);
   });
 
-  it("re-publishes labelled rungs whose bytes are unavailable on this node", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records?": () => new Response(JSON.stringify({
-        records: ["video-poster-thumb", "video-poster-720p", "video-skim", "video-720p"]
-          .map((value) => ({
-            metadata: { width: 1280, height: 720 },
-            labels: [{ app_id: "photos", key: "rendition", value }],
-          })),
-      }), { status: 200 }),
-    });
+  it("derives what a caller says is missing, even when the server lists it", async () => {
+    signedFetch = planeHolding(
+      [["smaller", 1280], ["canonical", 1920]],
+      ["video-poster-thumb", "video-poster-720p", "video-skim"],
+    );
     const extractPoster = vi.fn(async () => ({
       bytes: new Uint8Array([1]),
       width: 225,
       height: 400,
     }));
-
     const result = await deriveAndPublishVideo(
       "/clip.mov",
       parent,
-      deps({
-        availableRenditionClasses: [],
-        tools: tools({ extractPoster }),
-      }),
+      deps({ availableRenditionClasses: [], tools: tools({ extractPoster }) }),
     );
-
     expect(extractPoster).toHaveBeenCalled();
     expect(result.published.length).toBeGreaterThan(0);
   });
 
-  it("retries a labelled child whose missing dimensions make it unreadable", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records?": () => new Response(JSON.stringify({
-        records: [{
-          metadata: null,
-          labels: [{ app_id: "photos", key: "rendition", value: "video-poster-thumb" }],
-        }],
-      }), { status: 200 }),
-    });
-    const extractPoster = vi.fn(async () => ({
-      bytes: new Uint8Array([1]),
-      width: 225,
-      height: 400,
-    }));
-    await deriveAndPublishVideo(
-      "/clip.mov",
-      parent,
-      deps({ tools: tools({ extractPoster }) }),
-    );
-    expect(extractPoster).toHaveBeenCalled();
-    expect(calls.some((call) => call.path === "/data/records/child-1/metadata")).toBe(true);
-  });
-
-  it("keeps the archive gate closed when a child dimensions write fails", async () => {
-    signedFetch = makeSignedFetch({
-      "/data/records/child-1/metadata": () => new Response("nope", { status: 500 }),
-    });
+  it("reuses a canonical stand-in another node made rather than failing", async () => {
+    const base = makeSignedFetch();
+    signedFetch = vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
+      const body = init?.body ? (JSON.parse(init.body) as { standIn?: { role: string } }) : {};
+      if (path === "/data/records" && body.standIn?.role === "canonical") {
+        return new Response(JSON.stringify({ error: "StandInExists", existing: "made-elsewhere" }), { status: 409 });
+      }
+      return base(path, init);
+    }) as typeof signedFetch;
     const result = await deriveAndPublishVideo("/clip.mov", parent, deps());
-    expect(result.failed.length).toBeGreaterThan(0);
-    expect(result.ladderComplete).toBe(false);
-    expect(result.archiveTagged).toBe(false);
-    expect(calls.some((call) => call.path.endsWith("/archive-gate"))).toBe(false);
+    expect(result.failed).toEqual([]);
+    expect(result.published.find((p) => p.sizeClass === "video-1080p")).toMatchObject({
+      recordId: "made-elsewhere",
+      reused: true,
+    });
   });
 
-  it("asserts the archive gate once the ladder is complete", async () => {
+  it("never asks for archiving: the platform decides once the canonical stand-in is in the cloud", async () => {
     const result = await deriveAndPublishVideo("/clip.mov", parent, deps());
     expect(result.ladderComplete).toBe(true);
-    expect(calls.some((c) => c.path === "/data/records/rec-1/archive-gate")).toBe(true);
+    expect(calls.some((c) => c.path.includes("archive"))).toBe(false);
   });
 
-  // Claiming completeness with a rung missing is how an original gets frozen
-  // behind a 48-hour thaw while the thing that would be read instead does not
-  // exist.
   it("never claims completeness when a rung failed", async () => {
     const result = await deriveAndPublishVideo(
       "/clip.mov",
@@ -319,12 +339,9 @@ describe("the ingest path", () => {
       deps({ tools: tools({ transcode: async () => { throw new Error("encoder died"); } }) }),
     );
     expect(result.ladderComplete).toBe(false);
-    expect(result.archiveTagged).toBe(false);
-    expect(calls.some((c) => c.path.endsWith("/archive-gate"))).toBe(false);
-    expect(result.failed.map((f) => f.sizeClass)).toContain("video-720p");
+    expect(result.failed.map((f) => f.sizeClass)).toEqual(expect.arrayContaining(["video-720p", "video-1080p"]));
   });
 
-  // A clip with a poster and no transcode is one the grid can still show.
   it("keeps what succeeded when a rung fails", async () => {
     const result = await deriveAndPublishVideo(
       "/clip.mov",

@@ -3,8 +3,8 @@
  *
  * These are policy assertions, not implementation ones. Each corresponds to a
  * decision that is cheap to get wrong and expensive to notice: a phone that
- * uploads over cellular, a phone that cannot evict because it is full, a phone
- * that never syncs because it is never plugged in. All three work fine on a dev
+ * uploads over cellular, a phone that stops sending photographs because it is
+ * full, a phone that never syncs because it is never plugged in. All three work fine on a dev
  * handset on a desk, which is precisely why they are asserted here rather than
  * discovered in use.
  */
@@ -61,7 +61,7 @@ describe("the four constraints", () => {
     // Handing a metadata exchange to a download manager would be nonsense; the
     // flag marks a real mechanism, not an aspiration.
     expect(jobSpec("sync-metadata").delegatedTransfer).toBe(false);
-    expect(jobSpec("evict").delegatedTransfer).toBe(false);
+    expect(jobSpec("scan-acquirable").delegatedTransfer).toBe(false);
   });
 });
 
@@ -136,16 +136,8 @@ describe("battery policy", () => {
 });
 
 describe("storage policy", () => {
-  // The deadlock this avoids: the phone fills up, and then cannot run the one
-  // job that would empty it.
-  it("lets eviction run even when storage is low", () => {
-    expect(canRun(jobSpec("evict"), device({ isStorageLow: true }))).toBe(true);
-  });
-
   // Measured on a Pixel at 97% full, where the blanket version of this policy
-  // left the phone doing nothing at all: import refused, sync refused, and the
-  // one job still running an eviction pass that freed nothing, because a
-  // phone's own photographs are aliases and cost the budget nothing.
+  // left the phone doing nothing at all: import refused and sync refused.
   it("stops only the jobs that would land bytes on a full device", () => {
     const runnable = runnableJobs(device({ isStorageLow: true }));
     expect(runnable).not.toContain("fetch-blobs");
@@ -207,11 +199,6 @@ describe("ordering", () => {
     expect(before("sync-metadata", "push-blobs")).toBe(true);
   });
 
-  // Eviction must know what is durable elsewhere before dropping anything.
-  it("syncs metadata before evicting", () => {
-    expect(before("sync-metadata", "evict")).toBe(true);
-  });
-
   // The queue the fetch drains is written by the scan, so a fetch that ran
   // first would work through yesterday's idea of what this device is missing.
   it("scans for what is missing before fetching it", () => {
@@ -254,7 +241,7 @@ describe("what runs under real conditions", () => {
     expect(runnable).toContain("scan-media-store");
     expect(runnable).toContain("derive-ladder-cheap");
     expect(runnable).toContain("derive-ladder-full");
-    expect(runnable).toContain("evict");
+    expect(runnable).toContain("scan-acquirable");
     // And nothing that does touch the network.
     expect(runnable).not.toContain("sync-metadata");
     expect(runnable).not.toContain("fetch-blobs");

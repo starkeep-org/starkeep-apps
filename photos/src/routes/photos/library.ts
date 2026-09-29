@@ -1,5 +1,6 @@
 import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
-import { RENDITION_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
+import { DERIVED_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
+import type { VariantCandidate, WireStandInSummary } from "@/photos-lib/stand-in-candidates";
 import { cloudCanDecode } from "@/photos-lib/image-processing/derive-ladder";
 import {
   resolveRenditions,
@@ -57,8 +58,9 @@ export async function GET(req: Request): Promise<Response> {
     // Renditions are excluded from the page and returned *on* their parents.
     // With a ladder, a 60k-item library is 300k+ records, and a page that mixes
     // them is a page the client cannot use — it cannot tell how far to keep
-    // reading.
-    `notLabel=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+    // reading. Stand-ins the platform leaves out on its own; posters and skims
+    // are derived records it lists, so Photos leaves out its own.
+    `notLabel=${encodeURIComponent(DERIVED_LABEL_REF)}`,
   ];
   if (updatedAfter) {
     // The delta is cut in the order the caller is walking, which is sync time.
@@ -134,20 +136,11 @@ export interface UpstreamRecord {
   id: string;
   type?: string;
   mime_type: string | null;
+  size_bytes?: number | null;
   metadata?: { width?: number | null; height?: number | null } | null;
-  variant_candidates?: Array<{
-    id: string;
-    type: string;
-    width: number;
-    height: number;
-    long_edge: number;
-    label_value: string;
-    available_here: boolean;
-    url?: string;
-    url_lifetime?:
-      | { kind: "expires"; expires_at: string }
-      | { kind: "non-expiring" };
-  }>;
+  /** The platform's size summary; folded into `variant_candidates` on arrival. */
+  stand_ins?: WireStandInSummary;
+  variant_candidates?: VariantCandidate[];
 }
 
 /**
@@ -245,6 +238,7 @@ export function resolveFor(
 
   return resolveRenditions(targets, {
     sourceLongEdge,
+    sourceSizeBytes: record.size_bytes ?? null,
     candidates,
     unavailableState: unavailableState(record, cloud, localVerdicts),
   });

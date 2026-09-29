@@ -1,24 +1,26 @@
 /**
- * A phone with a budget that actually binds.
+ * A phone whose ceiling actually binds.
  *
  * This is what the media plan says Phase 2 exists to validate: "the phone peer
- * is the only honest consumer of `Elided`". Every residency test before this one
- * ran against fixtures or a laptop that wanted everything — so the decision
- * logic was exercised while the *situation* it was designed for never occurred.
- * Here the budget is genuinely smaller than the library, and the node has to
- * decline data and still be correct.
+ * is the only honest consumer of `Elided`". Here the library holds originals
+ * above the phone's ceiling, and the node has to decline those bytes and still
+ * be correct.
  *
  * `Elided` means: the record is present and its bytes are not. That is a valid,
  * intended state — not a failure — and the assertions below are careful to
  * distinguish it from "the sync did not work", which looks identical if you only
  * check one of the two.
+ *
+ * The declined fixtures are photographs above the phone's 1280-pixel ceiling,
+ * whose stand-ins would take their place. The kept fixtures are PDFs, which no
+ * stand-in can replace.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { createHLCClock } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, MockObjectStorageAdapter } from "@starkeep/storage-adapter";
-import { createInProcessSyncTransport, type NodeRetentionPolicy } from "@starkeep/sync-engine";
+import { createInProcessSyncTransport } from "@starkeep/sync-engine";
 import { createMobileNode, type MobileNode } from "../src/node";
 import { listLibrary } from "../src/library";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
@@ -54,30 +56,44 @@ const hashOf = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 
 let seq = 0;
 async function seedCloud(sizeBytes: number): Promise<DataRecord> {
+  return seedCloudFile(sizeBytes, "document/pdf", null);
+}
+
+/** An original above every phone's ceiling: a stand-in would take its place. */
+async function seedCloudPhoto(sizeBytes: number): Promise<DataRecord> {
+  return seedCloudFile(sizeBytes, "image/jpeg", 6000);
+}
+
+async function seedCloudFile(
+  sizeBytes: number,
+  type: string,
+  fidelity: number | null,
+): Promise<DataRecord> {
   seq += 1;
   const bytes = bytesOf(sizeBytes, seq % 251);
   const hash = hashOf(bytes);
   const rec = {
     id: `rec-${seq}`,
-    type: "image/jpeg",
+    type,
+    fidelity,
     createdAt: { wallTime: Date.UTC(2026, 0, 1), counter: seq, nodeId: "cloud" },
     updatedAt: { wallTime: Date.UTC(2026, 0, 1), counter: seq, nodeId: "cloud" },
     deletedAt: null,
     version: 1,
     contentHash: hash,
-    objectStorageKey: `shared/image/${hash.slice(0, 2)}/${hash}`,
-    mimeType: "image/jpeg",
+    objectStorageKey: `shared/${type.split("/")[0]}/${hash.slice(0, 2)}/${hash}`,
+    mimeType: null,
     sizeBytes,
     originAppId: "photos",
     parentId: null,
-    originalFilename: `photo-${seq}.jpg`,
+    originalFilename: `file-${seq}`,
   } as DataRecord;
   await cloudDb.put(rec);
   await cloudStorage.put(rec.objectStorageKey!, bytes);
   return rec;
 }
 
-async function startPhone(retention?: NodeRetentionPolicy): Promise<MobileNode> {
+async function startPhone(): Promise<MobileNode> {
   const harness = fakeExpoFs();
   return createMobileNode({
     nodeId: "phone-a",
@@ -95,7 +111,6 @@ async function startPhone(retention?: NodeRetentionPolicy): Promise<MobileNode> 
         objectStorage: cloudStorage,
       }),
     },
-    ...(retention ? { retention } : {}),
   });
 }
 
@@ -129,101 +144,21 @@ afterEach(async () => {
 
 const KB = 1024;
 
-describe("a budget that binds", () => {
-  // Every original the cloud holds, against a budget that fits roughly two.
-  const tightPolicy: NodeRetentionPolicy = {
-    platform: {
-      rows: { "original:image": { prefetch: true, share: 1 } },
-      fallback: { prefetch: true, share: 0 },
-      budgetBytes: 25 * KB,
-    },
-    apps: {},
-    appFallback: {
-      rows: {},
-      fallback: { prefetch: true, share: 1 },
-      budgetBytes: 25 * KB,
-    },
-  };
-
-  it("keeps the records and declines some of the bytes", async () => {
-    for (let i = 0; i < 5; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone(tightPolicy);
-    for (let i = 0; i < 3; i += 1) await phone.exchange();
+describe("a ceiling that binds", () => {
+  it("keeps the records and declines the originals above the ceiling", async () => {
+    for (let i = 0; i < 3; i += 1) await seedCloudPhoto(10 * KB);
+    for (let i = 0; i < 2; i += 1) await seedCloud(10 * KB);
+    phone = await startPhone();
+    await phone.sync();
 
     const state = await residencyOf(phone);
     // Metadata is cheap and always syncs — a phone that dropped records would
     // be unable to *show* the library, not merely unable to open a photo.
-    expect(state.total, "records must sync regardless of the byte budget").toBe(5);
-    // And some bytes were genuinely declined. Without this the test passes on a
-    // node that ignored the budget entirely.
-    expect(state.elided.length, "nothing was elided, so the budget did nothing").toBeGreaterThan(0);
-  });
-
-  it("holds what the budget allows rather than nothing", async () => {
-    for (let i = 0; i < 5; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone(tightPolicy);
-    for (let i = 0; i < 3; i += 1) await phone.exchange();
-
-    // The opposite failure to the one above: a node that declines everything is
-    // as broken as one that declines nothing, and both satisfy "some records
-    // have no bytes".
-    expect((await residencyOf(phone)).held.length).toBeGreaterThan(0);
-  });
-
-  it("stays within the budget it was given", async () => {
-    for (let i = 0; i < 8; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone(tightPolicy);
-    for (let i = 0; i < 4; i += 1) await phone.exchange();
-
-    const { held } = await residencyOf(phone);
-    // 25 KB of budget against 10 KB objects: three would exceed it.
-    expect(held.length).toBeLessThanOrEqual(3);
-  });
-});
-
-describe("no policy at all", () => {
-  // The unconfigured default, and deliberately the wrong setting for a phone.
-  // A node that has not been told its budget must not silently start declining
-  // data: over-fetching costs disk, under-fetching costs a photo that is
-  // quietly nowhere.
-  it("wants every blob, exactly as an unconfigured laptop does", async () => {
-    for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone();
-    await phone.exchange();
-
-    const state = await residencyOf(phone);
-    expect(state.elided).toEqual([]);
-    expect(state.held).toHaveLength(3);
-  });
-
-  it("reports no residency manager, rather than an empty one", async () => {
-    phone = await startPhone();
-    // Null is the honest answer and distinguishable from "a manager that
-    // decided to keep everything" — which matters to an inspector explaining
-    // why a record is present.
-    expect(phone.residency).toBeNull();
-  });
-});
-
-describe("a class with no share", () => {
-  it("takes the records and none of the bytes", async () => {
-    for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone({
-      platform: {
-        rows: { "original:image": { prefetch: true, share: 0 } },
-        fallback: { prefetch: true, share: 1 },
-        budgetBytes: 1,
-      },
-      apps: {},
-      appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 1 },
-    });
-    for (let i = 0; i < 2; i += 1) await phone.exchange();
-
-    const state = await residencyOf(phone);
-    // The whole library is browsable and none of it is downloaded — which is
-    // exactly what `Elided` is for, and what a phone on cellular wants.
-    expect(state.total).toBe(3);
-    expect(state.held).toEqual([]);
+    expect(state.total, "records must sync regardless of the ceiling").toBe(5);
+    expect(state.elided, "the originals above the ceiling").toHaveLength(3);
+    // The opposite failure: a node that declines everything is as broken as
+    // one that declines nothing, and both satisfy "some records have no bytes".
+    expect(state.held, "the documents, which no stand-in replaces").toHaveLength(2);
   });
 });
 
@@ -242,19 +177,9 @@ describe("a class with no share", () => {
  * missing was the wiring, not the transfer.
  */
 describe("fetching back a declined photo", () => {
-  const declineEverything: NodeRetentionPolicy = {
-    platform: {
-      rows: { "original:image": { prefetch: true, share: 0 } },
-      fallback: { prefetch: true, share: 1 },
-      budgetBytes: 1,
-    },
-    apps: {},
-    appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 1 },
-  };
-
   it("brings down bytes no sync round would ever offer again", async () => {
-    const record = await seedCloud(10 * KB);
-    phone = await startPhone(declineEverything);
+    const record = await seedCloudPhoto(10 * KB);
+    phone = await startPhone();
     await phone.sync();
 
     // Declined, and the cloud believes it landed.
@@ -277,8 +202,8 @@ describe("fetching back a declined photo", () => {
     // photograph and gives the tile nothing, which is the intended shape. `uri`
     // moves here only for a fetched *rendition*, and this case fetches the
     // original.
-    const record = await seedCloud(10 * KB);
-    phone = await startPhone(declineEverything);
+    const record = await seedCloudPhoto(10 * KB);
+    phone = await startPhone();
     await phone.sync();
 
     const deps = {
@@ -314,18 +239,17 @@ describe("fetching back a declined photo", () => {
     expect(await phone.fetchBlob(record)).toBe(false);
   });
 
-  it("does not move the byte accounting when the fetch fails", async () => {
-    // The same rule a round's pull obeys: crediting a decision rather than an
-    // arrival lets a node with a flaky link slowly convince itself it is full
-    // of things it does not have.
-    const record = await seedCloud(10 * KB);
-    phone = await startPhone(declineEverything);
+  it("does not record an arrival when the fetch fails", async () => {
+    // The same rule a round's pull obeys: recording a decision rather than an
+    // arrival lets a node believe it holds files it does not.
+    const record = await seedCloudPhoto(10 * KB);
+    phone = await startPhone();
     await phone.sync();
 
     await cloudStorage.delete(record.objectStorageKey!);
     const held = (await phone.databaseAdapter.get(record.id))!;
     expect(await phone.fetchBlob(held)).toBe(false);
-    expect(phone.residency!.usageByClass()).toEqual({});
+    expect(phone.residency.usageByGroup()).toEqual({});
   });
 });
 
@@ -338,49 +262,23 @@ describe("fetching back a declined photo", () => {
  * the queue afterwards. `CLAUDE.md` is explicit that a module nobody calls
  * creates the impression that more has been done than has been.
  */
-describe("acquiring what a round declined", () => {
-  const tightPolicy: NodeRetentionPolicy = {
-    platform: {
-      rows: { "original:image": { prefetch: true, share: 1 } },
-      fallback: { prefetch: true, share: 0 },
-      budgetBytes: 25 * KB,
-    },
-    apps: {},
-    appFallback: { rows: {}, fallback: { prefetch: true, share: 1 }, budgetBytes: 25 * KB },
-  };
-
-  it("queues what the budget declined during the round", async () => {
-    for (let i = 0; i < 6; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone(tightPolicy);
-    await phone.sync();
-
-    // Declined for want of room is not the same fact as declined outright, and
-    // a phone that dropped the difference had no way back but a user's tap.
-    expect(
-      phone.residency!.deferredCandidates("starkeep:original:image", 100).length,
-    ).toBeGreaterThan(0);
-  });
-
-  it("finds a blob it evicted, which no round will ever offer again", async () => {
+describe("acquiring what a round did not bring", () => {
+  it("finds bytes that went away, which no round will ever offer again", async () => {
     for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone(tightPolicy);
+    phone = await startPhone();
     await phone.sync();
 
     const { held } = await residencyOf(phone);
     const record = (await phone.databaseAdapter.get(held[0]!))!;
     const key = record.objectStorageKey!;
     await phone.objectStorage.delete(key);
-    phone.residency!.noteDeparture(key);
+    phone.residency.noteDeparture(key);
 
     // The watermark moved past this record long ago, so the sweep is the only
     // thing that can find it.
     const scan = await phone.scanForAcquirable();
     expect(scan.complete).toBe(true);
-    expect(
-      phone.residency!
-        .deferredCandidates("starkeep:original:image", 100)
-        .map((e) => e.objectStorageKey),
-    ).toContain(key);
+    expect(phone.residency.deferredCandidates(100).map((e) => e.objectStorageKey)).toContain(key);
 
     await phone.acquireQueued();
     expect(await phone.objectStorage.has(key)).toBe(true);
@@ -388,7 +286,7 @@ describe("acquiring what a round declined", () => {
 
   it("resumes a sweep it was killed part-way through", async () => {
     for (let i = 0; i < 6; i += 1) await seedCloud(10 * KB);
-    phone = await startPhone(tightPolicy);
+    phone = await startPhone();
     await phone.sync();
 
     const first = await phone.scanForAcquirable({ maxRecords: 2 });
@@ -400,14 +298,13 @@ describe("acquiring what a round declined", () => {
     expect(second.complete).toBe(true);
   });
 
-  it("does nothing at all on a phone with no budget", async () => {
+  it("has nothing to fetch when the phone already holds what it wants", async () => {
     for (let i = 0; i < 3; i += 1) await seedCloud(10 * KB);
+    await seedCloudPhoto(10 * KB);
     phone = await startPhone();
     await phone.sync();
 
-    // No policy means every blob is wanted and none is ever declined, so there
-    // is no queue to drain and nothing to sweep for.
-    expect(await phone.acquireQueued()).toEqual([]);
     expect(await phone.scanForAcquirable()).toEqual({ queued: 0, complete: true });
+    expect(await phone.acquireQueued()).toEqual({ landed: 0, bytesLanded: 0, dropped: 0, failed: 0 });
   });
 });

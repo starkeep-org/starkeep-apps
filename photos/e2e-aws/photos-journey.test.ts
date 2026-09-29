@@ -43,9 +43,8 @@ import {
   type LdsApp,
   type WebServer,
 } from "@starkeep/e2e";
-import { applicableStillClasses, STILL_LADDER } from "../src/photos-lib/ladder";
+import { applicableStillClasses, classForStandIn, STILL_LADDER } from "../src/photos-lib/ladder";
 import {
-  RENDITION_LABEL_REF,
   renditionFileName,
 } from "../src/photos-lib/image-processing/publish-renditions";
 
@@ -97,13 +96,15 @@ function assertNoPhotosDevServer(): void {
   );
 }
 
-/** A rendition child as the rendition steps read it back. */
+/** A stand-in as the rendition steps read it back. */
 interface RungRecord {
   id: string;
   parent_id: string | null;
   original_filename: string | null;
   object_storage_key: string | null;
-  metadata?: { width?: number | null; height?: number | null } | null;
+  type: string;
+  stand_in_role: "canonical" | "smaller" | null;
+  fidelity: number | null;
   labels?: Array<{
     app_id: string;
     key: string;
@@ -112,23 +113,29 @@ interface RungRecord {
   }>;
 }
 
+/** The query for a record's stand-ins, the same one Photos issues. */
+function standInsQuery(parentId: string): string {
+  return (
+    `/data/records?where=${encodeURIComponent(
+      JSON.stringify({ parent_id: parentId, stand_in_role: { in: ["canonical", "smaller"] } }),
+    )}&include=labels&limit=50`
+  );
+}
+
 /**
- * A record's `photos/rendition` children, with their labels and their
- * dimensions, from whichever data plane is asked.
+ * A record's stand-ins, with their roles and fidelities, from whichever data
+ * plane is asked.
  *
- * `parentId` + `label` is one indexed lookup, and it is the same query Photos
- * itself issues to decide what is left to derive — so the assertions read the
- * library the way the app does rather than through a shape invented for a test.
+ * `parent_id` + `stand_in_role` is one indexed lookup, and it is the same query
+ * Photos itself issues to decide what is left to derive — so the assertions
+ * read the library the way the app does rather than through a shape invented
+ * for a test.
  */
 async function renditionChildren(
   app: LdsApp,
   parentId: string,
 ): Promise<RungRecord[]> {
-  const res = await app.fetch(
-    `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: parentId }))}` +
-      `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
-      `&include=labels,metadata&limit=50`,
-  );
+  const res = await app.fetch(standInsQuery(parentId));
   if (!res.ok) {
     throw new Error(
       `rendition children of ${parentId} → ${res.status} ${await res.text()}`,
@@ -137,12 +144,17 @@ async function renditionChildren(
   return ((await res.json()) as { records: RungRecord[] }).records;
 }
 
-/** Which rung of the ladder a child is — the `photos/rendition` label's value. */
+/** Which rung of the ladder a stand-in is, read off its role and fidelity. */
 function renditionClassOf(rung: RungRecord): string {
-  return (
-    (rung.labels ?? []).find((l) => l.label === RENDITION_LABEL_REF)?.value ??
-    ""
-  );
+  if (!rung.stand_in_role || rung.fidelity === null) return "";
+  return classForStandIn("image", rung.stand_in_role, rung.fidelity) ?? "";
+}
+
+/** An original's size in bytes, as the data plane records it. */
+async function renditionOriginalSize(app: LdsApp, recordId: string): Promise<number> {
+  const res = await app.fetch(`/data/records/${recordId}`);
+  if (!res.ok) throw new Error(`record ${recordId} → ${res.status} ${await res.text()}`);
+  return ((await res.json()) as { record: { size_bytes: number } }).record.size_bytes;
 }
 
 /** A record's bytes, through the data plane's own file-url. */
@@ -309,7 +321,11 @@ function photosSteps(ctx: JourneyContext): void {
     // Asserted on the resulting ladder rather than on what this call published,
     // because the sweep may have published a rung first and a `published: []`
     // response would then be correct rather than a failure.
-    ladderClasses = applicableStillClasses(sourceLongEdge).map(
+    // With the original's size: a fixture under the platform's size floor
+    // stands in for itself above its largest smaller rung and takes no
+    // canonical stand-in, and Photos asks the same question the same way.
+    const original = await renditionOriginalSize(photos, ladderRecordId);
+    ladderClasses = applicableStillClasses(sourceLongEdge, original).map(
       (spec) => spec.sizeClass,
     );
     const rungs = await eventually(
@@ -336,18 +352,12 @@ function photosSteps(ctx: JourneyContext): void {
     );
     expect([...byClass.keys()].sort()).toEqual([...ladderClasses].sort());
     for (const [sizeClass, rung] of byClass) {
-      // Dimensions are the property the cloud drops a candidate for. They ride
-      // the record's create call precisely so no sync round can see the rung
-      // without them; asserting them here is what makes the cloud assertion in
-      // the next step meaningful rather than vacuous.
-      expect(
-        rung.metadata?.width ?? 0,
-        `${sizeClass} has no width`,
-      ).toBeGreaterThan(0);
-      expect(
-        rung.metadata?.height ?? 0,
-        `${sizeClass} has no height`,
-      ).toBeGreaterThan(0);
+      // The fidelity is what resolution orders stand-ins by. It rides the
+      // record's create call as a column, so no sync round can see the rung
+      // without it; asserting it here is what makes the cloud assertion in the
+      // next step meaningful rather than vacuous.
+      expect(rung.fidelity ?? 0, `${sizeClass} has no fidelity`).toBeGreaterThan(0);
+      expect(rung.type, `${sizeClass} is not an AVIF stand-in`).toBe("image/avif");
       expect(rung.parent_id).toBe(ladderRecordId);
       expect(rung.original_filename).toBe(
         renditionFileName(ladderSourceName, sizeClass),
@@ -355,7 +365,7 @@ function photosSteps(ctx: JourneyContext): void {
     }
   });
 
-  it("syncs the ladder up: every rung reaches the cloud with its label and its dimensions", async () => {
+  it("syncs the ladder up: every rung reaches the cloud with its role and its fidelity", async () => {
     // The join nothing else crosses. Each layer below is covered on its own —
     // the worker builds a ladder against a fake data plane, two local data
     // servers exchange rendition dimensions against a fake cloud — and the
@@ -383,11 +393,7 @@ function photosSteps(ctx: JourneyContext): void {
         async () => {
           const sync = await drive.fetch("/sync/now", { method: "POST" });
           expect(sync.status).toBe(200);
-          const res = await cloudPhotos.fetch(
-            `/data/records?where=${encodeURIComponent(JSON.stringify({ parent_id: ladderRecordId }))}` +
-              `&label=${encodeURIComponent(RENDITION_LABEL_REF)}` +
-              `&include=labels,metadata&limit=50`,
-          );
+          const res = await cloudPhotos.fetch(standInsQuery(ladderRecordId));
           expect(res.status).toBe(200);
           const { records } = (await res.json()) as { records: RungRecord[] };
           if (records.length < expected) {
@@ -431,47 +437,33 @@ function photosSteps(ctx: JourneyContext): void {
 
     for (const rung of arrived) {
       const sizeClass = renditionClassOf(rung);
-      expect(
-        sizeClass,
-        `a synced rung carries no ${RENDITION_LABEL_REF} value`,
-      ).toBeTruthy();
-      expect(
-        rung.metadata?.width ?? 0,
-        `${sizeClass} arrived with no width`,
-      ).toBeGreaterThan(0);
-      expect(
-        rung.metadata?.height ?? 0,
-        `${sizeClass} arrived with no height`,
-      ).toBeGreaterThan(0);
+      expect(sizeClass, "a synced stand-in names no rung of the ladder").toBeTruthy();
+      expect(rung.fidelity ?? 0, `${sizeClass} arrived with no fidelity`).toBeGreaterThan(0);
       syncedRungKeys.set(sizeClass, rung.object_storage_key as string);
     }
     expect([...syncedRungKeys.keys()].sort()).toEqual(
       [...ladderClasses].sort(),
     );
 
-    // The assertion the 2026-08-27 failure would fail. `variant=<label>` with no
-    // `variantLongEdge` asks the unnarrowed question — every derived child of
-    // this record — and the broker silently drops any candidate with no stored
-    // dimensions, so a record whose rungs all arrived dimensionless answers with
-    // an empty list that reads as "nothing derived yet". This is also the exact
-    // query the Photos client issues to paint a tile.
+    // The assertion the 2026-08-27 failure would fail, restated for stand-ins:
+    // the original's size summary in the cloud names every rung that arrived.
+    // This is also the listing the Photos client resolves a tile from.
     const resolvedRes = await cloudPhotos.fetch(
       `/data/records?where=${encodeURIComponent(JSON.stringify({ id: { in: [ladderRecordId] } }))}` +
-        `&limit=1&include=metadata&variant=${encodeURIComponent(RENDITION_LABEL_REF)}`,
+        `&limit=1&include=metadata`,
     );
     expect(resolvedRes.status).toBe(200);
     const { records: parents } = (await resolvedRes.json()) as {
       records: Array<{
         id: string;
-        variant_candidates?: Array<{ id: string; long_edge: number }>;
+        stand_ins?: { sizes: Array<{ record_id: string | null; placement: string }> };
       }>;
     };
     const parent = parents.find((r) => r.id === ladderRecordId);
     expect(parent, "the original must be readable in the cloud").toBeDefined();
     expect(
-      parent!.variant_candidates?.length ?? 0,
-      "the broker resolved fewer candidates than the rungs that arrived — a rung " +
-        "reaching the cloud without dimensions is dropped here and nowhere else",
+      parent!.stand_ins?.sizes.filter((size) => size.record_id !== null && size.placement !== "missing").length ?? 0,
+      "the cloud's size summary names fewer stand-ins than arrived",
     ).toBe(expected);
 
     // The bytes shipped too, not just the row. Every other byte round-trip in

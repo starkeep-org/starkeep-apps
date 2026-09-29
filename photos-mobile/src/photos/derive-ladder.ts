@@ -13,10 +13,13 @@
  *
  * ## What it will not do
  *
- * **Nothing above `image-medium` in the sweep.** See
- * {@link MOBILE_DERIVE_CEILING_LONG_EDGE}. The ceiling is now an argument rather
- * than a constant this file reads, because it bounds a *budget* and a sweep and
- * an open have different ones — {@link deriveForRecord} is where that is argued.
+ * **Nothing above `image-medium` in the cheap sweep.** See
+ * {@link MOBILE_DERIVE_CEILING_LONG_EDGE}. The ceiling is an argument rather
+ * than a constant this file reads, because it bounds a *budget*, and the cheap
+ * sweep, the full-ladder sweep and an open have different ones. The full-ladder
+ * sweep makes 2560 and the canonical at {@link FULL_DERIVE_CEILING_LONG_EDGE},
+ * one record at a time and only when power allows; {@link deriveForRecord}
+ * argues the open's case.
  *
  * **Nothing about archiving.** The platform decides when an original goes to
  * deep archive, from the canonical stand-in's arrival in the cloud. A sweep
@@ -123,6 +126,15 @@ import { PHOTOS_APP_ID } from "./renditions";
 export const MOBILE_DERIVE_CEILING_LONG_EDGE: number = STILL_LADDER.find(
   (spec) => spec.sizeClass === "image-medium",
 )!.maxLongEdge;
+
+/**
+ * The largest rung the full-ladder sweep makes: the top of the ladder, which is
+ * the canonical stand-in. A phone that derives its own photographs in full is
+ * what spares a desktop from fetching their originals to do it.
+ */
+export const FULL_DERIVE_CEILING_LONG_EDGE: number = Math.max(
+  ...STILL_LADDER.map((spec) => spec.maxLongEdge),
+);
 
 /** What a rendition is encoded as here, matching every other node. */
 const RENDITION_TYPE = "image/avif";
@@ -294,6 +306,12 @@ export async function deriveRenditions(
     readonly maxRecords?: number;
     readonly maxPages?: number;
     readonly signal?: { readonly aborted: boolean };
+    /**
+     * The largest rung this sweep makes. The background default stops at
+     * `image-medium`; the full-ladder sweep passes the canonical size, and runs
+     * only when power allows.
+     */
+    readonly ceilingLongEdge?: number;
   } = {},
 ): Promise<DeriveLadderOutcome> {
   const pageLimit = options.pageLimit ?? DERIVE_PAGE_LIMIT;
@@ -312,6 +330,7 @@ export async function deriveRenditions(
       after,
       maxRecords: budget - scanned,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.ceilingLongEdge !== undefined ? { ceilingLongEdge: options.ceilingLongEdge } : {}),
     });
     scanned += page.scanned;
     written += page.written;
@@ -352,8 +371,11 @@ export async function derivePage(
     /** How many records this page may still decode. */
     readonly maxRecords?: number;
     readonly signal?: { readonly aborted: boolean };
+    /** The largest rung to make. See {@link deriveRenditions}. */
+    readonly ceilingLongEdge?: number;
   },
 ): Promise<DeriveLadderOutcome> {
+  const ceiling = options.ceilingLongEdge ?? MOBILE_DERIVE_CEILING_LONG_EDGE;
   const page = deps.aliases.listAfter(options.after ?? null, options.limit);
   if (page.length === 0) {
     return { scanned: 0, written: 0, failed: 0, complete: true, resumeAfter: null };
@@ -424,11 +446,10 @@ export async function derivePage(
             sourceLongEdge,
             current.sizeBytes,
             existing.get(current.id) ?? [],
-            // The sweep keeps the standing ceiling. It runs over a whole camera
-            // roll on a background window's budget, which is the case the
-            // ceiling was written for — see `deriveForRecord` for the one
-            // caller that raises it.
-            MOBILE_DERIVE_CEILING_LONG_EDGE,
+            // The caller's ceiling: the standing one for the cheap sweep, the
+            // canonical size for the full-ladder sweep that waits for power.
+            // See `deriveForRecord` for the viewer, which raises it per photo.
+            ceiling,
           )
         : [];
 
@@ -441,7 +462,7 @@ export async function derivePage(
           alias.contentUri,
           sourceLongEdge,
           missing,
-          MOBILE_DERIVE_CEILING_LONG_EDGE,
+          ceiling,
         );
         // Null is a photograph this device could not read at all, and it is
         // counted with the throws rather than with the successes: both are a

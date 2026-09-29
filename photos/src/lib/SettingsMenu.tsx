@@ -24,6 +24,8 @@ interface SettingsMenuProps {
   onOpenCloudSetup: (() => void) | null;
   /** Local target only: opens on-device face recognition. */
   onOpenFaces: (() => void) | null;
+  /** Local target only: opens this machine's derivation switches. */
+  onOpenDerivation: (() => void) | null;
 }
 
 export function SettingsMenu({
@@ -31,6 +33,7 @@ export function SettingsMenu({
   onLayoutChange,
   onOpenCloudSetup,
   onOpenFaces,
+  onOpenDerivation,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,7 +136,7 @@ export function SettingsMenu({
             <CoverImageControls />
           </Section>
 
-          {(onOpenFaces || onOpenCloudSetup) && (
+          {(onOpenFaces || onOpenDerivation || onOpenCloudSetup) && (
             <Section title="Library">
               {onOpenFaces && (
                 <button
@@ -145,6 +148,18 @@ export function SettingsMenu({
                   style={menuButtonStyle}
                 >
                   On-device face recognition
+                </button>
+              )}
+              {onOpenDerivation && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenDerivation();
+                  }}
+                  style={menuButtonStyle}
+                >
+                  Derivation on this machine
                 </button>
               )}
               {onOpenCloudSetup && (

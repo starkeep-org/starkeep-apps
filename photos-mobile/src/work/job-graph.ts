@@ -254,7 +254,7 @@ export const JOB_GRAPH: readonly JobSpec[] = [
     description: "Find records this device wants bytes for and does not have",
     // No network: this is a walk over the local catalogue joined against the
     // local resident set. It is the only thing that can find a stand-in a raised
-    // ceiling now covers, a record someone pinned, or bytes that went away
+    // ceiling now covers, or bytes that went away
     // locally — and none of those questions needs the cloud to answer.
     constraints: NO_NETWORK,
     // A page of the catalogue per unit, resumed from a cursor. A 60k-item

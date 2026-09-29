@@ -216,13 +216,39 @@ describe("derivation", () => {
     expect(DERIVE_DEADLINE_SHARE).toBeLessThan(1);
   });
 
-  it("keeps the expensive rungs unbound", async () => {
-    const report = await runWorkTick(deps({ deriveRenditions: async () => derived() }), far());
+  it("binds every job, including the expensive rungs", () => {
+    expect(UNBOUND_JOBS).toEqual([]);
+  });
 
-    // 2560 and 4272 pixels on a side is real CPU for pixels no phone screen can
-    // show. They stay a `sharp` node's work.
-    expect(UNBOUND_JOBS).toEqual(["derive-ladder-full"]);
-    expect(find(report, "derive-ladder-full").ran).toBe(false);
+  it("makes the larger rungs when power allows, and not below the battery floor", async () => {
+    const deriveFullRenditions = vi.fn(async () => derived({ written: 2 }));
+    const charging = await runWorkTick(
+      deps({ device: device({ isCharging: true }), deriveFullRenditions }),
+      far(),
+    );
+    expect(find(charging, "derive-ladder-full").ran).toBe(true);
+    expect(find(charging, "derive-ladder-full").detail).toContain("rungs=2");
+
+    const low = await runWorkTick(
+      deps({ device: device({ isCharging: false, batteryLevel: 0.3 }), deriveFullRenditions }),
+      far(),
+    );
+    expect(find(low, "derive-ladder-full").ran).toBe(false);
+    expect(deriveFullRenditions).toHaveBeenCalledTimes(1);
+  });
+
+  it("derives nothing in the background with photo derivation off", async () => {
+    const deriveRenditions = vi.fn(async () => derived());
+    const deriveFullRenditions = vi.fn(async () => derived());
+    const report = await runWorkTick(
+      deps({ device: device({ isCharging: true }), deriveRenditions, deriveFullRenditions, photoDerivationOff: true }),
+      far(),
+    );
+    for (const job of ["derive-ladder-cheap", "derive-ladder-full"]) {
+      expect(find(report, job).detail).toBe("photo derivation is off on this device");
+    }
+    expect(deriveRenditions).not.toHaveBeenCalled();
+    expect(deriveFullRenditions).not.toHaveBeenCalled();
   });
 });
 

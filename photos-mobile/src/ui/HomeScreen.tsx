@@ -40,6 +40,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  Switch,
   Text,
   useWindowDimensions,
   View,
@@ -78,6 +79,7 @@ import type { JustifiedRow } from "../photos/render-target";
 import type { LibraryItem } from "../library";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
+import { IMAGE_CEILING_CHOICES } from "../device-settings";
 import { useLibrary, useNode, useStorage } from "./use-library";
 import { describeVerify, verifyFoundProblem } from "./verify-text";
 import { describeFreed, describeStorageGroup } from "./free-up-text";
@@ -640,8 +642,6 @@ export function HomeScreen({
     onFetchRendition: library.fetchRendition,
     onDeriveNow: library.deriveNow,
     onOpenForViewer: library.openForViewer,
-    onSetPinned: library.setPinned,
-    isPinned: library.isPinned,
     onOpenMotion: library.openMotion,
   }, library.items);
 
@@ -848,6 +848,54 @@ export function HomeScreen({
                 counted here — Starkeep points at them in your camera roll rather than keeping a
                 second copy, so they take no extra space.
               </Text>
+            ) : null}
+
+            {storage.settings ? (
+              <>
+                {/* The platform's ceiling for this node, shown here because a
+                    phone has no admin-web. Raising it downloads the sizes it
+                    now covers; lowering it removes nothing. */}
+                <Text style={styles.body}>Photo previews kept on this device</Text>
+                <View style={styles.chips}>
+                  {IMAGE_CEILING_CHOICES.map((choice) => {
+                    const selected = storage.settings!.imageCeiling === choice;
+                    return (
+                      <Pressable
+                        key={String(choice)}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected }}
+                        onPress={() => storage.setImageCeiling(choice)}
+                        style={[styles.chip, selected ? styles.chipSelected : null]}
+                      >
+                        <Text style={selected ? styles.chipLabelSelected : styles.chipLabel}>
+                          {choice === null ? "None" : `${choice} px`}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.muted}>
+                  Larger sizes download when you open a photo. Lowering this removes nothing until
+                  you free up space.
+                </Text>
+
+                {/* Photos' own setting. Off stops the background sweeps; the
+                    viewer still makes a size for the photo on screen. */}
+                <View style={styles.row}>
+                  <View style={styles.rowText}>
+                    <Text style={styles.body}>Derive photo stand-ins on this device</Text>
+                    <Text style={styles.muted}>
+                      Makes every size of the photos on this phone, while charging or above half
+                      battery. Videos get theirs on a desktop.
+                    </Text>
+                  </View>
+                  <Switch
+                    accessibilityLabel="Derive photo stand-ins on this device"
+                    value={storage.settings.derivePhotoStandIns}
+                    onValueChange={storage.setDerivePhotoStandIns}
+                  />
+                </View>
+              </>
             ) : null}
 
             {/* The person's "Free up space". Originals and larger stand-ins

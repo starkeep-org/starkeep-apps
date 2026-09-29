@@ -66,18 +66,16 @@ export interface TickReport {
  * Named here rather than silently skipped, so the report says which of the
  * graph's seven jobs are actually wired.
  *
- * One job left this list when the phone gained an encoder.
- * `derive-ladder-full` stays: the rungs above `image-medium` are 2560 and 4272
- * pixels on a side, which is real CPU for pixels no phone screen can show, and
- * they remain the work of a node running `sharp`. See
- * `MOBILE_DERIVE_CEILING_LONG_EDGE`.
+ * Empty now. `derive-ladder-cheap` left when the phone gained an encoder, and
+ * `derive-ladder-full` left when the phone took on its own 2560 and canonical
+ * rungs, so a desktop no longer fetches a phone's originals to make them.
  *
  * `derive-ladder-cheap` is bound but still conditional — a build without the
  * native encoder module reports so through {@link TickDeps.deriveRenditions}
  * rather than by appearing here, because that is a property of the binary rather
  * than of the graph.
  */
-export const UNBOUND_JOBS: readonly JobId[] = ["derive-ladder-full"];
+export const UNBOUND_JOBS: readonly JobId[] = [];
 
 export interface TickDeps {
   readonly node: MobileNode;
@@ -124,6 +122,24 @@ export interface TickDeps {
     /** Every original this device holds has now been looked at. */
     complete: boolean;
   } | null>;
+  /**
+   * Make the larger rungs, 2560 and the canonical, one record at a time. Same
+   * null contract as {@link deriveRenditions}. The graph runs it only when
+   * power allows.
+   */
+  readonly deriveFullRenditions?: (signal: {
+    readonly aborted: boolean;
+  }) => Promise<{
+    scanned: number;
+    written: number;
+    failed: number;
+    complete: boolean;
+  } | null>;
+  /**
+   * The person turned background photo derivation off on this device. Both
+   * derive jobs then report that rather than a missing encoder.
+   */
+  readonly photoDerivationOff?: boolean;
   readonly now?: () => number;
   readonly log?: (line: string) => void;
   /**
@@ -334,8 +350,22 @@ async function runJob(
     // device that cannot derive — no camera roll to walk, or no encoder in the
     // binary. Both are ordinary, and neither is a failure.
     case "derive-ladder-cheap": {
+      if (deps.photoDerivationOff) return "photo derivation is off on this device";
       if (!deps.deriveRenditions) return "nothing here derives renditions";
       const outcome = await deps.deriveRenditions(
+        shareOf(options, now, DERIVE_DEADLINE_SHARE),
+      );
+      if (outcome === null) return "this device cannot derive — no encoder, or no camera roll";
+      return (
+        `decoded=${outcome.scanned} rungs=${outcome.written} ` +
+        `failed=${outcome.failed} complete=${outcome.complete}`
+      );
+    }
+
+    case "derive-ladder-full": {
+      if (deps.photoDerivationOff) return "photo derivation is off on this device";
+      if (!deps.deriveFullRenditions) return "nothing here derives the larger rungs";
+      const outcome = await deps.deriveFullRenditions(
         shareOf(options, now, DERIVE_DEADLINE_SHARE),
       );
       if (outcome === null) return "this device cannot derive — no encoder, or no camera roll";

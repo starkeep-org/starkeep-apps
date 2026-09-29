@@ -55,7 +55,6 @@
 
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
-  InteractionManager,
   Pressable,
   Text,
   useWindowDimensions,
@@ -137,14 +136,6 @@ export interface ViewerHost {
    * against exactly the box the style sheet lays out. See `viewerStageBox`.
    */
   readonly onOpenForViewer: (item: LibraryItem, stage: Box) => Promise<LibraryItem>;
-  /**
-   * Keep this record on this device, or stop.
-   *
-   * Returns the state afterwards so the control can reflect it without the
-   * whole library being reloaded for one toggle.
-   */
-  readonly onSetPinned: (recordId: string, pinned: boolean) => boolean;
-  readonly isPinned: (recordId: string) => boolean;
   /**
    * The clip inside a Motion Photo, materialised for one viewing.
    *
@@ -367,8 +358,6 @@ export function useLibraryViewer(
     onFetchRendition,
     onDeriveNow,
     onOpenForViewer,
-    onSetPinned,
-    isPinned,
     onOpenMotion,
   }: ViewerHost,
   items: readonly LibraryItem[],
@@ -400,8 +389,6 @@ export function useLibraryViewer(
   const [item, setItem] = useState<LibraryItem | null>(null);
   /** The key currently being fetched, so the control can say so. */
   const [fetching, setFetching] = useState<string | null>(null);
-  /** Pinned state of the open record, so the toggle is not a round trip. */
-  const [pinned, setPinned] = useState(false);
   /**
    * Which record the viewer is showing, for the async work started on open.
    *
@@ -432,20 +419,7 @@ export function useLibraryViewer(
       // database round trip, and a viewer that waited for one would show a black
       // screen for the length of it.
       setItem(opened);
-      // Reset synchronously so the previous record's star does not survive into
-      // this one's frame. The real answer arrives with the deferred lookup
-      // below; `false` for one frame is the same state the modal's fade used to
-      // cover.
-      setPinned(false);
       perf("show:setItem");
-
-      // The pin lookup fills in a control nobody is looking at yet, so it runs
-      // after the interaction rather than in front of the first paint.
-      InteractionManager.runAfterInteractions(() => {
-        if (showing.current !== opened.record.id) return;
-        setPinned(isPinned(opened.record.id));
-        perf("show:pinned");
-      });
 
       void (async () => {
         const stage = stageRef.current;
@@ -489,7 +463,7 @@ export function useLibraryViewer(
         if (!samePicture(better, resolved)) setItem(better);
       })();
     },
-    [isPinned, onOpenForViewer, onFetchRendition, onDeriveNow],
+    [onOpenForViewer, onFetchRendition, onDeriveNow],
   );
 
   /** Where the open record sits in the page, or -1 once a reload has dropped it. */
@@ -531,11 +505,9 @@ export function useLibraryViewer(
       item={item}
       stage={stage}
       busy={item !== null && fetching === item.record.id}
-      pinned={pinned}
       hasPrevious={index > 0}
       hasNext={index >= 0 && index < items.length - 1}
       onStep={step}
-      onTogglePin={(target) => setPinned(onSetPinned(target.record.id, !pinned))}
       onFetch={fetchNow}
       onOpenMotion={onOpenMotion}
       onClose={() => {

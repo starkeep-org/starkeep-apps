@@ -50,6 +50,7 @@ import { createSqliteMotionIndexStore, type MotionIndexStore } from "./media/mot
 import {
   createSqliteScanCursorStore,
   DERIVATION_CURSOR_TABLE,
+  FULL_DERIVATION_CURSOR_TABLE,
   type ScanCursorStore,
 } from "./work/scan-cursor";
 import {
@@ -58,6 +59,7 @@ import {
   type ImportCursorStore,
 } from "./media/import-cursor";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
+import { createDeviceSettingsStore, type DeviceSettings } from "./device-settings";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
 
 /**
@@ -131,12 +133,10 @@ export interface MobileNodeOptions {
     readonly transport: SyncTransport;
     readonly remoteObjectStorage: ObjectStorageAdapter;
   };
-  /** Replicas elsewhere required before "Free up space" removes a file here. */
-  readonly minimumReplicas?: number;
   /**
    * This device's sync-down ceilings — the largest stand-in per category it
    * receives without being asked. The platform's phone row unless the person
-   * changed it: 1280-pixel images, and no video or audio stand-ins.
+   * changed it: 1280-pixel images, and no video stand-ins.
    */
   readonly ceilings?: SyncDownCeilings;
   readonly wallClock?: () => number;
@@ -197,6 +197,23 @@ export interface MobileNode {
    */
   readonly derivationCursor: ScanCursorStore | null;
   /**
+   * How far the full-ladder sweep — 2560 and the canonical — has walked this
+   * device's originals, or null when this node reads no camera roll. Its own
+   * table, because it walks the same aliases at a different pace, and one
+   * cursor would make each sweep skip what the other reached.
+   */
+  readonly fullDerivationCursor: ScanCursorStore | null;
+  /** This device's photo ceiling and derivation switch, as stored. */
+  deviceSettings(): DeviceSettings;
+  /**
+   * Change this device's photo sync-down ceiling. Takes effect at once and
+   * removes nothing: a raised ceiling reaches earlier-declined stand-ins
+   * through the next catalogue scan, which restarts from the top.
+   */
+  setImageCeiling(ceiling: number | null): DeviceSettings;
+  /** Turn this device's background photo derivation on or off. */
+  setDerivePhotoStandIns(on: boolean): DeviceSettings;
+  /**
    * Where the video inside a Motion Photo is, or null when this node reads no
    * camera roll.
    *
@@ -230,7 +247,7 @@ export interface MobileNode {
    * nobody has signed in on. Everything else on this node works regardless.
    */
   readonly engine: SyncEngine | null;
-  /** This node's residency: its ceilings, its pins, and what it holds. */
+  /** This node's residency: its ceilings and what it holds. */
   readonly residency: ResidencyManager;
   /**
    * Run one exchange round. Safe to abandon; the watermark makes it resumable.
@@ -260,8 +277,7 @@ export interface MobileNode {
   sync(options?: SyncOptions): Promise<SyncResult | null>;
   /**
    * Work through the acquisition queue: fetch files this device wants and
-   * lacks — stand-ins a raised ceiling now covers, pinned records, bytes that
-   * went missing — until the tick's byte cap runs out.
+   * lacks — stand-ins a raised ceiling now covers, bytes that went missing — until the tick's byte cap runs out.
    *
    * Serialized with {@link sync} for the same reason everything else here is —
    * one engine, one operation at a time.
@@ -330,16 +346,6 @@ export interface MobileNode {
     readonly scope: "originals" | "originals-and-above-ceiling";
     readonly dryRun?: boolean;
   }): Promise<FreeUpSpaceReport>;
-  /**
-   * Keep this record on this device, or stop doing so. A pinned file arrives
-   * even above this device's ceiling, and "Free up space" skips it.
-   *
-   * Node-local and deliberately not a label: a pin shared as a label would let
-   * one device's preference silently rewrite every other device's residency.
-   * A pin does not beat a record constraint.
-   */
-  setPinned(recordId: string, pinned: boolean): void;
-  isPinned(recordId: string): boolean;
   /**
    * What this node holds, by kind of file.
    *
@@ -417,6 +423,17 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         table: DERIVATION_CURSOR_TABLE,
       })
     : null;
+  const fullDerivationCursor = options.deviceMedia
+    ? createSqliteScanCursorStore({
+        db: databaseAdapter.getRawDatabase(),
+        table: FULL_DERIVATION_CURSOR_TABLE,
+      })
+    : null;
+  const settings = createDeviceSettingsStore({ db: databaseAdapter.getRawDatabase() });
+  const ceilingsFor = (s: DeviceSettings): SyncDownCeilings => ({
+    ...DEFAULT_SYNC_DOWN_CEILINGS.phone,
+    image: s.imageCeiling,
+  });
   // Built on the same condition, because import is the only writer and import
   // is what a camera roll makes possible. See `media/motion-index.ts`.
   const motionIndex = options.deviceMedia
@@ -458,12 +475,11 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     // about cloud storage; a handset holding such a record is the intended
     // outcome, not a violation.
     isCloudNode: false,
-    ceilings: options.ceilings ?? DEFAULT_SYNC_DOWN_CEILINGS.phone,
+    ceilings: options.ceilings ?? ceilingsFor(settings.get()),
     // A camera-roll photograph is an alias: the overlay answers `has()` for
     // it, but its bytes are the media store's. Removing the key would drop
     // the alias and free nothing, so "Free up space" never offers it.
     ...(mediaAliases ? { borrowsBytes: (key: string) => mediaAliases.get(key) !== null } : {}),
-    durability: { minimumReplicas: options.minimumReplicas ?? 1 },
   });
 
   // No cloud, no engine. Not a stub or an offline transport that queues: there
@@ -527,9 +543,22 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     importCursor,
     videoDurationCursor,
     derivationCursor,
+    fullDerivationCursor,
     motionIndex,
     engine,
     residency,
+    deviceSettings: () => settings.get(),
+    setImageCeiling(ceiling) {
+      const next = settings.update({ imageCeiling: ceiling });
+      residency.setCeilings(ceilingsFor(next));
+      // From the top, so the next scan reaches every stand-in the new ceiling
+      // covers rather than only those past where the last scan stopped.
+      scanCursor.set(null);
+      return next;
+    },
+    setDerivePhotoStandIns(on) {
+      return settings.update({ derivePhotoStandIns: on });
+    },
     exchange: async () => (engine ? serialized(() => engine.exchange()) : null),
     sync: async (syncOptions) =>
       engine ? serialized(() => engine.sync(syncOptions)) : null,
@@ -609,14 +638,6 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         ? [{ nodeId: "cloud", storage: options.cloud.remoteObjectStorage }]
         : [];
       return residency.freeUpSpace({ ...request, probes });
-    },
-
-    setPinned(recordId, pinned) {
-      residency.setPinned(recordId, pinned);
-    },
-
-    isPinned(recordId) {
-      return residency.isPinned(recordId);
     },
 
     storageReport() {

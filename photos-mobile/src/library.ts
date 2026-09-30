@@ -49,6 +49,7 @@ import {
   type DataRecord,
   type MetadataRow,
   type StarkeepId,
+  type StandInStandards,
 } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter, Query, SortField } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
@@ -89,6 +90,11 @@ export interface LibraryDeps {
    * photograph nobody has scanned yet. Nothing else on the tile depends on it.
    */
   readonly motionIndex?: MotionIndexStore | null;
+  /**
+   * The library's stand-in standards, which with each original's stamp decide
+   * which rung answers a tile. Omitted, the platform's defaults.
+   */
+  readonly standards?: () => StandInStandards;
 }
 
 /** One item as the UI needs it: a record, plus where to get a picture. */
@@ -382,6 +388,7 @@ export async function resolveLibraryItems(
         targetFor,
         isResident,
         dimensionsOf,
+        ...(deps.standards ? { standards: deps.standards() } : {}),
       })
     : null;
 
@@ -556,6 +563,7 @@ export async function resolveForViewer(
     target,
     isResident,
     dims,
+    deps.standards?.(),
   );
 
   const renditionUri = resolved?.paint

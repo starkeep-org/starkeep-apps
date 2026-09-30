@@ -176,6 +176,67 @@ export const STILL_LADDER: readonly StillClassSpec[] = [
 ];
 
 /**
+ * What one original asks of the ladder, read off the platform's stand-in
+ * summary for it.
+ *
+ * The platform judges each original by the threshold stamped on it, so the
+ * canonical rung's size and the standard sizes below it can differ from one
+ * original to the next. Every rule below takes this optionally: without it,
+ * they answer from the platform's default threshold, which is what an original
+ * with no summary yet is judged by.
+ */
+export interface StandInTarget {
+  /** The canonical stand-in's fidelity, or null when the original takes none. */
+  readonly canonical: number | null;
+  /** The smaller standard sizes the original takes, whether made yet or not. */
+  readonly smallerSizes: readonly number[];
+  /** The live canonical stand-in was made for another threshold. */
+  readonly canonicalOutdated: boolean;
+  /** The live canonical stand-in's fidelity, or null when none exists. */
+  readonly currentCanonical: number | null;
+  /**
+   * The library's advisory long edges for video sizes: the canonical one, and
+   * each smaller one by its bitrate. Absent for stills and for a data server
+   * older than the field.
+   */
+  readonly advisoryLongEdges?: { readonly canonical: number; readonly bySize: Readonly<Record<string, number>> };
+}
+
+/** The shape of a stand-in summary this package reads; see the platform's `stand_ins`. */
+export interface StandInSummaryLike {
+  readonly canonical_target?: number | null;
+  readonly canonical_outdated?: boolean;
+  readonly advisory_long_edges?: { readonly canonical: number; readonly by_size: Readonly<Record<string, number>> } | null;
+  readonly status?: string;
+  readonly sizes: ReadonlyArray<{ readonly fidelity: number; readonly role: string; readonly placement?: string }>;
+}
+
+/**
+ * An original's target from its summary. Null for a data server older than
+ * the target, whose summary carries no `canonical_target`.
+ */
+export function standInTargetOf(summary: StandInSummaryLike | null | undefined): StandInTarget | null {
+  if (!summary || summary.canonical_target === undefined) return null;
+  // Nobody has measured the original, so the platform has no answer yet.
+  if (summary.status === "fidelity-unknown") return null;
+  const current = summary.sizes.find((s) => s.role === "canonical" && s.placement !== "missing");
+  return {
+    canonical: summary.canonical_target,
+    smallerSizes: summary.sizes.filter((s) => s.role === "smaller").map((s) => s.fidelity),
+    canonicalOutdated: summary.canonical_outdated === true,
+    currentCanonical: current?.fidelity ?? null,
+    ...(summary.advisory_long_edges
+      ? {
+          advisoryLongEdges: {
+            canonical: summary.advisory_long_edges.canonical,
+            bySize: summary.advisory_long_edges.by_size,
+          },
+        }
+      : {}),
+  };
+}
+
+/**
  * Whether an original of this long edge and size archives behind a canonical
  * stand-in. The platform's rule: past the size floor and above the threshold.
  *
@@ -202,7 +263,17 @@ export function stillTakesCanonical(originalLongEdge: number, sizeBytes?: number
 export function applicableStillClasses(
   originalLongEdge: number,
   sizeBytes?: number | null,
+  target?: StandInTarget | null,
 ): StillClassSpec[] {
+  if (target) {
+    // The platform's answer for this original: its canonical size and the
+    // standard sizes below it, which a lowered threshold narrows.
+    return STILL_LADDER.filter((spec) =>
+      spec.role === "canonical"
+        ? target.canonical !== null
+        : spec.maxLongEdge < originalLongEdge && target.smallerSizes.includes(spec.maxLongEdge),
+    );
+  }
   const canonical = stillTakesCanonical(originalLongEdge, sizeBytes);
   return STILL_LADDER.filter((spec) =>
     spec.role === "canonical" ? canonical : spec.maxLongEdge < originalLongEdge,
@@ -267,7 +338,14 @@ export const CHEAP_TARGET_LONG_EDGE: number = Math.max(
  * rungs all sit below the original, so nothing clamps; the `min` stays as a
  * guard against a caller asking about a rung the original does not take.
  */
-export function renditionLongEdge(spec: StillClassSpec, originalLongEdge: number): number {
+export function renditionLongEdge(
+  spec: StillClassSpec,
+  originalLongEdge: number,
+  target?: StandInTarget | null,
+): number {
+  if (spec.role === "canonical" && target?.canonical != null) {
+    return Math.min(originalLongEdge, target.canonical);
+  }
   return Math.min(originalLongEdge, spec.maxLongEdge);
 }
 
@@ -412,10 +490,22 @@ export function transcodeWouldChangeAnything(
 
 /**
  * The long edge a transcode class emits for a source: the class's advisory
- * long edge, never above the source's own.
+ * long edge — the library's, when the target carries it — never above the
+ * source's own.
  */
-export function transcodeLongEdge(spec: VideoClassSpec, source: Pick<VideoSource, "longEdge">): number {
-  return Math.min(spec.maxLongEdge, source.longEdge);
+export function transcodeLongEdge(
+  spec: VideoClassSpec,
+  source: Pick<VideoSource, "longEdge">,
+  target?: StandInTarget | null,
+): number {
+  const edges = target?.advisoryLongEdges;
+  const advisory =
+    spec.kind !== "transcode" || !edges
+      ? spec.maxLongEdge
+      : spec.role === "canonical"
+        ? edges.canonical
+        : (edges.bySize[String(spec.targetKbps)] ?? spec.maxLongEdge);
+  return Math.min(advisory, source.longEdge);
 }
 
 /**
@@ -486,6 +576,7 @@ export function skimDurationSeconds(durationSeconds: number): number {
 export function applicableVideoClasses(
   source: VideoSource,
   enabledOptional: readonly SizeClass[] = [],
+  target?: StandInTarget | null,
 ): VideoClassSpec[] {
   void enabledOptional;
   const out: VideoClassSpec[] = [];
@@ -502,7 +593,15 @@ export function applicableVideoClasses(
       if (index === 0 || source.longEdge > posters[index - 1]!.maxLongEdge) out.push(spec);
       continue;
     }
-    // Transcodes: the canonical one always, the smaller one below the source.
+    // Transcodes: the canonical one whenever the platform expects one, the
+    // smaller one below the source — and, when the platform has said, only at
+    // a size it lists for this original.
+    if (target) {
+      if (spec.role === "canonical" ? target.canonical !== null : target.smallerSizes.includes(spec.targetKbps!)) {
+        out.push(spec);
+      }
+      continue;
+    }
     if (transcodeWouldChangeAnything(spec, source)) out.push(spec);
   }
   return out;
@@ -523,15 +622,32 @@ export interface StandInFields {
  * a still, its bitrate in kbps for a video — or null for a poster or a skim,
  * which are derived records.
  */
-export function standInFieldsFor(sizeClass: SizeClass, sourceFidelity: number | null): StandInFields | null {
+export function standInFieldsFor(
+  sizeClass: SizeClass,
+  sourceFidelity: number | null,
+  canonicalTarget?: number | null,
+): StandInFields | null {
   const still = STILL_LADDER.find((spec) => spec.sizeClass === sizeClass);
-  if (still) return { role: still.role, fidelity: still.maxLongEdge };
+  if (still) {
+    const fidelity = still.role === "canonical" && canonicalTarget != null ? canonicalTarget : still.maxLongEdge;
+    return { role: still.role, fidelity };
+  }
   const video = VIDEO_LADDER.find((spec) => spec.sizeClass === sizeClass);
   if (video?.kind === "transcode" && video.role) {
-    return { role: video.role, fidelity: transcodeKbps(video, sourceFidelity) };
+    const fidelity =
+      video.role === "canonical" && canonicalTarget != null ? canonicalTarget : transcodeKbps(video, sourceFidelity);
+    return { role: video.role, fidelity };
   }
   return null;
 }
+
+/** The still rung that is an original's canonical stand-in. */
+export const CANONICAL_STILL_CLASS: SizeClass = STILL_LADDER.find((s) => s.role === "canonical")!.sizeClass;
+
+/** The transcode that is a video original's canonical stand-in. */
+export const CANONICAL_VIDEO_CLASS: SizeClass = VIDEO_LADDER.find(
+  (v) => v.kind === "transcode" && v.role === "canonical",
+)!.sizeClass;
 
 /**
  * The rung a platform stand-in is, read back — the inverse of
@@ -548,6 +664,9 @@ export function classForStandIn(
     if (!spec) return null;
     return role === "canonical" || fidelity === spec.targetKbps ? spec.sizeClass : null;
   }
+  // The canonical stand-in is `image-large` at whatever threshold its
+  // original is judged by; a smaller one is the rung of its exact size.
+  if (role === "canonical") return STILL_LADDER.find((s) => s.role === "canonical")!.sizeClass;
   return STILL_LADDER.find((s) => s.role === role && s.maxLongEdge === fidelity)?.sizeClass ?? null;
 }
 

@@ -38,6 +38,8 @@ class FakePlane {
   /** The original's fidelity, as reported to the fidelity route. */
   reportedFidelity: number | null = null;
   uploads = 0;
+  /** When set, a canonical registration answers as the platform does for one no smaller than its original. */
+  refuseCanonicalAsNotSmaller = false;
 
   constructor(readonly parentId: string) {}
 
@@ -76,6 +78,9 @@ class FakePlane {
     }
     if (path === "/data/records") {
       const standIn = body.standIn as { role: "canonical" | "smaller"; fidelity: number };
+      if (standIn.role === "canonical" && this.refuseCanonicalAsNotSmaller) {
+        return json({ selfCanonical: true, original: { id: this.parentId, self_canonical: true } });
+      }
       const sizeClass = classForStandIn("image", standIn.role, standIn.fidelity)!;
       this.renditions.push(sizeClass);
       this.standIns[sizeClass] = body as never;
@@ -378,5 +383,80 @@ describe("the platform's stand-in rules, as Photos applies them", () => {
       recordId: "ELSEWHERE",
       reused: true,
     });
+  }, 60_000);
+});
+
+describe("each original's own target", () => {
+  const summary = (over: Record<string, unknown> = {}) => ({
+    category: "image",
+    fidelity: 4372,
+    status: "archivable",
+    top: 3200,
+    canonical_target: 3200,
+    canonical_outdated: false,
+    sizes: [320, 640, 1280, 2560].map((fidelity) => ({ fidelity, role: "smaller", placement: "missing", record_id: null })),
+    ...over,
+  });
+
+  it("makes the canonical stand-in at the threshold stamped on the original", async () => {
+    await run({ parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", standIns: summary() } });
+    expect(plane.standIns["image-large"]!.standIn).toEqual({ role: "canonical", fidelity: 3200 });
+  }, 60_000);
+
+  it("makes no canonical stand-in when the platform expects none", async () => {
+    await run({
+      parent: {
+        id: "REC1",
+        originalFilename: "photo.jpg",
+        mimeType: "image/jpeg",
+        standIns: summary({ status: "self-canonical", canonical_target: null }),
+      },
+    });
+    expect(plane.renditions).not.toContain("image-large");
+    expect(plane.renditions.length).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("never makes a size the summary does not list", async () => {
+    const listed = summary({
+      sizes: [640, 1280].map((fidelity) => ({ fidelity, role: "smaller", placement: "missing", record_id: null })),
+    });
+    await run({ parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", standIns: listed } });
+    expect(plane.renditions.sort()).toEqual(["image-large", "image-medium", "image-thumb"].sort());
+  }, 60_000);
+
+  it("makes a lowered canonical stand-in from the current one, without the original", async () => {
+    // Everything exists; the canonical stand-in was made at the old 4272.
+    plane.renditions.push(...STILL_LADDER.map((s) => s.sizeClass));
+    plane.metadata = { width: 4372, height: 3279, thumb_hash: "hash", exif_present: true };
+    const outdated = summary({
+      canonical_target: 2560,
+      canonical_outdated: true,
+      top: 4272,
+      sizes: [
+        ...[320, 640, 1280].map((fidelity) => ({ fidelity, role: "smaller", placement: "here", record_id: `S${fidelity}` })),
+        { fidelity: 4272, role: "canonical", placement: "here", record_id: "OLD" },
+      ],
+    });
+    let canonicalLoads = 0;
+    const result = await run({
+      parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", fidelity: 4372, standIns: outdated },
+      loadCanonical: async () => {
+        canonicalLoads += 1;
+        return source;
+      },
+    });
+    expect(result.outcome).toBe("complete");
+    expect(canonicalLoads).toBe(1);
+    expect(loads).toBe(0);
+    expect(plane.standIns["image-large"]!.standIn).toEqual({ role: "canonical", fidelity: 2560 });
+  }, 60_000);
+
+  it("takes the platform's self-canonical answer as the end of the canonical rung", async () => {
+    plane.refuseCanonicalAsNotSmaller = true;
+    const result = await run({
+      parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", standIns: summary() },
+    });
+    expect(result.outcome).toBe("complete");
+    expect(result.published.find((p) => p.sizeClass === "image-large")).toMatchObject({ selfCanonical: true });
   }, 60_000);
 });

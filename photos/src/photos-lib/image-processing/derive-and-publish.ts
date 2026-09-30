@@ -44,7 +44,11 @@ import {
   CHEAP_STILL_CLASSES,
   applicableStillClasses,
   classForTargetLongEdge,
+  CANONICAL_STILL_CLASS,
+  standInTargetOf,
   type SizeClass,
+  type StandInSummaryLike,
+  type StandInTarget,
 } from "../ladder";
 import { extractExif } from "../metadata/exif-reader";
 import { exifColumnFacts } from "../metadata/exif-generator";
@@ -92,7 +96,19 @@ export interface DeriveAndPublishParams {
      * decode.
      */
     readonly fidelity?: number | null;
+    /**
+     * The platform's stand-in summary for the original. Its canonical target
+     * and standard sizes decide what this derives; omitted, the platform's
+     * default threshold does.
+     */
+    readonly standIns?: StandInSummaryLike | null;
   };
+  /**
+   * Fetches the bytes of the original's current canonical stand-in. Used when
+   * the canonical stand-in is outdated and the new target is smaller: the
+   * replacement is derived from it, so the original need not be downloaded.
+   */
+  readonly loadCanonical?: () => Promise<Uint8Array>;
   /**
    * Fetches the original's bytes. Called at most once, and only when there is
    * work that needs them — a record whose ladder and metadata are already
@@ -168,10 +184,33 @@ export async function deriveAndPublish(
       : existingRenditionClasses(signedFetch, parent.id),
     readParentMetadata(signedFetch, parent.id),
   ]);
-  const already = recorded;
+  const target = standInTargetOf(parent.standIns);
   const wanted = params.onlyRenditionClasses
     ? new Set(params.onlyRenditionClasses)
     : requestedClasses(params.targetLongEdge);
+  // An outdated canonical stand-in still answers reads, but it is not the rung
+  // this original is judged by now, so it counts as missing.
+  let already = target?.canonicalOutdated ? recorded.filter((c) => c !== CANONICAL_CLASS) : recorded;
+  const published: PublishedRendition[] = [];
+
+  // A lowered target is derived from the current canonical stand-in, which
+  // holds every pixel the new one needs — no download of the original.
+  if (
+    target?.canonicalOutdated &&
+    target.canonical !== null &&
+    target.currentCanonical !== null &&
+    target.canonical < target.currentCanonical &&
+    params.loadCanonical &&
+    wanted.has(CANONICAL_CLASS)
+  ) {
+    try {
+      published.push(...(await replaceFromCanonical(params, target)));
+      already = [...already, CANONICAL_CLASS];
+    } catch (err) {
+      await noteAttempt(params, priorAttempt, "transient-failure", (err as Error).message);
+      return { outcome: "publish-failed", published, skipped: [], detail: (err as Error).message };
+    }
+  }
 
   // Dimensions on the parent are what let this answer "is there anything to
   // do?" without a decode. A record that has never been derived has none, so
@@ -179,7 +218,7 @@ export async function deriveAndPublish(
   const storedLongEdge = Math.max(metadata?.width ?? 0, metadata?.height ?? 0);
   const metadataComplete = storedLongEdge > 0 && Boolean(metadata?.thumb_hash);
   const missing = metadataComplete
-    ? applicableStillClasses(storedLongEdge, parent.sizeBytes)
+    ? applicableStillClasses(storedLongEdge, parent.sizeBytes, target)
         .map((s) => s.sizeClass)
         .filter((c) => !already.includes(c) && wanted.has(c))
     : null;
@@ -193,7 +232,7 @@ export async function deriveAndPublish(
     // original hot is cheap while leaving it un-archivable is permanent.
     return {
       outcome: "complete",
-      published: [],
+      published,
       skipped: [...already] as SizeClass[],
     };
   }
@@ -224,15 +263,15 @@ export async function deriveAndPublish(
   await writeParentFacts(signedFetch, parent.id, decoded, sourceBytes, metadata);
   await reportOriginalFidelity(signedFetch, parent.id, decoded.source.longEdge);
 
-  const toDerive = applicableStillClasses(decoded.source.longEdge, parent.sizeBytes)
+  const toDerive = applicableStillClasses(decoded.source.longEdge, parent.sizeBytes, target)
     .map((s) => s.sizeClass)
     .filter((c) => !already.includes(c) && wanted.has(c));
 
-  const published: PublishedRendition[] = [];
   try {
     for await (const rendition of deriveStillLadderStream(decoded, {
       only: toDerive,
       sourceSizeBytes: parent.sizeBytes ?? null,
+      target,
       ...(params.codec ? { codec: params.codec } : {}),
     })) {
       const contentHash = createHash("sha256").update(rendition.data).digest("hex");
@@ -245,6 +284,7 @@ export async function deriveAndPublish(
             // Reported to the platform as the original's fidelity with every
             // rung; the platform records it the first time.
             sourceFidelity: decoded.source.longEdge,
+            canonicalTarget: target?.canonical ?? null,
           },
           rendition,
           contentHash,
@@ -271,6 +311,47 @@ export async function deriveAndPublish(
     published,
     skipped: already.filter((c) => wanted.has(c as SizeClass)) as SizeClass[],
   };
+}
+
+/** The rung that is an original's canonical stand-in. */
+const CANONICAL_CLASS: SizeClass = CANONICAL_STILL_CLASS;
+
+/**
+ * Derive a lowered canonical stand-in from the current one, and publish it.
+ *
+ * The current canonical stand-in is larger than the new target, so it holds
+ * every pixel the replacement needs. Its dimensions are not the original's, so
+ * nothing about the original is written from this decode; the original's
+ * recorded fidelity is what the platform checks the replacement against, and
+ * the write swaps the two stand-ins.
+ */
+async function replaceFromCanonical(
+  params: DeriveAndPublishParams,
+  target: StandInTarget,
+): Promise<PublishedRendition[]> {
+  const decoded = await decodeForDerivation(await params.loadCanonical!(), { target });
+  const published: PublishedRendition[] = [];
+  for await (const rendition of deriveStillLadderStream(decoded, {
+    only: [CANONICAL_CLASS],
+    target,
+    ...(params.codec ? { codec: params.codec } : {}),
+  })) {
+    const contentHash = createHash("sha256").update(rendition.data).digest("hex");
+    published.push(
+      await publishRendition(
+        params.signedFetch,
+        {
+          id: params.parent.id,
+          originalFilename: params.parent.originalFilename,
+          canonicalTarget: target.canonical,
+        },
+        rendition,
+        contentHash,
+        dataRecordObjectKey("image", contentHash),
+      ),
+    );
+  }
+  return published;
 }
 
 /**

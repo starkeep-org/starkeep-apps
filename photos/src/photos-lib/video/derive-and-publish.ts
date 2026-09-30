@@ -13,8 +13,8 @@ import type { RenditionParent, PublishedRendition } from "../image-processing/pu
 import { deriveVideoLadder, videoLadderIsComplete, videoSourceOf } from "./derive-video-ladder";
 import { publishVideoFacts, publishVideoRendition } from "./publish-video";
 import { UnsupportedVideoError, type VideoTools } from "./video-tools";
-import type { SizeClass } from "../ladder";
-import { VIDEO_LADDER, videoFidelityKbps } from "../ladder";
+import type { SizeClass, StandInSummaryLike } from "../ladder";
+import { CANONICAL_VIDEO_CLASS, standInTargetOf, VIDEO_LADDER, videoFidelityKbps } from "../ladder";
 
 export interface VideoIngestResult {
   readonly published: readonly PublishedRendition[];
@@ -38,7 +38,22 @@ export interface VideoIngestDeps {
   readonly enabledOptional?: readonly SizeClass[];
   /** Rungs whose bytes this node can serve; supplied by the local sweep. */
   readonly availableRenditionClasses?: readonly SizeClass[];
+  /**
+   * The platform's stand-in summary for the original. Its canonical target
+   * decides the canonical transcode's bitrate and whether the smaller one
+   * applies; omitted, the platform's default threshold does.
+   */
+  readonly standIns?: StandInSummaryLike | null;
+  /**
+   * True when `path` holds the original's current canonical transcode rather
+   * than the original: a lowered target is made from it. Only the canonical
+   * transcode is derived, and nothing about the original is measured from it.
+   */
+  readonly sourceIsCanonical?: boolean;
 }
+
+/** The transcode that is an original's canonical stand-in. */
+const CANONICAL_CLASS: SizeClass = CANONICAL_VIDEO_CLASS;
 
 /**
  * Derive and publish everything a freshly imported video owes.
@@ -57,24 +72,32 @@ export async function deriveAndPublishVideo(
   // What already exists, whoever made it: stand-ins by the platform's columns,
   // posters and skims by Photos' own label. A transcode another node already
   // made is reused rather than repeated — the platform keeps one per size.
-  const existing = deps.availableRenditionClasses
+  const target = standInTargetOf(deps.standIns);
+  const recorded = deps.availableRenditionClasses
     ? [...deps.availableRenditionClasses]
     : await existingRenditionClasses(deps.signedFetch, parent.id);
+  // An outdated canonical transcode still plays, but it is not the one this
+  // original is judged by now.
+  const existing = target?.canonicalOutdated ? recorded.filter((c) => c !== CANONICAL_CLASS) : recorded;
   const missing = new Set<SizeClass>(
     VIDEO_LADDER.map((spec) => spec.sizeClass)
-      .filter((sizeClass) => !existing.includes(sizeClass)),
+      .filter((sizeClass) => !existing.includes(sizeClass))
+      .filter((sizeClass) => !deps.sourceIsCanonical || sizeClass === CANONICAL_CLASS),
   );
-  const result = await deriveVideoLadder(path, deps.tools, deps.enabledOptional ?? [], missing);
+  const result = await deriveVideoLadder(path, deps.tools, deps.enabledOptional ?? [], missing, target);
 
   // Facts first. They are what the grid lays a tile out with, and if publishing
   // is interrupted after this the record is at least coherent — dimensions and
   // duration with no renditions is a video that shows as a correctly-shaped
   // placeholder, whereas renditions with no facts is one the layout cannot
   // place at all.
-  await publishVideoFacts(deps.signedFetch, parent.id, result.facts);
-  // A video's fidelity is its whole-container bitrate in kbps.
-  const sourceFidelity = videoFidelityKbps(videoSourceOf(result.facts));
-  await reportOriginalFidelity(deps.signedFetch, parent.id, sourceFidelity);
+  // A video's fidelity is its whole-container bitrate in kbps. Measured only
+  // from the original: a canonical transcode's facts describe the transcode.
+  const sourceFidelity = deps.sourceIsCanonical ? null : videoFidelityKbps(videoSourceOf(result.facts));
+  if (!deps.sourceIsCanonical) {
+    await publishVideoFacts(deps.signedFetch, parent.id, result.facts);
+    await reportOriginalFidelity(deps.signedFetch, parent.id, sourceFidelity);
+  }
 
   const published: PublishedRendition[] = [];
   const failed = result.failures.map((f) => ({ sizeClass: f.sizeClass, reason: f.reason }));
@@ -88,7 +111,7 @@ export async function deriveAndPublishVideo(
           // The probed bitrate is the original's fidelity, reported with
           // each stand-in, and the bitrate a canonical stand-in below the
           // threshold takes.
-          { ...parent, sourceFidelity },
+          { ...parent, sourceFidelity, canonicalTarget: target?.canonical ?? null },
           rendition,
           contentHash,
           objectStorageKey,
@@ -101,11 +124,14 @@ export async function deriveAndPublishVideo(
     }
   }
 
-  const ladderComplete = videoLadderIsComplete(
-    result.facts,
-    [...existing, ...published.map((p) => p.sizeClass)] as SizeClass[],
-    deps.enabledOptional ?? [],
-  );
+  const ladderComplete = deps.sourceIsCanonical
+    ? published.some((p) => p.sizeClass === CANONICAL_CLASS)
+    : videoLadderIsComplete(
+        result.facts,
+        [...existing, ...published.map((p) => p.sizeClass)] as SizeClass[],
+        deps.enabledOptional ?? [],
+        target,
+      );
 
   // Archiving is the platform's decision: once the canonical transcode reaches
   // the cloud, the platform tags the original itself.

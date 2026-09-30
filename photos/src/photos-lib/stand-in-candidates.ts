@@ -14,7 +14,14 @@
  * own `photos/derived` label, and they are appended as they arrive.
  */
 
-import { classForStandIn, transcodeLongEdge, VIDEO_LADDER, type SizeClass } from "./ladder";
+import {
+  classForStandIn,
+  standInTargetOf,
+  transcodeLongEdge,
+  VIDEO_LADDER,
+  type SizeClass,
+  type StandInTarget,
+} from "./ladder";
 
 /** One size of an original, as `stand_ins.sizes[]` carries it. */
 export interface WireStandInSize {
@@ -32,6 +39,12 @@ export interface WireStandInSummary {
   readonly fidelity: number | null;
   readonly status: "archivable" | "self-canonical" | "video-below-floor" | "fidelity-unknown";
   readonly top: number | null;
+  /** The fidelity the canonical stand-in should report now. Absent on older servers. */
+  readonly canonical_target?: number | null;
+  /** The live canonical stand-in was made for another threshold. */
+  readonly canonical_outdated?: boolean;
+  /** The library's advisory long edges, for video. */
+  readonly advisory_long_edges?: { readonly canonical: number; readonly by_size: Readonly<Record<string, number>> } | null;
   readonly sizes: readonly WireStandInSize[];
   /**
    * Where the original's own bytes sit on the node that answered. Optional
@@ -97,6 +110,7 @@ export function candidatesFromStandIns(
   if (!category) return [];
   const width = record.metadata?.width ?? 0;
   const height = record.metadata?.height ?? 0;
+  const target = standInTargetOf(summary);
 
   const out: VariantCandidate[] = [];
   for (const size of summary.sizes) {
@@ -107,7 +121,7 @@ export function candidatesFromStandIns(
     // A stand-in at a standard size this ladder does not name is another
     // app's; Photos neither resolves to it nor counts it as a rung it has.
     if (!label) continue;
-    const longEdge = category === "video" ? videoLongEdge(label, width, height) : size.fidelity;
+    const longEdge = category === "video" ? videoLongEdge(label, width, height, target) : size.fidelity;
     out.push({
       id: size.record_id,
       type: size.type,
@@ -145,11 +159,11 @@ export function withStandInCandidates<
  * comes from the rung it is: the rung's advisory long edge, never above the
  * original's own. With no stored dimensions the rung's advisory edge stands.
  */
-function videoLongEdge(label: string, width: number, height: number): number {
+function videoLongEdge(label: string, width: number, height: number, target: StandInTarget | null): number {
   const spec = VIDEO_LADDER.find((v) => v.sizeClass === (label as SizeClass));
   const sourceLongEdge = Math.max(width, height);
   if (!spec) return sourceLongEdge;
-  return sourceLongEdge > 0 ? transcodeLongEdge(spec, { longEdge: sourceLongEdge }) : spec.maxLongEdge;
+  return transcodeLongEdge(spec, { longEdge: sourceLongEdge > 0 ? sourceLongEdge : Number.MAX_SAFE_INTEGER }, target);
 }
 
 /**

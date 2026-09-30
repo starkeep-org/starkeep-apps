@@ -244,7 +244,7 @@ export async function deriveAndPublish(
             originalFilename: parent.originalFilename,
             // Reported to the platform as the original's fidelity with every
             // rung; the platform records it the first time.
-            sourceLongEdge: decoded.source.longEdge,
+            sourceFidelity: decoded.source.longEdge,
           },
           rendition,
           contentHash,

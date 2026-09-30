@@ -17,7 +17,9 @@
 
 import {
   applicableVideoClasses,
+  transcodeKbps,
   transcodeLongEdge,
+  videoFidelityKbps,
   VIDEO_STAND_IN_CRF,
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
@@ -160,12 +162,13 @@ async function deriveOne(
       };
     }
     case "transcode": {
-      // A stand-in: VP9 WebM at the platform's constant quality, at the
-      // class's standard size — or at the source's own long edge for a
-      // canonical stand-in below the threshold, which is never upscaled.
+      // A stand-in: VP9 WebM in constrained quality, at the class's target
+      // bitrate — or the source's own for a canonical stand-in below the
+      // threshold — and at the class's advisory long edge, never upscaled.
       const out = await tools.transcode(path, {
         maxLongEdge: transcodeLongEdge(spec, source),
         crf: VIDEO_STAND_IN_CRF,
+        targetKbps: transcodeKbps(spec, videoFidelityKbps(source)),
       });
       return {
         sizeClass: spec.sizeClass,

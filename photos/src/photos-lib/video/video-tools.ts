@@ -47,8 +47,8 @@ export interface PosterOptions {
 }
 
 /**
- * A video stand-in, to the platform's video standard: VP9 in WebM at a
- * constant quality, with an Opus track.
+ * A video stand-in, to the platform's video standard: VP9 in WebM in
+ * constrained-quality mode, with an Opus track.
  *
  * VP9 rather than H.264 because the standard ranks wide support and freedom
  * from licensing first — H.264 encoders carry licensing obligations — and VP9
@@ -58,11 +58,16 @@ export interface PosterOptions {
 export interface TranscodeOptions {
   readonly maxLongEdge: number;
   /**
-   * libvpx-vp9 constant quality, 0–63, lower is better. Paired with a zero
-   * bitrate, which is what selects constant-quality mode: a nonzero bitrate
-   * caps the file and drops busy scenes below the platform's minimum quality.
+   * libvpx-vp9 quality, 0–63, lower is better. Paired with a nonzero bitrate,
+   * which selects constrained-quality mode: the CRF sets the quality a scene
+   * aims for and the bitrate caps what a busy scene may spend.
    */
   readonly crf: number;
+  /**
+   * The stand-in's target bitrate in kbps over the whole container — its
+   * reported fidelity. The encoder lands near it, not on it.
+   */
+  readonly targetKbps: number;
 }
 
 /**
@@ -74,8 +79,26 @@ export const STAND_IN_KEYFRAME_SECONDS = 3;
 /** The highest frame rate a stand-in keeps; faster sources are reduced to it. */
 export const STAND_IN_MAX_FPS = 60;
 
-/** The Opus bitrate for a video stand-in's audio track. */
-export const STAND_IN_AUDIO_BITRATE = "128k";
+/** The Opus bitrate for a video stand-in's audio track, in kbps. */
+export const STAND_IN_AUDIO_KBPS = 128;
+
+/** The Opus bitrate for a video stand-in's audio track, as ffmpeg takes it. */
+export const STAND_IN_AUDIO_BITRATE = `${STAND_IN_AUDIO_KBPS}k`;
+
+/**
+ * The video stream's share of a whole-container target, in kbps.
+ *
+ * A fidelity counts the whole file, because an original's is measured over the
+ * whole file, audio included — and `-b:v` sets the video stream alone. Without
+ * the subtraction a stand-in labelled 3000 kbps runs near 3128 and can outgrow
+ * a 3000 kbps original. A source with no audio yields a stand-in with none, so
+ * the whole target goes to the picture. Never below half the target, so a
+ * pathological sub-audio-bitrate source still gets a picture.
+ */
+export function videoStreamKbps(targetKbps: number, hasAudio: boolean): number {
+  if (!hasAudio) return targetKbps;
+  return Math.max(targetKbps - STAND_IN_AUDIO_KBPS, Math.round(targetKbps / 2));
+}
 
 export interface SkimOptions {
   readonly maxLongEdge: number;
@@ -348,14 +371,14 @@ export function createFfmpegTools(options: FfmpegToolsOptions = {}): VideoTools 
 
 /**
  * The ffmpeg arguments for a video stand-in. Exported so a test can pin the
- * standard — codec, container, constant quality, no bitrate cap — without
- * running an encoder.
+ * standard — codec, container, CRF, target bitrate — without running an
+ * encoder.
  */
 export function transcodeArgs(
   path: string,
   out: string,
   opts: TranscodeOptions,
-  facts: Pick<VideoFacts, "rotation" | "width" | "height">,
+  facts: Pick<VideoFacts, "rotation" | "width" | "height" | "audioCodec">,
 ): string[] {
   return [
     "-y",
@@ -365,8 +388,8 @@ export function transcodeArgs(
     "-fpsmax", String(STAND_IN_MAX_FPS),
     "-c:v", "libvpx-vp9",
     "-crf", String(opts.crf),
-    // Zero is what selects constant-quality mode; see TranscodeOptions.crf.
-    "-b:v", "0",
+    // Nonzero is what selects constrained-quality mode; see TranscodeOptions.crf.
+    "-b:v", `${videoStreamKbps(opts.targetKbps, facts.audioCodec !== null)}k`,
     "-pix_fmt", "yuv420p",
     // Row-based multithreading: VP9 encodes in software on most machines, at
     // about real time for 1080p, and this is most of what makes it that fast.

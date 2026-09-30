@@ -39,15 +39,25 @@ describe("Photos' ladder restates the platform's standards", () => {
     expect(STAND_IN_MIN_QUALITY).toBe(image.minimumQuality!.value);
   });
 
-  it("uses the video canonical threshold, standard sizes and CRF", () => {
+  it("uses the video canonical threshold, standard sizes and CRF, in kbps", () => {
+    expect(video.fidelityAxis).toBe("kbps");
     expect(VIDEO_CANONICAL_THRESHOLD).toBe(video.canonicalThreshold);
     const transcodes = VIDEO_LADDER.filter((v) => v.kind === "transcode");
-    expect(transcodes.filter((v) => v.role === "smaller").map((v) => v.maxLongEdge)).toEqual([
+    expect(transcodes.filter((v) => v.role === "smaller").map((v) => v.targetKbps)).toEqual([
       ...video.standardSizes,
     ]);
-    expect(transcodes.filter((v) => v.role === "canonical").map((v) => v.maxLongEdge)).toEqual([
+    expect(transcodes.filter((v) => v.role === "canonical").map((v) => v.targetKbps)).toEqual([
       video.canonicalThreshold,
     ]);
     expect(VIDEO_STAND_IN_CRF).toBe(video.minimumQuality!.value);
+  });
+
+  it("encodes each video size at the platform's advisory long edge", () => {
+    const edges = video.advisoryLongEdges!;
+    const transcodes = VIDEO_LADDER.filter((v) => v.kind === "transcode");
+    for (const spec of transcodes) {
+      const advisory = spec.role === "canonical" ? edges.canonical : edges.bySize[spec.targetKbps!];
+      expect(spec.maxLongEdge, spec.sizeClass).toBe(advisory);
+    }
   });
 });

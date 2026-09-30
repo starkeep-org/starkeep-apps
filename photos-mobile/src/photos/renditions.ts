@@ -30,7 +30,7 @@
  * belongs below this boundary rather than above it.
  */
 
-import type { DataRecord, MetadataRow, StarkeepId } from "@starkeep/protocol-primitives";
+import { typeCategory, type DataRecord, type MetadataRow, type StarkeepId } from "@starkeep/protocol-primitives";
 import { loadStandInsForPage } from "@starkeep/storage-adapter";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import {
@@ -166,7 +166,10 @@ export async function resolveLibraryRenditions(
       candidates.push(child);
       if (options.isResident(key)) resident.push(child);
     };
-    for (const c of standInsByParent.get(record.id) ?? []) {
+    // Only a still's stand-in fidelity is a long edge; a video stand-in's is a
+    // bitrate, and a VP9 file is nothing a tile can paint anyway.
+    const stills = typeCategory(record.type) === "image";
+    for (const c of stills ? (standInsByParent.get(record.id) ?? []) : []) {
       // A stand-in's fidelity is its long edge. One with no key names no bytes.
       if (c.fidelity === null || !c.objectStorageKey) continue;
       add(c.id, c.fidelity, c.type, c.objectStorageKey);

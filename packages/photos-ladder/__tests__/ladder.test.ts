@@ -26,6 +26,9 @@ import {
   IMAGE_CANONICAL_THRESHOLD,
   STAND_IN_MIN_QUALITY,
   VIDEO_CANONICAL_THRESHOLD,
+  VIDEO_SMALLER_KBPS,
+  transcodeKbps,
+  videoFidelityKbps,
   VIDEO_STAND_IN_CRF,
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
@@ -165,25 +168,54 @@ describe("video — transcodes are stand-ins", () => {
     }
   });
 
-  it("puts the canonical stand-in at the video's own long edge up to the threshold", () => {
+  it("never encodes above the source's own long edge", () => {
     expect(transcodeLongEdge(canonical, { longEdge: 1280 })).toBe(1280);
-    expect(transcodeLongEdge(canonical, { longEdge: 3840 })).toBe(VIDEO_CANONICAL_THRESHOLD);
-    expect(standInFieldsFor(canonical.sizeClass, 1440)).toEqual({ role: "canonical", fidelity: 1440 });
+    expect(transcodeLongEdge(canonical, { longEdge: 3840 })).toBe(canonical.maxLongEdge);
+    expect(transcodeLongEdge(smaller, { longEdge: 480 })).toBe(480);
+    expect(transcodeLongEdge(smaller, { longEdge: 3840 })).toBe(smaller.maxLongEdge);
   });
 
-  it("takes the smaller transcode only below the source", () => {
-    expect(videoClassesFor(source({ longEdge: smaller.maxLongEdge }))).not.toContain(smaller.sizeClass);
-    expect(videoClassesFor(source({ longEdge: smaller.maxLongEdge + 1 }))).toContain(smaller.sizeClass);
+  it("puts the canonical stand-in at the video's own bitrate up to the threshold", () => {
+    expect(transcodeKbps(canonical, 3000)).toBe(3000);
+    expect(transcodeKbps(canonical, 12_000)).toBe(VIDEO_CANONICAL_THRESHOLD);
+    expect(standInFieldsFor(canonical.sizeClass, 3000)).toEqual({ role: "canonical", fidelity: 3000 });
+    expect(standInFieldsFor(canonical.sizeClass, 12_000)).toEqual({
+      role: "canonical",
+      fidelity: VIDEO_CANONICAL_THRESHOLD,
+    });
   });
 
-  it("caps no bitrate, and encodes at the platform's constant quality", () => {
-    for (const spec of VIDEO_LADDER) expect("maxBitrate" in spec, spec.sizeClass).toBe(false);
+  it("puts the smaller stand-in at its standard bitrate", () => {
+    expect(transcodeKbps(smaller, 12_000)).toBe(VIDEO_SMALLER_KBPS);
+    expect(standInFieldsFor(smaller.sizeClass, 12_000)).toEqual({ role: "smaller", fidelity: VIDEO_SMALLER_KBPS });
+  });
+
+  it("takes the smaller transcode only below the source's bitrate, whatever its resolution", () => {
+    const at = VIDEO_SMALLER_KBPS * 1000;
+    expect(videoClassesFor(source({ bitrate: at }))).not.toContain(smaller.sizeClass);
+    // Rounds to the smaller size's own fidelity, which the platform refuses.
+    expect(videoClassesFor(source({ bitrate: at + 400 }))).not.toContain(smaller.sizeClass);
+    expect(videoClassesFor(source({ bitrate: at + 1000 }))).toContain(smaller.sizeClass);
+    expect(videoClassesFor(source({ longEdge: 480, bitrate: 6_000_000 }))).toContain(smaller.sizeClass);
+    expect(videoClassesFor(source({ bitrate: Number.POSITIVE_INFINITY }))).toContain(smaller.sizeClass);
+  });
+
+  it("measures a video's fidelity in whole kbps", () => {
+    expect(videoFidelityKbps({ bitrate: 4_782_400 })).toBe(4782);
+    expect(videoFidelityKbps({ bitrate: Number.POSITIVE_INFINITY })).toBeNull();
+  });
+
+  it("encodes at the platform's CRF, capped by a target bitrate", () => {
     expect(VIDEO_STAND_IN_CRF).toBe(31);
+    for (const spec of VIDEO_LADDER.filter((v) => v.kind === "transcode")) {
+      expect(spec.targetKbps, spec.sizeClass).toBeGreaterThan(0);
+    }
   });
 
   it("reads a video stand-in back to its rung", () => {
-    expect(classForStandIn("video", "canonical", 1440)).toBe(canonical.sizeClass);
-    expect(classForStandIn("video", "smaller", 1280)).toBe(smaller.sizeClass);
+    expect(classForStandIn("video", "canonical", 3000)).toBe(canonical.sizeClass);
+    expect(classForStandIn("video", "smaller", VIDEO_SMALLER_KBPS)).toBe(smaller.sizeClass);
+    expect(classForStandIn("video", "smaller", 1280)).toBeNull();
   });
 
   it("describes posters and skims as derived records, not stand-ins", () => {

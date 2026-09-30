@@ -58,6 +58,7 @@ import {
   applicableStillClasses,
   renditionLongEdge,
   type SizeClass,
+  type StandInTarget,
   type StillClassSpec,
 } from "../ladder";
 import { decodeSource } from "./decode-source";
@@ -98,6 +99,12 @@ export interface DeriveLadderOptions {
   readonly sourceType?: string;
   /** Used only for HEIC/HEIF; ignored for everything else. */
   readonly platformDecoder?: PlatformDecoder;
+  /**
+   * The original's target from its stand-in summary: the canonical rung's
+   * size and the standard sizes it takes. Omitted, the platform's default
+   * threshold decides.
+   */
+  readonly target?: StandInTarget | null;
   /**
    * The original's size in bytes. With its long edge it decides whether the
    * original archives behind a canonical stand-in — `image-large` — or stands
@@ -219,7 +226,9 @@ export async function decodeForDerivation(
   // display orientation and no later step has to think about it again. The raw
   // buffer carries no EXIF, which is the point: orientation is resolved once,
   // here, and cannot be applied twice by accident.
-  const working = Math.min(source.longEdge, WORKING_LONG_EDGE);
+  // A raised threshold puts the canonical rung above the default top, and the
+  // working image has to hold that many pixels.
+  const working = Math.min(source.longEdge, Math.max(WORKING_LONG_EDGE, options.target?.canonical ?? 0));
   const { data, info } = await sharp(Buffer.from(normalised.bytes))
     .rotate()
     .resize(working, working, {
@@ -261,7 +270,7 @@ function rungsFor(
   decoded: DecodedImage,
   options: DeriveLadderOptions,
 ): StillClassSpec[] {
-  const classes = applicableStillClasses(decoded.source.longEdge, options.sourceSizeBytes);
+  const classes = applicableStillClasses(decoded.source.longEdge, options.sourceSizeBytes, options.target);
   if (!options.only) return classes;
   const wanted = new Set(options.only);
   return classes.filter((c) => wanted.has(c.sizeClass));
@@ -290,7 +299,7 @@ export async function* deriveStillLadderStream(
   const decoded = await asDecoded(input, options);
 
   for (const spec of rungsFor(decoded, options)) {
-    yield await encodeOne(sharp, decoded, spec, codec, type, contentType);
+    yield await encodeOne(sharp, decoded, spec, codec, type, contentType, options.target ?? null);
   }
 }
 
@@ -318,11 +327,12 @@ async function encodeOne(
   codec: NonNullable<DeriveLadderOptions["codec"]>,
   type: string,
   contentType: string,
+  standInTarget: StandInTarget | null,
 ): Promise<DerivedRendition> {
   // Against the *original's* long edge, not the working image's: Rule 1 is
   // about what the source could support, and a working image already clamped to
   // the top rung would make every rung above the clamp resolve to the clamp.
-  const target = renditionLongEdge(spec, decoded.source.longEdge);
+  const target = renditionLongEdge(spec, decoded.source.longEdge, standInTarget);
   const pipeline = fromDecoded(sharp, decoded).resize(target, target, {
     fit: "inside",
     kernel: "lanczos3",
@@ -382,9 +392,10 @@ export function missingRenditionClasses(
   originalLongEdge: number,
   existingClasses: readonly string[],
   sizeBytes?: number | null,
+  target?: StandInTarget | null,
 ): SizeClass[] {
   const have = new Set(existingClasses);
-  return applicableStillClasses(originalLongEdge, sizeBytes)
+  return applicableStillClasses(originalLongEdge, sizeBytes, target)
     .map((s) => s.sizeClass)
     .filter((c) => !have.has(c));
 }

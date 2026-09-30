@@ -710,6 +710,8 @@ export function useLibrary(node: NodeState): LibraryState {
       // media, which marks nothing and is the same answer as an unscanned
       // photograph.
       motionIndex: lease.node.motionIndex,
+      // The library's settings, as this phone last received them.
+      standards: () => lease.node.librarySettings.standards(),
     }),
     [],
   );

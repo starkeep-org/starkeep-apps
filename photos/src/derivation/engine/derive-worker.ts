@@ -55,6 +55,7 @@ import {
   fetchSweepPage,
   fidelityWithoutDecode,
   sweepWork,
+  videoReplacesFromCanonicalHere,
   type SweepRecord,
 } from "../sweep-set";
 import { mayDownloadOriginals, readDerivationConfig } from "../config";
@@ -225,8 +226,12 @@ async function deriveOne(
         mimeType: record.mime_type ?? record.type ?? null,
         sizeBytes: record.size_bytes ?? null,
         ...(record.fidelity !== undefined ? { fidelity: record.fidelity } : {}),
+        ...(record.stand_ins ? { standIns: record.stand_ins } : {}),
       },
       loadSource: () => fetchSourceBytes(creds, record.id),
+      ...(currentCanonicalId(record)
+        ? { loadCanonical: () => fetchSourceBytes(creds, currentCanonicalId(record)!) }
+        : {}),
       // Targeted derivation includes the cheap rungs in its wanted set, while
       // existing-rendition detection keeps later passes disjoint in practice.
       ...(stage === "cheap"
@@ -272,12 +277,17 @@ async function deriveOneVideo(
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "photos-video-source-"));
   const path = join(dir, basename(record.original_filename ?? `${record.id}.video`));
+  // A lowered target is made from the current canonical transcode, which holds
+  // everything the smaller one needs; anything else reads the original.
+  const fromCanonical = videoReplacesFromCanonicalHere(record) ? currentCanonicalId(record) : null;
   try {
-    await downloadSourceFile(creds, record.id, path);
+    await downloadSourceFile(creds, fromCanonical ?? record.id, path);
     const result = await deriveAndPublishVideo(
       path,
       { id: record.id, originalFilename: record.original_filename },
       {
+        ...(record.stand_ins ? { standIns: record.stand_ins } : {}),
+        ...(fromCanonical ? { sourceIsCanonical: true } : {}),
         signedFetch: (requestPath, init) => signedFetch(creds, requestPath, init),
         tools: createFfmpegTools(),
         keyFor: async (bytes, rendition) => {
@@ -336,6 +346,11 @@ async function fetchSourceBytes(creds: AppCredentials, recordId: string): Promis
   const fileRes = await fetch(url);
   if (!fileRes.ok) throw new Error(`file fetch failed: ${fileRes.status}`);
   return new Uint8Array(await fileRes.arrayBuffer());
+}
+
+/** The record id of the original's live canonical stand-in, from its summary. */
+function currentCanonicalId(record: SweepRecord): string | null {
+  return record.stand_ins?.sizes.find((s) => s.role === "canonical" && s.record_id)?.record_id ?? null;
 }
 
 /** Run `limit` at a time, in order, waiting for each group. */

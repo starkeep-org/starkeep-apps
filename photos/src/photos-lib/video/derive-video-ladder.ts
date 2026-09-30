@@ -24,6 +24,7 @@ import {
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
   type SizeClass,
+  type StandInTarget,
   type VideoClassSpec,
   type VideoSource,
 } from "../ladder";
@@ -86,6 +87,7 @@ export async function deriveVideoLadder(
   tools: VideoTools,
   enabledOptional: readonly SizeClass[] = [],
   only?: ReadonlySet<SizeClass>,
+  target?: StandInTarget | null,
 ): Promise<VideoLadderResult> {
   // A missing ffmpeg is terminal, not transient: retrying it every sweep burns
   // the whole run rediscovering that it is still not installed.
@@ -95,7 +97,7 @@ export async function deriveVideoLadder(
 
   const facts = await tools.probe(path);
   const source = videoSourceOf(facts);
-  const classes = applicableVideoClasses(source, enabledOptional).filter(
+  const classes = applicableVideoClasses(source, enabledOptional, target).filter(
     (spec) => only === undefined || only.has(spec.sizeClass),
   );
 
@@ -104,7 +106,7 @@ export async function deriveVideoLadder(
 
   for (const spec of classes) {
     try {
-      renditions.push(await deriveOne(path, tools, spec, source));
+      renditions.push(await deriveOne(path, tools, spec, source, target ?? null));
     } catch (err) {
       // Recorded per class rather than thrown, so one failed transcode does not
       // discard the poster that already succeeded.
@@ -124,6 +126,7 @@ async function deriveOne(
   tools: VideoTools,
   spec: VideoClassSpec,
   source: VideoSource,
+  target: StandInTarget | null,
 ): Promise<DerivedVideoRendition> {
   switch (spec.kind) {
     case "poster": {
@@ -166,9 +169,14 @@ async function deriveOne(
       // bitrate — or the source's own for a canonical stand-in below the
       // threshold — and at the class's advisory long edge, never upscaled.
       const out = await tools.transcode(path, {
-        maxLongEdge: transcodeLongEdge(spec, source),
+        maxLongEdge: transcodeLongEdge(spec, source, target),
         crf: VIDEO_STAND_IN_CRF,
-        targetKbps: transcodeKbps(spec, videoFidelityKbps(source)),
+        // The platform's target for the canonical transcode when it has
+        // said, which is the threshold stamped on the original.
+        targetKbps:
+          spec.role === "canonical" && target?.canonical != null
+            ? target.canonical
+            : transcodeKbps(spec, videoFidelityKbps(source)),
       });
       return {
         sizeClass: spec.sizeClass,
@@ -194,9 +202,10 @@ export function missingVideoClasses(
   facts: VideoFacts,
   existing: readonly SizeClass[],
   enabledOptional: readonly SizeClass[] = [],
+  target?: StandInTarget | null,
 ): SizeClass[] {
   const have = new Set(existing);
-  return applicableVideoClasses(videoSourceOf(facts), enabledOptional)
+  return applicableVideoClasses(videoSourceOf(facts), enabledOptional, target)
     .map((spec) => spec.sizeClass)
     .filter((sizeClass) => !have.has(sizeClass));
 }
@@ -205,6 +214,7 @@ export function videoLadderIsComplete(
   facts: VideoFacts,
   existing: readonly SizeClass[],
   enabledOptional: readonly SizeClass[] = [],
+  target?: StandInTarget | null,
 ): boolean {
-  return missingVideoClasses(facts, existing, enabledOptional).length === 0;
+  return missingVideoClasses(facts, existing, enabledOptional, target).length === 0;
 }

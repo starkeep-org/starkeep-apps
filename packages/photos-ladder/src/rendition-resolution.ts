@@ -47,6 +47,7 @@ import {
   applicableStillClasses,
   renditionLongEdge,
   stillTakesCanonical,
+  type StandInTarget,
   type StillClassSpec,
 } from "./ladder";
 
@@ -119,6 +120,12 @@ export interface ResolveOptions {
   readonly sourceSizeBytes?: number | null;
   readonly candidates: readonly DerivedChild[];
   /**
+   * The original's target from its stand-in summary: its canonical size and
+   * the standard sizes it takes, under the threshold stamped on it. Omitted,
+   * the platform's default threshold decides.
+   */
+  readonly target?: StandInTarget | null;
+  /**
    * Why an unavailable rung is unavailable. Defaults to `pending`, which is
    * what it is on a node that could derive it and simply has not yet.
    */
@@ -145,13 +152,17 @@ export function resolveRendition(
   target: number,
   options: ResolveOptions,
 ): RenditionChoice {
-  const applicable = applicableStillClasses(options.sourceLongEdge, options.sourceSizeBytes);
-  const edges = applicable.map((spec) => effectiveLongEdge(spec, options.sourceLongEdge));
+  const standInTarget = options.target ?? null;
+  const applicable = applicableStillClasses(options.sourceLongEdge, options.sourceSizeBytes, standInTarget);
+  const edges = applicable.map((spec) => effectiveLongEdge(spec, options.sourceLongEdge, standInTarget));
   // A self-canonical original is its own top rung: it serves every size above
   // its largest stand-in, so it is what a large request resolves to — as a
   // candidate at its own long edge, which the caller supplies when it can
   // display the original's format.
-  if (!stillTakesCanonical(options.sourceLongEdge, options.sourceSizeBytes)) {
+  const selfCanonical = standInTarget
+    ? standInTarget.canonical === null
+    : !stillTakesCanonical(options.sourceLongEdge, options.sourceSizeBytes);
+  if (selfCanonical) {
     edges.push(options.sourceLongEdge);
   }
 
@@ -252,8 +263,8 @@ export function resolveWithoutDimensions(
   return out;
 }
 
-function effectiveLongEdge(spec: StillClassSpec, sourceLongEdge: number): number {
-  return renditionLongEdge(spec, sourceLongEdge);
+function effectiveLongEdge(spec: StillClassSpec, sourceLongEdge: number, target: StandInTarget | null): number {
+  return renditionLongEdge(spec, sourceLongEdge, target);
 }
 
 function availableEntry(child: DerivedChild): RenditionEntry {

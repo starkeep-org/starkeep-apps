@@ -44,6 +44,12 @@ export interface RenditionParent {
    * rung lands first carries it.
    */
   readonly sourceFidelity?: number | null;
+  /**
+   * The fidelity the platform expects of this original's canonical stand-in,
+   * from its summary: the threshold stamped on the original, or the original's
+   * own bitrate below it. Omitted, the platform's default threshold decides.
+   */
+  readonly canonicalTarget?: number | null;
 }
 
 /**
@@ -72,6 +78,12 @@ export interface PublishedRendition {
    * exists either way, which is all a caller needs.
    */
   readonly reused?: boolean;
+  /**
+   * True when the platform refused a canonical stand-in no smaller than its
+   * original and marked the original self-canonical instead. Nothing was
+   * stored; the original stands in for itself and needs no canonical rung.
+   */
+  readonly selfCanonical?: boolean;
 }
 
 export class RenditionPublishError extends Error {
@@ -202,7 +214,7 @@ export async function registerStandIn(
     readonly sizeBytes: number;
   },
 ): Promise<PublishedRendition> {
-  const standIn = standInFieldsFor(upload.sizeClass, parent.sourceFidelity ?? null);
+  const standIn = standInFieldsFor(upload.sizeClass, parent.sourceFidelity ?? null, parent.canonicalTarget);
   if (!standIn) {
     throw new RenditionPublishError("register", upload.sizeClass, 0, "not a stand-in rung");
   }
@@ -248,7 +260,17 @@ export async function registerStandIn(
       await createRes.text().catch(() => ""),
     );
   }
-  const { record } = (await createRes.json()) as { record: { id: string } };
+  const created = (await createRes.json()) as { record?: { id: string }; selfCanonical?: boolean };
+  if (created.selfCanonical) {
+    return {
+      sizeClass: upload.sizeClass,
+      recordId: parent.id,
+      contentHash: upload.contentHash,
+      sizeBytes: upload.sizeBytes,
+      selfCanonical: true,
+    };
+  }
+  const record = created.record!;
   return {
     sizeClass: upload.sizeClass,
     recordId: record.id,

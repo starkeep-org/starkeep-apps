@@ -25,6 +25,7 @@
 import { createHLCClock } from "@starkeep/protocol-primitives";
 import { SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
 import {
+  createLibrarySettings,
   createSyncEngine,
   createSqliteSyncStateStore,
   createResidencyManager,
@@ -33,6 +34,7 @@ import {
   scanForAcquirable,
   type AcquisitionOutcome,
   type BlobCandidate,
+  type LibrarySettings,
   type ReplicaProbe,
   type ResidencyManager,
   type FreeUpSpaceReport,
@@ -247,6 +249,12 @@ export interface MobileNode {
    * nobody has signed in on. Everything else on this node works regardless.
    */
   readonly engine: SyncEngine | null;
+  /**
+   * The library's settings, as the settings file this node received says. The
+   * phone never edits the file: it stamps originals with its values, and reads
+   * each original's target from the original's stamp.
+   */
+  readonly librarySettings: LibrarySettings;
   /** This node's residency: its ceilings and what it holds. */
   readonly residency: ResidencyManager;
   /**
@@ -464,6 +472,16 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     db: databaseAdapter.getRawDatabase(),
   });
 
+  // The library's settings file arrives like any other file. A phone with no
+  // cloud is the whole library, so its defaults are the library's value.
+  const librarySettings = createLibrarySettings({
+    db: databaseAdapter,
+    storage: localObjectStorage,
+    clock,
+    cloudConfigured: () => Boolean(options.cloud),
+  });
+  await librarySettings.refresh();
+
   // Every file no stand-in can replace arrives here; stand-ins arrive up to
   // this device's ceiling; everything else waits to be asked for. Nothing is
   // removed except by the person's "Free up space".
@@ -476,6 +494,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     // outcome, not a violation.
     isCloudNode: false,
     ceilings: options.ceilings ?? ceilingsFor(settings.get()),
+    standards: () => librarySettings.standards(),
     // A camera-roll photograph is an alias: the overlay answers `has()` for
     // it, but its bytes are the media store's. Removing the key would drop
     // the alias and free nothing, so "Free up space" never offers it.
@@ -497,8 +516,19 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         maxItems: MOBILE_MAX_ITEMS,
         transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
         residency: residencyHooks(residency),
+        standards: () => librarySettings.standards(),
       })
     : null;
+
+  /** A round may have brought a settings file; read it before anything stamps. */
+  async function afterRound<T>(result: T): Promise<T> {
+    try {
+      await librarySettings.refresh();
+    } catch (err) {
+      console.warn(`[starkeep:settings] could not read the library's settings: ${String(err)}`);
+    }
+    return result;
+  }
 
   /**
    * One engine, one operation at a time — the phone's copy of the rule the
@@ -547,6 +577,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     motionIndex,
     engine,
     residency,
+    librarySettings,
     deviceSettings: () => settings.get(),
     setImageCeiling(ceiling) {
       const next = settings.update({ imageCeiling: ceiling });
@@ -559,9 +590,9 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     setDerivePhotoStandIns(on) {
       return settings.update({ derivePhotoStandIns: on });
     },
-    exchange: async () => (engine ? serialized(() => engine.exchange()) : null),
+    exchange: async () => (engine ? serialized(() => engine.exchange().then(afterRound)) : null),
     sync: async (syncOptions) =>
-      engine ? serialized(() => engine.sync(syncOptions)) : null,
+      engine ? serialized(() => engine.sync(syncOptions).then(afterRound)) : null,
 
     async acquireQueued(acquireOptions) {
       // No cloud means nobody to fetch from.

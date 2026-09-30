@@ -80,11 +80,14 @@ import {
   createDataRecord,
   dataRecordObjectKey,
   DEFAULT_STAND_IN_STANDARDS,
+  stampFor,
   typeCategory,
   type DataRecord,
   type HLCClock,
+  type StandInStandards,
   type StarkeepId,
 } from "@starkeep/protocol-primitives";
+import type { LibrarySettings } from "@starkeep/sync-engine";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { isStandInSlotConflict, loadStandInsForPage } from "@starkeep/storage-adapter";
 import {
@@ -246,6 +249,12 @@ export interface DeriveLadderDeps {
   readonly clock: HLCClock;
   readonly hash: HashBytes;
   readonly encode: ImageEncoder;
+  /**
+   * The library's standards, and whether this node may stamp originals with
+   * them. Absent in a test with no settings, which reads as the platform
+   * defaults and a node that knows them.
+   */
+  readonly librarySettings?: Pick<LibrarySettings, "standards" | "knowsLibraryValue">;
   /** Which app owns the records this writes. Defaults to Photos, which is this app. */
   readonly originAppId?: string;
   /**
@@ -617,11 +626,21 @@ async function recordFidelity(
   const updated: DataRecord = {
     ...record,
     fidelity: sourceLongEdge,
+    // Stamped with the threshold the original is judged by, when this node
+    // knows the library's value; the cloud stamps it otherwise.
+    canonicalThreshold:
+      record.canonicalThreshold ??
+      stampFor(record.type, standardsOf(deps), deps.librarySettings?.knowsLibraryValue() ?? true),
     updatedAt: deps.clock.now(),
     version: record.version + 1,
   };
   await deps.database.put(updated);
   return updated;
+}
+
+/** The library's standards as this node knows them. */
+function standardsOf(deps: DeriveLadderDeps): StandInStandards {
+  return deps.librarySettings?.standards() ?? DEFAULT_STAND_IN_STANDARDS;
 }
 
 /**
@@ -723,7 +742,7 @@ async function publishStandIn(
       parentIdGiven: true,
       existingCanonical: null,
     },
-    DEFAULT_STAND_IN_STANDARDS,
+    standardsOf(deps),
   );
   if (verdict.refusals.length > 0) {
     console.warn(

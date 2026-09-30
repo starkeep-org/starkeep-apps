@@ -841,6 +841,26 @@ describe("deriving one record on demand", () => {
       expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640, 1280, 2560, 4272]);
     });
 
+    it("makes the canonical stand-in at the library's lowered threshold, and no size at or above it", async () => {
+      const lowered = {
+        ...DEFAULT_STAND_IN_STANDARDS,
+        image: { ...DEFAULT_STAND_IN_STANDARDS.image, canonicalThreshold: 2000 },
+      };
+      const parent = await importOriginal({ width: 6000, height: 4000 });
+      const encoder = fakeEncoder({ ceiling: 4272 });
+
+      await deriveForRecord(
+        deps(encoder.encode, { librarySettings: { standards: () => lowered, knowsLibraryValue: () => true } }),
+        parent,
+        4272,
+      );
+
+      expect(await current(parent)).toMatchObject({ canonicalThreshold: 2000 });
+      expect((await rungsOf(parent)).get("image-large")).toMatchObject({ standInRole: "canonical", fidelity: 2000 });
+      // 2560 sits above the stamp, so this original never takes it.
+      expect(encoder.encodes.map((e) => e.maxLongEdge)).toEqual([320, 640, 1280, 2000]);
+    });
+
     it("still refuses a rung that already has a record, however high the ceiling", async () => {
       // The rule the raised ceiling must not reach past. A rung with a record
       // wants its bytes fetched; re-encoding it here would mint a second record

@@ -26,6 +26,9 @@ export {
   transcodeKbps,
   videoFidelityKbps,
   standInFieldsFor,
+  standInTargetOf,
+  CANONICAL_STILL_CLASS,
+  CANONICAL_VIDEO_CLASS,
   classForStandIn,
   type StandInRole,
   type StandInFields,
@@ -33,6 +36,8 @@ export {
   type StillClassSpec,
   type VideoClassSpec,
   type VideoSource,
+  type StandInTarget,
+  type StandInSummaryLike,
 } from "./ladder";
 
 export {

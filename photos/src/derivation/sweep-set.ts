@@ -20,7 +20,10 @@
 import {
   applicableStillClasses,
   applicableVideoClasses,
+  CANONICAL_STILL_CLASS,
+  CANONICAL_VIDEO_CLASS,
   renditionLongEdge,
+  standInTargetOf,
   STILL_LADDER,
   type SizeClass,
 } from "../photos-lib/ladder";
@@ -83,10 +86,42 @@ export function missingClasses(record: SweepRecord): SizeClass[] | "unknown" {
   // would be refused and reused rather than stored; and whether its bytes sit
   // on this node is the platform's residency decision — a stand-in within the
   // node's ceiling arrives by sync, one above it arrives when asked for.
+  //
+  // The platform's target for this original decides the canonical rung's size
+  // and which smaller sizes apply, so an outdated canonical stand-in — made at
+  // another size — leaves the canonical rung missing.
+  const target = standInTargetOf(record.stand_ins);
   const have = new Set((record.variant_candidates ?? []).map((c) => c.long_edge));
-  return applicableStillClasses(sourceLongEdge, record.size_bytes)
-    .filter((spec) => !have.has(renditionLongEdge(spec, sourceLongEdge)))
+  return applicableStillClasses(sourceLongEdge, record.size_bytes, target)
+    .filter((spec) => !have.has(renditionLongEdge(spec, sourceLongEdge, target)))
     .map((spec) => spec.sizeClass);
+}
+
+/**
+ * Whether this record's only work is a smaller canonical stand-in made from the
+ * current one, whose bytes are here. Such a replacement never reads the
+ * original, so the download switch does not gate it.
+ */
+export function replacesFromCanonicalHere(record: SweepRecord): boolean {
+  const target = standInTargetOf(record.stand_ins);
+  if (!target?.canonicalOutdated || target.canonical === null || target.currentCanonical === null) return false;
+  if (target.canonical >= target.currentCanonical) return false;
+  const canonical = record.stand_ins?.sizes.find((s) => s.role === "canonical");
+  if (canonical?.placement !== "here") return false;
+  const missing = missingClasses(record);
+  return missing !== "unknown" && missing.length === 1 && missing[0] === CANONICAL_STILL_CLASS;
+}
+
+/**
+ * Whether this video's canonical transcode is outdated with a lower target, and
+ * the current one's bytes are here: the replacement is made from it, without
+ * the original.
+ */
+export function videoReplacesFromCanonicalHere(record: SweepRecord): boolean {
+  const target = standInTargetOf(record.stand_ins);
+  if (!target?.canonicalOutdated || target.canonical === null || target.currentCanonical === null) return false;
+  if (target.canonical >= target.currentCanonical) return false;
+  return record.stand_ins?.sizes.find((s) => s.role === "canonical")?.placement === "here";
 }
 
 /** Whether the record still lacks the facts one decode would produce. */
@@ -117,9 +152,12 @@ export function stageHasWork(
     // The first pass supplies these facts. Until they exist, no duplicated
     // approximation of the ladder can safely decide which rungs apply.
     if (longEdge <= 0) return true;
+    const target = standInTargetOf(record.stand_ins);
     const have = new Set((record.variant_candidates ?? []).map((c) => c.label_value));
+    // An outdated canonical transcode is not the one this original is judged by.
+    if (target?.canonicalOutdated) have.delete(CANONICAL_VIDEO_CLASS);
     const bitrate = record.metadata?.bitrate ?? Number.POSITIVE_INFINITY;
-    return applicableVideoClasses({ longEdge, bitrate, durationSeconds: 0 }).some(
+    return applicableVideoClasses({ longEdge, bitrate, durationSeconds: 0 }, [], target).some(
       (spec) => !have.has(spec.sizeClass),
     );
   }
@@ -200,7 +238,11 @@ export function sweepWork(
   const stageOn = stage === "video" ? switches.deriveVideoStandIns : switches.derivePhotoStandIns;
   if (!stageOn) return [];
   return records.filter(
-    (r) => stageHasWork(r, stage, cheapClasses) && originalReadable(r, switches.mayDownload),
+    (r) =>
+      stageHasWork(r, stage, cheapClasses) &&
+      (originalReadable(r, switches.mayDownload) ||
+        (stage === "full" && replacesFromCanonicalHere(r)) ||
+        (stage === "video" && videoReplacesFromCanonicalHere(r))),
   );
 }
 

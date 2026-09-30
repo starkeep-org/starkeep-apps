@@ -30,7 +30,15 @@
  * belongs below this boundary rather than above it.
  */
 
-import { typeCategory, type DataRecord, type MetadataRow, type StarkeepId } from "@starkeep/protocol-primitives";
+import {
+  DEFAULT_STAND_IN_STANDARDS,
+  typeCategory,
+  type DataRecord,
+  type MetadataRow,
+  type StandInStandards,
+  type StarkeepId,
+} from "@starkeep/protocol-primitives";
+import { standInTargetFor } from "./stand-in-target";
 import { loadStandInsForPage } from "@starkeep/storage-adapter";
 import type { DatabaseAdapter } from "@starkeep/storage-adapter";
 import {
@@ -39,6 +47,7 @@ import {
   stillTakesCanonical,
   type DerivedChild,
   type RenditionChoice,
+  type StandInTarget,
 } from "@starkeep/photos-ladder";
 
 /** Photos' app id — the namespace its own labels land in. */
@@ -141,6 +150,11 @@ export async function resolveLibraryRenditions(
      * the caller is holding.
      */
     readonly dimensionsOf: (record: DataRecord) => RecordDimensions | null;
+    /**
+     * The library's standards, which with each original's stamp decide its
+     * canonical size and standard sizes. Omitted, the platform's defaults.
+     */
+    readonly standards?: StandInStandards;
   },
 ): Promise<Map<StarkeepId, ResolvedRendition>> {
   const out = new Map<StarkeepId, ResolvedRendition>();
@@ -174,19 +188,23 @@ export async function resolveLibraryRenditions(
       if (c.fidelity === null || !c.objectStorageKey) continue;
       add(c.id, c.fidelity, c.type, c.objectStorageKey);
     }
+    // The platform's answer for this original, under the threshold stamped on
+    // it; null for a still nobody has measured, which the defaults decide.
+    const standInTarget = stills
+      ? standInTargetFor(record, standInsByParent.get(record.id) ?? [], options.standards ?? DEFAULT_STAND_IN_STANDARDS)
+      : null;
     // A self-canonical original stands in for itself above its largest
     // stand-in — `resolveRendition` names it as the ideal for a big enough
     // target — so it is a candidate at its own long edge.
-    if (
-      sourceLongEdge > 0 &&
-      record.objectStorageKey &&
-      !stillTakesCanonical(sourceLongEdge, record.sizeBytes)
-    ) {
+    const selfCanonical = standInTarget
+      ? standInTarget.canonical === null
+      : !stillTakesCanonical(sourceLongEdge, record.sizeBytes);
+    if (sourceLongEdge > 0 && record.objectStorageKey && selfCanonical) {
       add(record.id, sourceLongEdge, record.type, record.objectStorageKey);
     }
 
-    const known = resolveOne(target, sourceLongEdge, candidates, record.sizeBytes);
-    const here = resolveOne(target, sourceLongEdge, resident, record.sizeBytes);
+    const known = resolveOne(target, sourceLongEdge, candidates, record.sizeBytes, standInTarget);
+    const here = resolveOne(target, sourceLongEdge, resident, record.sizeBytes, standInTarget);
 
     // Rules 1 and 2 in one expression, because `resolveRendition` has already
     // applied them: over the resident subset the ideal is available exactly when
@@ -242,10 +260,11 @@ function resolveOne(
   sourceLongEdge: number,
   candidates: readonly DerivedChild[],
   sourceSizeBytes: number,
+  standInTarget: StandInTarget | null,
 ): RenditionChoice {
   const resolved =
     sourceLongEdge > 0
-      ? resolveRenditions([target], { sourceLongEdge, sourceSizeBytes, candidates })
+      ? resolveRenditions([target], { sourceLongEdge, sourceSizeBytes, candidates, target: standInTarget })
       : resolveWithoutDimensions([target], candidates);
   return resolved[String(target)]!;
 }
@@ -277,12 +296,14 @@ export async function resolveRecordRenditions(
   target: number | null,
   isResident: (objectStorageKey: string) => boolean,
   dimensions: RecordDimensions | null,
+  standards?: StandInStandards,
 ): Promise<ResolvedRendition | null> {
   if (target === null) return null;
   const resolved = await resolveLibraryRenditions(database, [record], {
     targetFor: () => target,
     isResident,
     dimensionsOf: () => dimensions,
+    ...(standards ? { standards } : {}),
   });
   return resolved.get(record.id) ?? null;
 }

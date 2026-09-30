@@ -97,9 +97,11 @@ import {
   renditionLongEdge,
   standInFieldsFor,
   STILL_LADDER,
+  type StandInTarget,
   type StillClassSpec,
 } from "@starkeep/photos-ladder";
 import type { MediaAliasStore } from "../media/media-alias";
+import { standInTargetFor } from "./stand-in-target";
 import type { ScanCursorStore } from "../work/scan-cursor";
 import { PHOTOS_APP_ID } from "./renditions";
 
@@ -459,6 +461,7 @@ export async function derivePage(
             // canonical size for the full-ladder sweep that waits for power.
             // See `deriveForRecord` for the viewer, which raises it per photo.
             ceiling,
+            targetOf(deps, current, existing.get(current.id) ?? []),
           )
         : [];
 
@@ -472,6 +475,7 @@ export async function derivePage(
           sourceLongEdge,
           missing,
           ceiling,
+          targetOf(deps, current, existing.get(current.id) ?? []),
         );
         // Null is a photograph this device could not read at all, and it is
         // counted with the throws rather than with the successes: both are a
@@ -591,15 +595,17 @@ export async function deriveForRecord(
 
   const current = await recordFidelity(deps, record, sourceLongEdge);
   const existing = await loadStandInsForPage(deps.database, [current]);
+  const target = targetOf(deps, current, existing.get(current.id) ?? []);
   const missing = missingClasses(
     sourceLongEdge,
     current.sizeBytes,
     existing.get(current.id) ?? [],
     ceilingLongEdge,
+    target,
   );
   if (missing.length === 0) return 0;
 
-  return deriveOne(deps, current, alias.contentUri, sourceLongEdge, missing, ceilingLongEdge);
+  return deriveOne(deps, current, alias.contentUri, sourceLongEdge, missing, ceilingLongEdge, target);
 }
 
 /**
@@ -643,6 +649,15 @@ function standardsOf(deps: DeriveLadderDeps): StandInStandards {
   return deps.librarySettings?.standards() ?? DEFAULT_STAND_IN_STANDARDS;
 }
 
+/** What this original asks of the ladder; see `stand-in-target.ts`. */
+function targetOf(
+  deps: DeriveLadderDeps,
+  original: DataRecord,
+  standIns: readonly DataRecord[],
+): StandInTarget | null {
+  return standInTargetFor(original, standIns, standardsOf(deps));
+}
+
 /**
  * Which rungs this device should make for this original and has not.
  *
@@ -657,14 +672,18 @@ function missingClasses(
   sourceSizeBytes: number,
   standIns: readonly DataRecord[],
   ceilingLongEdge: number,
+  target: StandInTarget | null,
 ): StillClassSpec[] {
+  // An outdated canonical stand-in counts as present here. Replacing one takes
+  // the platform's swap, which the phone's data plane does not run: the
+  // desktop's Photos makes the replacement, and the swap reaches this phone.
   const have = new Set(
     standIns
-      .filter((s) => s.standInRole !== null && s.fidelity !== null)
+      .filter((s) => !s.deletedAt && s.standInRole !== null && s.fidelity !== null)
       .map((s) => classForStandIn("image", s.standInRole!, s.fidelity!)),
   );
-  return applicableStillClasses(sourceLongEdge, sourceSizeBytes)
-    .filter((spec) => spec.maxLongEdge <= ceilingLongEdge)
+  return applicableStillClasses(sourceLongEdge, sourceSizeBytes, target)
+    .filter((spec) => renditionLongEdge(spec, sourceLongEdge, target) <= ceilingLongEdge)
     .filter((spec) => !have.has(spec.sizeClass));
 }
 
@@ -684,6 +703,7 @@ async function deriveOne(
   sourceLongEdge: number,
   missing: readonly StillClassSpec[],
   ceilingLongEdge: number,
+  target: StandInTarget | null,
 ): Promise<number | null> {
   const decoded = await deps.encode(uri, ceilingLongEdge);
   if (decoded === null) return null;
@@ -692,10 +712,10 @@ async function deriveOne(
   try {
     for (const spec of missing) {
       const encoded = await decoded.encode(
-        renditionLongEdge(spec, sourceLongEdge),
+        renditionLongEdge(spec, sourceLongEdge, target),
         spec.quality,
       );
-      if (await publishStandIn(deps, parent, spec, sourceLongEdge, encoded)) written += 1;
+      if (await publishStandIn(deps, parent, spec, sourceLongEdge, encoded, target)) written += 1;
     }
   } finally {
     decoded.release();
@@ -729,8 +749,9 @@ async function publishStandIn(
   spec: StillClassSpec,
   sourceLongEdge: number,
   encoded: EncodedRendition,
+  target: StandInTarget | null,
 ): Promise<boolean> {
-  const fields = standInFieldsFor(spec.sizeClass, sourceLongEdge);
+  const fields = standInFieldsFor(spec.sizeClass, sourceLongEdge, target?.canonical);
   if (!fields) return false;
 
   const verdict = checkStandInWrite(

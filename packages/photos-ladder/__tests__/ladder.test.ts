@@ -29,6 +29,7 @@ import {
   VIDEO_SMALLER_KBPS,
   transcodeKbps,
   videoFidelityKbps,
+  standInTargetOf,
   VIDEO_STAND_IN_CRF,
   SKIM_SEGMENT_SECONDS,
   SKIM_INTERVAL_SECONDS,
@@ -282,5 +283,72 @@ describe("video — posters", () => {
 describe("video — no optional classes", () => {
   it("disables nothing by default: the canonical transcode is what lets a video archive", () => {
     expect(DEFAULT_DISABLED_CLASSES).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("an original's own target, from its summary", () => {
+  const summary = (over: Record<string, unknown> = {}) => ({
+    canonical_target: 2560,
+    canonical_outdated: true,
+    sizes: [
+      { fidelity: 320, role: "smaller", placement: "here" },
+      { fidelity: 640, role: "smaller", placement: "missing" },
+      { fidelity: 1280, role: "smaller", placement: "missing" },
+      { fidelity: 4272, role: "canonical", placement: "cloud" },
+    ],
+    ...over,
+  });
+
+  it("reads the canonical target, the smaller sizes and the canonical stand-in there is", () => {
+    expect(standInTargetOf(summary())).toEqual({
+      canonical: 2560,
+      smallerSizes: [320, 640, 1280],
+      canonicalOutdated: true,
+      currentCanonical: 4272,
+    });
+    expect(standInTargetOf({ sizes: [] })).toBeNull();
+  });
+
+  it("takes only the listed sizes, and the canonical rung at the target's size", () => {
+    const target = standInTargetOf(summary())!;
+    const classes = applicableStillClasses(6000, 8_000_000, target);
+    expect(classes.map((c) => c.sizeClass)).toEqual(["image-xsmall", "image-thumb", "image-medium", "image-large"]);
+    const canonical = classes.find((c) => c.role === "canonical")!;
+    expect(renditionLongEdge(canonical, 6000, target)).toBe(2560);
+    expect(standInFieldsFor("image-large", 6000, target.canonical)).toEqual({ role: "canonical", fidelity: 2560 });
+  });
+
+  it("takes no canonical rung when the platform expects none", () => {
+    const target = standInTargetOf(summary({ canonical_target: null }))!;
+    expect(applicableStillClasses(6000, 8_000_000, target).some((c) => c.role === "canonical")).toBe(false);
+  });
+
+  it("reads any canonical stand-in back as the canonical rung, whatever its size", () => {
+    expect(classForStandIn("image", "canonical", 6000)).toBe("image-large");
+    expect(classForStandIn("image", "canonical", 2560)).toBe("image-large");
+  });
+
+  it("follows the target for video: the canonical transcode at its bitrate, the smaller one only if listed", () => {
+    const target = { canonical: 3000, smallerSizes: [], canonicalOutdated: false, currentCanonical: null };
+    const classes = applicableVideoClasses(source({ bitrate: 9_000_000 }), [], target).map((v) => v.sizeClass);
+    expect(classes).toContain("video-1080p");
+    expect(classes).not.toContain("video-720p");
+    expect(standInFieldsFor("video-1080p", 9000, 3000)).toEqual({ role: "canonical", fidelity: 3000 });
+  });
+
+  it("encodes video at the library's advisory resolution when the target carries it", () => {
+    const canonical = VIDEO_LADDER.find((v) => v.role === "canonical")!;
+    const smaller = VIDEO_LADDER.find((v) => v.kind === "transcode" && v.role === "smaller")!;
+    const target = standInTargetOf({
+      canonical_target: 4800,
+      advisory_long_edges: { canonical: 2560, by_size: { "2000": 960 } },
+      sizes: [],
+    })!;
+    expect(transcodeLongEdge(canonical, { longEdge: 3840 }, target)).toBe(2560);
+    expect(transcodeLongEdge(smaller, { longEdge: 3840 }, target)).toBe(960);
+    // Never above the source, whatever the library says.
+    expect(transcodeLongEdge(canonical, { longEdge: 1080 }, target)).toBe(1080);
   });
 });

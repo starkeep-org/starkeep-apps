@@ -9,7 +9,7 @@ import {
   type RenditionState,
 } from "@/photos-lib/rendition-resolution";
 import { MAX_VARIANT_TARGETS } from "@/photos-lib/rendition-targets";
-import { VIDEO_LADDER } from "@/photos-lib/ladder";
+import { standInTargetOf, VIDEO_LADDER } from "@/photos-lib/ladder";
 import { currentRenditionPolicies } from "@/photos-lib/rendition-policy";
 import { LIBRARY_ORDER } from "@/photos-lib/capture-order";
 
@@ -240,6 +240,9 @@ export function resolveFor(
     sourceLongEdge,
     sourceSizeBytes: record.size_bytes ?? null,
     candidates,
+    // The platform's answer for this original: its canonical size and the
+    // standard sizes below the threshold stamped on it.
+    target: standInTargetOf(record.stand_ins),
     unavailableState: unavailableState(record, cloud, localVerdicts),
   });
 }

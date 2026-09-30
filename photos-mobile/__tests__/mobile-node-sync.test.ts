@@ -14,7 +14,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { createHLCClock } from "@starkeep/protocol-primitives";
+import {
+  createHLCClock,
+  serializeUserSettings,
+  SETTINGS_TYPE_ID,
+  USER_SETTINGS_FILE_NAME,
+} from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, MockObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createInProcessSyncTransport } from "@starkeep/sync-engine";
 import { createMobileNode, MOBILE_MAX_BYTES, MOBILE_MAX_ITEMS, type MobileNode } from "../src/node";
@@ -125,6 +130,30 @@ async function seedCloud(count: number): Promise<DataRecord[]> {
   }
   return records;
 }
+
+describe("the library's settings on the phone", () => {
+  it("reads a settings file it pulls, and knows the library's value from then on", async () => {
+    expect(phone.librarySettings.knowsLibraryValue()).toBe(false);
+    const bytes = serializeUserSettings({ standIns: { image: { canonicalThreshold: 6000 } } });
+    const hash = hashOf(bytes);
+    const settings = record({
+      type: SETTINGS_TYPE_ID,
+      contentHash: hash,
+      objectStorageKey: `shared/starkeep/${hash.slice(0, 2)}/${hash}`,
+      mimeType: "application/json",
+      sizeBytes: bytes.byteLength,
+      originAppId: "starkeep-drive",
+      originalFilename: USER_SETTINGS_FILE_NAME,
+      fidelity: null,
+    });
+    await cloudDb.put(settings);
+    await cloudStorage.put(settings.objectStorageKey!, bytes);
+
+    await phone.sync();
+    expect(phone.librarySettings.knowsLibraryValue()).toBe(true);
+    expect(phone.librarySettings.standards().image.canonicalThreshold).toBe(6000);
+  });
+});
 
 describe("the phone as a peer", () => {
   it("pulls a record the cloud has and it does not", async () => {

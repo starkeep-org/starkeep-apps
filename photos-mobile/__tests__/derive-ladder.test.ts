@@ -53,6 +53,7 @@ import {
   type ImageEncoder,
 } from "../src/photos/derive-ladder";
 import { classForStandIn } from "@starkeep/photos-ladder";
+import { DEFAULT_STAND_IN_STANDARDS } from "@starkeep/protocol-primitives";
 
 const clock = createHLCClock({ nodeId: "phone" });
 const hash = async (bytes: Uint8Array): Promise<string> =>
@@ -409,6 +410,27 @@ describe("what a derived rung looks like", () => {
     for (const rung of (await rungsOf(parent)).values()) {
       expect(compareHLC(original.updatedAt, rung.createdAt)).toBeLessThan(0);
     }
+  });
+
+  it("stamps the original with the library's threshold when this phone knows it, and leaves it to the cloud when not", async () => {
+    const lowered = { ...DEFAULT_STAND_IN_STANDARDS, image: { ...DEFAULT_STAND_IN_STANDARDS.image, canonicalThreshold: 3200 } };
+    const known = await importOriginal({ width: 4000, height: 3000 });
+    await derivePage(
+      deps(fakeEncoder().encode, {
+        librarySettings: { standards: () => lowered, knowsLibraryValue: () => true },
+      }),
+      { limit: 10 },
+    );
+    expect(await current(known)).toMatchObject({ fidelity: 4000, canonicalThreshold: 3200 });
+
+    const unknown = await importOriginal({ width: 4000, height: 3000 });
+    await derivePage(
+      deps(fakeEncoder().encode, {
+        librarySettings: { standards: () => DEFAULT_STAND_IN_STANDARDS, knowsLibraryValue: () => false },
+      }),
+      { limit: 10 },
+    );
+    expect(await current(unknown)).toMatchObject({ fidelity: 4000, canonicalThreshold: null });
   });
 
   it("charges the bytes to a budget once the record carrying its role exists", async () => {

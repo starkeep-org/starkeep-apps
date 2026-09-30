@@ -836,6 +836,7 @@ function deriveDepsFor(node: MobileNode, clock: HLCClock): DeriveLadderDeps | nu
     hash: sha256Bytes,
     encode: avifEncoder,
     noteDerived: (record) => node.noteDerived(record),
+    librarySettings: node.librarySettings,
   };
 }
 

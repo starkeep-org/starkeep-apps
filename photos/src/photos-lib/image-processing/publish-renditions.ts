@@ -38,11 +38,12 @@ export interface RenditionParent {
   readonly id: string;
   readonly originalFilename: string | null;
   /**
-   * The original's long edge, as the decode measured it. Reported to the
-   * platform with every stand-in as the original's fidelity, which the
-   * platform records once — so whichever rung lands first carries it.
+   * The original's fidelity as the decode or probe measured it: the long edge
+   * for a still, the whole-container bitrate in kbps for a video. Reported to
+   * the platform with every stand-in, which records it once — so whichever
+   * rung lands first carries it.
    */
-  readonly sourceLongEdge?: number;
+  readonly sourceFidelity?: number | null;
 }
 
 /**
@@ -201,7 +202,7 @@ export async function registerStandIn(
     readonly sizeBytes: number;
   },
 ): Promise<PublishedRendition> {
-  const standIn = standInFieldsFor(upload.sizeClass, parent.sourceLongEdge ?? 0);
+  const standIn = standInFieldsFor(upload.sizeClass, parent.sourceFidelity ?? null);
   if (!standIn) {
     throw new RenditionPublishError("register", upload.sizeClass, 0, "not a stand-in rung");
   }
@@ -217,7 +218,7 @@ export async function registerStandIn(
         sizeBytes: upload.sizeBytes,
         parentId: parent.id,
         standIn,
-        ...(reportFidelity && parent.sourceLongEdge ? { parentFidelity: parent.sourceLongEdge } : {}),
+        ...(reportFidelity && parent.sourceFidelity ? { parentFidelity: parent.sourceFidelity } : {}),
       }),
     });
 
@@ -296,8 +297,8 @@ export async function publishThumbHash(
 }
 
 /**
- * Tell the platform an original's fidelity — its long edge — measured from a
- * decode Photos was doing anyway.
+ * Tell the platform an original's fidelity — a still's long edge, a video's
+ * bitrate in kbps — measured from a decode or probe Photos was doing anyway.
  *
  * Every stand-in reports it too, so this matters for the original that takes
  * none: one too small for any standard size. Without a reported fidelity the
@@ -308,13 +309,13 @@ export async function publishThumbHash(
 export async function reportOriginalFidelity(
   signedFetch: SignedFetch,
   recordId: string,
-  longEdge: number,
+  fidelity: number | null,
 ): Promise<void> {
-  if (!(longEdge > 0)) return;
+  if (fidelity === null || !(fidelity > 0)) return;
   const res = await signedFetch(`/data/records/${recordId}/fidelity`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fidelity: longEdge }),
+    body: JSON.stringify({ fidelity }),
   });
   if (!res.ok && res.status !== 409) {
     console.warn(`[renditions] fidelity report for ${recordId} failed (${res.status})`);

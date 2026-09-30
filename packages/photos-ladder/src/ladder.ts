@@ -102,8 +102,15 @@ export const IMAGE_CANONICAL_THRESHOLD = 4272;
  */
 export const ARCHIVE_SIZE_FLOOR_BYTES = 1024 * 1024;
 
-/** The canonical threshold for video: 1080p in either orientation. */
-export const VIDEO_CANONICAL_THRESHOLD = 1920;
+/**
+ * The canonical threshold for video, in kbps over the whole container: the
+ * canonical stand-in's target bitrate, or the original's own bitrate when that
+ * is lower. Video fidelity is a bitrate; resolution only caps the encode.
+ */
+export const VIDEO_CANONICAL_THRESHOLD = 4800;
+
+/** The one smaller video size, in kbps over the whole container. */
+export const VIDEO_SMALLER_KBPS = 2000;
 
 /**
  * The still ladder, ascending.
@@ -282,7 +289,18 @@ export function topApplicableStillClass(
 
 export interface VideoClassSpec {
   readonly sizeClass: SizeClass;
+  /**
+   * The largest long edge the class encodes at. For a transcode this is the
+   * platform's advisory resolution: it guides the encoder, and no rule reads
+   * it, because a video stand-in's fidelity is its bitrate.
+   */
   readonly maxLongEdge: number;
+  /**
+   * A transcode's target bitrate in kbps over the whole container — the
+   * stand-in's reported fidelity. The canonical transcode lowers it to the
+   * source's own bitrate; see {@link transcodeKbps}.
+   */
+  readonly targetKbps?: number;
   /**
    * Poster and skim classes are stills / sampled sequences — derived records
    * that cannot replace the video. Transcodes are stand-ins.
@@ -294,10 +312,9 @@ export interface VideoClassSpec {
 }
 
 /**
- * The libvpx-vp9 constant-quality setting every video stand-in encodes at: the
- * platform's minimum, and Google's published setting for 1080p. Lower is
- * better; the bitrate is zero so the encoder spends whatever each scene needs
- * — a bitrate cap would force high-motion footage below the minimum.
+ * The libvpx-vp9 CRF every video stand-in encodes at, in constrained-quality
+ * mode: the target bitrate caps the file, and the CRF stops the encoder
+ * spending bits a quiet scene does not need. Lower is better.
  */
 export const VIDEO_STAND_IN_CRF = 31;
 
@@ -330,16 +347,19 @@ export const VIDEO_LADDER: readonly VideoClassSpec[] = [
   {
     sizeClass: "video-720p",
     maxLongEdge: 1280,
+    targetKbps: VIDEO_SMALLER_KBPS,
     kind: "transcode",
     role: "smaller",
     serves: "inline playback",
   },
   {
-    // The canonical stand-in, which every video takes: at the video's own long
-    // edge up to 1920, in VP9 WebM that every current browser plays. Named for
-    // its usual size; a 1440 px clip's canonical stand-in is 1440.
+    // The canonical stand-in, which every video takes: at the threshold
+    // bitrate, or the video's own when lower, and at the video's own long edge
+    // up to 1080p, in VP9 WebM that every current browser plays. Named for its
+    // usual size; a 1440 px clip's canonical stand-in is 1440 px.
     sizeClass: "video-1080p",
-    maxLongEdge: VIDEO_CANONICAL_THRESHOLD,
+    maxLongEdge: 1920,
+    targetKbps: VIDEO_CANONICAL_THRESHOLD,
     kind: "transcode",
     role: "canonical",
     serves: "TV / large-screen playback, and what the person sees once the original is archived",
@@ -355,17 +375,30 @@ export const DEFAULT_DISABLED_CLASSES: readonly SizeClass[] = [];
 
 export interface VideoSource {
   readonly longEdge: number;
+  /**
+   * Whole-container bitrate in bits per second. Infinite when the container
+   * declares none and its size and duration cannot answer.
+   */
   readonly bitrate: number;
   readonly durationSeconds: number;
+}
+
+/**
+ * A video's fidelity: its whole-container bitrate in kbps, rounded to a whole
+ * number, which is how the platform ranks video. Null when unknown.
+ */
+export function videoFidelityKbps(source: Pick<VideoSource, "bitrate">): number | null {
+  return Number.isFinite(source.bitrate) && source.bitrate > 0 ? Math.round(source.bitrate / 1000) : null;
 }
 
 /**
  * Whether a transcode class applies to a source.
  *
  * The canonical transcode always does — every video original gets one, even a
- * small H.264 clip, because the platform never lets a video stand in for
- * itself. The smaller transcode applies only below the source's long edge, as
- * every smaller stand-in does.
+ * small H.264 clip, and the platform decides from its size whether it replaces
+ * the original. The smaller transcode applies only below the source's own
+ * bitrate, as every smaller stand-in sits below its original's fidelity; an
+ * unknown bitrate counts as above.
  */
 export function transcodeWouldChangeAnything(
   spec: VideoClassSpec,
@@ -373,12 +406,27 @@ export function transcodeWouldChangeAnything(
 ): boolean {
   if (spec.kind !== "transcode") return true;
   if (spec.role === "canonical") return true;
-  return source.longEdge > spec.maxLongEdge;
+  const kbps = videoFidelityKbps(source);
+  return kbps === null || kbps > spec.targetKbps!;
 }
 
-/** The long edge a transcode class emits for a source. */
+/**
+ * The long edge a transcode class emits for a source: the class's advisory
+ * long edge, never above the source's own.
+ */
 export function transcodeLongEdge(spec: VideoClassSpec, source: Pick<VideoSource, "longEdge">): number {
   return Math.min(spec.maxLongEdge, source.longEdge);
+}
+
+/**
+ * The bitrate a transcode class targets for a source, in kbps over the whole
+ * container, and the stand-in's reported fidelity: the class's target, and
+ * for the canonical transcode never above the source's own bitrate.
+ */
+export function transcodeKbps(spec: VideoClassSpec, sourceKbps: number | null): number {
+  const target = spec.targetKbps!;
+  if (spec.role !== "canonical" || sourceKbps === null) return target;
+  return Math.min(target, sourceKbps);
 }
 
 /**
@@ -471,15 +519,16 @@ export interface StandInFields {
 }
 
 /**
- * The stand-in a rung is, for an original of this long edge — or null for a
- * poster or a skim, which are derived records.
+ * The stand-in a rung is, for an original of this fidelity — its long edge for
+ * a still, its bitrate in kbps for a video — or null for a poster or a skim,
+ * which are derived records.
  */
-export function standInFieldsFor(sizeClass: SizeClass, sourceLongEdge: number): StandInFields | null {
+export function standInFieldsFor(sizeClass: SizeClass, sourceFidelity: number | null): StandInFields | null {
   const still = STILL_LADDER.find((spec) => spec.sizeClass === sizeClass);
   if (still) return { role: still.role, fidelity: still.maxLongEdge };
   const video = VIDEO_LADDER.find((spec) => spec.sizeClass === sizeClass);
   if (video?.kind === "transcode" && video.role) {
-    return { role: video.role, fidelity: transcodeLongEdge(video, { longEdge: sourceLongEdge }) };
+    return { role: video.role, fidelity: transcodeKbps(video, sourceFidelity) };
   }
   return null;
 }
@@ -497,7 +546,7 @@ export function classForStandIn(
   if (category === "video") {
     const spec = VIDEO_LADDER.find((v) => v.kind === "transcode" && v.role === role);
     if (!spec) return null;
-    return role === "canonical" || fidelity === spec.maxLongEdge ? spec.sizeClass : null;
+    return role === "canonical" || fidelity === spec.targetKbps ? spec.sizeClass : null;
   }
   return STILL_LADDER.find((s) => s.role === role && s.maxLongEdge === fidelity)?.sizeClass ?? null;
 }

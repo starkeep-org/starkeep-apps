@@ -111,22 +111,29 @@ async function probeBytes(bytes: Uint8Array, name: string) {
 }
 
 describe("the video stand-in standard", () => {
-  // Pure argument building, pinned exactly: a bitrate cap here would push busy
-  // footage below the platform's minimum quality, and a second codec would make
-  // the fidelity values incomparable across apps.
-  const args = transcodeArgs("/in.mov", "/out.webm", { maxLongEdge: 1280, crf: 31 }, {
-    rotation: 0,
-    width: 1920,
-    height: 1080,
-  });
-  const valueOf = (flag: string) => args[args.indexOf(flag) + 1];
+  // Pure argument building, pinned exactly: a second codec would make the
+  // fidelity values incomparable across apps, and a video bitrate that ignored
+  // the audio track would label a stand-in below what it weighs.
+  const argsFor = (audioCodec: string | null) =>
+    transcodeArgs("/in.mov", "/out.webm", { maxLongEdge: 1280, crf: 31, targetKbps: 4800 }, {
+      rotation: 0,
+      width: 1920,
+      height: 1080,
+      audioCodec,
+    });
+  const args = argsFor("aac");
+  const valueOf = (flag: string, from = args) => from[from.indexOf(flag) + 1];
 
-  it("encodes VP9 at constant quality with no bitrate cap", () => {
+  it("encodes VP9 in constrained quality: CRF 31 under the target bitrate", () => {
     expect(valueOf("-c:v")).toBe("libvpx-vp9");
     expect(valueOf("-crf")).toBe("31");
-    expect(valueOf("-b:v")).toBe("0");
     expect(args).not.toContain("-maxrate");
     expect(args).not.toContain("-bufsize");
+  });
+
+  it("gives the picture the whole-container target less the audio track", () => {
+    expect(valueOf("-b:v")).toBe("4672k");
+    expect(valueOf("-b:v", argsFor(null))).toBe("4800k");
   });
 
   it("carries Opus audio at 128 kbps, keyframes every three seconds, and at most 60 fps", () => {
@@ -285,11 +292,13 @@ describe("deriving the ladder", () => {
   // `-movflags +faststart` cannot write to a pipe ("muxer does not support non
   // seekable output"), which would have failed every real transcode in the
   // library while the suite stayed green.
-  ffmpeg()("actually encodes when the source is above the ceilings", async () => {
+  ffmpeg()("actually encodes when the source is above the smaller size's bitrate", async () => {
     const big = join(dir, "big.mp4");
+    // Temporal noise makes the clip incompressible, so its bitrate sits well
+    // above the 2000 kbps smaller size; a plain test pattern would not.
     await run("ffmpeg", [
       "-y", "-f", "lavfi",
-      "-i", "testsrc=size=1920x1080:rate=30:duration=2",
+      "-i", "testsrc=size=1920x1080:rate=30:duration=2,noise=alls=40:allf=t",
       "-c:v", "libx264", "-pix_fmt", "yuv420p", big,
     ]);
     const result = await deriveVideoLadder(big, tools);
@@ -356,7 +365,7 @@ describe("deriving the ladder", () => {
   // The no-op clause. A 640x480 source is already below every 720p ceiling, and
   // re-encoding it produces a file that is no better, probably larger, and
   // definitely lossier.
-  ffmpeg()("does not transcode a source already below the ceilings", async () => {
+  ffmpeg()("does not make a smaller stand-in of a source already below its bitrate", async () => {
     const result = await deriveVideoLadder(landscape, tools);
     expect(result.renditions.map((r) => r.sizeClass)).not.toContain("video-720p");
   }, 120_000);

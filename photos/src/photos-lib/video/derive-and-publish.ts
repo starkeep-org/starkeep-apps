@@ -10,12 +10,11 @@
 import { reportOriginalFidelity, type SignedFetch } from "../image-processing/publish-renditions";
 import { existingRenditionClasses } from "../image-processing/publish-renditions";
 import type { RenditionParent, PublishedRendition } from "../image-processing/publish-renditions";
-import { deriveVideoLadder, videoLadderIsComplete } from "./derive-video-ladder";
-import { displayLongEdge } from "./probe";
+import { deriveVideoLadder, videoLadderIsComplete, videoSourceOf } from "./derive-video-ladder";
 import { publishVideoFacts, publishVideoRendition } from "./publish-video";
 import { UnsupportedVideoError, type VideoTools } from "./video-tools";
 import type { SizeClass } from "../ladder";
-import { VIDEO_LADDER } from "../ladder";
+import { VIDEO_LADDER, videoFidelityKbps } from "../ladder";
 
 export interface VideoIngestResult {
   readonly published: readonly PublishedRendition[];
@@ -73,7 +72,9 @@ export async function deriveAndPublishVideo(
   // placeholder, whereas renditions with no facts is one the layout cannot
   // place at all.
   await publishVideoFacts(deps.signedFetch, parent.id, result.facts);
-  await reportOriginalFidelity(deps.signedFetch, parent.id, displayLongEdge(result.facts));
+  // A video's fidelity is its whole-container bitrate in kbps.
+  const sourceFidelity = videoFidelityKbps(videoSourceOf(result.facts));
+  await reportOriginalFidelity(deps.signedFetch, parent.id, sourceFidelity);
 
   const published: PublishedRendition[] = [];
   const failed = result.failures.map((f) => ({ sizeClass: f.sizeClass, reason: f.reason }));
@@ -84,10 +85,10 @@ export async function deriveAndPublishVideo(
       published.push(
         await publishVideoRendition(
           deps.signedFetch,
-          // The probed long edge is the original's fidelity, reported with
-          // each stand-in, and the size a canonical stand-in below the
+          // The probed bitrate is the original's fidelity, reported with
+          // each stand-in, and the bitrate a canonical stand-in below the
           // threshold takes.
-          { ...parent, sourceLongEdge: displayLongEdge(result.facts) },
+          { ...parent, sourceFidelity },
           rendition,
           contentHash,
           objectStorageKey,

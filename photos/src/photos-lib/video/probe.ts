@@ -58,6 +58,7 @@ interface ProbeJson {
   format?: {
     duration?: string;
     bit_rate?: string;
+    size?: string;
     tags?: Record<string, string>;
   };
 }
@@ -132,10 +133,20 @@ export function parseProbeOutput(json: unknown): VideoFacts | null {
     frameRate: parseFrameRate(video.avg_frame_rate) ?? parseFrameRate(video.r_frame_rate),
     videoCodec: video.codec_name ?? null,
     audioCodec: audio?.codec_name ?? null,
-    bitrate: numberOrNull(probe.format?.bit_rate),
+    bitrate: numberOrNull(probe.format?.bit_rate) ?? bitrateFromSize(probe.format?.size, durationSeconds),
     capturedAt: captureTime(probe),
     rotation,
   };
+}
+
+/**
+ * The whole-container bitrate a container that declares none implies: its
+ * size in bits over its duration in seconds. Null when either is unknown.
+ */
+function bitrateFromSize(size: string | undefined, durationSeconds: number): number | null {
+  const bytes = numberOrNull(size);
+  if (bytes === null || !(durationSeconds > 0)) return null;
+  return Math.round((bytes * 8) / durationSeconds);
 }
 
 function numberOrNull(raw: string | undefined): number | null {

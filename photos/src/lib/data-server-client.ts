@@ -278,7 +278,10 @@ export async function addPhotoFromPath(
   } catch (err) {
     console.warn("[data-server-client] image metadata read failed:", err);
   }
-  const longEdge = Math.max(Number(metadata?.width ?? 0), Number(metadata?.height ?? 0));
+  // Only a still's fidelity is its long edge; a video's is its bitrate, which
+  // the derivation reports once it has probed the file.
+  const isImage = starkeepTypeFromFilename(fileName).startsWith("image/");
+  const longEdge = isImage ? Math.max(Number(metadata?.width ?? 0), Number(metadata?.height ?? 0)) : 0;
 
   const result = await request<{ record: PhotoRecord; deduped?: boolean }>("/data/records", source, {
     method: "POST",

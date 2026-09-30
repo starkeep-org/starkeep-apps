@@ -124,30 +124,30 @@ describe("publishing a rendition", () => {
     expect(create.body.type).toBe("image/jpeg");
   });
 
-  it("registers a transcode as a VP9 WebM stand-in at the canonical size", async () => {
+  it("registers a transcode as a VP9 WebM stand-in at the canonical bitrate", async () => {
     await publishVideoRendition(
-      signedFetch, { ...parent, sourceLongEdge: 1920 },
+      signedFetch, { ...parent, sourceFidelity: 12_000 },
       rendition({ sizeClass: "video-1080p", kind: "transcode", type: "video", contentType: "video/webm", durationMs: 12_000 }),
       "hash", "key",
     );
     const create = calls.find((c) => c.path === "/data/records")!;
     expect(create.body.type).toBe("video/webm");
-    expect(create.body.standIn).toEqual({ role: "canonical", fidelity: 1920 });
-    expect(create.body.parentFidelity).toBe(1920);
+    expect(create.body.standIn).toEqual({ role: "canonical", fidelity: 4800 });
+    expect(create.body.parentFidelity).toBe(12_000);
     // The platform's columns describe a stand-in: no label, no metadata row.
     expect(create.body.labels).toBeUndefined();
     expect(create.body.metadata).toBeUndefined();
   });
 
-  it("puts a small video's canonical stand-in at the video's own long edge", async () => {
+  it("puts a low-bitrate video's canonical stand-in at the video's own bitrate", async () => {
     await publishVideoRendition(
-      signedFetch, { ...parent, sourceLongEdge: 1440 },
+      signedFetch, { ...parent, sourceFidelity: 3000 },
       rendition({ sizeClass: "video-1080p", kind: "transcode", type: "video", contentType: "video/webm" }),
       "hash", "key",
     );
     expect(calls.find((c) => c.path === "/data/records")!.body.standIn).toEqual({
       role: "canonical",
-      fidelity: 1440,
+      fidelity: 3000,
     });
   });
 
@@ -235,13 +235,13 @@ describe("the ingest path", () => {
     );
   });
 
-  it("reports the video's long edge as the original's fidelity", async () => {
+  it("reports the video's bitrate in kbps as the original's fidelity", async () => {
     await deriveAndPublishVideo("/clip.mov", parent, deps());
-    expect(calls.find((c) => c.path === "/data/records/rec-1/fidelity")!.body).toEqual({ fidelity: 1920 });
+    expect(calls.find((c) => c.path === "/data/records/rec-1/fidelity")!.body).toEqual({ fidelity: 12_000 });
     const transcodes = calls.filter((c) => c.path === "/data/records" && c.body.standIn);
     expect(transcodes.map((c) => c.body.standIn)).toEqual([
-      { role: "smaller", fidelity: 1280 },
-      { role: "canonical", fidelity: 1920 },
+      { role: "smaller", fidelity: 2000 },
+      { role: "canonical", fidelity: 4800 },
     ]);
   });
 
@@ -272,7 +272,7 @@ describe("the ingest path", () => {
 
   it("does not re-encode or republish rungs that already exist, wherever they were made", async () => {
     signedFetch = planeHolding(
-      [["smaller", 1280], ["canonical", 1920]],
+      [["smaller", 2000], ["canonical", 4800]],
       ["video-poster-thumb", "video-poster-720p", "video-skim"],
     );
     const extractPoster = vi.fn();
@@ -292,7 +292,7 @@ describe("the ingest path", () => {
 
   it("derives what a caller says is missing, even when the server lists it", async () => {
     signedFetch = planeHolding(
-      [["smaller", 1280], ["canonical", 1920]],
+      [["smaller", 2000], ["canonical", 4800]],
       ["video-poster-thumb", "video-poster-720p", "video-skim"],
     );
     const extractPoster = vi.fn(async () => ({

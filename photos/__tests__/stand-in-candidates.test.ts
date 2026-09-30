@@ -107,25 +107,29 @@ describe("candidatesFromStandIns", () => {
     expect(candidatesFromStandIns(record([size({ fidelity: 500 })]), NOW)).toEqual([]);
   });
 
-  it("names video stand-ins by their transcode rungs", () => {
+  it("names video stand-ins by their transcode rungs, and sizes them by resolution", () => {
     const video: StandInRecord = {
       id: "clip",
       type: "video/mp4",
       metadata: { width: 1440, height: 810 },
       stand_ins: {
         category: "video",
-        fidelity: 1440,
+        fidelity: 9000,
         status: "archivable",
-        top: 1440,
+        top: 4800,
         sizes: [
-          size({ fidelity: 1280, type: "video/webm", record_id: "v720" }),
-          size({ fidelity: 1440, role: "canonical", type: "video/webm", record_id: "vc" }),
+          size({ fidelity: 2000, type: "video/webm", record_id: "v720" }),
+          size({ fidelity: 4800, role: "canonical", type: "video/webm", record_id: "vc" }),
         ],
       },
     };
-    expect(candidatesFromStandIns(video, NOW).map((c) => c.label_value)).toEqual([
-      "video-720p",
-      "video-1080p",
+    const candidates = candidatesFromStandIns(video, NOW);
+    expect(candidates.map((c) => c.label_value)).toEqual(["video-720p", "video-1080p"]);
+    // A fidelity in kbps is never a long edge: the 720p rung is 1280 wide, and
+    // the canonical one keeps the 1440 px original's own size.
+    expect(candidates.map((c) => [c.long_edge, c.width, c.height])).toEqual([
+      [1280, 1280, 720],
+      [1440, 1440, 810],
     ]);
   });
 });

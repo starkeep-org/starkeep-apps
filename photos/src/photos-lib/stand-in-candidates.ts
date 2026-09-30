@@ -14,7 +14,7 @@
  * own `photos/derived` label, and they are appended as they arrive.
  */
 
-import { classForStandIn } from "./ladder";
+import { classForStandIn, transcodeLongEdge, VIDEO_LADDER, type SizeClass } from "./ladder";
 
 /** One size of an original, as `stand_ins.sizes[]` carries it. */
 export interface WireStandInSize {
@@ -107,11 +107,12 @@ export function candidatesFromStandIns(
     // A stand-in at a standard size this ladder does not name is another
     // app's; Photos neither resolves to it nor counts it as a rung it has.
     if (!label) continue;
+    const longEdge = category === "video" ? videoLongEdge(label, width, height) : size.fidelity;
     out.push({
       id: size.record_id,
       type: size.type,
-      ...dimensionsAt(size.fidelity, width, height),
-      long_edge: size.fidelity,
+      ...dimensionsAt(longEdge, width, height),
+      long_edge: longEdge,
       label_value: label,
       available_here: size.placement === "here",
       ...(size.url
@@ -137,6 +138,18 @@ export function withStandInCandidates<
     ...record,
     variant_candidates: [...candidatesFromStandIns(record, now), ...(record.variant_candidates ?? [])],
   } as T;
+}
+
+/**
+ * A video stand-in's long edge. Its fidelity is a bitrate, so the long edge
+ * comes from the rung it is: the rung's advisory long edge, never above the
+ * original's own. With no stored dimensions the rung's advisory edge stands.
+ */
+function videoLongEdge(label: string, width: number, height: number): number {
+  const spec = VIDEO_LADDER.find((v) => v.sizeClass === (label as SizeClass));
+  const sourceLongEdge = Math.max(width, height);
+  if (!spec) return sourceLongEdge;
+  return sourceLongEdge > 0 ? transcodeLongEdge(spec, { longEdge: sourceLongEdge }) : spec.maxLongEdge;
 }
 
 /**

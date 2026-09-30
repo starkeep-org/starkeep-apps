@@ -53,6 +53,16 @@ describe("reading container facts", () => {
     });
   });
 
+  it("derives the bitrate from size and duration when the container declares none", () => {
+    const json = probeJson();
+    const facts = parseProbeOutput({
+      ...json,
+      format: { duration: "12.500000", size: "12500000", tags: json.format.tags },
+    })!;
+    expect(facts.bitrate).toBe(8_000_000);
+    expect(parseProbeOutput({ ...json, format: { duration: "12.5" } })!.bitrate).toBeNull();
+  });
+
   it("reports no facts for a file with no video stream", () => {
     // An audio-only file with a video extension is a real thing to find in a
     // camera-roll export. Not an error, and not worth retrying forever.

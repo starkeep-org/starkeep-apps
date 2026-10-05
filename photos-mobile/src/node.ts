@@ -516,7 +516,6 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         maxItems: MOBILE_MAX_ITEMS,
         transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
         residency: residencyHooks(residency),
-        standards: () => librarySettings.standards(),
       })
     : null;
 

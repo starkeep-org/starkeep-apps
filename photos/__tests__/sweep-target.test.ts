@@ -1,15 +1,9 @@
 /**
- * The sweep follows each original's target: the canonical size stamped on it,
- * the standard sizes below it, and a canonical stand-in made for another
- * threshold.
+ * The sweep follows each original's target: the canonical size stamped on the
+ * original, and the standard sizes below it.
  */
 import { describe, expect, it } from "vitest";
-import {
-  missingClasses,
-  replacesFromCanonicalHere,
-  sweepWork,
-  type SweepRecord,
-} from "../src/derivation/sweep-set";
+import { missingClasses, sweepWork, type SweepRecord } from "../src/derivation/sweep-set";
 import { withStandInCandidates, type WireStandInSummary } from "../src/photos-lib/stand-in-candidates";
 
 function record(summary: Partial<WireStandInSummary>): SweepRecord {
@@ -43,43 +37,38 @@ const here = (fidelity: number, role: "smaller" | "canonical") => ({
 });
 
 describe("the sweep and each original's target", () => {
-  it("counts an outdated canonical stand-in as missing at the new size", () => {
-    const r = record({
-      canonical_target: 2560,
-      canonical_outdated: true,
-      sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller"), here(4272, "canonical")],
-    });
-    expect(missingClasses(r)).toEqual(["image-large"]);
-    expect(replacesFromCanonicalHere(r)).toBe(true);
-  });
-
-  it("finds nothing missing once the canonical stand-in matches", () => {
+  it("finds nothing missing once every size the target names exists", () => {
     const r = record({
       canonical_target: 4272,
-      canonical_outdated: false,
       sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller"), here(2560, "smaller"), here(4272, "canonical")],
     });
     expect(missingClasses(r)).toEqual([]);
   });
 
-  it("does not replace from the canonical stand-in on a raise, which needs the original", () => {
-    const r = record({
-      canonical_target: 5120,
-      canonical_outdated: true,
-      sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller"), here(2560, "smaller"), here(4272, "canonical")],
-    });
+  it("takes only the sizes the target names, and the canonical rung at its stamp", () => {
+    // Stamped at 2560, so the canonical rung is 2560 and 4272 is not a size
+    // this original takes at all. The summary lists the sizes that apply, so
+    // 1280 is not one of them here.
+    const r = record({ canonical_target: 2560, top: 2560, sizes: [here(320, "smaller"), here(640, "smaller")] });
     expect(missingClasses(r)).toEqual(["image-large"]);
-    expect(replacesFromCanonicalHere(r)).toBe(false);
   });
 
-  it("takes a lowered replacement with downloads off when the canonical stand-in is here", () => {
+  it("needs the original, so downloads off with the original in the cloud is no work", () => {
     const r = record({
-      canonical_target: 2560,
-      canonical_outdated: true,
+      canonical_target: 4272,
       original_placement: "cloud",
-      sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller"), here(4272, "canonical")],
+      sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller")],
     });
     const switches = { derivePhotoStandIns: true, deriveVideoStandIns: false, mayDownload: false };
-    expect(sweepWork([r], "full", switches, ["image-xsmall", "image-thumb"])).toEqual([r]);
+    expect(sweepWork([r], "full", switches, ["image-xsmall", "image-thumb"])).toEqual([]);
+    expect(sweepWork([r], "full", { ...switches, mayDownload: true }, ["image-xsmall", "image-thumb"])).toEqual([r]);
+  });
+
+  it("derives nothing for an original still waiting for its stamp", () => {
+    // No node has stamped it, so the platform names no target and nothing here
+    // can say what a stand-in for it should be. The cloud stamps it on the next
+    // exchange and the sweep after that derives the ladder.
+    const r = record({ status: "awaiting-stamp", canonical_target: null, top: null, sizes: [] });
+    expect(missingClasses(r)).toEqual([]);
   });
 });

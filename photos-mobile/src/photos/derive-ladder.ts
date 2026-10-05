@@ -674,9 +674,6 @@ function missingClasses(
   ceilingLongEdge: number,
   target: StandInTarget | null,
 ): StillClassSpec[] {
-  // An outdated canonical stand-in counts as present here. Replacing one takes
-  // the platform's swap, which the phone's data plane does not run: the
-  // desktop's Photos makes the replacement, and the swap reaches this phone.
   const have = new Set(
     standIns
       .filter((s) => !s.deletedAt && s.standInRole !== null && s.fidelity !== null)

@@ -132,8 +132,11 @@ async function seedCloud(count: number): Promise<DataRecord[]> {
 }
 
 describe("the library's settings on the phone", () => {
-  it("reads a settings file it pulls, and knows the library's value from then on", async () => {
-    expect(phone.librarySettings.knowsLibraryValue()).toBe(false);
+  it("reads a settings file it pulls, and stamps by it from then on", async () => {
+    // With no settings file in the library the defaults are its value, so the
+    // phone knows it and stamps what it imports rather than waiting.
+    expect(phone.librarySettings.knowsLibraryValue()).toBe(true);
+    expect(phone.librarySettings.standards().image.canonicalThreshold).toBe(4272);
     const bytes = serializeUserSettings({ standIns: { image: { canonicalThreshold: 6000 } } });
     const hash = hashOf(bytes);
     const settings = record({

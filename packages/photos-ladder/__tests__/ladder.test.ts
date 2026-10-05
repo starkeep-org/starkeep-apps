@@ -291,7 +291,6 @@ describe("video — no optional classes", () => {
 describe("an original's own target, from its summary", () => {
   const summary = (over: Record<string, unknown> = {}) => ({
     canonical_target: 2560,
-    canonical_outdated: true,
     sizes: [
       { fidelity: 320, role: "smaller", placement: "here" },
       { fidelity: 640, role: "smaller", placement: "missing" },
@@ -301,14 +300,17 @@ describe("an original's own target, from its summary", () => {
     ...over,
   });
 
-  it("reads the canonical target, the smaller sizes and the canonical stand-in there is", () => {
-    expect(standInTargetOf(summary())).toEqual({
-      canonical: 2560,
-      smallerSizes: [320, 640, 1280],
-      canonicalOutdated: true,
-      currentCanonical: 4272,
-    });
+  it("reads the canonical target and the smaller sizes", () => {
+    expect(standInTargetOf(summary())).toEqual({ canonical: 2560, smallerSizes: [320, 640, 1280] });
     expect(standInTargetOf({ sizes: [] })).toBeNull();
+  });
+
+  it("has no answer while the platform has none", () => {
+    // Unmeasured, or measured and not yet stamped with a canonical threshold.
+    // Either way nothing can be derived against it, and the caller measures
+    // and reports instead.
+    expect(standInTargetOf(summary({ status: "fidelity-unknown" }))).toBeNull();
+    expect(standInTargetOf(summary({ status: "awaiting-stamp", canonical_target: null }))).toBeNull();
   });
 
   it("takes only the listed sizes, and the canonical rung at the target's size", () => {
@@ -331,7 +333,7 @@ describe("an original's own target, from its summary", () => {
   });
 
   it("follows the target for video: the canonical transcode at its bitrate, the smaller one only if listed", () => {
-    const target = { canonical: 3000, smallerSizes: [], canonicalOutdated: false, currentCanonical: null };
+    const target = { canonical: 3000, smallerSizes: [] };
     const classes = applicableVideoClasses(source({ bitrate: 9_000_000 }), [], target).map((v) => v.sizeClass);
     expect(classes).toContain("video-1080p");
     expect(classes).not.toContain("video-720p");

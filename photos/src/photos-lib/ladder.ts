@@ -41,6 +41,7 @@ export {
   transcodeKbps,
   videoFidelityKbps,
   standInFieldsFor,
+  awaitsStamp,
   standInTargetOf,
   CANONICAL_STILL_CLASS,
   CANONICAL_VIDEO_CLASS,

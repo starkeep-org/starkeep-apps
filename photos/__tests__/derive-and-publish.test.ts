@@ -393,7 +393,6 @@ describe("each original's own target", () => {
     status: "archivable",
     top: 3200,
     canonical_target: 3200,
-    canonical_outdated: false,
     sizes: [320, 640, 1280, 2560].map((fidelity) => ({ fidelity, role: "smaller", placement: "missing", record_id: null })),
     ...over,
   });
@@ -424,31 +423,17 @@ describe("each original's own target", () => {
     expect(plane.renditions.sort()).toEqual(["image-large", "image-medium", "image-thumb"].sort());
   }, 60_000);
 
-  it("makes a lowered canonical stand-in from the current one, without the original", async () => {
-    // Everything exists; the canonical stand-in was made at the old 4272.
-    plane.renditions.push(...STILL_LADDER.map((s) => s.sizeClass));
-    plane.metadata = { width: 4372, height: 3279, thumb_hash: "hash", exif_present: true };
-    const outdated = summary({
-      canonical_target: 2560,
-      canonical_outdated: true,
-      top: 4272,
-      sizes: [
-        ...[320, 640, 1280].map((fidelity) => ({ fidelity, role: "smaller", placement: "here", record_id: `S${fidelity}` })),
-        { fidelity: 4272, role: "canonical", placement: "here", record_id: "OLD" },
-      ],
-    });
-    let canonicalLoads = 0;
+  it("derives nothing for an original the platform has not stamped yet", async () => {
+    // Measured but unstamped: no node knows the threshold it is judged by, so
+    // nothing here can say what its stand-ins should be. The cloud stamps it on
+    // the next exchange and a later pass derives the ladder.
+    const waiting = summary({ status: "awaiting-stamp", canonical_target: null, top: null, sizes: [] });
     const result = await run({
-      parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", fidelity: 4372, standIns: outdated },
-      loadCanonical: async () => {
-        canonicalLoads += 1;
-        return source;
-      },
+      parent: { id: "REC1", originalFilename: "photo.jpg", mimeType: "image/jpeg", fidelity: 4372, standIns: waiting },
     });
     expect(result.outcome).toBe("complete");
-    expect(canonicalLoads).toBe(1);
+    expect(plane.renditions).toEqual([]);
     expect(loads).toBe(0);
-    expect(plane.standIns["image-large"]!.standIn).toEqual({ role: "canonical", fidelity: 2560 });
   }, 60_000);
 
   it("takes the platform's self-canonical answer as the end of the canonical rung", async () => {

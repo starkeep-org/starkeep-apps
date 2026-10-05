@@ -37,12 +37,10 @@ export interface WireStandInSize {
 export interface WireStandInSummary {
   readonly category: string;
   readonly fidelity: number | null;
-  readonly status: "archivable" | "self-canonical" | "video-below-floor" | "fidelity-unknown";
+  readonly status: "archivable" | "self-canonical" | "video-below-floor" | "fidelity-unknown" | "awaiting-stamp";
   readonly top: number | null;
   /** The fidelity the canonical stand-in should report now. Absent on older servers. */
   readonly canonical_target?: number | null;
-  /** The live canonical stand-in was made for another threshold. */
-  readonly canonical_outdated?: boolean;
   /** The library's advisory long edges, for video. */
   readonly advisory_long_edges?: { readonly canonical: number; readonly by_size: Readonly<Record<string, number>> } | null;
   readonly sizes: readonly WireStandInSize[];

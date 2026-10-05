@@ -190,10 +190,6 @@ export interface StandInTarget {
   readonly canonical: number | null;
   /** The smaller standard sizes the original takes, whether made yet or not. */
   readonly smallerSizes: readonly number[];
-  /** The live canonical stand-in was made for another threshold. */
-  readonly canonicalOutdated: boolean;
-  /** The live canonical stand-in's fidelity, or null when none exists. */
-  readonly currentCanonical: number | null;
   /**
    * The library's advisory long edges for video sizes: the canonical one, and
    * each smaller one by its bitrate. Absent for stills and for a data server
@@ -205,10 +201,27 @@ export interface StandInTarget {
 /** The shape of a stand-in summary this package reads; see the platform's `stand_ins`. */
 export interface StandInSummaryLike {
   readonly canonical_target?: number | null;
-  readonly canonical_outdated?: boolean;
   readonly advisory_long_edges?: { readonly canonical: number; readonly by_size: Readonly<Record<string, number>> } | null;
   readonly status?: string;
   readonly sizes: ReadonlyArray<{ readonly fidelity: number; readonly role: string; readonly placement?: string }>;
+}
+
+/**
+ * Whether this original is measured but not yet stamped with a canonical
+ * threshold, so there is nothing to derive for it and nothing to report
+ * either.
+ *
+ * Distinct from a null {@link standInTargetOf}, which also covers a data
+ * server too old to send a target and an original nobody has measured, and
+ * means "fall back to the platform's defaults". That fallback is right for an
+ * unmeasured original, because the write that carries the first stand-in
+ * reports the measurement and stamps in the same breath. It is wrong here: the
+ * measurement is already recorded, the threshold is not this node's to guess,
+ * and a stand-in made against the defaults is one the platform refuses. The
+ * cloud stamps such an original on the next exchange, so the wait is one round.
+ */
+export function awaitsStamp(summary: StandInSummaryLike | null | undefined): boolean {
+  return summary?.status === "awaiting-stamp";
 }
 
 /**
@@ -217,14 +230,14 @@ export interface StandInSummaryLike {
  */
 export function standInTargetOf(summary: StandInSummaryLike | null | undefined): StandInTarget | null {
   if (!summary || summary.canonical_target === undefined) return null;
-  // Nobody has measured the original, so the platform has no answer yet.
-  if (summary.status === "fidelity-unknown") return null;
-  const current = summary.sizes.find((s) => s.role === "canonical" && s.placement !== "missing");
+  // The platform has no answer yet: nobody has measured the original
+  // (`fidelity-unknown`), or no node has stamped it with a canonical threshold
+  // (`awaiting-stamp`). Either way there is nothing to derive against, and the
+  // caller measures and reports instead.
+  if (summary.status === "fidelity-unknown" || summary.status === "awaiting-stamp") return null;
   return {
     canonical: summary.canonical_target,
     smallerSizes: summary.sizes.filter((s) => s.role === "smaller").map((s) => s.fidelity),
-    canonicalOutdated: summary.canonical_outdated === true,
-    currentCanonical: current?.fidelity ?? null,
     ...(summary.advisory_long_edges
       ? {
           advisoryLongEdges: {

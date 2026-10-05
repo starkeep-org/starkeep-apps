@@ -43,8 +43,6 @@ interface StoredRecord {
 const records = new Map<string, StoredRecord>();
 /** Where each original's own bytes sit, as the platform reports it. Default `here`. */
 const originalPlacement = new Map<string, "here" | "cloud">();
-/** Summary fields the platform reports for an original, beyond its sizes. */
-const summaryFields = new Map<string, Record<string, unknown>>();
 /** Every original whose bytes the worker asked for; each would be a download. */
 const fileUrlCalls: string[] = [];
 let sourceBytes: Buffer;
@@ -221,7 +219,6 @@ function handler(
                 placement: "here",
               })),
             original_placement: originalPlacement.get(r.id) ?? "here",
-            ...(summaryFields.get(r.id) ?? {}),
           },
         })),
         nextCursor: null,
@@ -409,74 +406,6 @@ describe("a machine with downloads to derive turned off", () => {
       // The original that is here is still derived.
       expect(fileUrlCalls).toContain("orig-here");
       expect(childrenOf("orig-here").length).toBeGreaterThan(0);
-    } finally {
-      rmSync(configPath(), { force: true });
-    }
-  }, 120_000);
-});
-
-describe("a lowered threshold, replaced on a machine that does not download", () => {
-  const configPath = () => join(root, "app-local", "photos", "derivation", "config.json");
-
-  it("makes the new canonical stand-in from the current one and never fetches the original", async () => {
-    if (!existsSync(workerBundlePath())) {
-      throw new Error("run `pnpm derive:build-worker` before this test");
-    }
-    mkdirSync(join(root, "app-local", "photos", "derivation"), { recursive: true });
-    writeFileSync(configPath(), JSON.stringify({ downloadOriginalsToDerive: false }));
-    try {
-      records.clear();
-      originalPlacement.clear();
-      summaryFields.clear();
-      fileUrlCalls.length = 0;
-      records.set("orig-lowered", {
-        id: "orig-lowered",
-        mime_type: "image/jpeg",
-        original_filename: "lowered.jpg",
-        parent_id: null,
-        size_bytes: sourceBytes.byteLength,
-        metadata: { width: SOURCE_EDGE, height: Math.round(SOURCE_EDGE * 0.75), thumb_hash: "x", exif_present: false },
-        standIn: null,
-        fidelity: SOURCE_EDGE,
-      });
-      originalPlacement.set("orig-lowered", "cloud");
-      // Every size the original takes under its new stamp, and a canonical
-      // stand-in made at the old 4272.
-      for (const fidelity of [320, 640, 1280]) {
-        records.set(`small-${fidelity}`, {
-          id: `small-${fidelity}`,
-          mime_type: "image/avif",
-          original_filename: `small-${fidelity}`,
-          parent_id: "orig-lowered",
-          size_bytes: 1000,
-          metadata: {},
-          standIn: { role: "smaller", fidelity },
-          fidelity: null,
-        });
-      }
-      records.set("old-canonical", {
-        id: "old-canonical",
-        mime_type: "image/avif",
-        original_filename: "old-canonical",
-        parent_id: "orig-lowered",
-        size_bytes: 1000,
-        metadata: {},
-        standIn: { role: "canonical", fidelity: 4272 },
-        fidelity: null,
-      });
-      summaryFields.set("orig-lowered", { canonical_target: 2560, canonical_outdated: true, top: 4272 });
-
-      const event = await runWorker({
-        type: "start",
-        resume: { stage: "full", cursor: null },
-        concurrency: 1,
-      });
-      expect(event.type, event.type === "failed" ? event.message : undefined).toBe("finished");
-
-      expect(fileUrlCalls).not.toContain("orig-lowered");
-      expect(fileUrlCalls).toContain("old-canonical");
-      const canonicals = childrenOf("orig-lowered").filter((c) => c.standIn?.role === "canonical");
-      expect(canonicals.map((c) => c.standIn!.fidelity).sort((a, b) => a - b)).toEqual([2560, 4272]);
     } finally {
       rmSync(configPath(), { force: true });
     }

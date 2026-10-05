@@ -14,7 +14,7 @@ import { deriveVideoLadder, videoLadderIsComplete, videoSourceOf } from "./deriv
 import { publishVideoFacts, publishVideoRendition } from "./publish-video";
 import { UnsupportedVideoError, type VideoTools } from "./video-tools";
 import type { SizeClass, StandInSummaryLike } from "../ladder";
-import { CANONICAL_VIDEO_CLASS, standInTargetOf, VIDEO_LADDER, videoFidelityKbps } from "../ladder";
+import { awaitsStamp, CANONICAL_VIDEO_CLASS, standInTargetOf, VIDEO_LADDER, videoFidelityKbps } from "../ladder";
 
 export interface VideoIngestResult {
   readonly published: readonly PublishedRendition[];
@@ -44,12 +44,6 @@ export interface VideoIngestDeps {
    * applies; omitted, the platform's default threshold does.
    */
   readonly standIns?: StandInSummaryLike | null;
-  /**
-   * True when `path` holds the original's current canonical transcode rather
-   * than the original: a lowered target is made from it. Only the canonical
-   * transcode is derived, and nothing about the original is measured from it.
-   */
-  readonly sourceIsCanonical?: boolean;
 }
 
 /** The transcode that is an original's canonical stand-in. */
@@ -72,17 +66,18 @@ export async function deriveAndPublishVideo(
   // What already exists, whoever made it: stand-ins by the platform's columns,
   // posters and skims by Photos' own label. A transcode another node already
   // made is reused rather than repeated — the platform keeps one per size.
+  // See the stills path: an original the platform has not stamped yet has no
+  // target, and a transcode made against the defaults is one it refuses.
+  if (awaitsStamp(deps.standIns)) {
+    return { published: [], failed: [], ladderComplete: false };
+  }
   const target = standInTargetOf(deps.standIns);
   const recorded = deps.availableRenditionClasses
     ? [...deps.availableRenditionClasses]
     : await existingRenditionClasses(deps.signedFetch, parent.id);
-  // An outdated canonical transcode still plays, but it is not the one this
-  // original is judged by now.
-  const existing = target?.canonicalOutdated ? recorded.filter((c) => c !== CANONICAL_CLASS) : recorded;
+  const existing = recorded;
   const missing = new Set<SizeClass>(
-    VIDEO_LADDER.map((spec) => spec.sizeClass)
-      .filter((sizeClass) => !existing.includes(sizeClass))
-      .filter((sizeClass) => !deps.sourceIsCanonical || sizeClass === CANONICAL_CLASS),
+    VIDEO_LADDER.map((spec) => spec.sizeClass).filter((sizeClass) => !existing.includes(sizeClass)),
   );
   const result = await deriveVideoLadder(path, deps.tools, deps.enabledOptional ?? [], missing, target);
 
@@ -91,13 +86,10 @@ export async function deriveAndPublishVideo(
   // duration with no renditions is a video that shows as a correctly-shaped
   // placeholder, whereas renditions with no facts is one the layout cannot
   // place at all.
-  // A video's fidelity is its whole-container bitrate in kbps. Measured only
-  // from the original: a canonical transcode's facts describe the transcode.
-  const sourceFidelity = deps.sourceIsCanonical ? null : videoFidelityKbps(videoSourceOf(result.facts));
-  if (!deps.sourceIsCanonical) {
-    await publishVideoFacts(deps.signedFetch, parent.id, result.facts);
-    await reportOriginalFidelity(deps.signedFetch, parent.id, sourceFidelity);
-  }
+  // A video's fidelity is its whole-container bitrate in kbps.
+  const sourceFidelity = videoFidelityKbps(videoSourceOf(result.facts));
+  await publishVideoFacts(deps.signedFetch, parent.id, result.facts);
+  await reportOriginalFidelity(deps.signedFetch, parent.id, sourceFidelity);
 
   const published: PublishedRendition[] = [];
   const failed = result.failures.map((f) => ({ sizeClass: f.sizeClass, reason: f.reason }));
@@ -124,14 +116,12 @@ export async function deriveAndPublishVideo(
     }
   }
 
-  const ladderComplete = deps.sourceIsCanonical
-    ? published.some((p) => p.sizeClass === CANONICAL_CLASS)
-    : videoLadderIsComplete(
-        result.facts,
-        [...existing, ...published.map((p) => p.sizeClass)] as SizeClass[],
-        deps.enabledOptional ?? [],
-        target,
-      );
+  const ladderComplete = videoLadderIsComplete(
+    result.facts,
+    [...existing, ...published.map((p) => p.sizeClass)] as SizeClass[],
+    deps.enabledOptional ?? [],
+    target,
+  );
 
   // Archiving is the platform's decision: once the canonical transcode reaches
   // the cloud, the platform tags the original itself.

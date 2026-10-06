@@ -67,10 +67,26 @@ function stageBox(
 interface PhotoViewerProps {
   image: AppImage;
   onClose: () => void;
+  /**
+   * Delete this photograph, or absent to offer no delete control at all.
+   *
+   * A prop rather than something this component does itself, because the viewer is
+   * presentational: it owns the confirmation, the in-flight state and the refusal
+   * message, and the caller owns the request and the library state it changes — the
+   * same split `onClose` already has. A rejection's message is what the person is
+   * shown, so the caller's error text is user-facing.
+   */
+  onDelete?: () => Promise<void>;
 }
 
-export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
+export function PhotoViewer({ image, onClose, onDelete }: PhotoViewerProps) {
   const [infoVisible, setInfoVisible] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  useEffect(() => {
+    setDeleting(false);
+    setDeleteError(null);
+  }, [image.id]);
   // Track whether the full-size image has actually finished downloading. Until
   // then we show a placeholder instead of a bare <img>, which would otherwise
   // render the browser's broken-image glyph while its signed URL is still being
@@ -195,11 +211,56 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
     fontSize: 13,
     flexShrink: 0,
   });
+  /**
+   * Confirm, then hand the delete to the caller.
+   *
+   * Confirmed because it is the one control here that takes something away, and the
+   * person is told what they get back: the item goes to Drive's Trash and can be
+   * restored whole for as long as the library keeps deleted items.
+   *
+   * The viewer stays open until the caller's promise settles, and shows a refusal
+   * inline. The plan called for an optimistic removal with a restore on failure;
+   * that trades one round trip to this machine for a failure the person would have
+   * to be told about somewhere the viewer no longer is, which is the worse half of
+   * the bargain.
+   */
+  const deletePhoto = useCallback(async () => {
+    if (!onDelete) return;
+    if (
+      !window.confirm(
+        `Delete ${image.originalFilename ?? "this photo"}?\n\n` +
+          "It moves to Drive's Trash, where you can restore it for as long as your " +
+          "library keeps deleted items.",
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
+    }
+  }, [image.originalFilename, onDelete]);
+
   const toggles = (
     <>
       <button onClick={() => setInfoVisible(!infoVisible)} style={toggleStyle(infoVisible)}>
         Info
       </button>
+      {onDelete && (
+        <button
+          onClick={() => void deletePhoto()}
+          disabled={deleting}
+          title="Delete this photo"
+          style={{ ...toggleStyle(false), opacity: deleting ? 0.6 : 1 }}
+        >
+          {deleting ? "Deleting…" : "Delete"}
+        </button>
+      )}
       {hasFaces && (
         <button
           onClick={() => setFacesVisible((v) => !v)}
@@ -256,6 +317,11 @@ export function PhotoViewer({ image, onClose }: PhotoViewerProps) {
           </button>
         </div>
         {narrow && <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{toggles}</div>}
+        {deleteError && (
+          <div role="alert" style={{ color: "#f0a8b0", fontSize: 13 }}>
+            {deleteError}
+          </div>
+        )}
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>

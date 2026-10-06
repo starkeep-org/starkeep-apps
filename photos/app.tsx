@@ -11,7 +11,7 @@ import {
   RenditionResolutionProvider,
   useRenditionResolutionCache,
 } from "@/photos-ui";
-import { addPhotoFromPath, getPhotoFileUrls } from "./src/lib/data-server-client";
+import { addPhotoFromPath, deletePhoto, getPhotoFileUrls } from "./src/lib/data-server-client";
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
@@ -315,6 +315,15 @@ function PhotosAppInner() {
           <PhotoViewer
             image={selectedImage}
             onClose={() => dispatch({ type: "SET_SELECTED_ID", id: null })}
+            // The viewer owns the confirmation and the refusal message; the library
+            // state is this component's, like every other dispatch here. The grid
+            // drops the row without refetching, which is what `OPTIMISTIC_DELETE`
+            // means — the server has already agreed by the time this runs.
+            onDelete={async () => {
+              await deletePhoto(selectedImage.id);
+              dispatch({ type: "OPTIMISTIC_DELETE", id: selectedImage.id });
+              dispatch({ type: "SET_SELECTED_ID", id: null });
+            }}
           />
         )}
 

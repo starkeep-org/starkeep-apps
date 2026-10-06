@@ -76,6 +76,23 @@ export async function PATCH(req: Request, id: string): Promise<Response> {
   return Response.json({ image });
 }
 
+/**
+ * Delete a photograph: the shared record, and this app's own row about it.
+ *
+ * The platform deletes the record, its stand-ins, its derived children and every
+ * app's labels on any of them, because the item is going away. It does not touch an
+ * app's private table — it cannot know which rows of yours refer to a record — so
+ * `image_enriched` is this route's to clean up, and it was being left behind.
+ *
+ * The record goes first, and the row after. A failed record delete leaves the row
+ * where it is, which is the harmless half: the row is keyed by `record_id` and
+ * nothing reads it without the record. The other order would strand an edit if the
+ * delete were refused.
+ *
+ * A failed row delete does not fail the request. The photograph is gone as far as
+ * the person is concerned, and the orphan is recoverable through the delete feed —
+ * `deleted=only&updated_after=` names exactly the records whose rows to drop.
+ */
 export async function DELETE(_req: Request, id: string): Promise<Response> {
   const creds = await loadAppCredentials("photos");
   if (!creds) return notInstalled();
@@ -85,5 +102,18 @@ export async function DELETE(_req: Request, id: string): Promise<Response> {
     const errBody = await deleteRes.text().catch(() => "");
     return Response.json({ error: `Delete failed: ${errBody}` }, { status: deleteRes.status });
   }
+
+  const rowRes = await signedFetch(creds, "/app-data/db/image_enriched", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ where: { record_id: id } }),
+  }).catch(() => null);
+  if (!rowRes?.ok) {
+    console.warn(
+      `[photos] deleted record ${id} but could not drop its image_enriched row` +
+        `${rowRes ? ` (${rowRes.status})` : ""}; it will be orphaned until a reconcile`,
+    );
+  }
+
   return Response.json({ ok: true });
 }

@@ -272,7 +272,12 @@ describe("acquiring what a round did not bring", () => {
     const record = (await phone.databaseAdapter.get(held[0]!))!;
     const key = record.objectStorageKey!;
     await phone.objectStorage.delete(key);
-    phone.residency.noteDeparture(key);
+    // A reconcile, not a departure the person chose. The two are different facts
+    // and residency keeps them apart: bytes the person let go stay gone until a
+    // read, while bytes that went *missing* are a fault to repair — and the
+    // acquisition pass is the repair, which is what this case covers.
+    const reconciled = await phone.residency.reconcile();
+    expect(reconciled.corrected).toBeGreaterThan(0);
 
     // The watermark moved past this record long ago, so the sweep is the only
     // thing that can find it.

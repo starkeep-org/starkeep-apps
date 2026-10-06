@@ -414,6 +414,23 @@ export async function requestOwnApi<T>(path: string, init?: RequestInit): Promis
   return (await res.json()) as T;
 }
 
+/**
+ * Delete one photograph.
+ *
+ * Through this app's own route rather than the data server's, because deleting a
+ * photograph is two things: the shared record, which the platform cascades, and this
+ * app's `image_enriched` row, which it cannot know about. The route does both.
+ *
+ * The item is not destroyed. It becomes a tombstone the person can restore from
+ * Drive's Trash for as long as the library keeps deleted items, and only then are
+ * its files reclaimed.
+ *
+ * A rejection's message is user-facing: the viewer shows it where the person asked.
+ */
+export async function deletePhoto(id: string): Promise<void> {
+  await requestOwnApi(`/api/photos/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function getPhotoFileUrl(id: string): Promise<string> {
   const source = await resolveDataSource();
   const result = await request<{ url: string }>(`/data/records/${id}/file-url`, source);

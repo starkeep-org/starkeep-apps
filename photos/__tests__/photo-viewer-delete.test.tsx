@@ -105,11 +105,11 @@ describe("the delete control", () => {
   });
 
   it("says what the person gets back, so the confirmation is not a bare warning", async () => {
-    const confirm = vi.fn(() => false);
+    const confirm = vi.fn((_message?: string) => false);
     vi.stubGlobal("confirm", confirm);
     await open({ onDelete: async () => {} });
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    const message = confirm.mock.calls[0]![0] as string;
+    const message = confirm.mock.calls[0]![0]!;
     expect(message).toContain("photo.jpg");
     expect(message).toContain("Drive's Trash");
     expect(message).toContain("restore");

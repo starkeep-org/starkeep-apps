@@ -242,7 +242,7 @@ describe("what a tile paints", () => {
     //
     // `bytesHere` stays true, because "can this device show the full-size file"
     // and "what does this tile paint" are different questions — the viewer and
-    // the fetch control both read the first one.
+    // the tile's missing mark both read the first one.
     const parent = await seedParent({ bytesHere: true });
     await seedRendition(parent, 640, { resident: false });
 
@@ -375,9 +375,8 @@ describe("the viewer wants a bigger rung than the tile", () => {
   });
 
   it("keeps the record's own bytes reported as absent when they are", async () => {
-    // The viewer's fetch control is offered on `bytesHere`, and a rendition
-    // standing in for an absent original must not suppress it. This is the case
-    // that used to hide the control behind a non-null `uri`.
+    // A rendition standing in for an absent original paints, and still does not
+    // make the original's own bytes count as here.
     const parent = await seedParent({ bytesHere: false });
     await seedRendition(parent, 1280, { resident: true });
 
@@ -388,6 +387,134 @@ describe("the viewer wants a bigger rung than the tile", () => {
 
     expect(opened.uri).not.toBeNull();
     expect(opened.bytesHere).toBe(false);
+  });
+});
+
+describe("the viewer plays a video", () => {
+  /**
+   * A video original with stored dimensions, and its two standard copies: the
+   * 2000 kbps copy the library encodes at 720p and the canonical 4800 kbps
+   * copy at 1080p.
+   */
+  async function seedVideo(options: {
+    readonly bytesHere: boolean;
+    readonly dimensions?: { width: number; height: number };
+    readonly resident: { readonly p720: boolean; readonly p1080: boolean };
+  }) {
+    seq += 1;
+    const key = `shared/video/original-${seq}`;
+    const video = createDataRecord(
+      {
+        type: "video/mp4",
+        originAppId: "photos",
+        contentHash: String(seq).padStart(64, "2"),
+        objectStorageKey: key,
+        sizeBytes: 60_000_000,
+        originalFilename: `clip-${seq}.mp4`,
+      },
+      clock,
+    );
+    await database.put(video);
+    const dims = options.dimensions ?? { width: 3840, height: 2160 };
+    await database.putMetadata(video.type, { recordId: video.id, width: dims.width, height: dims.height });
+    if (options.bytesHere) held.add(key);
+    const copy = async (kbps: number, role: "smaller" | "canonical", resident: boolean) => {
+      seq += 1;
+      const copyKey = `shared/video/copy-${kbps}-${seq}`;
+      const record = createDataRecord(
+        {
+          type: "video/webm",
+          originAppId: "photos",
+          parentId: video.id,
+          contentHash: String(seq).padStart(64, "3"),
+          objectStorageKey: copyKey,
+          sizeBytes: kbps * 1000,
+          originalFilename: null,
+          standInRole: role,
+          fidelity: kbps,
+        },
+        clock,
+      );
+      await database.put(record);
+      if (resident) held.add(copyKey);
+      return record;
+    };
+    const p720 = await copy(2000, "smaller", options.resident.p720);
+    const p1080 = await copy(4800, "canonical", options.resident.p1080);
+    return { video, p720, p1080 };
+  }
+
+  const open = async () =>
+    resolveForViewer(deps(), await tile(), { stage: STAGE, devicePixelRatio: 3 });
+
+  /** A poster frame a desktop extracted, labelled the way Photos labels it. */
+  async function seedPoster(video: DataRecord, sizeClass: string, resident: boolean) {
+    seq += 1;
+    const key = `shared/image/poster-${sizeClass}-${seq}`;
+    const poster = createDataRecord(
+      {
+        type: "image/jpeg",
+        originAppId: "photos",
+        parentId: video.id,
+        contentHash: String(seq).padStart(64, "4"),
+        objectStorageKey: key,
+        sizeBytes: 50_000,
+        originalFilename: `${sizeClass}.jpg`,
+      },
+      clock,
+    );
+    await database.put(poster);
+    await database.upsertLabels([
+      { recordId: poster.id, appId: "photos", key: "derived", value: sizeClass, recordType: poster.type, hlc: clock.now() },
+    ]);
+    if (resident) held.add(key);
+    return poster;
+  }
+
+  it("paints the small poster on the tile and the large one in the viewer", async () => {
+    const { video } = await seedVideo({ bytesHere: false, resident: { p720: false, p1080: false } });
+    const thumb = await seedPoster(video, "video-poster-thumb", true);
+    const large = await seedPoster(video, "video-poster-720p", true);
+    expect((await tile()).uri).toBe(uriOf(thumb));
+    expect((await open()).uri).toBe(uriOf(large));
+  });
+
+  it("plays the original when the original is here, and fetches nothing", async () => {
+    const { video } = await seedVideo({ bytesHere: true, resident: { p720: false, p1080: false } });
+    const opened = await open();
+    expect(opened.playbackUri).toBe(uriOf(video));
+    expect(opened.missingRendition).toBeNull();
+  });
+
+  // A landscape clip on this phone's stage fits its width at 390 points, which
+  // is 1170 physical pixels: the 720p copy covers it.
+  it("fetches the 720p copy for a landscape clip, not the 1080p copy or the original", async () => {
+    const { p720 } = await seedVideo({ bytesHere: false, resident: { p720: false, p1080: false } });
+    const opened = await open();
+    expect(opened.missingRendition).toBe(p720.id);
+    expect(opened.playbackUri).toBeNull();
+    // The original stays absent: playing fetches the copy, never the original.
+    expect(opened.bytesHere).toBe(false);
+  });
+
+  it("plays the 720p copy once it is here", async () => {
+    const { p720 } = await seedVideo({ bytesHere: false, resident: { p720: true, p1080: false } });
+    const opened = await open();
+    expect(opened.playbackUri).toBe(uriOf(p720));
+    expect(opened.missingRendition).toBeNull();
+  });
+
+  // A portrait clip fills the stage's height, 546 points or 1638 pixels, which
+  // the 1280-pixel copy does not cover.
+  it("fetches the 1080p copy for a portrait clip, and plays the 720p copy meanwhile", async () => {
+    const { p720, p1080 } = await seedVideo({
+      bytesHere: false,
+      dimensions: { width: 2160, height: 3840 },
+      resident: { p720: true, p1080: false },
+    });
+    const opened = await open();
+    expect(opened.missingRendition).toBe(p1080.id);
+    expect(opened.playbackUri).toBe(uriOf(p720));
   });
 });
 

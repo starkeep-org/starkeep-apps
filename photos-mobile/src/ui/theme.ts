@@ -243,6 +243,25 @@ export const styles = StyleSheet.create({
    */
   viewerImage: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
   /**
+   * The play control over a clip's poster: a disc in the middle of the stage.
+   * Absolute over the poster rather than beside it, so the stage keeps the box
+   * the poster was laid out in.
+   */
+  viewerPlayButton: {
+    position: "absolute",
+    alignSelf: "center",
+    top: "50%",
+    marginTop: -36,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  viewerPlayGlyph: { color: "#fff", fontSize: 30, marginLeft: 4 },
+  viewerPlayBusy: { color: "#fff", fontSize: 12 },
+  /**
    * The footer, at the height the stage arithmetic reserved for it.
    *
    * Stated rather than grown, because the stage is computed as the window less

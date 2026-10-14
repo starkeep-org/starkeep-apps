@@ -45,12 +45,14 @@
  */
 
 import {
+  DEFAULT_STAND_IN_STANDARDS,
   typeCategory,
   type DataRecord,
   type MetadataRow,
   type StarkeepId,
   type StandInStandards,
 } from "@starkeep/protocol-primitives";
+import { loadStandInsForPage } from "@starkeep/storage-adapter";
 import type { DatabaseAdapter, ObjectStorageAdapter, Query, SortField } from "@starkeep/storage-adapter";
 import type { MediaAliasStore } from "./media/media-alias";
 import type { MotionIndexStore } from "./media/motion-index";
@@ -59,6 +61,7 @@ import {
   resolveLibraryRenditions,
   resolveRecordRenditions,
 } from "./photos/renditions";
+import { chooseVideoPlayback, loadVideoPosters, videoCopies } from "./photos/video-playback";
 // Photos' own layer, which is where a size class or a ladder rung may be named.
 // This file may not import `@starkeep/photos-ladder` directly and does not — see
 // `__tests__/ladder-boundary.test.ts`. What comes through here is a pixel count
@@ -126,13 +129,16 @@ export interface LibraryItem {
    * Carried separately from {@link uri} because a non-null `uri` does not imply
    * it: a record whose original is elided still paints, from the rendition that
    * stands in for it. This field is the one that answers whether the full-size
-   * file is here — which is what decides whether a video can be played and
-   * whether the viewer offers the original at all.
+   * file is here — which is what decides whether the original can be played
+   * and whether the viewer's tile mark shows.
    */
   readonly bytesHere: boolean;
   /**
    * A URI a video player can open, or null when this record is not a video or
-   * its bytes are not on this device.
+   * nothing playable is on this device. Without the original here, the
+   * viewer's resolution names the smallest stand-in covering the stage, or a
+   * smaller one while that one is fetched. A grid tile, which plays nothing,
+   * asks only about the original.
    *
    * A third field rather than a widening of {@link uri}, because the two ask
    * different questions and get different answers for the same record. `uri`
@@ -392,6 +398,12 @@ export async function resolveLibraryItems(
       })
     : null;
 
+  // A clip's poster, which a desktop extracts and every node receives. Two
+  // queries for the page, and none when the page holds no video.
+  const posters = grid ? await loadVideoPosters(deps.database, records) : null;
+  const residentUri = (record: DataRecord | null | undefined): string | null =>
+    record?.objectStorageKey ? (deps.objectStorage.localFileUriFor?.(record.objectStorageKey) ?? null) : null;
+
   // One query for the page's stills, on the same argument. A Motion Photo is an
   // image record, so videos are not asked about at all.
   const motionKeys = records
@@ -444,7 +456,13 @@ export async function resolveLibraryItems(
       // `ownUri` is still computed, because {@link LibraryItem.bytesHere} and
       // {@link LibraryItem.playbackUri} are different questions with different
       // answers, and both still need it.
-      uri: renditionUri,
+      // A clip paints its poster: the small one, or the large one when only
+      // that has arrived.
+      uri:
+        renditionUri ??
+        (isVideo
+          ? (residentUri(posters?.get(record.id)?.thumb) ?? residentUri(posters?.get(record.id)?.large))
+          : null),
       bytesHere: ownUri !== null,
       // The record's own bytes, never the rendition's: a poster is a still and
       // a player handed one plays nothing. `localFileUriFor` already covers
@@ -570,6 +588,31 @@ export async function resolveForViewer(
     ? (deps.objectStorage.localFileUriFor?.(resolved.paint.objectStorageKey) ?? null)
     : null;
   const ownUri = uriFor(deps.objectStorage, record);
+  // A video plays the smallest copy that covers this stage, and that copy is
+  // what the viewer fetches when it is not here. The original moves only when
+  // somebody asks for it. See `photos/video-playback.ts`.
+  const isVideo = typeCategory(record.type) === "video";
+  const video =
+    isVideo && ownUri === null
+      ? chooseVideoPlayback(
+          videoCopies((await loadStandInsForPage(deps.database, [record])).get(record.id) ?? [], {
+            edges: (deps.standards?.() ?? DEFAULT_STAND_IN_STANDARDS).video.advisoryLongEdges,
+            sourceLongEdge: source ? Math.max(source.width, source.height) : null,
+            isResident,
+          }),
+          target,
+          false,
+        )
+      : null;
+  const standInUri = video?.play
+    ? (deps.objectStorage.localFileUriFor?.(video.play.objectStorageKey) ?? null)
+    : null;
+  // The viewer paints a clip's large poster under the play button, and the
+  // small one when only that has arrived.
+  const poster = isVideo ? (await loadVideoPosters(deps.database, [record])).get(record.id) : undefined;
+  const keyUri = (key: string | undefined) =>
+    key ? (deps.objectStorage.localFileUriFor?.(key) ?? null) : null;
+  const posterUri = keyUri(poster?.large?.objectStorageKey) ?? keyUri(poster?.thumb?.objectStorageKey);
 
   return {
     ...item,
@@ -585,11 +628,11 @@ export async function resolveForViewer(
     // choosing between: `image-medium` and above are visually indistinguishable
     // at this size and cost a fraction of the decode, and a 40-megapixel
     // original decoded on a phone is seconds of blank screen.
-    uri: renditionUri ?? ownUri,
+    uri: posterUri ?? renditionUri ?? ownUri,
     bytesHere: ownUri !== null,
-    playbackUri: typeCategory(record.type) === "video" ? ownUri : null,
+    playbackUri: isVideo ? (ownUri ?? standInUri) : null,
     paintedRendition: renditionUri ? (resolved?.paint?.id ?? null) : null,
-    missingRendition: resolved?.missingIdeal ?? null,
+    missingRendition: isVideo ? (video?.fetch?.id ?? null) : (resolved?.missingIdeal ?? null),
     renditionTarget: target,
   };
 }

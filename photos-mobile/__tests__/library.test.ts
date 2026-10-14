@@ -104,8 +104,8 @@ describe("playbackUri", () => {
   });
 
   it("is null for a video whose bytes are not here", async () => {
-    // An elided clip. There is a record and there is nothing to play, and the
-    // viewer's fetch control is what exists for it.
+    // An elided clip. There is a record and there is nothing to play until the
+    // viewer's play button fetches a copy.
     await seed("video/mp4", { bytesHere: false });
 
     const page = await listLibrary(deps(), { limit: 10 });

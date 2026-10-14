@@ -8,12 +8,19 @@
     "newArchEnabled": true,
     "android": {
       "package": "app.starkeep.photos",
-      "permissions": ["READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO"]
+      "permissions": ["READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "CAMERA"]
     },
     "plugins": [
       "expo-file-system",
       "expo-image",
       "expo-video",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Starkeep uses the camera to scan the pairing code from admin-web.",
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-media-library",
         {

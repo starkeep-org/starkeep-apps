@@ -3,7 +3,12 @@
 Companion to `import-loop-design.md` §5.2, which named the problem and sketched three options.
 This is the concrete design. Nothing here is implemented.
 
-**Status: awaiting confirmation on §4 (how a device gets registered).** Everything else follows.
+**Status (2026-10-13): historical.** Option R2 (operator pairing) shipped, and §4.4's QR pairing has
+since shipped in a different shape: admin-web generates the device's keypair and shows the private
+key as a QR code, so the phone delivers nothing to the cloud and no unauthenticated route exists.
+§3 no longer holds either: a device now acts only as Starkeep Drive, and only through the routes the
+phone calls. See `~/projects/starkeep/plan-mobile-qr-pairing-2026-10-13.md` and "The phone's
+credential" in `starkeep-core/data-roles-and-permissions.md`.
 
 ---
 

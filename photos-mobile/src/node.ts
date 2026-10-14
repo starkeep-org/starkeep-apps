@@ -102,6 +102,20 @@ export const MOBILE_MAX_ITEMS = 200;
 export const MOBILE_TRANSFER_CONCURRENCY = 3;
 
 /**
+ * How this node reads the library's settings: without tombstoning losing
+ * settings files.
+ *
+ * Every host otherwise tombstones the losers when two settings files are live
+ * at once. A phone syncs as a paired device, and the cloud refuses a
+ * `starkeep/*` record from a device, because the settings file holds the
+ * paired-device list and a stolen phone must not be able to edit it. A
+ * tombstone from here would therefore get the whole exchange refused. The
+ * cloud and the desktops tombstone losers, and their tombstones reach this
+ * node like any other record.
+ */
+const SETTINGS_READ_ONLY = { tombstoneLosers: false } as const;
+
+/**
  * Records the catalogue scan looks at in one unit of work.
  *
  * Sized by the same constraint as everything else here — a few seconds — and
@@ -480,7 +494,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     clock,
     cloudConfigured: () => Boolean(options.cloud),
   });
-  await librarySettings.refresh();
+  await librarySettings.refresh(SETTINGS_READ_ONLY);
 
   // Every file no stand-in can replace arrives here; stand-ins arrive up to
   // this device's ceiling; everything else waits to be asked for. Nothing is
@@ -522,7 +536,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   /** A round may have brought a settings file; read it before anything stamps. */
   async function afterRound<T>(result: T): Promise<T> {
     try {
-      await librarySettings.refresh();
+      await librarySettings.refresh(SETTINGS_READ_ONLY);
     } catch (err) {
       console.warn(`[starkeep:settings] could not read the library's settings: ${String(err)}`);
     }

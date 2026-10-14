@@ -33,9 +33,13 @@ import {
   HttpObjectStorageAdapter,
   type UploadFile,
 } from "@starkeep/sync-engine";
-import { createSessionStore } from "./auth/session-store";
-import { loadDeviceKey, type DeviceKey } from "./auth/device-key";
-import { loadCloudConfig } from "./config";
+import {
+  clearDeviceCredential,
+  loadDeviceKey,
+  storeDeviceCredential,
+  type DeviceCredential,
+  type DeviceKey,
+} from "./auth/device-key";
 import {
   backfillImageExif,
   backfillThumbHashes,
@@ -194,15 +198,21 @@ export function cachePath(...segments: string[]): string {
 
 export const DATABASE_PATH = documentPath("starkeep", "local.sqlite");
 export const OBJECTS_PATH = documentPath("starkeep", "objects");
-export const SESSION_PATH = documentPath("starkeep", "session.json");
 export const NODE_IDENTITY_PATH = documentPath("starkeep", "node.json");
 
 export function createLocalObjectStorage(): ExpoObjectStorageAdapter {
   return new ExpoObjectStorageAdapter({ fs: expoFileSystem, basePath: OBJECTS_PATH });
 }
 
-/** The device's session store, over the same filesystem port everything else uses. */
-export const sessionStore = createSessionStore(expoFileSystem, SESSION_PATH);
+/** Keep a scanned pairing code's credential. The node picks it up when it next opens. */
+export function storePairing(credential: DeviceCredential): Promise<void> {
+  return storeDeviceCredential(SecureStore, credential);
+}
+
+/** Forget this phone's pairing. The node drops its cloud when it next opens. */
+export function clearPairing(): Promise<void> {
+  return clearDeviceCredential(SecureStore);
+}
 
 /**
  * expo-media-library, adapted to the port `device-library.ts` declares.
@@ -287,11 +297,11 @@ export const deviceMediaStorage = { fs: expoFileSystem };
 /**
  * Bring up this device's node.
  *
- * No cloud is passed, and that is the current truth rather than a placeholder:
- * every `/apps/{appId}/*` route is HMAC-signed with a per-app secret no handset
- * can hold, so there is nothing to exchange with. The node is complete anyway —
- * it holds records, imports the camera roll and answers every question about
- * what it has. See todo #51 and `import-loop-design.md` §5.2.
+ * The node syncs only once the phone is paired. Pairing stores a credential
+ * scanned from admin-web's QR code, which carries both the key the phone signs
+ * with and the cloud it syncs to. With no credential there is no cloud to
+ * exchange with, and the node is complete anyway: it holds records, imports the
+ * camera roll and answers every question about what it has.
  *
  * `generateId` is passed rather than called at module scope because it reaches
  * for a PRNG that Hermes only has after `react-native-get-random-values` has
@@ -300,19 +310,14 @@ export const deviceMediaStorage = { fs: expoFileSystem };
 export async function bringUpNode(): Promise<{
   node: MobileNode;
   identity: NodeIdentity;
-  deviceKey: DeviceKey;
+  deviceKey: DeviceKey | null;
 }> {
   // Before anything else, because the thing it collects belongs to a process
   // that is already gone: a viewer killed mid-playback runs no `release()`. See
   // `sweepMotionScratchFiles`.
   sweepMotionScratchFiles();
   const identity = await loadNodeIdentity(expoFileSystem, NODE_IDENTITY_PATH, generateId);
-  const deviceKey = await loadDeviceKey({
-    store: SecureStore,
-    deviceId: identity.nodeId,
-    randomBytes: (length) => Crypto.getRandomValues(new Uint8Array(length)),
-  });
-  const config = loadCloudConfig();
+  const deviceKey = await loadDeviceKey(SecureStore);
 
   const node = await createMobileNode({
     nodeId: identity.nodeId,
@@ -320,7 +325,7 @@ export async function bringUpNode(): Promise<{
     sqliteDriver: opSqliteDriver,
     localObjectStorage: createLocalObjectStorage(),
     deviceMedia: deviceMediaStorage,
-    ...(config?.baseUrl ? { cloud: driveChannel(config.baseUrl, deviceKey) } : {}),
+    ...(deviceKey ? { cloud: driveChannel(deviceKey) } : {}),
   });
   return { node, identity, deviceKey };
 }
@@ -334,15 +339,12 @@ export async function bringUpNode(): Promise<{
  * The `photos` channel carries app-specific rows — captions — and is a second
  * engine against a second base URL, not needed to answer "did my photos sync".
  *
- * **Configured even when this device is not paired yet.** The engine exists and
- * every request 401s until the operator pairs it, which is a far better state
- * than no engine at all: the failure is visible, attributable and fixed by
- * pairing, where a missing engine looks exactly like a device with nothing to
- * send. That was the actual bug — signing in changed nothing because
- * `bringUpNode` passed no cloud, so `exchange()` was a no-op.
+ * **Configured only once the phone is paired.** The pairing code carries the
+ * cloud's address with the key, so an unpaired phone has no cloud to name, and
+ * the screen says "not connected" rather than showing a sync that fails.
  */
-function driveChannel(baseUrl: string, deviceKey: DeviceKey) {
-  const channelUrl = `${baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
+function driveChannel(deviceKey: DeviceKey) {
+  const channelUrl = `${deviceKey.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
   const signRequest = (method: string, path: string, body?: string | Uint8Array) =>
     deviceKey.signRequest(
       DRIVE_APP_ID,

@@ -44,8 +44,7 @@ import {
   type VerifyResult,
   type SyncTransport,
 } from "@starkeep/sync-engine";
-import type { DataRecord, SyncDownCeilings } from "@starkeep/protocol-primitives";
-import { DEFAULT_SYNC_DOWN_CEILINGS } from "@starkeep/protocol-primitives";
+import type { ConfiguredCeilings, DataRecord, SyncDownCeilings } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "./media/media-alias";
 import { createSqliteMotionIndexStore, type MotionIndexStore } from "./media/motion-index";
@@ -61,7 +60,7 @@ import {
   type ImportCursorStore,
 } from "./media/import-cursor";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
-import { createDeviceSettingsStore, type DeviceSettings } from "./device-settings";
+import { ceilingsOf, createDeviceSettingsStore, type DeviceSettings } from "./device-settings";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
 
 /**
@@ -219,16 +218,15 @@ export interface MobileNode {
    * cursor would make each sweep skip what the other reached.
    */
   readonly fullDerivationCursor: ScanCursorStore | null;
-  /** This device's photo ceiling and derivation switch, as stored. */
+  /** This device's sync-down ceilings, as stored. */
   deviceSettings(): DeviceSettings;
   /**
-   * Change this device's photo sync-down ceiling. Takes effect at once and
-   * removes nothing: a raised ceiling reaches earlier-declined stand-ins
-   * through the next catalogue scan, which restarts from the top.
+   * Change this device's sync-down ceilings for the categories given; the rest
+   * keep their values. Takes effect at once and removes nothing: a raised
+   * ceiling reaches earlier-declined stand-ins through the next catalogue scan,
+   * which restarts from the top.
    */
-  setImageCeiling(ceiling: number | null): DeviceSettings;
-  /** Turn this device's background photo derivation on or off. */
-  setDerivePhotoStandIns(on: boolean): DeviceSettings;
+  setCeilings(change: ConfiguredCeilings): DeviceSettings;
   /**
    * Where the video inside a Motion Photo is, or null when this node reads no
    * camera roll.
@@ -452,10 +450,6 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       })
     : null;
   const settings = createDeviceSettingsStore({ db: databaseAdapter.getRawDatabase() });
-  const ceilingsFor = (s: DeviceSettings): SyncDownCeilings => ({
-    ...DEFAULT_SYNC_DOWN_CEILINGS.phone,
-    image: s.imageCeiling,
-  });
   // Built on the same condition, because import is the only writer and import
   // is what a camera roll makes possible. See `media/motion-index.ts`.
   const motionIndex = options.deviceMedia
@@ -507,7 +501,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     // about cloud storage; a handset holding such a record is the intended
     // outcome, not a violation.
     isCloudNode: false,
-    ceilings: options.ceilings ?? ceilingsFor(settings.get()),
+    ceilings: options.ceilings ?? ceilingsOf(settings.get()),
     standards: () => librarySettings.standards(),
     // A camera-roll photograph is an alias: the overlay answers `has()` for
     // it, but its bytes are the media store's. Removing the key would drop
@@ -592,16 +586,15 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     residency,
     librarySettings,
     deviceSettings: () => settings.get(),
-    setImageCeiling(ceiling) {
-      const next = settings.update({ imageCeiling: ceiling });
-      residency.setCeilings(ceilingsFor(next));
+    setCeilings(change) {
+      const next = settings.update({
+        standInCeilings: { ...settings.get().standInCeilings, ...change },
+      });
+      residency.setCeilings(ceilingsOf(next));
       // From the top, so the next scan reaches every stand-in the new ceiling
       // covers rather than only those past where the last scan stopped.
       scanCursor.set(null);
       return next;
-    },
-    setDerivePhotoStandIns(on) {
-      return settings.update({ derivePhotoStandIns: on });
     },
     exchange: async () => (engine ? serialized(() => engine.exchange().then(afterRound)) : null),
     sync: async (syncOptions) =>

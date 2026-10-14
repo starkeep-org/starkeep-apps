@@ -236,20 +236,6 @@ describe("derivation", () => {
     expect(find(low, "derive-ladder-full").ran).toBe(false);
     expect(deriveFullRenditions).toHaveBeenCalledTimes(1);
   });
-
-  it("derives nothing in the background with photo derivation off", async () => {
-    const deriveRenditions = vi.fn(async () => derived());
-    const deriveFullRenditions = vi.fn(async () => derived());
-    const report = await runWorkTick(
-      deps({ device: device({ isCharging: true }), deriveRenditions, deriveFullRenditions, photoDerivationOff: true }),
-      far(),
-    );
-    for (const job of ["derive-ladder-cheap", "derive-ladder-full"]) {
-      expect(find(report, job).detail).toBe("photo derivation is off on this device");
-    }
-    expect(deriveRenditions).not.toHaveBeenCalled();
-    expect(deriveFullRenditions).not.toHaveBeenCalled();
-  });
 });
 
 describe("failure", () => {

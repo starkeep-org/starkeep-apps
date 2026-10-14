@@ -135,11 +135,6 @@ export interface TickDeps {
     failed: number;
     complete: boolean;
   } | null>;
-  /**
-   * The person turned background photo derivation off on this device. Both
-   * derive jobs then report that rather than a missing encoder.
-   */
-  readonly photoDerivationOff?: boolean;
   readonly now?: () => number;
   readonly log?: (line: string) => void;
   /**
@@ -350,7 +345,6 @@ async function runJob(
     // device that cannot derive — no camera roll to walk, or no encoder in the
     // binary. Both are ordinary, and neither is a failure.
     case "derive-ladder-cheap": {
-      if (deps.photoDerivationOff) return "photo derivation is off on this device";
       if (!deps.deriveRenditions) return "nothing here derives renditions";
       const outcome = await deps.deriveRenditions(
         shareOf(options, now, DERIVE_DEADLINE_SHARE),
@@ -363,7 +357,6 @@ async function runJob(
     }
 
     case "derive-ladder-full": {
-      if (deps.photoDerivationOff) return "photo derivation is off on this device";
       if (!deps.deriveFullRenditions) return "nothing here derives the larger rungs";
       const outcome = await deps.deriveFullRenditions(
         shareOf(options, now, DERIVE_DEADLINE_SHARE),

@@ -22,7 +22,6 @@
     "src/**/*.tsx",
     "__tests__/**/*.ts",
     "App.tsx",
-    "app.config.ts",
     "index.ts"
   ],
   "extends": "expo/tsconfig.base"

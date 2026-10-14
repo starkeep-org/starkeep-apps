@@ -275,8 +275,8 @@ export type NodeState =
       readonly node: MobileNode;
       readonly identity: NodeIdentity;
       readonly clock: HLCClock;
-      /** Shown on screen so the operator can pair this device in admin-web. */
-      readonly deviceKey: DeviceKey;
+      /** This phone's pairing, or null when it is not paired. */
+      readonly deviceKey: DeviceKey | null;
     }
   | { readonly status: "failed"; readonly error: string };
 
@@ -297,6 +297,13 @@ export interface NodeHandle {
    * afterwards without racing the node it is about to query.
    */
   reset: () => Promise<void>;
+  /**
+   * Close the node and open it again, keeping everything it holds.
+   *
+   * For pairing and disconnecting: the credential decides whether the node has
+   * a cloud, and the node reads it only when it opens.
+   */
+  reopen: () => Promise<void>;
 }
 
 export function useNode(): NodeHandle {
@@ -371,7 +378,20 @@ export function useNode(): NodeHandle {
     await built;
   }, []);
 
-  return { state, reset };
+  const reopen = useCallback(async () => {
+    current.current = null;
+    setState({ status: "starting" });
+    // The same order as a reset, without deleting anything: close the shared
+    // node so the next open builds a fresh one, then let the effect build it.
+    await closeNodeForReset();
+    const built = new Promise<void>((resolve) => {
+      opening.current = resolve;
+    });
+    setGeneration((n) => n + 1);
+    await built;
+  }, []);
+
+  return { state, reset, reopen };
 }
 
 export interface LibraryState {

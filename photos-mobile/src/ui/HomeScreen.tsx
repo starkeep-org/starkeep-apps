@@ -8,9 +8,9 @@
  * and colouring it as a fault trains someone to ignore the two rows next to it
  * that genuinely are pass-or-fail.
  *
- * Connecting is offered here rather than demanded up front, because signing in
- * buys sync and nothing else. A device with no session is a whole Starkeep
- * node; it is simply the only one that knows what it holds.
+ * Connecting is offered here rather than demanded up front, because pairing
+ * buys sync and nothing else. An unpaired device is a whole Starkeep node; it
+ * is simply the only one that knows what it holds.
  *
  * ## The order of the sections is the argument
  *
@@ -49,11 +49,10 @@ import {
 // the screen can drop the decoded bitmaps when the app leaves the foreground.
 import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { ActiveSession } from "../auth/session-manager";
-import type { CloudConfig } from "../config";
 import {
   DATABASE_PATH,
   OBJECTS_PATH,
+  clearPairing,
   createLocalObjectStorage,
   deviceMedia,
   opSqliteDriver,
@@ -80,7 +79,7 @@ import type { LibraryItem } from "../library";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
 import { IMAGE_CEILING_CHOICES } from "../device-settings";
-import { useLibrary, useNode, useStorage } from "./use-library";
+import { useLibrary, useNode, useStorage, type NodeState } from "./use-library";
 import { describeVerify, verifyFoundProblem } from "./verify-text";
 import { describeFreed, describeStorageGroup } from "./free-up-text";
 import type { VerifyResult } from "@starkeep/sync-engine";
@@ -113,17 +112,8 @@ interface Check {
 }
 
 interface Props {
-  /** Null when this device has never signed in — which is a supported way to run. */
-  readonly session: ActiveSession | null;
-  /** False only for the instant before the session file has been read. */
-  readonly sessionKnown: boolean;
-  /** Null on a build with no cloud configured — the node still runs. */
-  readonly config: CloudConfig | null;
-  readonly canRefreshSession: boolean;
-  readonly onRefreshSession: () => Promise<void>;
-  /** Null when there is no pool to connect to, which hides the offer entirely. */
-  readonly onConnect: (() => void) | null;
-  readonly onSignOut: () => void;
+  /** Open the scanner for admin-web's pairing code. */
+  readonly onConnect: () => void;
 }
 
 /**
@@ -200,22 +190,14 @@ async function checkCloud(baseUrl: string): Promise<Check> {
   }
 }
 
-export function HomeScreen({
-  session,
-  sessionKnown,
-  config,
-  canRefreshSession,
-  onRefreshSession,
-  onConnect,
-  onSignOut,
-}: Props) {
+export function HomeScreen({ onConnect }: Props) {
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // The hook rather than `Dimensions.get`, because this value has to re-render
   // the screen: the justified rows are laid out against it, and a rotation that
   // did not re-flow them would leave every row measured for the other width.
   const window = useWindowDimensions();
-  const { state: node, reset } = useNode();
+  const { state: node, reset, reopen } = useNode();
   const library = useLibrary(node);
   const storage = useStorage(node);
   /**
@@ -227,6 +209,17 @@ export function HomeScreen({
    * is about to happen is more informative than a generic "Are you sure?".
    */
   const [confirmingReset, setConfirmingReset] = useState(false);
+  /**
+   * Whether "Disconnect" is armed, for the reason the reset button is: after a
+   * disconnect the phone syncs again only once admin-web pairs it again.
+   */
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
+  /**
+   * The pairing this phone just let go of, named so the operator can revoke it
+   * in admin-web. Disconnecting deletes the key here; the cloud keeps
+   * accepting it until it is revoked there.
+   */
+  const [disconnected, setDisconnected] = useState<{ deviceId: string; label: string | null } | null>(null);
   /**
    * Whether the camera-roll grid has been asked for.
    *
@@ -599,7 +592,8 @@ export function HomeScreen({
     };
   }, []);
 
-  const baseUrl = config?.baseUrl;
+  const deviceKey = node.status === "ready" ? node.deviceKey : null;
+  const baseUrl = deviceKey?.baseUrl;
 
   const collect = useCallback(async (): Promise<Check[]> => {
     // The node first, and never behind the cloud probe: `Promise.all` rather
@@ -611,7 +605,7 @@ export function HomeScreen({
         ? checkCloud(baseUrl)
         : Promise.resolve({
             name: "Cloud",
-            detail: "no cloud data server in this build's config",
+            detail: "this device is not connected to a cloud",
             ok: false,
             required: false,
           }),
@@ -703,7 +697,7 @@ export function HomeScreen({
     <View style={[styles.listGutter, { gap: 20, marginBottom: 20 }]}>
       <View style={{ gap: 4 }}>
         <Text style={styles.title}>Starkeep Photos</Text>
-        <Text style={styles.subtitle}>{sessionLabel(session, sessionKnown)}</Text>
+        <Text style={styles.subtitle}>{connectionLabel(node)}</Text>
       </View>
       <Text style={styles.sectionTitle}>This node&rsquo;s library</Text>
       {library.error ? <Text style={styles.error}>{library.error}</Text> : null}
@@ -971,7 +965,7 @@ export function HomeScreen({
           ))
         )}
         <Text style={styles.muted}>
-          Pull down to run these again{canRefreshSession ? " and retry the session" : ""}.
+          Pull down to run these again.
         </Text>
       </Section>
 
@@ -989,7 +983,7 @@ export function HomeScreen({
         <Text style={styles.mono}>{DATABASE_PATH}</Text>
         <Text style={styles.mono}>{OBJECTS_PATH}</Text>
         <Text style={styles.muted}>
-          {config ? `${config.userPoolId} · ${config.region}` : "no cloud configured in this build"}
+          {deviceKey ? deviceKey.baseUrl : "not connected to a cloud"}
         </Text>
       </Section>
 
@@ -1049,7 +1043,7 @@ export function HomeScreen({
             ) : null}
             {node.node.engine === null ? (
               <Text style={styles.muted}>
-                No cloud is configured in this build, so there is nothing to exchange with.
+                This device is not connected to a cloud, so there is nothing to exchange with.
               </Text>
             ) : null}
             {syncError ? <Text style={styles.error}>{syncError}</Text> : null}
@@ -1092,41 +1086,55 @@ export function HomeScreen({
               </Text>
             ) : null}
 
-            {/* The pairing details. On screen because pairing is done from
-                admin-web — a device cannot authenticate its own first
-                registration, so the operator approves it from the privileged
-                console. Until then every request is refused, which is the
-                honest state and is what the error above will say. */}
-            <Text style={styles.muted}>
-              To let this device sync, pair it in admin-web with these values:
-            </Text>
-            <Text style={styles.mono} selectable>
-              {node.deviceKey.deviceId}
-            </Text>
-            <Text style={styles.mono} selectable>
-              {node.deviceKey.publicKeySpki}
-            </Text>
           </>
         ) : null}
 
-        {session ? (
+        {deviceKey ? (
           <>
             <Text style={styles.muted}>
-              {session.tokens
-                ? `Connected as ${session.email ?? "this account"}.`
-                : `Signed in as ${session.email ?? "this account"}, using the session stored on this device. It will refresh itself when there is a connection.`}
+              Connected to {hostLabel(deviceKey.baseUrl)} as{" "}
+              {deviceKey.label ? `\u201c${deviceKey.label}\u201d` : deviceKey.deviceId}.
             </Text>
-            <Pressable onPress={onSignOut} style={{ paddingVertical: 8 }}>
-              <Text style={styles.linkLabel}>Disconnect</Text>
+            <Pressable
+              onPress={() => {
+                if (!confirmingDisconnect) {
+                  setConfirmingDisconnect(true);
+                  return;
+                }
+                setConfirmingDisconnect(false);
+                const was = { deviceId: deviceKey.deviceId, label: deviceKey.label };
+                void clearPairing()
+                  .then(() => reopen())
+                  .then(() => setDisconnected(was))
+                  .catch((err: unknown) => setSyncError(String(err)));
+              }}
+              disabled={syncing}
+              style={{ paddingVertical: 8 }}
+            >
+              <Text style={confirmingDisconnect ? styles.error : styles.linkLabel}>
+                {confirmingDisconnect
+                  ? "Tap again to disconnect. Pairing again needs admin-web."
+                  : "Disconnect"}
+              </Text>
             </Pressable>
           </>
         ) : (
           <>
+            {disconnected ? (
+              // The key is gone from this phone, but the cloud accepts it until
+              // admin-web revokes it, and only the operator can do that.
+              <Text style={styles.muted}>
+                Disconnected. In admin-web, revoke{" "}
+                {disconnected.label ? `\u201c${disconnected.label}\u201d` : "this phone"} (
+                <Text style={styles.mono}>{disconnected.deviceId}</Text>) so its key stops working.
+              </Text>
+            ) : null}
             <Text style={styles.muted}>
               This device is not connected to a cloud, so nothing leaves it and nothing arrives.
-              Everything above is local and stays that way.
+              Everything above is local and stays that way. To connect it, pair it in admin-web and
+              scan the code it shows.
             </Text>
-            {onConnect && sessionKnown ? (
+            {node.status === "ready" ? (
               <Pressable onPress={onConnect} style={[styles.button, { marginTop: 4 }]}>
                 <Text style={styles.buttonLabel}>Connect this device</Text>
               </Pressable>
@@ -1212,13 +1220,9 @@ export function HomeScreen({
             tintColor="#888"
             onRefresh={() => {
               setRefreshing(true);
-              // Pull-to-refresh also retries the session, which is how an
-              // offline session becomes live again without a force-quit.
-              void Promise.all([
-                collect().then(setChecks),
-                library.reload(),
-                canRefreshSession ? onRefreshSession() : Promise.resolve(),
-              ]).finally(() => setRefreshing(false));
+              void Promise.all([collect().then(setChecks), library.reload()]).finally(() =>
+                setRefreshing(false),
+              );
             }}
           />
         }
@@ -1233,19 +1237,19 @@ export function HomeScreen({
 /**
  * Who this device thinks it is.
  *
- * "Local node" rather than "not signed in": the absence of a session is a way
- * to run, not a thing missing, and a subtitle that reads as a deficiency is the
- * sign-in gate growing back as copy.
- *
- * An unrefreshed session *is* named as such, because that one is a true and
- * slightly unusual state — someone debugging a handset should be able to see
- * that its tokens are stale without inferring it from a failing cloud row.
+ * "Local node" rather than "not paired": being unpaired is a way to run, not a
+ * thing missing, and a subtitle that reads as a deficiency is a sign-in gate
+ * growing back as copy.
  */
-function sessionLabel(session: ActiveSession | null, sessionKnown: boolean): string {
-  if (!sessionKnown) return "local node";
-  if (!session) return "local node · not connected";
-  const who = session.email ?? "connected";
-  return session.tokens ? who : `${who} · offline session`;
+export function connectionLabel(node: NodeState): string {
+  if (node.status !== "ready") return "local node";
+  if (!node.deviceKey) return "local node · not connected";
+  return `${node.deviceKey.label ?? "paired"} · ${hostLabel(node.deviceKey.baseUrl)}`;
+}
+
+/** A cloud's address, as a person reads it: the host alone. */
+export function hostLabel(baseUrl: string): string {
+  return baseUrl.replace(/^https?:\/\//, "").replace(/[/:].*$/, "");
 }
 
 /**

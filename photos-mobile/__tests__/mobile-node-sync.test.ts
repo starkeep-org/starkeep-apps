@@ -158,6 +158,46 @@ describe("the library's settings on the phone", () => {
   });
 });
 
+describe("the phone never writes the library's settings file", () => {
+  /** A settings record on the cloud side, created at `wallTime`. */
+  async function cloudSettings(threshold: number, wallTime: number): Promise<DataRecord> {
+    const bytes = serializeUserSettings({ standIns: { image: { canonicalThreshold: threshold } } });
+    const hash = hashOf(bytes);
+    const settings = record({
+      type: SETTINGS_TYPE_ID,
+      contentHash: hash,
+      objectStorageKey: `shared/starkeep/${hash.slice(0, 2)}/${hash}`,
+      mimeType: "application/json",
+      sizeBytes: bytes.byteLength,
+      originAppId: "starkeep-drive",
+      originalFilename: USER_SETTINGS_FILE_NAME,
+      fidelity: null,
+      createdAt: { wallTime, counter: 0, nodeId: "desktop" },
+      updatedAt: { wallTime, counter: 0, nodeId: "desktop" },
+    });
+    await cloudDb.put(settings);
+    await cloudStorage.put(settings.objectStorageKey!, bytes);
+    return settings;
+  }
+
+  it("reads the winner of two live settings files and leaves the loser for other nodes to tombstone", async () => {
+    // The cloud refuses a `starkeep/*` record from a paired device, because the
+    // settings file holds the paired-device list. A tombstone written here would
+    // get every later exchange refused, so the phone reads and never writes.
+    const loser = await cloudSettings(5120, Date.UTC(2026, 0, 1));
+    await cloudSettings(6000, Date.UTC(2026, 0, 2));
+
+    await phone.sync();
+    await phone.sync();
+
+    expect(phone.librarySettings.standards().image.canonicalThreshold).toBe(6000);
+    const onPhone = await phone.databaseAdapter.get(loser.id);
+    expect(onPhone).not.toBeNull();
+    expect(onPhone!.deletedAt).toBeNull();
+    expect((await cloudDb.get(loser.id))!.deletedAt).toBeNull();
+  });
+});
+
 describe("the phone as a peer", () => {
   it("pulls a record the cloud has and it does not", async () => {
     const [seeded] = await seedCloud(1);

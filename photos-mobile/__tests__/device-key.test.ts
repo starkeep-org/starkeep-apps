@@ -14,16 +14,21 @@
  * drifts is a 401 nobody can explain.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { createPublicKey, verify as nodeVerify, createHmac } from "node:crypto";
+import { createPrivateKey, createPublicKey, verify as nodeVerify, createHmac } from "node:crypto";
 import {
   loadDeviceKey,
-  clearDeviceKey,
+  keyFrom,
+  parsePairingPayload,
+  storeDeviceCredential,
+  clearDeviceCredential,
   signedMessage,
   canonicalSignedPath,
+  PAIRING_PAYLOAD_VERSION,
   APP_ID_HEADER,
   APP_TS_HEADER,
   DEVICE_ID_HEADER,
   DEVICE_SIG_HEADER,
+  type DeviceCredential,
   type DeviceKey,
   type SecureStore,
 } from "../src/auth/device-key";
@@ -39,9 +44,21 @@ function fakeSecureStore() {
   return { store, items };
 }
 
-/** Deterministic "randomness", so a test can assert a stable key. */
-const fixedRandom = (seed: number) => (length: number) =>
-  new Uint8Array(Array.from({ length }, (_, i) => (i + seed) % 256));
+/** A deterministic 32-byte seed, base64. */
+const seed = (n: number) =>
+  Buffer.from(Array.from({ length: 32 }, (_, i) => (i + n) % 256)).toString("base64");
+
+const credential: DeviceCredential = {
+  deviceId: "dev_abc",
+  privateKey: seed(1),
+  baseUrl: "https://d123.cloudfront.net",
+  label: "Pixel 8",
+};
+
+/** What admin-web puts in the QR code. */
+function payload(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({ starkeepPair: PAIRING_PAYLOAD_VERSION, ...credential, ...over });
+}
 
 /** Exactly what the cloud verifier will do. */
 function cloudVerifies(
@@ -62,38 +79,103 @@ let device: DeviceKey;
 
 beforeEach(async () => {
   harness = fakeSecureStore();
-  device = await loadDeviceKey({
-    store: harness.store,
-    deviceId: "node-abc",
-    randomBytes: fixedRandom(1),
+  device = keyFrom(credential);
+});
+
+describe("reading a pairing code", () => {
+  it("reads admin-web's payload, and names the host so the screen can ask", () => {
+    const parsed = parsePairingPayload(payload());
+    expect(parsed).toEqual({ ok: true, host: "d123.cloudfront.net", credential });
+  });
+
+  it("drops a trailing slash from the cloud address", () => {
+    const parsed = parsePairingPayload(payload({ baseUrl: "https://d123.cloudfront.net/" }));
+    expect(parsed.ok && parsed.credential.baseUrl).toBe("https://d123.cloudfront.net");
+  });
+
+  it("treats a missing label as none", () => {
+    const { label: _drop, ...noLabel } = credential;
+    const parsed = parsePairingPayload(JSON.stringify({ starkeepPair: 1, ...noLabel }));
+    expect(parsed.ok && parsed.credential.label).toBeNull();
+  });
+
+  it.each([
+    ["text that is not JSON", "https://example.com", /not a Starkeep pairing code/],
+    ["JSON that is not an object", "[1,2]", /not a Starkeep pairing code/],
+    ["an object with no version", JSON.stringify({ deviceId: "x" }), /not a Starkeep pairing code/],
+    ["a newer version", payload({ starkeepPair: 2 }), /different version of admin-web/],
+    ["a device id that could walk an SSM path", payload({ deviceId: "../photos" }), /device id/],
+    ["a key that is not base64", payload({ privateKey: "!!!" }), /key is not valid/],
+    ["a key of the wrong length", payload({ privateKey: Buffer.alloc(16).toString("base64") }), /key is not valid/],
+    ["a cloud address that is not a URL", payload({ baseUrl: "d123.cloudfront.net" }), /cloud address is not valid/],
+    ["a cloud address on another scheme", payload({ baseUrl: "ftp://d123.cloudfront.net" }), /cloud address is not valid/],
+    ["plain http to a public host", payload({ baseUrl: "http://evil.example.com" }), /must use https/],
+    ["a label that is not a string", payload({ label: 7 }), /device name/],
+    ["a label that is too long", payload({ label: "x".repeat(101) }), /device name/],
+  ])("refuses %s", (_name, text, reason) => {
+    const parsed = parsePairingPayload(text);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.reason).toMatch(reason);
+  });
+
+  it.each(["localhost", "127.0.0.1", "10.0.2.2"])(
+    "allows plain http to %s, for a development cloud",
+    (host) => {
+      const parsed = parsePairingPayload(payload({ baseUrl: `http://${host}:4100` }));
+      expect(parsed.ok && parsed.host).toBe(host);
+    },
+  );
+});
+
+describe("the stored credential", () => {
+  it("is absent until a code is scanned, so the phone starts unpaired", async () => {
+    expect(await loadDeviceKey(harness.store)).toBeNull();
+  });
+
+  it("persists, so a restart is the same device", async () => {
+    await storeDeviceCredential(harness.store, credential);
+    const loaded = await loadDeviceKey(harness.store);
+    expect(loaded).toMatchObject({
+      deviceId: "dev_abc",
+      label: "Pixel 8",
+      baseUrl: "https://d123.cloudfront.net",
+      publicKeySpki: device.publicKeySpki,
+    });
+  });
+
+  it("lives in the secure store as one item, and nowhere else", async () => {
+    await storeDeviceCredential(harness.store, credential);
+    expect([...harness.items.keys()]).toEqual(["starkeep.device.credential"]);
+  });
+
+  it("is forgotten on disconnect, along with a key from before QR pairing", async () => {
+    await storeDeviceCredential(harness.store, credential);
+    harness.items.set("starkeep.device.privateKey", seed(9));
+    await clearDeviceCredential(harness.store);
+    expect(harness.items.size).toBe(0);
+    expect(await loadDeviceKey(harness.store)).toBeNull();
+  });
+
+  it("ignores a key from before QR pairing, which the cloud no longer accepts", async () => {
+    harness.items.set("starkeep.device.privateKey", seed(9));
+    expect(await loadDeviceKey(harness.store)).toBeNull();
+  });
+
+  it("counts a stored credential that no longer parses as unpaired", async () => {
+    harness.items.set("starkeep.device.credential", "{not json");
+    expect(await loadDeviceKey(harness.store)).toBeNull();
+    harness.items.set("starkeep.device.credential", JSON.stringify({ ...credential, privateKey: "short" }));
+    expect(await loadDeviceKey(harness.store)).toBeNull();
+  });
+
+  it("is replaced by a later scan", async () => {
+    await storeDeviceCredential(harness.store, credential);
+    await storeDeviceCredential(harness.store, { ...credential, deviceId: "dev_second", privateKey: seed(5) });
+    expect((await loadDeviceKey(harness.store))!.deviceId).toBe("dev_second");
   });
 });
 
 describe("the key itself", () => {
-  it("persists, so a restart is the same device", async () => {
-    const again = await loadDeviceKey({
-      store: harness.store,
-      deviceId: "node-abc",
-      // Different randomness — if this were used, the key would change.
-      randomBytes: fixedRandom(99),
-    });
-    expect(again.publicKeySpki).toBe(device.publicKeySpki);
-  });
-
-  it("mints a new key once cleared", async () => {
-    await clearDeviceKey(harness.store);
-    const fresh = await loadDeviceKey({
-      store: harness.store,
-      deviceId: "node-abc",
-      randomBytes: fixedRandom(99),
-    });
-    expect(fresh.publicKeySpki).not.toBe(device.publicKeySpki);
-  });
-
-  it("uses the node id as its device id, so a device has one name", () => {
-    expect(device.deviceId).toBe("node-abc");
-  });
-
   it("publishes a public key node:crypto can import directly", () => {
     // If the SPKI prefix were wrong this throws, and it would throw in the
     // Lambda rather than here — which is the whole point of asserting it.
@@ -105,9 +187,25 @@ describe("the key itself", () => {
     expect(key.asymmetricKeyType).toBe("ed25519");
   });
 
-  it("never puts the private key anywhere but the secure store", () => {
-    expect([...harness.items.keys()]).toEqual(["starkeep.device.privateKey"]);
-    expect(device.publicKeySpki).not.toContain(harness.items.get("starkeep.device.privateKey"));
+  it("derives the public key admin-web registered from the seed it was handed", () => {
+    // Admin-web registers the SPKI it exported and hands the phone the seed.
+    // The two must name the same key, or every request fails the signature
+    // check. Derived here by node:crypto from the PKCS#8 that wraps the seed,
+    // which is how a browser's Web Crypto holds it.
+    const pkcs8 = Buffer.concat([
+      Buffer.from("302e020100300506032b657004220420", "hex"),
+      Buffer.from(credential.privateKey, "base64"),
+    ]);
+    const spki = createPublicKey(createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" })).export({
+      format: "der",
+      type: "spki",
+    });
+    expect(spki.toString("base64")).toBe(device.publicKeySpki);
+  });
+
+  it("signs with the device id admin-web chose", () => {
+    const headers = device.signRequest("starkeep-drive", "GET", "/health", undefined);
+    expect(headers[DEVICE_ID_HEADER]).toBe("dev_abc");
   });
 });
 
@@ -183,7 +281,7 @@ describe("signatures the cloud will check", () => {
       [APP_ID_HEADER, APP_TS_HEADER, DEVICE_ID_HEADER, DEVICE_SIG_HEADER].sort(),
     );
     expect(headers[APP_ID_HEADER]).toBe("starkeep-drive");
-    expect(headers[DEVICE_ID_HEADER]).toBe("node-abc");
+    expect(headers[DEVICE_ID_HEADER]).toBe("dev_abc");
   });
 
   it("stamps a timestamp the verifier's skew window will accept", () => {

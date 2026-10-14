@@ -25,6 +25,5 @@ export { PhotoInfoPanel } from "./components/viewer/photo-info-panel";
 // On-device vision (local target only — these render nothing when the routes
 // answer 501, so the toolbar can mount them unconditionally)
 export { VisionPanel } from "./components/vision/vision-panel";
-export { DerivationPanel } from "./components/derivation/derivation-panel";
 export { PeopleView } from "./components/vision/people-view";
 export { FaceOverlay } from "./components/vision/face-overlay";

@@ -362,52 +362,44 @@ describe("a cold library, swept by the real worker", () => {
   }, 180_000);
 });
 
-describe("a machine with downloads to derive turned off", () => {
-  const configPath = () => join(root, "app-local", "photos", "derivation", "config.json");
-
-  it("derives only from originals already here, and still reports a cloud-only original's fidelity", async () => {
+describe("a still whose original is in the cloud", () => {
+  it("is not downloaded to derive, and still has its fidelity reported", async () => {
     if (!existsSync(workerBundlePath())) {
       throw new Error("run `pnpm derive:build-worker` before this test");
     }
-    mkdirSync(join(root, "app-local", "photos", "derivation"), { recursive: true });
-    writeFileSync(configPath(), JSON.stringify({ downloadOriginalsToDerive: false }));
-    try {
-      records.clear();
-      originalPlacement.clear();
-      fileUrlCalls.length = 0;
-      const stored = (id: string): StoredRecord => ({
-        id,
-        mime_type: "image/jpeg",
-        original_filename: `${id}.jpg`,
-        parent_id: null,
-        size_bytes: sourceBytes.byteLength,
-        // Dimensions already known, as a synced original's are.
-        metadata: { width: SOURCE_EDGE, height: Math.round(SOURCE_EDGE * 0.75), thumb_hash: "x" },
-        standIn: null,
-        fidelity: null,
-      });
-      records.set("orig-here", stored("orig-here"));
-      records.set("orig-cloud", stored("orig-cloud"));
-      originalPlacement.set("orig-cloud", "cloud");
+    records.clear();
+    originalPlacement.clear();
+    fileUrlCalls.length = 0;
+    const stored = (id: string): StoredRecord => ({
+      id,
+      mime_type: "image/jpeg",
+      original_filename: `${id}.jpg`,
+      parent_id: null,
+      size_bytes: sourceBytes.byteLength,
+      // Dimensions already known, as a synced original's are.
+      metadata: { width: SOURCE_EDGE, height: Math.round(SOURCE_EDGE * 0.75), thumb_hash: "x" },
+      standIn: null,
+      fidelity: null,
+    });
+    records.set("orig-here", stored("orig-here"));
+    records.set("orig-cloud", stored("orig-cloud"));
+    originalPlacement.set("orig-cloud", "cloud");
 
-      const event = await runWorker({
-        type: "start",
-        resume: { stage: "cheap", cursor: null },
-        concurrency: 2,
-      });
-      expect(event.type, event.type === "failed" ? event.message : undefined).toBe("finished");
+    const event = await runWorker({
+      type: "start",
+      resume: { stage: "cheap", cursor: null },
+      concurrency: 2,
+    });
+    expect(event.type, event.type === "failed" ? event.message : undefined).toBe("finished");
 
-      // Any read of the cloud-only original would have downloaded it.
-      expect(fileUrlCalls).not.toContain("orig-cloud");
-      expect(childrenOf("orig-cloud")).toEqual([]);
-      // The fidelity needs no bytes, so it is reported anyway.
-      expect(records.get("orig-cloud")!.fidelity).toBe(SOURCE_EDGE);
+    // Any read of the cloud-only original would have downloaded it.
+    expect(fileUrlCalls).not.toContain("orig-cloud");
+    expect(childrenOf("orig-cloud")).toEqual([]);
+    // The fidelity needs no bytes, so it is reported anyway.
+    expect(records.get("orig-cloud")!.fidelity).toBe(SOURCE_EDGE);
 
-      // The original that is here is still derived.
-      expect(fileUrlCalls).toContain("orig-here");
-      expect(childrenOf("orig-here").length).toBeGreaterThan(0);
-    } finally {
-      rmSync(configPath(), { force: true });
-    }
+    // The original that is here is still derived.
+    expect(fileUrlCalls).toContain("orig-here");
+    expect(childrenOf("orig-here").length).toBeGreaterThan(0);
   }, 120_000);
 });

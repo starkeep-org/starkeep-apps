@@ -29,6 +29,8 @@
  * the whole sweep if they share the loop that serves it.
  */
 
+// First: a worker thread has its own console. See log-timestamps.ts.
+import "../../log-timestamps";
 import { parentPort } from "node:worker_threads";
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";

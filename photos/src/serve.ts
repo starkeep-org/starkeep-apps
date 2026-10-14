@@ -22,6 +22,8 @@
  * platform's.
  */
 
+// First, so lines written during startup are stamped too. See log-timestamps.ts.
+import "./log-timestamps.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";

@@ -44,7 +44,7 @@ import type { LibraryItem } from "../library";
 import type { Dimensions as Box } from "../photos/render-target";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { styles } from "./theme";
-import { formatBytes } from "./format";
+import { formatBytes, isVideo } from "./format";
 import { perf } from "./perf";
 
 /**
@@ -67,7 +67,7 @@ export function LibraryViewer({
   hasPrevious,
   hasNext,
   onStep,
-  onFetch,
+  onPlay,
   onOpenMotion,
   onClose,
 }: {
@@ -78,7 +78,8 @@ export function LibraryViewer({
   hasPrevious: boolean;
   hasNext: boolean;
   onStep: (step: ViewerStep) => void;
-  onFetch: (item: LibraryItem) => Promise<boolean>;
+  /** Play pressed on a clip: fetch what it needs to play, when that is not here. */
+  onPlay: (item: LibraryItem) => Promise<void>;
   onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   onClose: () => void;
 }) {
@@ -129,7 +130,7 @@ export function LibraryViewer({
         hasPrevious={hasPrevious}
         hasNext={hasNext}
         onStep={onStep}
-        onFetch={onFetch}
+        onPlay={onPlay}
         onOpenMotion={onOpenMotion}
         onClose={onClose}
       />
@@ -144,7 +145,7 @@ function ViewerBody({
   hasPrevious,
   hasNext,
   onStep,
-  onFetch,
+  onPlay,
   onOpenMotion,
   onClose,
 }: {
@@ -154,11 +155,22 @@ function ViewerBody({
   hasPrevious: boolean;
   hasNext: boolean;
   onStep: (step: ViewerStep) => void;
-  onFetch: (item: LibraryItem) => Promise<boolean>;
+  onPlay: (item: LibraryItem) => Promise<void>;
   onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   onClose: () => void;
 }) {
   const { record, uri, bytesHere, playbackUri, thumbHash } = item;
+  const clip = isVideo(item);
+  /**
+   * Whether somebody pressed play on this clip. The player mounts once this is
+   * set and there is something to play, which may be after a download.
+   * Reset by remounting, like `painted` below.
+   */
+  const [playRequested, setPlayRequested] = useState(false);
+  const pressPlay = useCallback(() => {
+    setPlayRequested(true);
+    if (!playbackUri) void onPlay(item);
+  }, [item, onPlay, playbackUri]);
   perf("body:render");
   useEffect(() => {
     perf("body:mounted");
@@ -212,7 +224,7 @@ function ViewerBody({
   const [painted, setPainted] = useState(false);
   const onPainted = useCallback(() => setPainted(true), []);
   useEffect(() => {
-    if (playbackUri || !painted) return;
+    if (clip || !painted) return;
     let released = false;
     let handle: OpenMotionPhoto | null = null;
     const deferred = InteractionManager.runAfterInteractions(() => {
@@ -244,7 +256,7 @@ function ViewerBody({
       background.remove();
       handle?.release();
     };
-  }, [item, onOpenMotion, playbackUri, painted]);
+  }, [item, onOpenMotion, clip, painted]);
 
   /**
    * Sideways to move through the library, and nothing else claimed.
@@ -291,7 +303,7 @@ function ViewerBody({
           the view it draws into changes size, and the motion control is a
           control that arrives a second after the picture. */}
       <View style={{ width: stage.width, height: stage.height }}>
-        {playbackUri ? (
+        {clip && playRequested && playbackUri ? (
           <VideoStage uri={playbackUri} />
         ) : playingMotion && motion && uri ? (
           <MotionStage motion={motion} onStop={stopMotion} />
@@ -307,6 +319,21 @@ function ViewerBody({
             onClose={onClose}
           />
         )}
+        {clip && !(playRequested && playbackUri) ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={busy ? "Downloading the video" : "Play"}
+            onPress={pressPlay}
+            disabled={busy}
+            style={styles.viewerPlayButton}
+          >
+            {busy ? (
+              <Text style={styles.viewerPlayBusy}>Loading…</Text>
+            ) : (
+              <Text style={styles.viewerPlayGlyph}>▶</Text>
+            )}
+          </Pressable>
+        ) : null}
       </View>
 
       {/* Given the height the stage arithmetic reserved for it, so a control
@@ -344,28 +371,6 @@ function ViewerBody({
             place the difference between "a photo" and "a record" is visible,
             and because it is what a second device would match it by. */}
         <Text style={styles.mono}>{record.contentHash?.slice(0, 16) ?? "no hash"}…</Text>
-        {/* The reversal half of eliding, and the only one there is. A record
-            this node declined has already had its watermark advanced past it,
-            so no sync round will offer the bytes again — without this button
-            a file above this device's ceiling would be indistinguishable from
-            a lost photo.
-
-            Offered on `bytesHere` alone now, where it used to also check `uri`.
-            The two stopped agreeing the moment a rendition could stand in for an
-            absent original: such a record paints a picture and still does not
-            have its own bytes, and hiding the control for it would have hidden
-            it in exactly the case it was written for. */}
-        {bytesHere ? null : (
-          <Pressable
-            onPress={() => void onFetch(item)}
-            disabled={busy}
-            style={{ paddingVertical: 8 }}
-          >
-            <Text style={styles.linkLabel}>
-              {busy ? "Fetching…" : "Fetch these bytes"}
-            </Text>
-          </Pressable>
-        )}
         <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
           <Text style={styles.linkLabel}>Close</Text>
         </Pressable>
@@ -725,9 +730,10 @@ function RenderedSize({
  * on a press of the scrubber — or stepping to the next photograph on a drag of
  * it — would make the controls unusable.
  *
- * **No autoplay.** The viewer opens on the first frame and a person presses
- * play. A video that starts making noise because a tile was tapped is a
- * surprise, and on a phone the bytes may be a 47 MB original.
+ * **Mounted only after somebody pressed play**, so it starts playing at once.
+ * The viewer opens on the clip's poster with a play button over it: a video
+ * that starts making noise because a tile was tapped is a surprise, and a
+ * download nobody asked for spends somebody's data.
  */
 function VideoStage({ uri }: { uri: string }) {
   /**
@@ -740,6 +746,7 @@ function VideoStage({ uri }: { uri: string }) {
    */
   const player = useVideoPlayer({ uri, contentType: "progressive" as const }, (p) => {
     p.loop = false;
+    p.play();
   });
   return (
     <View style={styles.viewerImageArea}>

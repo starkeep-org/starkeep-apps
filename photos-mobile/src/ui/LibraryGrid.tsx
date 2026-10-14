@@ -258,10 +258,10 @@ export const LibraryRow = memo(function LibraryRow({
           />
           {/* The mark for a record with nothing on this device at all: no
               original and no rendition, so what is behind it is a ThumbHash or
-              the tile's own colour. The fetch control in the viewer is what it
-              exists for — eliding advances the watermark, so nothing in a sync
-              round will offer those bytes again and that is the only route
-              back.
+              the tile's own colour. Opening it is the route back — the viewer
+              fetches the rung it needs, or a clip's copy on play — because
+              eliding advances the watermark, so nothing in a sync round will
+              offer those bytes again.
 
               **Both halves of the condition are load-bearing now that the list
               paints rungs only.** A null `uri` on its own no longer means
@@ -434,6 +434,10 @@ export function useLibraryViewer(
         // no change on screen.
         if (!samePicture(resolved, opened)) setItem(resolved);
 
+        // A clip downloads nothing on open. Its bytes move when somebody
+        // presses play, which is `playNow`'s job.
+        if (isVideo(resolved)) return;
+
         // **Two ways to get the rung this screen wants, and a record is only
         // ever in one of them.** `missingRendition` is non-null exactly when the
         // rung's record exists and its bytes do not, which is a transfer.
@@ -486,16 +490,33 @@ export function useLibraryViewer(
     [show],
   );
 
-  const fetchNow = useCallback(
-    async (target: LibraryItem): Promise<boolean> => {
+  /**
+   * Play pressed on a clip whose bytes are not here: fetch the copy the viewer
+   * chose, or the original when no copy exists, then resolve again so the
+   * viewer has something to play.
+   *
+   * The copy is the smallest one covering the stage. See
+   * `photos/video-playback.ts`. The original moves only for a clip nobody has
+   * transcoded.
+   */
+  const playNow = useCallback(
+    async (target: LibraryItem): Promise<void> => {
+      if (target.playbackUri) return;
       setFetching(target.record.id);
       try {
-        return await onFetch(target);
+        const fetched =
+          target.missingRendition !== null
+            ? await onFetchRendition(target, "viewer")
+            : await onFetch(target);
+        if (!fetched || showing.current !== target.record.id) return;
+        const playable = await onOpenForViewer(target, stageRef.current);
+        if (showing.current !== target.record.id) return;
+        setItem(playable);
       } finally {
         setFetching(null);
       }
     },
-    [onFetch],
+    [onFetch, onFetchRendition, onOpenForViewer],
   );
 
   const index = item ? items.findIndex((c) => c.record.id === item.record.id) : -1;
@@ -508,7 +529,7 @@ export function useLibraryViewer(
       hasPrevious={index > 0}
       hasNext={index >= 0 && index < items.length - 1}
       onStep={step}
-      onFetch={fetchNow}
+      onPlay={playNow}
       onOpenMotion={onOpenMotion}
       onClose={() => {
         perf("close:press");

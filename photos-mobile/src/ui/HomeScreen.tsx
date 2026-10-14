@@ -40,6 +40,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  Share,
   Text,
   useWindowDimensions,
   View,
@@ -58,6 +59,19 @@ import {
 } from "../platform";
 import { JOB_GRAPH, runnableJobs, type DeviceState } from "../work/job-graph";
 import { planCatchUp, type CatchUpPlan } from "../work/foreground-catchup";
+import {
+  createDebouncer,
+  createForegroundSyncLoop,
+  createSyncFollowUp,
+  mayAutoSync,
+} from "../work/foreground-sync";
+import {
+  formatSyncTrace,
+  SYNC_TRACE_KEEP,
+  type SyncTraceRound,
+  type SyncTrigger,
+} from "../work/sync-trace";
+import { describeTraceRound, TRACE_ROUNDS_SHOWN } from "./trace-text";
 import {
   backgroundWorkStatus,
   readRealDeviceState,
@@ -269,6 +283,22 @@ export function HomeScreen({ onConnect }: Props) {
   /** True while a sync is in flight, readable from an event handler. */
   const syncingRef = useRef(false);
   /**
+   * At most one sync running and one waiting behind it. A sync asked for while
+   * one runs — the rungs a derivation just made, a photograph imported a
+   * moment ago — runs when that one ends instead of being dropped. See
+   * `work/foreground-sync.ts`.
+   */
+  const syncFollowUp = useRef(createSyncFollowUp());
+  /** What asked for the waiting follow-up, for the trace. The latest wins. */
+  const followUpTrigger = useRef<SyncTrigger>("button");
+  /** Whether the app is in the foreground, readable from a sync's `finally`. */
+  const appActive = useRef(AppState.currentState === "active");
+  /**
+   * The last rounds this node ran, for the Work section. Read after every sync
+   * and on mount, from the node's own trace table.
+   */
+  const [trace, setTrace] = useState<SyncTraceRound[]>([]);
+  /**
    * What the last foreground catch-up did, for the line under the Sync section.
    *
    * A pass that declined a half has to say so. "Waiting for Wi-Fi before
@@ -323,13 +353,30 @@ export function HomeScreen({ onConnect }: Props) {
    * one tap per round would make a first upload of a real library hundreds of
    * taps.
    */
-  const runSync = useCallback(() => {
-    if (node.status !== "ready" || node.node.engine === null) return;
-    // A catch-up and a tap can race — the app comes back to the foreground
-    // while a sync the user started is already draining. Starting a second one
-    // against the same engine would serialize behind the first anyway and
-    // double the progress counter on the way.
-    if (syncingRef.current) return;
+  const startSyncRef = useRef<((trigger: SyncTrigger) => void) | null>(null);
+  const runSync = useCallback(
+    (trigger: SyncTrigger = "button") => {
+      if (node.status !== "ready" || node.node.engine === null) return;
+      // A catch-up, a timer tick and a tap can race — the app comes back to the
+      // foreground while a sync the user started is already draining. A second
+      // sync against the same engine would serialize behind the first anyway
+      // and double the progress counter on the way, so it waits instead, and
+      // many waiting requests collapse into one.
+      if (syncFollowUp.current.request() === "queued") {
+        followUpTrigger.current = trigger;
+        return;
+      }
+      startSyncRef.current?.(trigger);
+    },
+    [node],
+  );
+
+  const startSync = useCallback((trigger: SyncTrigger) => {
+    if (node.status !== "ready" || node.node.engine === null) {
+      // Nothing to run against, so nothing is running and nothing waits.
+      while (syncFollowUp.current.finished());
+      return;
+    }
     syncingRef.current = true;
     setSyncing(true);
     setSyncProgress(null);
@@ -339,6 +386,7 @@ export function HomeScreen({ onConnect }: Props) {
     let items = 0;
     void node.node
       .sync({
+        trigger,
         signal: abort.signal,
         onRound: (result, rounds) => {
           items += result.applied + result.shipped;
@@ -351,10 +399,12 @@ export function HomeScreen({ onConnect }: Props) {
           // moves no bytes looks identical in the totals to one
           // that had no bytes to move.
           console.warn(
-            `[sync] round=${rounds} applied=${result.applied} ` +
+            `[sync] trigger=${trigger} round=${rounds} applied=${result.applied} ` +
               `shipped=${result.shipped} elided=${result.elided} ` +
+              `landed=${result.landed} uploaded=${result.uploaded} ` +
               `blocked=${result.blocked} hasMore=${result.hasMore} ` +
               `outboundHasMore=${result.outboundHasMore} ` +
+              `bytesHasMore=${result.bytesHasMore} ` +
               `progressed=${result.progressed}`,
           );
         },
@@ -406,8 +456,63 @@ export function HomeScreen({ onConnect }: Props) {
       .finally(() => {
         syncingRef.current = false;
         setSyncing(false);
+        setTrace(node.node.syncTrace(TRACE_ROUNDS_SHOWN));
+        // A sync asked for while this one ran. Not after the app has left the
+        // foreground: the waiting request was for an open app, and the
+        // background windows have their own sync.
+        if (syncFollowUp.current.finished()) {
+          if (appActive.current) startSyncRef.current?.(followUpTrigger.current);
+          else syncFollowUp.current.finished();
+        }
       });
   }, [node, library, storage]);
+
+  useEffect(() => {
+    startSyncRef.current = startSync;
+  }, [startSync]);
+
+  /**
+   * A sync nobody tapped for: a timer tick, a photograph just taken. Kept to
+   * the catch-up's rule — never over a metered connection — because the sync
+   * moves originals as well as rows. See `mayAutoSync`.
+   */
+  const autoSync = useCallback(
+    async (trigger: SyncTrigger) => {
+      const conditions = await readRealDeviceState().catch(() => null);
+      const allowed = mayAutoSync({
+        nodeReady: node.status === "ready",
+        hasCloud: node.status === "ready" && node.node.engine !== null,
+        device: conditions,
+      });
+      if (allowed) runSync(trigger);
+    },
+    [node, runSync],
+  );
+
+  /**
+   * The camera roll changed while the app is open: import what is new, ship
+   * its rows, make its sizes, and ship those. Waits for a running catch-up
+   * rather than racing its import, by asking again a moment later.
+   */
+  const mediaChangeRetry = useRef<(() => void) | null>(null);
+  const onMediaChange = useCallback(async () => {
+    if (node.status !== "ready") return;
+    if (catchingUpRef.current) {
+      mediaChangeRetry.current?.();
+      return;
+    }
+    catchingUpRef.current = true;
+    try {
+      const permission = await deviceMedia.getPermissions().catch(() => null);
+      if (!permission?.granted) return;
+      await library.importQuietly();
+      await autoSync("media-change");
+      await library.deriveRenditions();
+      await autoSync("after-derive");
+    } finally {
+      catchingUpRef.current = false;
+    }
+  }, [node, library, autoSync]);
 
   /**
    * Bring the library up to date because somebody opened the app.
@@ -450,6 +555,12 @@ export function HomeScreen({ onConnect }: Props) {
       }
 
       const imported = plan.import ? await library.importQuietly() : null;
+
+      // Rows first. A photograph this pass noticed ships now, rather than after
+      // four backfills and a derivation pass, which on a real camera roll is
+      // tens of seconds. The sizes derivation makes ship in a second sync,
+      // below. `tick.ts` orders import before sync the same way.
+      if (plan.sync) runSync(plan.import ? "after-import" : "open");
 
       // One batch of repair per app open, and only while there is repair left.
       // Gated on the import half's permission, because it reads the same media
@@ -499,9 +610,9 @@ export function HomeScreen({ onConnect }: Props) {
       // bounds how often that happens. See `importNullModified`.
       if (plan.import) await library.sweepNullModified();
 
-      // After the import resolves, so a photograph this pass noticed ships in
-      // this pass. `tick.ts` orders the same two jobs the same way.
-      if (plan.sync) runSync();
+      // Again, for the rungs derivation just made. If the first sync is still
+      // running this one waits behind it and runs when it ends.
+      if (plan.sync && plan.import) runSync("after-derive");
 
       catchUpAt.current = Date.now();
       setLastCatchUp({ plan, imported });
@@ -522,21 +633,55 @@ export function HomeScreen({ onConnect }: Props) {
     runCatchUpRef.current = () => void runCatchUp();
   }, [runCatchUp]);
 
+  /** The latest {@link autoSync} and {@link onMediaChange}, for the same reason. */
+  const autoSyncRef = useRef<((trigger: SyncTrigger) => Promise<void>) | null>(null);
+  const onMediaChangeRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => {
+    autoSyncRef.current = autoSync;
+    onMediaChangeRef.current = onMediaChange;
+  }, [autoSync, onMediaChange]);
+
+  useEffect(() => {
+    // While the app is open: a sync every thirty seconds, and an import and a
+    // sync a few seconds after the camera roll changes. Both stop the moment
+    // the app leaves the foreground; background windows are their own thing.
+    const loop = createForegroundSyncLoop({ onTick: () => autoSyncRef.current?.("timer") });
+    const mediaChange = createDebouncer(() => void onMediaChangeRef.current?.());
+    mediaChangeRetry.current = () => mediaChange.trigger();
+    let mediaSubscription: { remove(): void } | null = null;
+
+    const enterForeground = (): void => {
+      appActive.current = true;
+      loop.start();
+      mediaSubscription ??= deviceMedia.onChange?.(() => mediaChange.trigger()) ?? null;
+    };
+    const leaveForeground = (): void => {
+      appActive.current = false;
+      loop.stop();
+      mediaChange.cancel();
+      mediaSubscription?.remove();
+      mediaSubscription = null;
+      // A sync waiting behind the running one was asked for by an open app.
+      syncFollowUp.current.cancel();
+      // Stopping is cheap — every round has persisted its watermarks — and it
+      // is what keeps an unbounded drain from running into the moment the OS
+      // freezes the process. Nothing is armed for the way back: coming to the
+      // foreground starts a pass unconditionally, and that pass syncs.
+      syncAbort.current?.abort();
+    };
+
+    if (AppState.currentState === "active") enterForeground();
     const subscription = AppState.addEventListener("change", (state) => {
       if (state !== "active") {
-        // Stopping is cheap — every round has persisted its watermarks — and it
-        // is what keeps an unbounded drain from running into the moment the OS
-        // freezes the process. Nothing is armed for the way back: coming to the
-        // foreground starts a pass unconditionally, and that pass syncs.
-        syncAbort.current?.abort();
+        leaveForeground();
         return;
       }
+      enterForeground();
       runCatchUpRef.current?.();
     });
     return () => {
       subscription.remove();
-      syncAbort.current?.abort();
+      leaveForeground();
     };
   }, []);
 
@@ -553,6 +698,13 @@ export function HomeScreen({ onConnect }: Props) {
     if (!nodeReady) return;
     runCatchUpRef.current?.();
   }, [nodeReady]);
+
+  // The trace as the node left it, including the background windows' rounds.
+  useEffect(() => {
+    if (node.status !== "ready") return;
+    setTrace(node.node.syncTrace(TRACE_ROUNDS_SHOWN));
+  }, [node]);
+
 
   /**
    * What the last background tick did, whether the OS will run another, and
@@ -591,6 +743,35 @@ export function HomeScreen({ onConnect }: Props) {
       cancelled = true;
     };
   }, []);
+
+  /**
+   * Everything a person diagnosing sync needs from this phone, through the
+   * system share sheet — which offers Copy as well as every way to send it.
+   * The sync trace in full, the last background tick, and this device's
+   * conditions.
+   */
+  const shareDiagnostics = useCallback(async () => {
+    if (node.status !== "ready") return;
+    const lines = [
+      `Starkeep Photos diagnostics, ${new Date().toISOString()}`,
+      device ? `Device: ${describeDevice(device)}` : "Device: conditions not read",
+      `Background task: ${backgroundStatus ?? "unknown"}`,
+      tickReport
+        ? `Last background tick ${tickReport.startedAt} (${tickReport.totalMs} ms${tickReport.ranOutOfTime ? ", out of time" : ""})` +
+          (tickReport.abandoned ? `, abandoned while ${tickReport.abandoned}` : "") +
+          "\n" +
+          tickReport.outcomes.map((o) => `  ${o.ran ? "ran" : "—"} ${o.job}: ${o.detail}`).join("\n")
+        : "No background tick has reported yet.",
+      "",
+      "Sync rounds, newest first:",
+      formatSyncTrace(node.node.syncTrace(SYNC_TRACE_KEEP)),
+    ];
+    try {
+      await Share.share({ message: lines.join("\n") });
+    } catch (err) {
+      setSyncError(`Could not open the share sheet: ${String(err)}`);
+    }
+  }, [node, device, backgroundStatus, tickReport]);
 
   const deviceKey = node.status === "ready" ? node.deviceKey : null;
   const baseUrl = deviceKey?.baseUrl;
@@ -1020,6 +1201,24 @@ export function HomeScreen({ onConnect }: Props) {
         ) : (
           <Text style={styles.muted}>No background tick has reported yet.</Text>
         )}
+        {/* Every sync this phone ran, foreground and background, from the
+            node's own trace. The desktop and the cloud each log their half;
+            this is the phone's. */}
+        <Text style={styles.muted}>Recent sync rounds:</Text>
+        {trace.length === 0 ? (
+          <Text style={styles.muted}>No sync has run yet.</Text>
+        ) : (
+          trace.map((round, i) => (
+            <Text key={`${round.syncId}-${round.round}-${i}`} style={styles.muted}>
+              {describeTraceRound(round)}
+            </Text>
+          ))
+        )}
+        {node.status === "ready" ? (
+          <Pressable onPress={() => void shareDiagnostics()} style={styles.button}>
+            <Text style={styles.buttonLabel}>Share diagnostics</Text>
+          </Pressable>
+        ) : null}
       </Section>
 
       <Section title="Sync">

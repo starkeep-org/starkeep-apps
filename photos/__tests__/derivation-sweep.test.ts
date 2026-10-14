@@ -23,11 +23,6 @@ import {
   type SweepRecord,
 } from "../src/derivation/sweep-set";
 import {
-  DEFAULT_DERIVATION_CONFIG,
-  mayDownloadOriginals,
-  mergeDerivationConfig,
-} from "../src/derivation/config";
-import {
   CHEAP_STILL_CLASSES,
   STILL_LADDER,
   applicableStillClasses,
@@ -305,7 +300,7 @@ describe("paging the library", () => {
   });
 });
 
-describe("this machine's switches", () => {
+describe("which originals the sweep reads", () => {
   const here = (id: string) =>
     record({
       id,
@@ -316,47 +311,29 @@ describe("this machine's switches", () => {
       id,
       stand_ins: { category: "image", fidelity: BIG, status: "archivable", top: 4272, sizes: [], original_placement: "cloud" },
     });
-  const all = { derivePhotoStandIns: true, deriveVideoStandIns: true, mayDownload: true };
 
-  it("default to deriving everything and downloading what is missing", () => {
-    expect(DEFAULT_DERIVATION_CONFIG).toEqual({
-      derivePhotoStandIns: true,
-      deriveVideoStandIns: true,
-      downloadOriginalsToDerive: true,
-    });
-    expect(mayDownloadOriginals(DEFAULT_DERIVATION_CONFIG)).toBe(true);
-  });
-
-  it("take booleans field by field and ignore anything else", () => {
-    expect(
-      mergeDerivationConfig(DEFAULT_DERIVATION_CONFIG, { deriveVideoStandIns: false, derivePhotoStandIns: "no" }),
-    ).toEqual({ derivePhotoStandIns: true, deriveVideoStandIns: false, downloadOriginalsToDerive: true });
-  });
-
-  it("allow no download while both derive switches are off", () => {
-    expect(
-      mayDownloadOriginals({ derivePhotoStandIns: false, deriveVideoStandIns: false, downloadOriginalsToDerive: true }),
-    ).toBe(false);
-  });
-
-  it("derive no stills with photo derivation off, and no video with video derivation off", () => {
-    const records = [here("a")];
-    expect(sweepWork(records, "cheap", { ...all, derivePhotoStandIns: false }, CHEAP_STILL_CLASSES)).toEqual([]);
-    expect(sweepWork(records, "cheap", all, CHEAP_STILL_CLASSES).map((r) => r.id)).toEqual(["a"]);
-    const video = record({ id: "v", mime_type: "video/mp4", metadata: { width: 0, height: 0 } });
-    expect(sweepWork([video], "video", { ...all, deriveVideoStandIns: false }, CHEAP_STILL_CLASSES)).toEqual([]);
-    expect(sweepWork([video], "video", all, CHEAP_STILL_CLASSES).map((r) => r.id)).toEqual(["v"]);
-  });
-
-  // Any read of an original this machine lacks downloads it and keeps it.
-  it("read only originals already here with downloads off", () => {
+  // Any read of an original this machine lacks downloads it and keeps it. A
+  // phone derives its own photographs, so a still is read only when it is here.
+  it("read a still's original only when it is already here", () => {
     const records = [here("a"), cloudOnly("b"), record({ id: "c" })];
-    expect(
-      sweepWork(records, "cheap", { ...all, mayDownload: false }, CHEAP_STILL_CLASSES).map((r) => r.id),
-    ).toEqual(["a"]);
-    expect(originalReadable(cloudOnly("b"), true)).toBe(true);
+    for (const stage of ["cheap", "medium", "full"] as const) {
+      expect(originalReadable(cloudOnly("b"), stage)).toBe(false);
+    }
+    expect(sweepWork(records, "cheap", CHEAP_STILL_CLASSES).map((r) => r.id)).toEqual(["a"]);
     // A server older than the field says nothing, which is not "here".
-    expect(originalReadable(record({ id: "c" }), false)).toBe(false);
+    expect(originalReadable(record({ id: "c" }), "cheap")).toBe(false);
+  });
+
+  // No other node derives video, so the video stage downloads what it needs.
+  it("read a video's original wherever it is", () => {
+    const video = record({
+      id: "v",
+      mime_type: "video/mp4",
+      metadata: { width: 0, height: 0 },
+      stand_ins: { category: "video", fidelity: null, status: "archivable", top: null, sizes: [], original_placement: "cloud" },
+    });
+    expect(originalReadable(video, "video")).toBe(true);
+    expect(sweepWork([video], "video", CHEAP_STILL_CLASSES).map((r) => r.id)).toEqual(["v"]);
   });
 
   it("report a fidelity the stored dimensions answer, for a still with none", () => {

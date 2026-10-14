@@ -21,11 +21,6 @@ export function derivationDir(): string {
   return join(starkeepDir(), "app-local", "photos", "derivation");
 }
 
-/** This machine's derivation switches. See `config.ts`. */
-export function derivationConfigPath(): string {
-  return join(derivationDir(), "config.json");
-}
-
 /** What this node tried, and what came of it. Advisory. */
 export function attemptsPath(): string {
   return join(derivationDir(), "attempts.json");

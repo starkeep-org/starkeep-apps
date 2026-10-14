@@ -165,20 +165,28 @@ function stillStage(sizeClass: SizeClass, cheap: ReadonlySet<SizeClass>): "cheap
 }
 
 /**
- * Whether the sweep may read this record's original under the machine's
- * switches. Any read of an original this machine lacks downloads it and keeps
- * it, so with downloads off only an original known to be here qualifies.
+ * Whether the sweep may read this record's original in this stage.
+ *
+ * Reading an original this machine lacks downloads it and keeps it until
+ * "Free up space". The sweep does that only for video, because no other node
+ * derives video: a phone has no encoder and the cloud runs no sweep. A still
+ * qualifies only when its original is already here. A phone derives its own
+ * photographs in full, and fetching them here was how a desktop came to hold
+ * every phone original and to derive rungs the phone was about to send.
  */
-export function originalReadable(record: SweepRecord, mayDownload: boolean): boolean {
-  return mayDownload || record.stand_ins?.original_placement === "here";
+export function originalReadable(
+  record: SweepRecord,
+  stage: "cheap" | "medium" | "full" | "video",
+): boolean {
+  return stage === "video" || record.stand_ins?.original_placement === "here";
 }
 
 /**
  * The fidelity a still's stored dimensions answer without a decode, or null
  * when the record has one already, is not a still, or has no dimensions yet.
  *
- * Reported whatever the switches say: it costs one request and no bytes, and
- * without it no node can place the original against its ceiling.
+ * Reported whether or not the original is here: it costs one request and no
+ * bytes, and without it no node can place the original against its ceiling.
  */
 export function fidelityWithoutDecode(record: SweepRecord): number | null {
   if (record.fidelity !== null) return null;
@@ -188,30 +196,13 @@ export function fidelityWithoutDecode(record: SweepRecord): number | null {
   return longEdge > 0 ? longEdge : null;
 }
 
-/** The switches one pass runs under. See `derivation/config.ts`. */
-export interface SweepSwitches {
-  readonly derivePhotoStandIns: boolean;
-  readonly deriveVideoStandIns: boolean;
-  /** Downloads allowed and at least one derive switch on. */
-  readonly mayDownload: boolean;
-}
-
-/**
- * The records of one page this stage derives under the machine's switches:
- * none when the stage's switch is off, and with downloads off only those whose
- * original is already here.
- */
+/** The records of one page this stage derives. */
 export function sweepWork(
   records: readonly SweepRecord[],
   stage: "cheap" | "medium" | "full" | "video",
-  switches: SweepSwitches,
   cheapClasses: readonly SizeClass[],
 ): SweepRecord[] {
-  const stageOn = stage === "video" ? switches.deriveVideoStandIns : switches.derivePhotoStandIns;
-  if (!stageOn) return [];
-  return records.filter(
-    (r) => stageHasWork(r, stage, cheapClasses) && originalReadable(r, switches.mayDownload),
-  );
+  return records.filter((r) => stageHasWork(r, stage, cheapClasses) && originalReadable(r, stage));
 }
 
 /** `fetch`-alike over the data server, injected so this module owns no creds. */

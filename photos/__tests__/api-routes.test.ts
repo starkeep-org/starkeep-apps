@@ -147,8 +147,6 @@ const ROUTES: ReadonlyArray<[string, string]> = [
   ["POST", "/api/resize"],
   ["POST", "/api/share"],
   ["POST", "/api/local-sync-handoff"],
-  ["GET", "/api/derive/config"],
-  ["PUT", "/api/derive/config"],
   ["GET", "/api/derive/status"],
   ["POST", "/api/derive/sweep"],
   ["GET", "/api/vision/config"],

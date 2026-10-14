@@ -53,15 +53,19 @@ describe("the sweep and each original's target", () => {
     expect(missingClasses(r)).toEqual(["image-large"]);
   });
 
-  it("needs the original, so downloads off with the original in the cloud is no work", () => {
+  it("needs the original, so a still whose original is in the cloud is no work", () => {
     const r = record({
       canonical_target: 4272,
       original_placement: "cloud",
       sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller")],
     });
-    const switches = { derivePhotoStandIns: true, deriveVideoStandIns: false, mayDownload: false };
-    expect(sweepWork([r], "full", switches, ["image-xsmall", "image-thumb"])).toEqual([]);
-    expect(sweepWork([r], "full", { ...switches, mayDownload: true }, ["image-xsmall", "image-thumb"])).toEqual([r]);
+    expect(sweepWork([r], "full", ["image-xsmall", "image-thumb"])).toEqual([]);
+    const local = record({
+      canonical_target: 4272,
+      original_placement: "here",
+      sizes: [here(320, "smaller"), here(640, "smaller"), here(1280, "smaller")],
+    });
+    expect(sweepWork([local], "full", ["image-xsmall", "image-thumb"])).toEqual([local]);
   });
 
   it("derives nothing for an original still waiting for its stamp", () => {

@@ -62,6 +62,12 @@ import {
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
 import { ceilingsOf, createDeviceSettingsStore, type DeviceSettings } from "./device-settings";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
+import {
+  createSyncTraceStore,
+  stopReasonOf,
+  type SyncTraceRound,
+  type SyncTrigger,
+} from "./work/sync-trace";
 
 /**
  * Byte budget for one exchange round on a phone.
@@ -293,8 +299,16 @@ export interface MobileNode {
    * Same null-on-no-cloud contract as {@link exchange}, and equally safe to
    * abandon: each round persists its own watermarks, so backgrounding the app
    * mid-loop costs at most the round in flight.
+   *
+   * Every round, and why the sync stopped, goes to the sync trace under
+   * `trigger`. See {@link syncTrace}.
    */
-  sync(options?: SyncOptions): Promise<SyncResult | null>;
+  sync(options?: SyncOptions & { readonly trigger?: SyncTrigger }): Promise<SyncResult | null>;
+  /**
+   * The most recent sync rounds this node ran, newest first: what the Work
+   * section shows and "Share diagnostics" sends. See `work/sync-trace.ts`.
+   */
+  syncTrace(limit: number): SyncTraceRound[];
   /**
    * Work through the acquisition queue: fetch files this device wants and
    * lacks — stand-ins a raised ceiling now covers, bytes that went missing — until the tick's byte cap runs out.
@@ -479,6 +493,16 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   const syncState = createSqliteSyncStateStore({
     db: databaseAdapter.getRawDatabase(),
   });
+  // In the same file, for the same reason: the trace describes the rounds that
+  // moved these watermarks.
+  const syncTrace = createSyncTraceStore(databaseAdapter.getRawDatabase());
+  const finishTrace = (syncId: string, trigger: SyncTrigger, startedAt: number, reason: string): void => {
+    try {
+      syncTrace.finish(syncId, trigger, startedAt, reason);
+    } catch (err) {
+      console.warn(`[sync] could not record a sync's end in the trace: ${String(err)}`);
+    }
+  };
 
   // The library's settings file arrives like any other file. A phone with no
   // cloud is the whole library, so its defaults are the library's value.
@@ -597,8 +621,45 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       return next;
     },
     exchange: async () => (engine ? serialized(() => engine.exchange().then(afterRound)) : null),
-    sync: async (syncOptions) =>
-      engine ? serialized(() => engine.sync(syncOptions).then(afterRound)) : null,
+    sync: async (syncOptions) => {
+      if (!engine) return null;
+      const { trigger = "button", ...engineOptions } = syncOptions ?? {};
+      const syncId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const syncStartedAt = Date.now();
+      let roundStartedAt = syncStartedAt;
+      return serialized(async () => {
+        try {
+          const result = await engine.sync({
+            ...engineOptions,
+            onRound: (round, rounds) => {
+              // The trace must never cost a sync its round: a write that fails
+              // is a lost line of diagnostics, not a failed upload.
+              try {
+                syncTrace.recordRound(syncId, trigger, rounds, roundStartedAt, round);
+              } catch (err) {
+                console.warn(`[sync] could not record a round in the trace: ${String(err)}`);
+              }
+              roundStartedAt = Date.now();
+              engineOptions.onRound?.(round, rounds);
+            },
+          });
+          finishTrace(syncId, trigger, syncStartedAt, stopReasonOf(result, engineOptions.signal?.aborted ?? false));
+          return afterRound(result);
+        } catch (err) {
+          finishTrace(syncId, trigger, syncStartedAt, stopReasonOf(null, false, err));
+          throw err;
+        }
+      });
+    },
+
+    syncTrace: (limit) => {
+      try {
+        return syncTrace.recent(limit);
+      } catch (err) {
+        console.warn(`[sync] could not read the sync trace: ${String(err)}`);
+        return [];
+      }
+    },
 
     async acquireQueued(acquireOptions) {
       // No cloud means nobody to fetch from.

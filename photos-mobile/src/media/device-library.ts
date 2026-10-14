@@ -115,6 +115,13 @@ export interface DeviceMediaModule {
   newQuery(): MediaQuery;
   /** The heavier per-asset URI lookup, used only when an id is not already one. */
   uriFor(id: string): Promise<string>;
+  /**
+   * Call `listener` when the device's photo library changes, until the
+   * returned subscription is removed. Android reports no detail, so a change
+   * means only "look again". Optional, so a module without it simply never
+   * reports one.
+   */
+  onChange?(listener: () => void): { remove(): void };
 }
 
 export type MediaKind = "image" | "video" | "audio" | "unknown";

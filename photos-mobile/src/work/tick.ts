@@ -331,7 +331,10 @@ async function runJob(
       }
       // The share exists so the jobs after sync still get a window. See
       // SYNC_DEADLINE_SHARE.
-      const result = await node.sync({ signal: shareOf(options, now, SYNC_DEADLINE_SHARE) });
+      const result = await node.sync({
+        signal: shareOf(options, now, SYNC_DEADLINE_SHARE),
+        trigger: "background",
+      });
       if (result === null) return "no cloud on this node — nothing to exchange";
       return (
         `rounds=${result.rounds} applied=${result.applied} shipped=${result.shipped} ` +

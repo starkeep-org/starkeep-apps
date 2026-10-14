@@ -249,6 +249,7 @@ export const deviceMedia: DeviceMediaModule = {
   requestPermissions: () => MediaLibrary.requestPermissionsAsync(),
   newQuery: () => wrapQuery(new MediaLibrary.Query()),
   uriFor: (id: string) => new MediaLibrary.Asset(id).getUri(),
+  onChange: (listener) => MediaLibrary.addListener(() => listener()),
 };
 
 /**

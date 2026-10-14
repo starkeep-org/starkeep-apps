@@ -343,6 +343,43 @@ describe("two callers at once", () => {
   });
 });
 
+/**
+ * The sync trace (plan step 6): every round, with what started the sync and
+ * why it stopped, in the node's own database.
+ */
+describe("the sync trace", () => {
+  it("records a sync's rounds under its trigger, with the stop reason on the last", async () => {
+    await seedCloud(3);
+    const result = await phone.sync({ trigger: "timer" });
+    expect(result?.complete).toBe(true);
+
+    const rows = phone.syncTrace(50);
+    expect(rows.length).toBe(result!.rounds);
+    expect(rows.every((row) => row.trigger === "timer")).toBe(true);
+    expect(rows[0]!.stopReason).toBe("complete");
+    expect(rows.slice(1).every((row) => row.stopReason === null)).toBe(true);
+    expect(rows.reduce((sum, row) => sum + row.applied, 0)).toBe(3);
+  });
+
+  it("records a failed sync as an error, and still throws", async () => {
+    cloudDb.querySince = async () => {
+      throw new Error("[test] the round failed");
+    };
+    await expect(phone.sync({ trigger: "media-change" })).rejects.toThrow();
+    const [last] = phone.syncTrace(1);
+    expect(last).toMatchObject({ trigger: "media-change" });
+    expect(last!.stopReason).toMatch(/^error: /);
+  });
+
+  it("calls the caller's own round callback as well", async () => {
+    await seedCloud(2);
+    let rounds = 0;
+    await phone.sync({ trigger: "button", onRound: () => void rounds++ });
+    expect(rounds).toBeGreaterThan(0);
+    expect(phone.syncTrace(100).filter((row) => row.trigger === "button")).toHaveLength(rounds);
+  });
+});
+
 describe("durability across a restart", () => {
   // A phone is killed constantly. The watermark and the records must be in the
   // same file for this to hold — a watermark newer than the records it

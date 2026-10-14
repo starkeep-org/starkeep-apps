@@ -10,10 +10,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dimensions, PixelRatio } from "react-native";
 import {
+  ceilingChoices,
   createHLCClock,
+  DEFAULT_SYNC_DOWN_CEILINGS,
+  STAND_IN_CATEGORIES,
   typeCategory,
   type HLCClock,
+  type StandInCategory,
   type StarkeepId,
+  type SyncDownCeilings,
 } from "@starkeep/protocol-primitives";
 import {
   listLibrary,
@@ -50,7 +55,7 @@ import {
 } from "../platform";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
-import type { DeviceSettings } from "../device-settings";
+import { ceilingsOf, type DeviceSettings } from "../device-settings";
 import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth } from "./theme";
 import { type Dimensions as Box, type GridGeometry } from "../photos/render-target";
 import {
@@ -591,10 +596,37 @@ export interface StorageState {
    * every stand-in above this device's ceiling — whose cloud copies are proved.
    */
   freeUp: (scope: "originals" | "originals-and-above-ceiling") => Promise<void>;
-  /** This device's photo ceiling and derivation switch; null until the node is up. */
-  readonly settings: DeviceSettings | null;
-  setImageCeiling: (ceiling: number | null) => void;
-  setDerivePhotoStandIns: (on: boolean) => void;
+  /**
+   * This device's sync-down ceilings in force, per category, with the sizes a
+   * person can pick and the phone defaults; null until the node is up.
+   */
+  readonly ceilings: CeilingsView | null;
+  setCeiling: (category: StandInCategory, ceiling: number | null) => void;
+}
+
+/** What the Storage section draws its ceiling pickers from. */
+export interface CeilingsView {
+  readonly current: SyncDownCeilings;
+  readonly defaults: SyncDownCeilings;
+  /**
+   * The sizes to offer besides none: the library's standard sizes and
+   * canonical threshold, which is the list admin-web offers on a desktop.
+   */
+  readonly choices: Readonly<Record<StandInCategory, readonly number[]>>;
+  /** The library's canonical threshold per category, which a picker marks. */
+  readonly canonical: Readonly<Record<StandInCategory, number>>;
+}
+
+function ceilingsViewOf(node: MobileNode, settings: DeviceSettings): CeilingsView {
+  const current = ceilingsOf(settings);
+  const standards = node.librarySettings.standards();
+  const choices = Object.fromEntries(
+    STAND_IN_CATEGORIES.map((c) => [c, ceilingChoices(standards[c], current[c])]),
+  ) as Record<StandInCategory, number[]>;
+  const canonical = Object.fromEntries(
+    STAND_IN_CATEGORIES.map((c) => [c, standards[c].canonicalThreshold]),
+  ) as Record<StandInCategory, number>;
+  return { current, defaults: DEFAULT_SYNC_DOWN_CEILINGS.phone, choices, canonical };
 }
 
 /**
@@ -646,29 +678,16 @@ export function useStorage(node: NodeState): StorageState {
     [ready, refresh],
   );
 
-  const [settings, setSettings] = useState<DeviceSettings | null>(null);
+  const [ceilings, setCeilings] = useState<CeilingsView | null>(null);
   useEffect(() => {
-    setSettings(ready ? ready.node.deviceSettings() : null);
+    setCeilings(ready ? ceilingsViewOf(ready.node, ready.node.deviceSettings()) : null);
   }, [ready]);
 
-  const setImageCeiling = useCallback(
-    (ceiling: number | null) => {
+  const setCeiling = useCallback(
+    (category: StandInCategory, ceiling: number | null) => {
       if (!ready) return;
       try {
-        setSettings(ready.node.setImageCeiling(ceiling));
-        setError(null);
-      } catch (err) {
-        setError(String(err));
-      }
-    },
-    [ready],
-  );
-
-  const setDerivePhotoStandIns = useCallback(
-    (on: boolean) => {
-      if (!ready) return;
-      try {
-        setSettings(ready.node.setDerivePhotoStandIns(on));
+        setCeilings(ceilingsViewOf(ready.node, ready.node.setCeilings({ [category]: ceiling })));
         setError(null);
       } catch (err) {
         setError(String(err));
@@ -684,9 +703,8 @@ export function useStorage(node: NodeState): StorageState {
     error,
     refresh,
     freeUp,
-    settings,
-    setImageCeiling,
-    setDerivePhotoStandIns,
+    ceilings,
+    setCeiling,
   };
 }
 

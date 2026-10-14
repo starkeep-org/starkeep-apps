@@ -167,7 +167,7 @@ describe("what no stand-in can replace", () => {
 describe("this device's settings", () => {
   it("starts at the phone's defaults", async () => {
     phone = await startPhone();
-    expect(phone.deviceSettings()).toEqual({ imageCeiling: 1280, derivePhotoStandIns: true });
+    expect(phone.deviceSettings()).toEqual({ standInCeilings: {} });
   });
 
   // Nothing is removed and nothing restarts: the next scan starts from the top
@@ -184,7 +184,7 @@ describe("this device's settings", () => {
     await phone.sync();
     expect(await phone.objectStorage.has(screen.objectStorageKey!)).toBe(false);
 
-    expect(phone.setImageCeiling(2560)).toMatchObject({ imageCeiling: 2560 });
+    expect(phone.setCeilings({ image: 2560 })).toEqual({ standInCeilings: { image: 2560 } });
     let complete = false;
     while (!complete) complete = (await phone.scanForAcquirable()).complete;
     const outcome = await phone.acquireQueued();
@@ -193,10 +193,11 @@ describe("this device's settings", () => {
     expect(await phone.objectStorage.has(original.objectStorageKey!)).toBe(false);
   });
 
-  it("keeps the derivation switch", async () => {
+  // Changing one category leaves the other as the person set it.
+  it("keeps each category's ceiling when another changes", async () => {
     phone = await startPhone();
-    expect(phone.setDerivePhotoStandIns(false).derivePhotoStandIns).toBe(false);
-    expect(phone.deviceSettings().derivePhotoStandIns).toBe(false);
+    phone.setCeilings({ video: 2000 });
+    expect(phone.setCeilings({ image: null })).toEqual({ standInCeilings: { image: null, video: 2000 } });
   });
 });
 

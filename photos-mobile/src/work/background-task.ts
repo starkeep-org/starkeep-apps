@@ -269,7 +269,6 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
           // 2560 and the canonical, one photograph per unit. The graph runs this
           // only when charging or comfortably above half battery.
           deriveFullRenditions: (signal) => deriveFullRenditionsFor(lease.node, clock, { signal }),
-          photoDerivationOff: !lease.node.deviceSettings().derivePhotoStandIns,
           // Kept so the watchdog has something to write. Each snapshot names
           // the job in flight, so an abandoned window says which one it was.
           onProgress: (snapshot) => {

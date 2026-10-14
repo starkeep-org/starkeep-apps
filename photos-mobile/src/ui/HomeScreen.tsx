@@ -40,7 +40,6 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  Switch,
   Text,
   useWindowDimensions,
   View,
@@ -78,10 +77,11 @@ import type { JustifiedRow } from "../photos/render-target";
 import type { LibraryItem } from "../library";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
-import { IMAGE_CEILING_CHOICES } from "../device-settings";
 import { useLibrary, useNode, useStorage, type NodeState } from "./use-library";
 import { describeVerify, verifyFoundProblem } from "./verify-text";
 import { describeFreed, describeStorageGroup } from "./free-up-text";
+import { CEILING_CATEGORY_LABELS, ceilingLabel } from "./ceiling-text";
+import { STAND_IN_CATEGORIES } from "@starkeep/protocol-primitives";
 import type { VerifyResult } from "@starkeep/sync-engine";
 
 /** The device's conditions, as one line under the job count. */
@@ -844,51 +844,51 @@ export function HomeScreen({ onConnect }: Props) {
               </Text>
             ) : null}
 
-            {storage.settings ? (
+            {storage.ceilings ? (
               <>
-                {/* The platform's ceiling for this node, shown here because a
-                    phone has no admin-web. Raising it downloads the sizes it
-                    now covers; lowering it removes nothing. */}
-                <Text style={styles.body}>Photo previews kept on this device</Text>
-                <View style={styles.chips}>
-                  {IMAGE_CEILING_CHOICES.map((choice) => {
-                    const selected = storage.settings!.imageCeiling === choice;
-                    return (
-                      <Pressable
-                        key={String(choice)}
-                        accessibilityRole="radio"
-                        accessibilityState={{ selected }}
-                        onPress={() => storage.setImageCeiling(choice)}
-                        style={[styles.chip, selected ? styles.chipSelected : null]}
-                      >
-                        <Text style={selected ? styles.chipLabelSelected : styles.chipLabel}>
-                          {choice === null ? "None" : `${choice} px`}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                {/* The platform's ceilings for this node, shown here because a
+                    phone has no admin-web. Same categories and sizes as the
+                    desktop's "Sync-down ceilings". Raising one downloads the
+                    sizes it now covers; lowering one removes nothing. */}
+                <Text style={styles.body}>Sync-down ceilings</Text>
+                {STAND_IN_CATEGORIES.map((category) => {
+                  const view = storage.ceilings!;
+                  const current = view.current[category];
+                  const canonical = view.canonical[category];
+                  const options: (number | null)[] = [null, ...view.choices[category]];
+                  return (
+                    <View key={category}>
+                      <Text style={styles.muted}>
+                        {CEILING_CATEGORY_LABELS[category]}
+                        {current === view.defaults[category] ? " (default)" : ""}
+                      </Text>
+                      <View style={styles.chips}>
+                        {options.map((choice) => {
+                          const selected = current === choice;
+                          return (
+                            <Pressable
+                              key={String(choice)}
+                              accessibilityRole="radio"
+                              accessibilityState={{ selected }}
+                              accessibilityLabel={`${CEILING_CATEGORY_LABELS[category]} ceiling ${ceilingLabel(category, choice, canonical)}`}
+                              onPress={() => storage.setCeiling(category, choice)}
+                              style={[styles.chip, selected ? styles.chipSelected : null]}
+                            >
+                              <Text style={selected ? styles.chipLabelSelected : styles.chipLabel}>
+                                {ceilingLabel(category, choice, canonical)}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })}
                 <Text style={styles.muted}>
-                  Larger sizes download when you open a photo. Lowering this removes nothing until
-                  you free up space.
+                  This device receives every size up to its ceiling for the whole library. Larger
+                  sizes and originals download when you open them. Lowering a ceiling removes
+                  nothing until you free up space.
                 </Text>
-
-                {/* Photos' own setting. Off stops the background sweeps; the
-                    viewer still makes a size for the photo on screen. */}
-                <View style={styles.row}>
-                  <View style={styles.rowText}>
-                    <Text style={styles.body}>Derive photo stand-ins on this device</Text>
-                    <Text style={styles.muted}>
-                      Makes every size of the photos on this phone, while charging or above half
-                      battery. Videos get theirs on a desktop.
-                    </Text>
-                  </View>
-                  <Switch
-                    accessibilityLabel="Derive photo stand-ins on this device"
-                    value={storage.settings.derivePhotoStandIns}
-                    onValueChange={storage.setDerivePhotoStandIns}
-                  />
-                </View>
               </>
             ) : null}
 

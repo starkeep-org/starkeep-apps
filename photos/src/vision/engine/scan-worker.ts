@@ -14,6 +14,8 @@
  * that is enough to make the grid stutter for the whole scan.
  */
 
+// First: a worker thread has its own console. See log-timestamps.ts.
+import "../../log-timestamps";
 import { parentPort } from "node:worker_threads";
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
 import { assignUnclusteredFaces, reconcilePeopleToStore } from "../clustering";

@@ -41,6 +41,7 @@ import { createTickReportStore } from "./tick-report-store";
 import { claimFor, decideClaim, type Claim } from "./single-flight";
 import { EXPIRED, raceDeadline } from "../deadline";
 import { backgroundWindow, nativeTimers } from "./native-timers";
+import StarkeepMediaTrigger from "../../modules/starkeep-media-trigger";
 
 /**
  * The task's name, as WorkManager and `TaskManager` both know it.
@@ -337,11 +338,22 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
  * finds already enqueued or running. Calling it on every launch is therefore
  * the right shape — it is what re-establishes the schedule after the one event
  * that clears it, a force-stop from Settings.
+ *
+ * The media trigger runs the same task when a photograph lands, rather than at
+ * the next periodic window. Armed after the registration, because the worker
+ * behind it finds the task through the consumer that registration creates.
+ * Absent from a binary built before the module existed, and then the periodic
+ * window is all there is.
  */
 export async function registerBackgroundWork(): Promise<void> {
   await BackgroundTask.registerTaskAsync(BACKGROUND_WORK_TASK, {
     minimumInterval: MINIMUM_INTERVAL_MINUTES,
   });
+  if (StarkeepMediaTrigger) {
+    await StarkeepMediaTrigger.arm();
+  } else {
+    taskLog("StarkeepMediaTrigger is not in this binary — periodic windows only");
+  }
 }
 
 /** Whether the OS is prepared to run background tasks for this app at all. */

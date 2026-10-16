@@ -6,6 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:android": "cd android && ./gradlew :starkeep-media-trigger:testDebugUnitTest",
     "start": "expo start",
     "android": "expo run:android",
     "prebuild": "expo prebuild --platform android"

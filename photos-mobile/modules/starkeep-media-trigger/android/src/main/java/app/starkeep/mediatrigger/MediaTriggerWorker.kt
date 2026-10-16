@@ -13,6 +13,7 @@ import androidx.work.WorkerParameters
 import expo.modules.backgroundtask.BackgroundTaskConsumer
 import expo.modules.backgroundtask.BackgroundTaskScheduler
 import expo.modules.interfaces.taskManager.TaskServiceProviderHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitAll
 import java.util.concurrent.TimeUnit
@@ -54,8 +55,28 @@ import java.util.concurrent.TimeUnit
  * anything, but the tick's import watermark still picks them up on the next run
  * of either worker.
  */
-class MediaTriggerWorker(context: Context, params: WorkerParameters) :
-  CoroutineWorker(context, params) {
+class MediaTriggerWorker(
+  context: Context,
+  params: WorkerParameters,
+  private val host: Host,
+) : CoroutineWorker(context, params) {
+
+  /**
+   * What the worker needs from the app around it.
+   *
+   * A seam for the tests, which run under Robolectric with no React instance
+   * and no Expo task service. Production always uses {@link ExpoHost}.
+   */
+  interface Host {
+    /** Whether the app's activity is in the foreground. */
+    fun inForeground(): Boolean
+
+    /** Run the background task and return once the JS side reports it finished. */
+    suspend fun runTask(context: Context)
+  }
+
+  /** The constructor WorkManager's default factory calls, by reflection. */
+  constructor(context: Context, params: WorkerParameters) : this(context, params, ExpoHost)
 
   companion object {
     private const val TAG = "StarkeepMediaTrigger"
@@ -114,23 +135,52 @@ class MediaTriggerWorker(context: Context, params: WorkerParameters) :
 
     // The same rule Expo's worker applies. The open app runs its own catch-up,
     // and a background tick would compete with the screen for the node.
-    if (BackgroundTaskScheduler.inForeground) {
+    if (host.inForeground()) {
       Log.i(TAG, "app is in the foreground — skipping")
       return Result.success()
     }
 
-    val taskService = TaskServiceProviderHelper.getTaskServiceImpl(applicationContext)
+    try {
+      host.runTask(applicationContext)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.e(TAG, "task failed: ${e.message}")
+    }
+
+    Log.i(TAG, "task finished")
+    // Always success. A failed parent fails its children, and the child is the
+    // next trigger.
+    return Result.success()
+  }
+}
+
+/**
+ * The real host: Expo's foreground flag and Expo's task service.
+ *
+ * This repeats the part of Expo's `runTasks` that matters (find the consumer
+ * the JS task registered under, execute it, wait) without the periodic
+ * request `runTasks` appends afterwards. See the class comment on
+ * {@link MediaTriggerWorker}.
+ */
+internal object ExpoHost : MediaTriggerWorker.Host {
+  private const val TAG = "StarkeepMediaTrigger"
+
+  override fun inForeground(): Boolean = BackgroundTaskScheduler.inForeground
+
+  override suspend fun runTask(context: Context) {
+    val taskService = TaskServiceProviderHelper.getTaskServiceImpl(context)
     if (taskService == null) {
       Log.w(TAG, "no task service in this binary")
-      return Result.success()
+      return
     }
-    val consumers = taskService.getTaskConsumers(applicationContext.packageName)
+    val consumers = taskService.getTaskConsumers(context.packageName)
       .filterIsInstance<BackgroundTaskConsumer>()
     if (consumers.isEmpty()) {
       // The JS task registers on the first launch. Until then there is
       // nothing to run.
       Log.i(TAG, "no background task registered yet")
-      return Result.success()
+      return
     }
 
     consumers.map { consumer ->
@@ -139,16 +189,11 @@ class MediaTriggerWorker(context: Context, params: WorkerParameters) :
         consumer.executeTask { done.complete(Unit) }
       } catch (e: Exception) {
         // Completed here as well, because a deferred nobody completes would
-        // hold this worker until WorkManager's ten-minute stop.
+        // hold the worker until WorkManager's ten-minute stop.
         Log.e(TAG, "task failed to start: ${e.message}")
         done.complete(Unit)
       }
       done
     }.awaitAll()
-
-    Log.i(TAG, "task finished")
-    // Always success. A failed parent fails its children, and the child is the
-    // next trigger.
-    return Result.success()
   }
 }

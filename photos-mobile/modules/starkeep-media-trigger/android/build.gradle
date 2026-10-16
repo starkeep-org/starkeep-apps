@@ -12,6 +12,12 @@ android {
     versionCode 1
     versionName '0.1.0'
   }
+  // Robolectric reads the merged manifest and resources to build a Context.
+  testOptions {
+    unitTests {
+      includeAndroidResources = true
+    }
+  }
 }
 
 // expo-background-task reaches the build as a prebuilt artifact from its own
@@ -33,4 +39,11 @@ dependencies {
   // For `BackgroundTaskConsumer`, the consumer the JS task is registered under,
   // and `BackgroundTaskScheduler.inForeground`. See `MediaTriggerWorker.kt`.
   implementation "host.exp.exponent:expo.modules.backgroundtask:${backgroundTaskVersion}"
+
+  // JVM tests of the worker and its scheduling, against WorkManager's test
+  // implementation under Robolectric. Run with `pnpm test:android`.
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.robolectric:robolectric:4.14.1'
+  testImplementation 'androidx.test:core:1.6.1'
+  testImplementation 'androidx.work:work-testing:2.9.1'
 }

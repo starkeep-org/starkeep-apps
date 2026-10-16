@@ -77,9 +77,29 @@ interface PhotoViewerProps {
    * shown, so the caller's error text is user-facing.
    */
   onDelete?: () => Promise<void>;
+  /**
+   * Show the photo before or after this one in the library's order, or absent at
+   * that end of the list. Bound to the left and right arrow keys.
+   *
+   * Props for the same reason `onClose` is one: the caller owns the list and the
+   * selection, and the viewer only reports which way the person asked to move.
+   */
+  onPrevious?: () => void;
+  onNext?: () => void;
 }
 
-export function PhotoViewer({ image, onClose, onDelete }: PhotoViewerProps) {
+/**
+ * Whether a key press belongs to the element that received it rather than to the
+ * viewer. The caption editor needs its arrow keys to move the cursor, and a
+ * focused video's native controls use them to seek.
+ */
+function keyBelongsToTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return ["INPUT", "TEXTAREA", "SELECT", "VIDEO", "AUDIO"].includes(target.tagName);
+}
+
+export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: PhotoViewerProps) {
   const [infoVisible, setInfoVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -195,11 +215,20 @@ export function PhotoViewer({ image, onClose, onDelete }: PhotoViewerProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (keyBelongsToTarget(e.target)) return;
+      const move = e.key === "ArrowLeft" ? onPrevious : e.key === "ArrowRight" ? onNext : undefined;
+      if (!move) return;
+      e.preventDefault();
+      move();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, onPrevious, onNext]);
 
   const toggleStyle = (active: boolean): React.CSSProperties => ({
     background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",

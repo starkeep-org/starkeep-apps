@@ -116,9 +116,15 @@ function PhotosAppInner() {
 
   // The grid displays originals, so the clicked tile already *is* the record
   // the viewer wants. There is no thumbnail-to-parent hop to make.
-  const selectedImage = state.selectedId
-    ? displayImages.find((img) => img.id === state.selectedId) ?? null
-    : null;
+  const selectedIndex = state.selectedId
+    ? displayImages.findIndex((img) => img.id === state.selectedId)
+    : -1;
+  const selectedImage = selectedIndex >= 0 ? displayImages[selectedIndex] : null;
+  // The viewer steps through the same list the grid shows, in the same order, so
+  // the arrow keys land on the tile beside the one that was opened.
+  const previousImage = selectedIndex > 0 ? displayImages[selectedIndex - 1] : null;
+  const nextImage =
+    selectedIndex >= 0 && selectedIndex < displayImages.length - 1 ? displayImages[selectedIndex + 1] : null;
 
   const freshness = usePhotoFreshness({
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
@@ -312,6 +318,12 @@ function PhotosAppInner() {
           <PhotoViewer
             image={selectedImage}
             onClose={() => dispatch({ type: "SET_SELECTED_ID", id: null })}
+            onPrevious={
+              previousImage
+                ? () => dispatch({ type: "SET_SELECTED_ID", id: previousImage.id })
+                : undefined
+            }
+            onNext={nextImage ? () => dispatch({ type: "SET_SELECTED_ID", id: nextImage.id }) : undefined}
             // The viewer owns the confirmation and the refusal message; the library
             // state is this component's, like every other dispatch here. The grid
             // drops the row without refetching, which is what `OPTIMISTIC_DELETE`

@@ -175,6 +175,8 @@ export function PhotoThumbnail({
         cursor: "pointer",
         background: "#222",
         flexShrink: 0,
+        // The play badge positions against the tile.
+        position: "relative",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -218,7 +220,44 @@ export function PhotoThumbnail({
           }}
         />
       )}
+      {video ? <PlayBadge tileShortEdge={Math.min(width, height)} /> : null}
     </div>
+  );
+}
+
+/**
+ * The mark that says a tile is a video.
+ *
+ * A poster frame is a still, so without this a clip is indistinguishable from
+ * a photo until it is opened. Drawn over every video tile, whatever the tile is
+ * painting, since a ThumbHash or an empty tile is no more telling than a
+ * poster. Scaled to the tile so a short row does not wear a badge sized for a
+ * tall one, and inert to the pointer so a click still lands on the tile.
+ */
+function PlayBadge({ tileShortEdge }: { tileShortEdge: number }) {
+  const size = Math.round(Math.min(56, Math.max(24, tileShortEdge * 0.3)));
+  return (
+    <svg
+      data-testid="video-play-badge"
+      aria-hidden
+      viewBox="0 0 48 48"
+      width={size}
+      height={size}
+      style={{
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
+        opacity: 0.7,
+        pointerEvents: "none",
+        // A white mark vanishes on a bright poster without some edge.
+        filter: "drop-shadow(0 0 2px rgba(0, 0, 0, 0.6))",
+      }}
+    >
+      {/* Shifted right so its centroid, not its bounding box, sits at the
+          tile's centre. */}
+      <path d="M13 4 L44 24 L13 44 Z" fill="#fff" />
+    </svg>
   );
 }
 

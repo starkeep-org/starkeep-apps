@@ -25,6 +25,7 @@
 // First, so lines written during startup are stamped too. See log-timestamps.ts.
 import "./log-timestamps.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,45 @@ import { isClientRoute, isFile, resolveClientRequest, SHELL } from "./client-ser
 import { startIngestWatchIfLocal } from "./ingest-watch-start.js";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * What the client build reads, as paths under the package.
+ *
+ * Memo's list plus two. `app.tsx` sits at the package root, outside `src/`,
+ * and `src/main.tsx` imports it, so leaving it off would let an edit to the
+ * app shell alone go unbuilt. `package.json` stands in for the dependencies:
+ * pnpm links packages with the store's original mtimes, so an upgrade never
+ * looks newer than the build, but the version range it changed does.
+ */
+const CLIENT_INPUTS = ["src", "app.tsx", "index.html", "vite.config.ts", "package.json"];
+
+/** The newest mtime under a path, directory or file, or 0 when absent. */
+function newestMtime(path: string): number {
+  const stat = statSync(path, { throwIfNoEntry: false });
+  if (!stat) return 0;
+  if (!stat.isDirectory()) return stat.mtimeMs;
+  let newest = 0;
+  for (const entry of readdirSync(path)) newest = Math.max(newest, newestMtime(join(path, entry)));
+  return newest;
+}
+
+/**
+ * Whether `dist/` predates the sources it was built from.
+ *
+ * A missing build is loud and already handled below. A *stale* one is silent
+ * and worse: the server starts, every page renders, and the code running is
+ * whatever was last built. A `dist/` from 2026-09-13 hid a month of client
+ * changes this way before anyone noticed. Memo hit the same fault first and
+ * carries the same check.
+ *
+ * Checked rather than rebuilt unconditionally: `vite build` empties `dist/`,
+ * and a second start against a running instance would delete that instance's
+ * assets before failing on the port.
+ */
+function distIsStale(): boolean {
+  const built = newestMtime(SHELL);
+  return built > 0 && CLIENT_INPUTS.some((p) => newestMtime(join(PKG_DIR, p)) > built);
+}
 
 function portFromArgv(argv: string[]): number {
   // `-p` as well as `--port`: the manifest's `portFlag` is `-p`, which is what
@@ -54,11 +94,14 @@ async function main(): Promise<void> {
 
   // Self-healing: a locally installed app that fails to start because nobody
   // ran a build step reports as a platform failure in whichever suite installed
-  // it.
-  if (!dev && !isFile(SHELL)) {
-    console.log("photos: dist/ is missing, running `vite build`…");
-    const { build } = await import("vite");
-    await build({ root: PKG_DIR });
+  // it. Staleness is healed on the same terms — see `distIsStale`.
+  if (!dev) {
+    const missing = !isFile(SHELL);
+    if (missing || distIsStale()) {
+      console.log(`photos: dist/ is ${missing ? "missing" : "older than its sources"}, running \`vite build\`…`);
+      const { build } = await import("vite");
+      await build({ root: PKG_DIR });
+    }
   }
 
   const api = getRequestListener(app.fetch);

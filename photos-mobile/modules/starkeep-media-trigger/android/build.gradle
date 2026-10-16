@@ -1,0 +1,36 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.starkeep.mediatrigger'
+version = '0.1.0'
+
+android {
+  namespace "app.starkeep.mediatrigger"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+// expo-background-task reaches the build as a prebuilt artifact from its own
+// `local-maven-repo`, not as a Gradle project, so it is depended on by
+// coordinate. The version is read from the installed package rather than
+// written here, so a patch bump of the package cannot leave this module asking
+// for an artifact that is no longer on disk.
+def backgroundTaskVersion = new groovy.json.JsonSlurper().parse(new File(
+  providers.exec {
+    workingDir(projectDir)
+    commandLine("node", "--print", "require.resolve('expo-background-task/package.json')")
+  }.standardOutput.asText.get().trim()
+)).version
+
+dependencies {
+  // The same WorkManager expo-background-task links, so the app carries one
+  // copy and both workers share one database of scheduled work.
+  implementation 'androidx.work:work-runtime-ktx:2.9.1'
+  // For `BackgroundTaskConsumer`, the consumer the JS task is registered under,
+  // and `BackgroundTaskScheduler.inForeground`. See `MediaTriggerWorker.kt`.
+  implementation "host.exp.exponent:expo.modules.backgroundtask:${backgroundTaskVersion}"
+}

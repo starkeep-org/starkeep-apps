@@ -119,7 +119,7 @@ describe("publishing a rendition", () => {
   // The poster is what the grid paints. Registered as video it would be hidden
   // from every image-granted app — a library with holes where the clips are.
   it("registers a poster as an image", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
     const create = calls.find((c) => c.path === "/data/records")!;
     expect(create.body.type).toBe("image/jpeg");
   });
@@ -128,7 +128,7 @@ describe("publishing a rendition", () => {
     await publishVideoRendition(
       signedFetch, { ...parent, sourceFidelity: 12_000 },
       rendition({ sizeClass: "video-1080p", kind: "transcode", type: "video", contentType: "video/webm", durationMs: 12_000 }),
-      "hash", "key",
+      "hash",
     );
     const create = calls.find((c) => c.path === "/data/records")!;
     expect(create.body.type).toBe("video/webm");
@@ -143,7 +143,7 @@ describe("publishing a rendition", () => {
     await publishVideoRendition(
       signedFetch, { ...parent, sourceFidelity: 3000 },
       rendition({ sizeClass: "video-1080p", kind: "transcode", type: "video", contentType: "video/webm" }),
-      "hash", "key",
+      "hash",
     );
     expect(calls.find((c) => c.path === "/data/records")!.body.standIn).toEqual({
       role: "canonical",
@@ -155,7 +155,7 @@ describe("publishing a rendition", () => {
   // in the table matching its type, so no sync round ships a poster the grid
   // cannot size.
   it("registers a poster's dimensions with the poster, in the image table's shape", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
     const create = calls.find((c) => c.path === "/data/records")!;
     expect(create.body.metadata).toMatchObject({ width: 225, height: 400 });
     expect(create.body.standIn).toBeUndefined();
@@ -166,13 +166,13 @@ describe("publishing a rendition", () => {
     await publishVideoRendition(
       signedFetch, parent,
       rendition({ sizeClass: "video-skim", kind: "skim", type: "video", contentType: "video/mp4", durationMs: 2_000 }),
-      "hash", "key",
+      "hash",
     );
     expect(calls.find((c) => c.path === "/data/records")!.body.metadata).toMatchObject({ duration_ms: 2_000 });
   });
 
   it("labels a derived record so the library can leave it out", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
     expect(calls.find((c) => c.path === "/data/records")!.body.labels).toEqual([
       { key: "derived", value: "video-poster-thumb" },
     ]);
@@ -180,14 +180,14 @@ describe("publishing a rendition", () => {
 
   // A poster named `.mov` is a JPEG that half the world refuses to open.
   it("names the file for what was produced, not for the source", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
     expect(calls.find((c) => c.path === "/data/records")!.body.fileName).toBe(
       "video-poster-thumb_IMG_0042.jpg",
     );
   });
 
   it("declares every rung instant, since renditions are what a cold library is read from", async () => {
-    await publishVideoRendition(signedFetch, parent, rendition(), "hash", "key");
+    await publishVideoRendition(signedFetch, parent, rendition(), "hash");
     expect(calls.find((c) => c.path === "/files/presign")!.body.intent).toBe("instant");
   });
 
@@ -196,7 +196,7 @@ describe("publishing a rendition", () => {
       "/data/records": () => new Response("nope", { status: 500 }),
     });
     await expect(
-      publishVideoRendition(failing, parent, rendition(), "hash", "key"),
+      publishVideoRendition(failing, parent, rendition(), "hash"),
     ).rejects.toMatchObject({ stage: "register", sizeClass: "video-poster-thumb" });
   });
 });
@@ -214,7 +214,7 @@ describe("the ingest path", () => {
   const deps = (over: Partial<Parameters<typeof deriveAndPublishVideo>[2]> = {}) => ({
     signedFetch,
     tools: tools(),
-    keyFor: async () => ({ contentHash: "h", objectStorageKey: "k" }),
+    contentHashOf: async () => "h",
     ...over,
   });
 

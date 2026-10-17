@@ -25,7 +25,13 @@ import * as MediaLibrary from "expo-media-library";
 // `thumbHashFor` below for why the ThumbHash is taken from it rather than
 // computed in JavaScript.
 import { Image } from "expo-image";
-import { DEPLOYMENT_SETTINGS_ROUTE, generateId, type DataRecord, type HLCClock } from "@starkeep/protocol-primitives";
+import {
+  DEPLOYMENT_SETTINGS_ROUTE,
+  DEVICE_SELF_ROUTE,
+  generateId,
+  type DataRecord,
+  type HLCClock,
+} from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -405,6 +411,17 @@ function driveChannel(deviceKey: DeviceKey) {
       const body = (await res.json()) as { settings?: unknown };
       return body.settings ?? null;
     },
+    // The user an admin paired this phone for, which the node binds its
+    // library to before the first sync.
+    async readDeviceSelf(): Promise<{ userId: string | null }> {
+      const res = await boundedFetch(`${channelUrl}${DEVICE_SELF_ROUTE}`, {
+        method: "GET",
+        headers: signRequest("GET", DEVICE_SELF_ROUTE),
+      });
+      if (!res.ok) throw new Error(`the cloud answered ${res.status} for this device's record`);
+      const body = (await res.json()) as { userId?: string | null };
+      return { userId: body.userId ?? null };
+    },
     transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest, fetch: boundedFetch }),
     remoteObjectStorage: new HttpObjectStorageAdapter({
       baseUrl: `${channelUrl}/files`,
@@ -484,6 +501,7 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
     clock,
     fs: expoFileSystem,
     hash: sha256Bytes,
+    userId: () => node.userId(),
     thumbHash: thumbHashFor,
     ...(node.motionIndex ? { motionIndex: node.motionIndex } : {}),
   };
@@ -878,6 +896,7 @@ function deriveDepsFor(node: MobileNode, clock: HLCClock): DeriveLadderDeps | nu
     objectStorage: node.objectStorage,
     clock,
     hash: sha256Bytes,
+    userId: () => node.userId(),
     encode: avifEncoder,
     noteDerived: (record) => node.noteDerived(record),
     librarySettings: node.librarySettings,

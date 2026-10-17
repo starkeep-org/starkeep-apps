@@ -252,6 +252,12 @@ export interface DeriveLadderDeps {
   readonly hash: HashBytes;
   readonly encode: ImageEncoder;
   /**
+   * The user segment the keys carry: the library's bound user, or `local`
+   * before a cloud binds it. An accessor, because binding happens while the
+   * node runs.
+   */
+  readonly userId: () => string;
+  /**
    * The library's standards, and whether this node may stamp originals with
    * them. Absent in a test with no settings, which reads as the platform
    * defaults and a node that knows them.
@@ -770,7 +776,7 @@ async function publishStandIn(
   }
 
   const contentHash = await deps.hash(encoded.bytes);
-  const objectStorageKey = dataRecordObjectKey(RENDITION_TYPE, contentHash);
+  const objectStorageKey = dataRecordObjectKey(deps.userId(), RENDITION_TYPE, contentHash);
   await deps.objectStorage.put(objectStorageKey, encoded.bytes, {
     contentType: RENDITION_TYPE,
   });

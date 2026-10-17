@@ -4,12 +4,6 @@ import { photoRecordToAppImage } from "@/lib/photoRecordToAppImage";
 import type { PhotoRecord } from "@/lib/data-server-client";
 import { PHOTOS_LABEL_KEYS } from "@/photos-lib";
 
-// Mirrors dataRecordObjectKey in @starkeep/protocol-primitives. Inlined to keep the route a
-// thin Next runtime layer (matches the convention used in app/api/photos/route.ts).
-function dataRecordObjectKey(typeId: string, contentHash: string): string {
-  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
-}
-
 function notInstalled(): Response {
   return Response.json(
     { error: "photos has not been installed locally — run install from admin-web first" },
@@ -67,12 +61,13 @@ export async function POST(req: Request): Promise<Response> {
   // once they go through API Gateway.
   const croppedBytes = new Uint8Array(cropped);
   const contentHash = createHash("sha256").update(croppedBytes).digest("hex");
-  const objectStorageKey = dataRecordObjectKey("image", contentHash);
 
+  // The data server builds the key from the category and the hash, under the
+  // library's user.
   const presignRes = await signedFetch(creds, "/files/presign", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: objectStorageKey, contentType: mimeType }),
+    body: JSON.stringify({ type: "image", contentHash, contentType: mimeType }),
   });
   if (!presignRes.ok) {
     const errBody = await presignRes.text().catch(() => "");

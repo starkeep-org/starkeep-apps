@@ -270,7 +270,6 @@ export async function deriveAndPublish(
           },
           rendition,
           contentHash,
-          dataRecordObjectKey("image", contentHash),
         ),
       );
     }
@@ -390,8 +389,4 @@ async function noteAttempt(
   await params.attempts.write(
     recordAttempt(previous, params.parent.id, outcome, Date.now(), detail),
   );
-}
-
-function dataRecordObjectKey(typeId: string, contentHash: string): string {
-  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
 }

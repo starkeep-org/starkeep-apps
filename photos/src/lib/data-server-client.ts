@@ -197,10 +197,6 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
-function dataRecordObjectKey(typeId: string, contentHash: string): string {
-  return `shared/${typeId}/${contentHash.slice(0, 2)}/${contentHash}`;
-}
-
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource);
   const view = new Uint8Array(digest);
@@ -223,7 +219,6 @@ export async function addPhotoFromPath(
   // API Gateway ~7 MB cap on inline JSON bodies. This is the canonical
   // client-side add-photo flow.
   const contentHash = await sha256Hex(fileBytes);
-  const objectStorageKey = dataRecordObjectKey("image", contentHash);
 
   const presign = await request<{
     url: string;
@@ -234,7 +229,10 @@ export async function addPhotoFromPath(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      key: objectStorageKey,
+      // The data server builds the key from the category and the hash, under
+      // the user it acts for, which the browser never needs to know.
+      type: "image",
+      contentHash,
       contentType: mimeType,
       // No retrieval intent: the platform decides and performs archiving, once
       // the original's canonical stand-in is in the cloud and no app advises

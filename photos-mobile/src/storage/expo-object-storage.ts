@@ -338,6 +338,46 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
     return { keys, nextCursor: null, hasMore: false };
   }
 
+  /**
+   * Move every file under one key prefix to another, sidecars included, and
+   * merge into whatever the destination already holds. A file already at its
+   * destination stays and the source copy goes, because the same key names
+   * the same bytes.
+   *
+   * Binding a library uses this to rename the `local` user segment once a
+   * cloud names the user. It runs synchronously, so no write on this thread
+   * lands between the listing and the moves.
+   */
+  movePrefix(fromPrefix: string, toPrefix: string): number {
+    const from = `${this.basePath}/${fromPrefix.replace(/\/$/, "")}`;
+    const to = `${this.basePath}/${toPrefix.replace(/\/$/, "")}`;
+    let moved = 0;
+    const walk = (dir: ExpoDirectory, relative: string): void => {
+      for (const entry of dir.list()) {
+        const name = entry.uri.replace(/\/$/, "").split("/").pop() ?? "";
+        const rel = relative === "" ? name : `${relative}/${name}`;
+        if (isDirectory(entry)) {
+          walk(entry, rel);
+          continue;
+        }
+        const target = this.fs.file(`${to}/${rel}`);
+        if (target.exists) {
+          entry.delete();
+          continue;
+        }
+        const parent = rel.includes("/") ? `${to}/${rel.slice(0, rel.lastIndexOf("/"))}` : to;
+        this.fs.directory(parent).create({ intermediates: true, idempotent: true });
+        entry.moveSync(target);
+        moved += 1;
+      }
+    };
+    const root = this.fs.directory(from);
+    if (!root.exists) return 0;
+    walk(root, "");
+    root.delete();
+    return moved;
+  }
+
   private writeSidecar(key: string, value: unknown): void {
     const meta = this.fs.file(this.metaPathFor(key));
     meta.create({ intermediates: true, overwrite: true });

@@ -23,7 +23,7 @@
  */
 
 import { createHLCClock } from "@starkeep/protocol-primitives";
-import { SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
+import { libraryUserSegment, SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
 import {
   createLibrarySettings,
   createSqliteDeploymentSettingsCache,
@@ -61,6 +61,7 @@ import {
   type ImportCursorStore,
 } from "./media/import-cursor";
 import { DeviceMediaObjectStorage } from "./storage/device-media-storage";
+import { bindPhoneLibrary, type MovableObjectStorage } from "./library-binding";
 import { ceilingsOf, createDeviceSettingsStore, type DeviceSettings } from "./device-settings";
 import type { ExpoFileSystem } from "./storage/expo-object-storage";
 import {
@@ -122,7 +123,12 @@ export interface MobileNodeOptions {
   /** Where op-sqlite should put the database. */
   readonly databasePath: string;
   readonly sqliteDriver: SqliteDriver;
-  readonly localObjectStorage: ObjectStorageAdapter;
+  /**
+   * This node's own files. One that can move a key prefix lets binding rename
+   * the `local` user segment on disk; one that cannot holds nothing binding
+   * needs to move.
+   */
+  readonly localObjectStorage: ObjectStorageAdapter & Partial<MovableObjectStorage>;
   /**
    * The cloud, reached over whatever transport the shell supplies.
    *
@@ -145,6 +151,11 @@ export interface MobileNodeOptions {
      * route, or null when none is set. Throws when the cloud cannot answer.
      */
     readonly readDeploymentSettings: () => Promise<unknown>;
+    /**
+     * This device's own record from the Drive channel's `device/self` route:
+     * the user an admin paired it for. Throws when the cloud cannot answer.
+     */
+    readonly readDeviceSelf: () => Promise<{ readonly userId: string | null }>;
   };
   /**
    * This device's sync-down ceilings — the largest stand-in per category it
@@ -259,6 +270,12 @@ export interface MobileNode {
    * nobody has signed in on. Everything else on this node works regardless.
    */
   readonly engine: SyncEngine | null;
+  /**
+   * The user segment every key this node writes carries: the user a cloud
+   * bound the library to, or `local` until one does. Read on every write,
+   * because binding happens while the node runs, before its first sync.
+   */
+  userId(): string;
   /**
    * The deployment's settings, as this node last read them from the cloud.
    * The phone stamps originals with these values, and reads each original's
@@ -583,6 +600,41 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
    */
   const scanCursor = createSqliteScanCursorStore({ db: databaseAdapter.getRawDatabase() });
 
+  let userSegment = libraryUserSegment(databaseAdapter.getRawDatabase());
+  let binding: Promise<void> | null = null;
+  /**
+   * Bind the library to the user the cloud paired this phone for, once per
+   * node, before anything is exchanged. Keys then carry that user's segment,
+   * as the cloud requires. A cloud that names another user than the
+   * library's refuses: the two libraries must not mix. A failure is retried by
+   * the next operation, because re-pairing is how the person fixes it.
+   */
+  function ensureBound(): Promise<void> {
+    if (!cloud) return Promise.resolve();
+    binding ??= (async () => {
+      const { userId } = await cloud.readDeviceSelf();
+      if (!userId) throw new Error("The cloud approved this phone for no user. Pair it again.");
+      const storage = options.localObjectStorage.movePrefix ? (options.localObjectStorage as MovableObjectStorage) : null;
+      const report = bindPhoneLibrary(databaseAdapter.getRawDatabase(), storage, userId);
+      if (userSegment !== userId || report.movedFiles > 0 || report.rewrittenKeys > 0) {
+        console.log(
+          `[starkeep:binding] bound this library to user ${userId}: ` +
+            `${report.movedFiles} files moved, ${report.rewrittenKeys} keys rewritten`,
+        );
+        // The sweeps walk keys in order, and every key just changed its
+        // prefix, so each sweep starts again from the top.
+        scanCursor.set(null);
+        derivationCursor?.set(null);
+        fullDerivationCursor?.set(null);
+      }
+      userSegment = userId;
+    })().catch((err: unknown) => {
+      binding = null;
+      throw err;
+    });
+    return binding;
+  }
+
   let engineLock: Promise<unknown> = Promise.resolve();
   function serialized<T>(body: () => Promise<T>): Promise<T> {
     // `then(body, body)` rather than `then(body)`: a rejected predecessor must
@@ -605,6 +657,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     fullDerivationCursor,
     motionIndex,
     engine,
+    userId: () => userSegment,
     residency,
     librarySettings,
     deviceSettings: () => settings.get(),
@@ -618,7 +671,11 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       scanCursor.set(null);
       return next;
     },
-    exchange: async () => (engine ? serialized(() => engine.exchange().then(afterRound)) : null),
+    exchange: async () =>
+      engine ? serialized(async () => {
+        await ensureBound();
+        return engine.exchange().then(afterRound);
+      }) : null,
     sync: async (syncOptions) => {
       if (!engine) return null;
       const { trigger = "button", ...engineOptions } = syncOptions ?? {};
@@ -627,6 +684,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       let roundStartedAt = syncStartedAt;
       return serialized(async () => {
         try {
+          await ensureBound();
           const result = await engine.sync({
             ...engineOptions,
             onRound: (round, rounds) => {
@@ -663,8 +721,9 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       // No cloud means nobody to fetch from.
       if (!engine) return null;
       // Serialized behind the same lock as a round: both drive the one engine.
-      return serialized(() =>
-        runAcquisition({
+      return serialized(async () => {
+        await ensureBound();
+        return runAcquisition({
           engine,
           manager: residency,
           databaseAdapter,
@@ -673,8 +732,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
           // unit that takes a minute is a unit that gets abandoned partway,
           // over and over.
           maxBytes: acquireOptions?.maxBytes ?? MOBILE_MAX_BYTES,
-        }),
-      );
+        });
+      });
     },
 
     async scanForAcquirable(scanOptions) {
@@ -704,7 +763,11 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       return { queued: result.queued, complete: result.nextCursor === null };
     },
 
-    verify: async () => (engine ? serialized(() => engine.verify()) : null),
+    verify: async () =>
+      engine ? serialized(async () => {
+        await ensureBound();
+        return engine.verify();
+      }) : null,
     // Deliberately *not* serialized behind the engine lock. It writes no sync
     // state, and making someone wait for a multi-minute drain before their
     // photo appears would defeat the point of an on-demand fetch. The transfer
@@ -712,6 +775,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     // joins that transfer rather than racing it.
     async fetchBlob(record) {
       if (!engine || !record.objectStorageKey) return false;
+      await ensureBound();
       return engine.fetchBlob(
         {
           fileHash: record.contentHash || record.objectStorageKey,

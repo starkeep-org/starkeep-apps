@@ -117,7 +117,8 @@ const qb = new Kysely<DB>({
   },
 });
 
-const TABLE = "device_media_aliases";
+export const MEDIA_ALIAS_TABLE = "device_media_aliases";
+const TABLE = MEDIA_ALIAS_TABLE;
 
 interface Row {
   object_storage_key: string;

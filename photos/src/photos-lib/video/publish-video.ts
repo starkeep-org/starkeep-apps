@@ -79,13 +79,15 @@ export async function publishVideoRendition(
   parent: RenditionParent,
   rendition: DerivedVideoRendition,
   contentHash: string,
-  objectStorageKey: string,
 ): Promise<PublishedRendition> {
+  // The server builds the key from the category and the hash, under the user
+  // the request acts for, which this module never needs to know.
   const presignRes = await signedFetch(`/files/presign`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      key: objectStorageKey,
+      type: rendition.type,
+      contentHash,
       contentType: rendition.contentType,
       // Every rung is `instant` — renditions are what the library is read from
       // once originals go cold. Only the original is ever `archive`.

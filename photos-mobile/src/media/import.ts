@@ -106,6 +106,12 @@ export interface ImportDeps {
   /** The same filesystem port everything else uses; content URIs go through it. */
   readonly fs: ExpoFileSystem;
   readonly hash: HashBytes;
+  /**
+   * The user segment the keys carry: the library's bound user, or `local`
+   * before a cloud binds it. An accessor, because binding happens while the
+   * node runs.
+   */
+  readonly userId: () => string;
   /** Injected so tests can assert `addedAtMs` rather than tolerate it. */
   readonly now?: () => number;
   /**
@@ -654,7 +660,7 @@ async function importOne(
   if (!digest) return { reason: `could not read the bytes of ${item.uri}` };
 
   const type = typeOf(item);
-  const objectStorageKey = dataRecordObjectKey(type, digest.hex);
+  const objectStorageKey = dataRecordObjectKey(deps.userId(), type, digest.hex);
 
   const record = createDataRecord(
     {

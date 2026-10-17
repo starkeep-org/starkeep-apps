@@ -109,6 +109,7 @@ async function importBoth() {
       clock: createHLCClock({ nodeId: "phone-a" }),
       fs: harness.fs,
       hash: nodeHash,
+      userId: () => phone.userId(),
       yieldToUi: () => Promise.resolve(),
     },
     { limit: 10 },

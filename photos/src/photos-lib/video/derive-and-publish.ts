@@ -26,15 +26,11 @@ export interface VideoIngestDeps {
   readonly signedFetch: SignedFetch;
   readonly tools: VideoTools;
   /**
-   * Content hash and storage key for a rendition's bytes.
-   *
-   * Supplied by the caller because the two servers address storage differently,
-   * and this module has no business knowing which one it is running inside.
+   * The SHA-256 of a rendition's bytes, as lowercase hex. The server builds
+   * the storage key from it. Supplied by the caller, so this module needs no
+   * hashing library of its own.
    */
-  readonly keyFor: (
-    bytes: Uint8Array,
-    rendition: { readonly type: "image" | "video" },
-  ) => Promise<{ contentHash: string; objectStorageKey: string }>;
+  readonly contentHashOf: (bytes: Uint8Array) => Promise<string>;
   readonly enabledOptional?: readonly SizeClass[];
   /** Rungs whose bytes this node can serve; supplied by the local sweep. */
   readonly availableRenditionClasses?: readonly SizeClass[];
@@ -96,7 +92,7 @@ export async function deriveAndPublishVideo(
 
   for (const rendition of result.renditions) {
     try {
-      const { contentHash, objectStorageKey } = await deps.keyFor(rendition.bytes, rendition);
+      const contentHash = await deps.contentHashOf(rendition.bytes);
       published.push(
         await publishVideoRendition(
           deps.signedFetch,
@@ -106,7 +102,6 @@ export async function deriveAndPublishVideo(
           { ...parent, sourceFidelity, canonicalTarget: target?.canonical ?? null },
           rendition,
           contentHash,
-          objectStorageKey,
         ),
       );
     } catch (err) {

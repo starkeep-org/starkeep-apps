@@ -4,8 +4,8 @@
 //
 // Extract the lowercase file extension from a filename, or `undefined` when the
 // name has no extension. Inlined here (rather than imported from @starkeep/protocol-primitives)
-// for the same reason as `dataRecordObjectKey` in the route files: to keep this
-// client-adjacent lib from dragging the core package into the browser build.
+// to keep this client-adjacent lib from dragging the core package into the
+// browser build.
 //
 // Extension extraction is generic across all file types; there is nothing
 // image-specific about it. It's still used to derive filenames and (via
@@ -24,7 +24,7 @@ export function extensionFromFilename(
 
 // Advisory ext → Starkeep type id, for the image formats photos handles.
 // Mirrors @starkeep/protocol-primitives EXTENSIONS (inlined to keep core out of
-// the browser bundle — same rationale as extensionFromFilename / dataRecordObjectKey).
+// the browser bundle — same rationale as extensionFromFilename).
 const IMAGE_TYPE_BY_EXT: Record<string, string> = {
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
   webp: "image/webp", heic: "image/heic", heif: "image/heif", avif: "image/avif",

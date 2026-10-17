@@ -34,6 +34,8 @@ import type {
   MediaQuery,
 } from "../src/media/device-library";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
+import { LibraryBoundElsewhereError, type SqliteDatabaseAdapter } from "@starkeep/storage-sqlite";
+import { bindPhoneLibrary } from "../src/library-binding";
 
 function fakeOpSqlite() {
   const db = new DatabaseSync(":memory:");
@@ -74,6 +76,9 @@ function fakeMedia(rows: AssetMetadataLike[]): DeviceMediaModule {
   };
 }
 
+/** The user the cloud paired this phone for. */
+const PHONE_USER = "8f1c2d3e-0000-4000-8000-0000000000aa";
+
 let phone: MobileNode;
 let harness: ReturnType<typeof fakeExpoFs>;
 let cloudDb: MockDatabaseAdapter;
@@ -101,6 +106,7 @@ beforeEach(async () => {
     }),
     cloud: {
       remoteObjectStorage: cloudStorage,
+      readDeviceSelf: async () => ({ userId: PHONE_USER }),
       readDeploymentSettings: async () => null,
       transport: createInProcessSyncTransport({
         databaseAdapter: cloudDb,
@@ -136,6 +142,7 @@ async function importThePhoto() {
       clock: createHLCClock({ nodeId: "phone-a" }),
       fs: harness.fs,
       hash: nodeHash,
+      userId: () => phone.userId(),
       yieldToUi: () => Promise.resolve(),
     },
     { limit: 10 },
@@ -169,13 +176,31 @@ describe("an imported photo syncs", () => {
     expect(remote).not.toBeNull();
     expect(remote!.contentHash).toBe(record.contentHash);
 
+    // Imported before the phone knew its user, so under `local`; the
+    // exchange bound the library first, and the record now names the user.
+    expect(record.objectStorageKey).toMatch(/^shared\/local\/image\//);
+    const bound = await phone.databaseAdapter.get(record.id);
+    expect(bound!.objectStorageKey).toBe(record.objectStorageKey!.replace("shared/local/", `shared/${PHONE_USER}/`));
+    expect(remote!.objectStorageKey).toBe(bound!.objectStorageKey);
+
     // The bytes came off the camera roll and went to the peer without ever
     // being written to the phone's own object store.
-    expect(await cloudStorage.has(record.objectStorageKey!)).toBe(true);
+    expect(await cloudStorage.has(bound!.objectStorageKey!)).toBe(true);
     // Normalised to a plain Uint8Array: the mock stores a Buffer, and comparing
     // the two directly fails on the type tag while every byte agrees.
-    const uploaded = await cloudStorage.get(record.objectStorageKey!);
+    const uploaded = await cloudStorage.get(bound!.objectStorageKey!);
     expect(new Uint8Array(uploaded!.data)).toEqual(PHOTO);
+  });
+
+  it("refuses to bind a library already bound to another user", async () => {
+    await importThePhoto();
+    await phone.exchange();
+    expect(phone.userId()).toBe(PHONE_USER);
+
+    expect(() => bindPhoneLibrary((phone.databaseAdapter as SqliteDatabaseAdapter).getRawDatabase(), null, "another-user")).toThrow(
+      LibraryBoundElsewhereError,
+    );
+    expect(phone.userId()).toBe(PHONE_USER);
   });
 
   it("still holds nothing of its own after the push", async () => {

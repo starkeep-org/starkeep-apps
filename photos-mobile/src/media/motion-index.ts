@@ -100,7 +100,8 @@ const qb = new Kysely<DB>({
   },
 });
 
-const TABLE = "motion_photo_index";
+export const MOTION_INDEX_TABLE = "motion_photo_index";
+const TABLE = MOTION_INDEX_TABLE;
 const MARKER_TABLE = "motion_index_scanned_at";
 
 /**

@@ -107,6 +107,7 @@ beforeEach(async () => {
       media: fakeMedia([assetAt(PHOTO_A), assetAt(PHOTO_B)]),
       aliases: node.mediaAliases!,
       database: node.databaseAdapter,
+      userId: () => node.userId(),
       clock: createHLCClock({ nodeId: "phone-a" }),
       fs: fs.fs,
       hash: nodeHash,
@@ -218,6 +219,7 @@ describe("the node after a reset", () => {
       {
         media: fakeMedia([assetAt(PHOTO_A), assetAt(PHOTO_B)]),
         aliases: rebuilt.mediaAliases!,
+        userId: () => rebuilt.userId(),
         database: rebuilt.databaseAdapter,
         clock: createHLCClock({ nodeId: "phone-a" }),
         fs: fs.fs,

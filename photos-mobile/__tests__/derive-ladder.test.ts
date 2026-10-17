@@ -29,6 +29,7 @@ import {
   dataRecordObjectKey,
   type DataRecord,
   type StarkeepId,
+  LOCAL_USER_SEGMENT,
 } from "@starkeep/protocol-primitives";
 import {
   MockDatabaseAdapter,
@@ -157,7 +158,7 @@ function deps(
   encode: ImageEncoder,
   over: Partial<DeriveLadderDeps> = {},
 ): DeriveLadderDeps & { cursor: ScanCursorStore } {
-  return { aliases, database, objectStorage, clock, hash, encode, cursor, ...over };
+  return { aliases, database, objectStorage, clock, hash, encode, cursor, userId: () => LOCAL_USER_SEGMENT, ...over };
 }
 
 /**
@@ -186,7 +187,7 @@ async function importOriginal(
       type,
       originAppId: "photos",
       contentHash,
-      objectStorageKey: dataRecordObjectKey(type, contentHash),
+      objectStorageKey: dataRecordObjectKey(LOCAL_USER_SEGMENT, type, contentHash),
       sizeBytes: 4_000_000,
       originalFilename: `IMG_${seq}.jpg`,
     },
@@ -382,7 +383,7 @@ describe("what a derived rung looks like", () => {
     expect(thumb.originalFilename).toBe(`image-thumb_${parent.originalFilename}`);
     // The key is the hash of the bytes, and the bytes are where it says.
     expect(thumb.objectStorageKey).toBe(
-      dataRecordObjectKey("image/avif", thumb.contentHash),
+      dataRecordObjectKey(LOCAL_USER_SEGMENT, "image/avif", thumb.contentHash),
     );
     const stored = await objectStorage.get(thumb.objectStorageKey);
     expect(stored?.data.byteLength).toBe(thumb.sizeBytes);
@@ -504,7 +505,7 @@ describe("what it does not do twice", () => {
                   type: "image/avif",
                   originAppId: "photos",
                   contentHash: "f".repeat(64),
-                  objectStorageKey: dataRecordObjectKey("image/avif", "f".repeat(64)),
+                  objectStorageKey: dataRecordObjectKey(LOCAL_USER_SEGMENT, "image/avif", "f".repeat(64)),
                   sizeBytes: 10,
                   parentId: parent.id,
                   originalFilename: null,

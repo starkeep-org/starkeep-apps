@@ -278,13 +278,7 @@ async function deriveOneVideo(
         ...(record.stand_ins ? { standIns: record.stand_ins } : {}),
         signedFetch: (requestPath, init) => signedFetch(creds, requestPath, init),
         tools: createFfmpegTools(),
-        keyFor: async (bytes, rendition) => {
-          const contentHash = createHash("sha256").update(bytes).digest("hex");
-          return {
-            contentHash,
-            objectStorageKey: `shared/${rendition.type}/${contentHash.slice(0, 2)}/${contentHash}`,
-          };
-        },
+        contentHashOf: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
         availableRenditionClasses: locallyAvailableClasses(record),
       },
     );

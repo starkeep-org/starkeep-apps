@@ -287,3 +287,38 @@ describe("deleting", () => {
     await expect(adapter.delete("nope")).resolves.toBeUndefined();
   });
 });
+
+describe("moving a key prefix", () => {
+  // Binding a library renames the `local` user segment on disk. See
+  // `src/library-binding.ts`.
+  const local = (name: string) => `shared/local/image/ab/${name}`;
+  const bound = (name: string) => `shared/u1/image/ab/${name}`;
+
+  it("moves every file under the prefix, sidecars with it", async () => {
+    await adapter.put(local("one"), PAYLOAD, { contentType: "image/avif" });
+    await adapter.put(local("two"), PAYLOAD);
+
+    expect(adapter.movePrefix("shared/local/", "shared/u1/")).toBe(3);
+
+    expect(await adapter.has(local("one"))).toBe(false);
+    expect((await adapter.get(bound("one")))!.contentType).toBe("image/avif");
+    expect(await adapter.has(bound("two"))).toBe(true);
+    expect(harness.fs.directory("/docs/objects/shared/local").exists).toBe(false);
+  });
+
+  it("merges into files already there, keeping the destination's copy", async () => {
+    await adapter.put(bound("one"), PAYLOAD);
+    await adapter.put(local("one"), new Uint8Array([9]));
+    await adapter.put(local("two"), PAYLOAD);
+
+    adapter.movePrefix("shared/local/", "shared/u1/");
+
+    expect((await adapter.get(bound("one")))!.size).toBe(64);
+    expect(await adapter.has(bound("two"))).toBe(true);
+    expect((await adapter.list("shared/")).keys.sort()).toEqual([bound("one"), bound("two")]);
+  });
+
+  it("moves nothing when the prefix holds nothing", () => {
+    expect(adapter.movePrefix("shared/local/", "shared/u1/")).toBe(0);
+  });
+});

@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { createHLCClock, dataRecordObjectKey, type StarkeepId } from "@starkeep/protocol-primitives";
+import { createHLCClock, dataRecordObjectKey, type StarkeepId, LOCAL_USER_SEGMENT } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, type RawDatabase } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "../src/media/media-alias";
 import {
@@ -178,6 +178,7 @@ function deps(rows: AssetMetadataLike[] = [asset({ id: URI_1 })]) {
     clock: createHLCClock({ nodeId: "phone" }),
     fs: fs.fs,
     hash: nodeHash,
+    userId: () => LOCAL_USER_SEGMENT,
     yieldToUi: () => Promise.resolve(),
     now: () => 1_700_000_500_000,
   };
@@ -199,7 +200,7 @@ describe("importDeviceMedia", () => {
     const record = outcome.records[0]!;
     const expected = createHash("sha256").update(PHOTO).digest("hex");
     expect(record.contentHash).toBe(expected);
-    expect(record.objectStorageKey).toBe(dataRecordObjectKey("image/jpeg", expected));
+    expect(record.objectStorageKey).toBe(dataRecordObjectKey(LOCAL_USER_SEGMENT, "image/jpeg", expected));
     expect(record.sizeBytes).toBe(PHOTO.byteLength);
     expect(record.originalFilename).toBe("IMG_0001.jpg");
     expect(record.originAppId).toBe("photos");

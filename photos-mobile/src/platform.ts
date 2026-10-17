@@ -34,9 +34,14 @@ import {
   type UploadFile,
 } from "@starkeep/sync-engine";
 import {
+  checkCodePairing,
+  clearCodePairing,
   clearDeviceCredential,
+  loadCodePairing,
   loadDeviceKey,
+  startCodePairing,
   storeDeviceCredential,
+  type CodePairing,
   type DeviceCredential,
   type DeviceKey,
 } from "./auth/device-key";
@@ -207,6 +212,32 @@ export function createLocalObjectStorage(): ExpoObjectStorageAdapter {
 /** Keep a scanned pairing code's credential. The node picks it up when it next opens. */
 export function storePairing(credential: DeviceCredential): Promise<void> {
   return storeDeviceCredential(SecureStore, credential);
+}
+
+/**
+ * Make a key on this phone for the cloud at `baseUrl` and a pairing code for
+ * an admin to approve. The key waits in the secure store until approved.
+ */
+export function startPairingByCode(
+  baseUrl: string,
+  label: string | null,
+): Promise<CodePairing | { readonly ok: false; readonly reason: string }> {
+  return startCodePairing(SecureStore, (n) => Crypto.getRandomBytes(n), baseUrl, label);
+}
+
+/** The key waiting for an admin, if any. */
+export function pendingPairingByCode(): Promise<CodePairing | null> {
+  return loadCodePairing(SecureStore);
+}
+
+/** Whether an admin has approved the waiting key. Throws when the cloud cannot be asked. */
+export function checkPairingByCode(credential: DeviceCredential): Promise<boolean> {
+  return checkCodePairing(credential);
+}
+
+/** Forget the key waiting for an admin. */
+export function clearPairingByCode(): Promise<void> {
+  return clearCodePairing(SecureStore);
 }
 
 /** Forget this phone's pairing. The node drops its cloud when it next opens. */

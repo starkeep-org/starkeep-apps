@@ -1,21 +1,25 @@
 /**
- * Connecting this phone: scan the code admin-web shows when it pairs a phone.
+ * Connecting this phone, two ways.
  *
- * The code carries this phone's key and the cloud it syncs to, so scanning it
- * is the whole of connecting. Nothing is typed and no account is signed in to.
- * The rules — ask before connecting, report a bad code once — live in
- * `pair-flow.ts`, where they can be tested without a camera.
+ * - **Scan admin-web's code.** The code carries this phone's key and the cloud
+ *   it syncs to, so scanning it is the whole of connecting. The rules — ask
+ *   before connecting, report a bad code once — live in `pair-flow.ts`, where
+ *   they can be tested without a camera.
+ * - **Show a pairing code** (`CodePairing.tsx`), for joining a cloud whose
+ *   admin-web is not at hand. The phone makes its own key and an admin
+ *   approves it.
  *
  * Reached by asking and always escapable, for the reason sign-in was: the app
  * works without ever reaching this screen, and what it buys is sync.
  */
 
-import { useReducer, type ReactNode } from "react";
+import { useReducer, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { DeviceCredential } from "../auth/device-key";
 import { isScanning, pairFlow, PAIR_FLOW_START } from "./pair-flow";
+import { CodePairing } from "./CodePairing";
 import { styles } from "./theme";
 
 interface Props {
@@ -27,6 +31,7 @@ interface Props {
 export function PairScreen({ onPaired, onCancel }: Props) {
   const [permission, requestPermission] = useCameraPermissions();
   const [state, dispatch] = useReducer(pairFlow, PAIR_FLOW_START);
+  const [byCode, setByCode] = useState(false);
 
   const cancel = (
     <Pressable onPress={onCancel} style={{ paddingVertical: 8 }}>
@@ -35,7 +40,9 @@ export function PairScreen({ onPaired, onCancel }: Props) {
   );
 
   let body: ReactNode;
-  if (!permission) {
+  if (byCode) {
+    body = <CodePairing onPaired={onPaired} />;
+  } else if (!permission) {
     body = <ActivityIndicator />;
   } else if (!permission.granted) {
     body = (
@@ -126,9 +133,16 @@ export function PairScreen({ onPaired, onCancel }: Props) {
       <View style={[styles.content, { flex: 1, justifyContent: "center" }]}>
         <View style={{ gap: 4 }}>
           <Text style={styles.title}>Connect</Text>
-          <Text style={styles.subtitle}>Scan admin-web&rsquo;s pairing code</Text>
+          <Text style={styles.subtitle}>
+            {byCode ? "Send a pairing code to an admin" : "Scan admin-web\u2019s pairing code"}
+          </Text>
         </View>
         {body}
+        {!byCode && state.kind === "scanning" ? (
+          <Pressable onPress={() => setByCode(true)} style={{ paddingVertical: 8 }}>
+            <Text style={styles.linkLabel}>No admin-web here? Use a pairing code</Text>
+          </Pressable>
+        ) : null}
         {state.kind === "connecting" ? null : cancel}
       </View>
     </SafeAreaView>

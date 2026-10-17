@@ -18,17 +18,22 @@
  *
  * ## Where the key comes from
  *
- * Admin-web makes it. Pairing is this phone's install step: the operator names
- * the phone in admin-web, admin-web generates the keypair in the browser,
- * registers the public half, and shows the private half once as a QR code. The
- * phone scans the code ({@link parsePairingPayload}) and keeps the result in
- * the secure store. The code also carries the cloud's URL, so the phone learns
- * which Starkeep it belongs to from the code rather than from its build.
+ * Two ways, and the cloud's request path writes no credential in either.
  *
- * A phone that made its own key would have to deliver the public half to the
- * cloud before it could authenticate anything, which needs an unauthenticated
- * route and a credential write in the cloud's request path. See
- * `~/projects/starkeep/plan-mobile-qr-pairing-2026-10-13.md`.
+ * - **Admin-web makes it.** The operator names the phone in admin-web, which
+ *   generates the keypair in the browser, registers the public half, and shows
+ *   the private half once as a QR code. The phone scans the code
+ *   ({@link parsePairingPayload}) and keeps the result in the secure store. The
+ *   code also carries the cloud's URL. See
+ *   `~/projects/starkeep/plan-mobile-qr-pairing-2026-10-13.md`.
+ * - **The phone makes it.** The person types the cloud's address, and the
+ *   phone generates the keypair and shows a pairing code holding only the
+ *   public half ({@link startCodePairing}). An admin approves the code in
+ *   admin-web, and the phone learns of it by polling `device/self`
+ *   ({@link checkCodePairing}). The private half never leaves the phone.
+ *
+ * The signing itself is protocol-primitives' `deviceSigner`, the same code the
+ * local data server signs with.
  *
  * ## The signed message is not ours to invent
  *
@@ -50,7 +55,34 @@
  * individually revocable**.
  */
 
-import { ed25519 } from "@noble/curves/ed25519.js";
+import {
+  APP_ID_HEADER,
+  APP_TS_HEADER,
+  canonicalSignedPath,
+  DEVICE_ID_HEADER,
+  DEVICE_ID_PATTERN,
+  DEVICE_SELF_ROUTE,
+  DEVICE_SIG_HEADER,
+  deviceFingerprint,
+  deviceSigner,
+  encodePairingRequest,
+  fromBase64,
+  generateDeviceId,
+  generateDeviceSeed,
+  MAX_DEVICE_LABEL_LENGTH,
+  signedMessage,
+  toBase64,
+  type RandomBytes,
+} from "@starkeep/protocol-primitives";
+
+export {
+  APP_ID_HEADER,
+  APP_TS_HEADER,
+  canonicalSignedPath,
+  DEVICE_ID_HEADER,
+  DEVICE_SIG_HEADER,
+  signedMessage,
+};
 
 /** Where the private key lives. Supplied at the edge; see `platform.ts`. */
 export interface SecureStore {
@@ -71,11 +103,8 @@ const LEGACY_PRIVATE_KEY_ITEM = "starkeep.device.privateKey";
 /** The version of the QR payload this build reads. */
 export const PAIRING_PAYLOAD_VERSION = 1;
 
-/** Must match the cloud's `isValidDeviceId`; the id becomes an SSM parameter name. */
-const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-
-/** Must match the settings file's `MAX_DEVICE_LABEL_LENGTH`. */
-const MAX_LABEL_LENGTH = 100;
+/** Where a key this phone made waits until an admin approves it. */
+const PENDING_ITEM = "starkeep.device.pending";
 
 /**
  * Hosts a development cloud answers on without TLS: the machine itself, and the
@@ -116,80 +145,6 @@ export interface DeviceKey {
     path: string,
     body: Uint8Array | undefined,
   ): Record<string, string>;
-}
-
-export const APP_ID_HEADER = "X-Starkeep-App-Id";
-export const APP_TS_HEADER = "X-Starkeep-App-Ts";
-export const DEVICE_ID_HEADER = "X-Starkeep-Device-Id";
-export const DEVICE_SIG_HEADER = "X-Starkeep-Device-Sig";
-
-/**
- * The canonical path, copied from `@starkeep/app-client`'s `sign.ts`.
- *
- * Copied rather than imported because that package is Node-only — it imports
- * `node:crypto` at module scope. The rule is four lines and is asserted against
- * the same cases on both sides; importing it would make this module unloadable
- * on a handset, which is the failure that has already been paid for twice here.
- */
-export function canonicalSignedPath(path: string): string {
-  const q = path.indexOf("?");
-  const pathname = q >= 0 ? path.slice(0, q) : path;
-  try {
-    return decodeURIComponent(pathname);
-  } catch {
-    return pathname;
-  }
-}
-
-/** The exact bytes both primitives sign. */
-export function signedMessage(
-  appId: string,
-  method: string,
-  path: string,
-  ts: number,
-  body: Uint8Array | undefined,
-): Uint8Array {
-  const prefix = new TextEncoder().encode(
-    `${appId}:${method.toUpperCase()}:${canonicalSignedPath(path)}:${ts}:`,
-  );
-  if (!body || body.byteLength === 0) return prefix;
-  const out = new Uint8Array(prefix.byteLength + body.byteLength);
-  out.set(prefix, 0);
-  out.set(body, prefix.byteLength);
-  return out;
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  // `btoa` exists on Hermes and in Node 16+. Chunking is unnecessary at these
-  // sizes — a key is 32 bytes and a signature 64.
-  return btoa(binary);
-}
-
-function fromBase64(text: string): Uint8Array {
-  const binary = atob(text);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
-  return out;
-}
-
-/**
- * The 12-byte SPKI prefix for an Ed25519 public key (RFC 8410).
- *
- * Emitted so the cloud can `createPublicKey({ type: "spki", format: "der" })`
- * directly — Node has no "raw Ed25519 bytes" import, and asking the verifier to
- * hand-assemble this would put the same twelve magic bytes in two places.
- */
-const ED25519_SPKI_PREFIX = new Uint8Array([
-  0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-]);
-
-function spkiFrom(rawPublicKey: Uint8Array): Uint8Array {
-  const out = new Uint8Array(ED25519_SPKI_PREFIX.byteLength + rawPublicKey.byteLength);
-  out.set(ED25519_SPKI_PREFIX, 0);
-  out.set(rawPublicKey, ED25519_SPKI_PREFIX.byteLength);
-  return out;
 }
 
 export type PairingParse =
@@ -253,7 +208,7 @@ export function parsePairingPayload(text: string): PairingParse {
   }
 
   const label = v["label"];
-  if (label !== undefined && label !== null && (typeof label !== "string" || label.length > MAX_LABEL_LENGTH)) {
+  if (label !== undefined && label !== null && (typeof label !== "string" || label.length > MAX_DEVICE_LABEL_LENGTH)) {
     return { ok: false, reason: "The pairing code's device name is not valid." };
   }
 
@@ -319,27 +274,102 @@ export async function loadDeviceKey(store: SecureStore): Promise<DeviceKey | nul
 
 /** A signer over a credential's seed. */
 export function keyFrom(credential: DeviceCredential): DeviceKey {
-  const privateKey = fromBase64(credential.privateKey);
-  const publicKey = ed25519.getPublicKey(privateKey);
-
+  const signer = deviceSigner(credential.deviceId, fromBase64(credential.privateKey));
   return {
     deviceId: credential.deviceId,
     label: credential.label,
     baseUrl: credential.baseUrl,
-    publicKeySpki: toBase64(spkiFrom(publicKey)),
-    signRequest(appId, method, path, body) {
-      const ts = Date.now();
-      // GET and HEAD sign an empty body, matching the verifier — which cannot
-      // see a body on those methods and so signs `Buffer.alloc(0)`.
-      const upper = method.toUpperCase();
-      const signedBody = upper === "GET" || upper === "HEAD" ? undefined : body;
-      const message = signedMessage(appId, upper, path, ts, signedBody);
-      return {
-        [APP_ID_HEADER]: appId,
-        [APP_TS_HEADER]: String(ts),
-        [DEVICE_ID_HEADER]: credential.deviceId,
-        [DEVICE_SIG_HEADER]: toBase64(ed25519.sign(message, privateKey)),
-      };
-    },
+    publicKeySpki: signer.publicKeySpki,
+    signRequest: (appId, method, path, body) => signer.signRequest(appId, method, path, body),
   };
+}
+
+/** A key this phone made, waiting for an admin, and what the person shows the admin. */
+export interface CodePairing {
+  readonly credential: DeviceCredential;
+  /** The pairing code: the public half, the id, the label and the kind. */
+  readonly code: string;
+  /** What the admin reads back to confirm the code came from this phone. */
+  readonly fingerprint: string;
+}
+
+function codePairingFor(credential: DeviceCredential): CodePairing {
+  const { publicKeySpki } = keyFrom(credential);
+  return {
+    credential,
+    code: encodePairingRequest({
+      deviceId: credential.deviceId,
+      publicKeySpki,
+      label: credential.label,
+      kind: "phone",
+    }),
+    fingerprint: deviceFingerprint(publicKeySpki),
+  };
+}
+
+/**
+ * Make a key on this phone for the cloud at `baseUrl`, and keep it until an
+ * admin approves it, so closing the app does not lose it. Replaces any earlier
+ * key still waiting. Refuses an address the QR path would refuse.
+ */
+export async function startCodePairing(
+  store: SecureStore,
+  randomBytes: RandomBytes,
+  baseUrl: string,
+  label: string | null,
+): Promise<CodePairing | { readonly ok: false; readonly reason: string }> {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  const check = parsePairingPayload(
+    JSON.stringify({
+      starkeepPair: PAIRING_PAYLOAD_VERSION,
+      deviceId: "dev_check",
+      privateKey: toBase64(new Uint8Array(32)),
+      baseUrl: trimmed,
+      label,
+    }),
+  );
+  if (!check.ok) return { ok: false, reason: check.reason.replace("The pairing code's", "The") };
+  const credential: DeviceCredential = {
+    deviceId: generateDeviceId(randomBytes),
+    privateKey: toBase64(generateDeviceSeed(randomBytes)),
+    baseUrl: trimmed,
+    label,
+  };
+  await store.setItemAsync(PENDING_ITEM, JSON.stringify(credential));
+  return codePairingFor(credential);
+}
+
+/** The key waiting for an admin, if any. */
+export async function loadCodePairing(store: SecureStore): Promise<CodePairing | null> {
+  const stored = await store.getItemAsync(PENDING_ITEM);
+  if (!stored) return null;
+  try {
+    return codePairingFor(JSON.parse(stored) as DeviceCredential);
+  } catch {
+    return null;
+  }
+}
+
+/** Forget the key waiting for an admin. */
+export async function clearCodePairing(store: SecureStore): Promise<void> {
+  await store.deleteItemAsync(PENDING_ITEM);
+}
+
+/**
+ * Whether an admin has approved the waiting key: the cloud answers the
+ * device's own record once it holds one, and 401 until then. Throws when the
+ * cloud cannot be asked.
+ */
+export async function checkCodePairing(
+  credential: DeviceCredential,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<boolean> {
+  const url = `${credential.baseUrl}/apps/starkeep-drive${DEVICE_SELF_ROUTE}`;
+  const res = await fetchImpl(url, {
+    method: "GET",
+    headers: keyFrom(credential).signRequest("starkeep-drive", "GET", DEVICE_SELF_ROUTE, undefined),
+  });
+  if (res.status === 401) return false;
+  if (!res.ok) throw new Error(`the cloud answered ${res.status}`);
+  return true;
 }

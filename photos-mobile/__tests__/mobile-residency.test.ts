@@ -105,6 +105,7 @@ async function startPhone(): Promise<MobileNode> {
     }),
     cloud: {
       remoteObjectStorage: cloudStorage,
+      readDeploymentSettings: async () => null,
       transport: createInProcessSyncTransport({
         databaseAdapter: cloudDb,
         clock: createHLCClock({ nodeId: "cloud" }),

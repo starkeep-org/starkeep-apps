@@ -26,6 +26,7 @@ import { createHLCClock } from "@starkeep/protocol-primitives";
 import { SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
 import {
   createLibrarySettings,
+  createSqliteDeploymentSettingsCache,
   createSyncEngine,
   createSqliteSyncStateStore,
   createResidencyManager,
@@ -107,20 +108,6 @@ export const MOBILE_MAX_ITEMS = 200;
 export const MOBILE_TRANSFER_CONCURRENCY = 3;
 
 /**
- * How this node reads the library's settings: without tombstoning losing
- * settings files.
- *
- * Every host otherwise tombstones the losers when two settings files are live
- * at once. A phone syncs as a paired device, and the cloud refuses a
- * `starkeep/*` record from a device, because the settings file holds the
- * paired-device list and a stolen phone must not be able to edit it. A
- * tombstone from here would therefore get the whole exchange refused. The
- * cloud and the desktops tombstone losers, and their tombstones reach this
- * node like any other record.
- */
-const SETTINGS_READ_ONLY = { tombstoneLosers: false } as const;
-
-/**
  * Records the catalogue scan looks at in one unit of work.
  *
  * Sized by the same constraint as everything else here — a few seconds — and
@@ -153,6 +140,11 @@ export interface MobileNodeOptions {
   readonly cloud?: {
     readonly transport: SyncTransport;
     readonly remoteObjectStorage: ObjectStorageAdapter;
+    /**
+     * The deployment's settings document from the Drive channel's settings
+     * route, or null when none is set. Throws when the cloud cannot answer.
+     */
+    readonly readDeploymentSettings: () => Promise<unknown>;
   };
   /**
    * This device's sync-down ceilings — the largest stand-in per category it
@@ -268,9 +260,9 @@ export interface MobileNode {
    */
   readonly engine: SyncEngine | null;
   /**
-   * The library's settings, as the settings file this node received says. The
-   * phone never edits the file: it stamps originals with its values, and reads
-   * each original's target from the original's stamp.
+   * The deployment's settings, as this node last read them from the cloud.
+   * The phone stamps originals with these values, and reads each original's
+   * target from the original's stamp.
    */
   readonly librarySettings: LibrarySettings;
   /** This node's residency: its ceilings and what it holds. */
@@ -504,15 +496,17 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     }
   };
 
-  // The library's settings file arrives like any other file. A phone with no
-  // cloud is the whole library, so its defaults are the library's value.
+  // The deployment's settings, read from the cloud and cached in this node's
+  // database, so a phone that starts offline still knows the value it last
+  // read. A phone with no cloud is the whole library, so the defaults are its
+  // value.
+  const cloud = options.cloud;
   const librarySettings = createLibrarySettings({
-    db: databaseAdapter,
-    storage: localObjectStorage,
-    clock,
-    cloudConfigured: () => Boolean(options.cloud),
+    read: cloud ? () => cloud.readDeploymentSettings() : async () => null,
+    cloudConfigured: () => Boolean(cloud),
+    cache: createSqliteDeploymentSettingsCache({ db: databaseAdapter.getRawDatabase() }),
   });
-  await librarySettings.refresh(SETTINGS_READ_ONLY);
+  await librarySettings.refresh();
 
   // Every file no stand-in can replace arrives here; stand-ins arrive up to
   // this device's ceiling; everything else waits to be asked for. Nothing is
@@ -551,12 +545,16 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       })
     : null;
 
-  /** A round may have brought a settings file; read it before anything stamps. */
+  /**
+   * Read the deployment's settings again after each round, so a change made in
+   * admin-web reaches this phone's stamps by the next round. A failed read
+   * keeps the last value.
+   */
   async function afterRound<T>(result: T): Promise<T> {
-    try {
-      await librarySettings.refresh(SETTINGS_READ_ONLY);
-    } catch (err) {
-      console.warn(`[starkeep:settings] could not read the library's settings: ${String(err)}`);
+    await librarySettings.refresh();
+    const problems = librarySettings.status().problems;
+    if (problems.length > 0) {
+      console.warn(`[starkeep:settings] could not read the deployment's settings: ${problems.join("; ")}`);
     }
     return result;
   }

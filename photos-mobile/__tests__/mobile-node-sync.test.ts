@@ -14,12 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import {
-  createHLCClock,
-  serializeUserSettings,
-  SETTINGS_TYPE_ID,
-  USER_SETTINGS_FILE_NAME,
-} from "@starkeep/protocol-primitives";
+import { createHLCClock } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, MockObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createInProcessSyncTransport } from "@starkeep/sync-engine";
 import { createMobileNode, MOBILE_MAX_BYTES, MOBILE_MAX_ITEMS, type MobileNode } from "../src/node";
@@ -88,8 +83,12 @@ const record = (over: Partial<DataRecord> = {}): DataRecord => {
   } as DataRecord;
 };
 
+/** What the cloud's settings route answers: a document, none, or a failure. */
+let cloudSettings: unknown = null;
+
 beforeEach(async () => {
   seq = 0;
+  cloudSettings = null;
   cloudDb = new MockDatabaseAdapter();
   cloudStorage = new MockObjectStorageAdapter();
   await cloudDb.init();
@@ -111,6 +110,10 @@ beforeEach(async () => {
         clock: createHLCClock({ nodeId: "cloud" }),
         objectStorage: cloudStorage,
       }),
+      readDeploymentSettings: async () => {
+        if (cloudSettings === "fail") throw new Error("the cloud answered 503");
+        return cloudSettings;
+      },
     },
   });
 });
@@ -131,70 +134,25 @@ async function seedCloud(count: number): Promise<DataRecord[]> {
   return records;
 }
 
-describe("the library's settings on the phone", () => {
-  it("reads a settings file it pulls, and stamps by it from then on", async () => {
-    // With no settings file in the library the defaults are its value, so the
-    // phone knows it and stamps what it imports rather than waiting.
+describe("the deployment's settings on the phone", () => {
+  it("reads a value set in the cloud after a round, and stamps by it from then on", async () => {
+    // With no document set the defaults are the value, so the phone knows it
+    // and stamps what it imports rather than waiting.
     expect(phone.librarySettings.knowsLibraryValue()).toBe(true);
     expect(phone.librarySettings.standards().image.canonicalThreshold).toBe(4272);
-    const bytes = serializeUserSettings({ standIns: { image: { canonicalThreshold: 6000 } } });
-    const hash = hashOf(bytes);
-    const settings = record({
-      type: SETTINGS_TYPE_ID,
-      contentHash: hash,
-      objectStorageKey: `shared/starkeep/${hash.slice(0, 2)}/${hash}`,
-      mimeType: "application/json",
-      sizeBytes: bytes.byteLength,
-      originAppId: "starkeep-drive",
-      originalFilename: USER_SETTINGS_FILE_NAME,
-      fidelity: null,
-    });
-    await cloudDb.put(settings);
-    await cloudStorage.put(settings.objectStorageKey!, bytes);
 
+    cloudSettings = { standIns: { image: { canonicalThreshold: 6000 } } };
     await phone.sync();
     expect(phone.librarySettings.knowsLibraryValue()).toBe(true);
     expect(phone.librarySettings.standards().image.canonicalThreshold).toBe(6000);
   });
-});
 
-describe("the phone never writes the library's settings file", () => {
-  /** A settings record on the cloud side, created at `wallTime`. */
-  async function cloudSettings(threshold: number, wallTime: number): Promise<DataRecord> {
-    const bytes = serializeUserSettings({ standIns: { image: { canonicalThreshold: threshold } } });
-    const hash = hashOf(bytes);
-    const settings = record({
-      type: SETTINGS_TYPE_ID,
-      contentHash: hash,
-      objectStorageKey: `shared/starkeep/${hash.slice(0, 2)}/${hash}`,
-      mimeType: "application/json",
-      sizeBytes: bytes.byteLength,
-      originAppId: "starkeep-drive",
-      originalFilename: USER_SETTINGS_FILE_NAME,
-      fidelity: null,
-      createdAt: { wallTime, counter: 0, nodeId: "desktop" },
-      updatedAt: { wallTime, counter: 0, nodeId: "desktop" },
-    });
-    await cloudDb.put(settings);
-    await cloudStorage.put(settings.objectStorageKey!, bytes);
-    return settings;
-  }
-
-  it("reads the winner of two live settings files and leaves the loser for other nodes to tombstone", async () => {
-    // The cloud refuses a `starkeep/*` record from a paired device, because the
-    // settings file holds the paired-device list. A tombstone written here would
-    // get every later exchange refused, so the phone reads and never writes.
-    const loser = await cloudSettings(5120, Date.UTC(2026, 0, 1));
-    await cloudSettings(6000, Date.UTC(2026, 0, 2));
-
+  it("keeps the last value through a round whose read fails", async () => {
+    cloudSettings = { standIns: { image: { canonicalThreshold: 6000 } } };
     await phone.sync();
+    cloudSettings = "fail";
     await phone.sync();
-
     expect(phone.librarySettings.standards().image.canonicalThreshold).toBe(6000);
-    const onPhone = await phone.databaseAdapter.get(loser.id);
-    expect(onPhone).not.toBeNull();
-    expect(onPhone!.deletedAt).toBeNull();
-    expect((await cloudDb.get(loser.id))!.deletedAt).toBeNull();
   });
 });
 

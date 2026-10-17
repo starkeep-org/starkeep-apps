@@ -25,7 +25,7 @@ import * as MediaLibrary from "expo-media-library";
 // `thumbHashFor` below for why the ThumbHash is taken from it rather than
 // computed in JavaScript.
 import { Image } from "expo-image";
-import { generateId, type DataRecord, type HLCClock } from "@starkeep/protocol-primitives";
+import { DEPLOYMENT_SETTINGS_ROUTE, generateId, type DataRecord, type HLCClock } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -364,6 +364,16 @@ function driveChannel(deviceKey: DeviceKey) {
   );
 
   return {
+    // Signed over the path below the app, as the sync transport signs.
+    async readDeploymentSettings(): Promise<unknown> {
+      const res = await boundedFetch(`${channelUrl}${DEPLOYMENT_SETTINGS_ROUTE}`, {
+        method: "GET",
+        headers: signRequest("GET", DEPLOYMENT_SETTINGS_ROUTE),
+      });
+      if (!res.ok) throw new Error(`the cloud answered ${res.status} for the deployment's settings`);
+      const body = (await res.json()) as { settings?: unknown };
+      return body.settings ?? null;
+    },
     transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest, fetch: boundedFetch }),
     remoteObjectStorage: new HttpObjectStorageAdapter({
       baseUrl: `${channelUrl}/files`,

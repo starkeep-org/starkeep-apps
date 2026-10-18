@@ -19,7 +19,6 @@ import {
   loadDeviceKey,
   keyFrom,
   parsePairingPayload,
-  storeDeviceCredential,
   clearDeviceCredential,
   signedMessage,
   canonicalSignedPath,
@@ -28,15 +27,10 @@ import {
   APP_TS_HEADER,
   DEVICE_ID_HEADER,
   DEVICE_SIG_HEADER,
-  startCodePairing,
-  loadCodePairing,
-  clearCodePairing,
-  checkCodePairing,
   type DeviceCredential,
   type DeviceKey,
   type SecureStore,
 } from "../src/auth/device-key";
-import { parsePairingRequest } from "@starkeep/protocol-primitives";
 
 /** An in-memory expo-secure-store. */
 function fakeSecureStore() {
@@ -133,12 +127,12 @@ describe("reading a pairing code", () => {
 });
 
 describe("the stored credential", () => {
-  it("is absent until a code is scanned, so the phone starts unpaired", async () => {
+  it("is absent on a phone an older build never paired", async () => {
     expect(await loadDeviceKey(harness.store)).toBeNull();
   });
 
   it("persists, so a restart is the same device", async () => {
-    await storeDeviceCredential(harness.store, credential);
+    harness.items.set("starkeep.device.credential", JSON.stringify(credential));
     const loaded = await loadDeviceKey(harness.store);
     expect(loaded).toMatchObject({
       deviceId: "dev_abc",
@@ -149,12 +143,12 @@ describe("the stored credential", () => {
   });
 
   it("lives in the secure store as one item, and nowhere else", async () => {
-    await storeDeviceCredential(harness.store, credential);
+    harness.items.set("starkeep.device.credential", JSON.stringify(credential));
     expect([...harness.items.keys()]).toEqual(["starkeep.device.credential"]);
   });
 
   it("is forgotten on disconnect, along with a key from before QR pairing", async () => {
-    await storeDeviceCredential(harness.store, credential);
+    harness.items.set("starkeep.device.credential", JSON.stringify(credential));
     harness.items.set("starkeep.device.privateKey", seed(9));
     await clearDeviceCredential(harness.store);
     expect(harness.items.size).toBe(0);
@@ -173,11 +167,6 @@ describe("the stored credential", () => {
     expect(await loadDeviceKey(harness.store)).toBeNull();
   });
 
-  it("is replaced by a later scan", async () => {
-    await storeDeviceCredential(harness.store, credential);
-    await storeDeviceCredential(harness.store, { ...credential, deviceId: "dev_second", privateKey: seed(5) });
-    expect((await loadDeviceKey(harness.store))!.deviceId).toBe("dev_second");
-  });
 });
 
 describe("the key itself", () => {
@@ -323,68 +312,5 @@ describe("the canonical message, which is not ours to invent", () => {
     // A path that cannot be decoded must still sign as *something*, or one bad
     // record id takes down the whole exchange.
     expect(canonicalSignedPath("/data/%E0%A4%A")).toBe("/data/%E0%A4%A");
-  });
-});
-
-describe("pairing by code", () => {
-  const random = (n: number) => {
-    const out = new Uint8Array(n);
-    for (let i = 0; i < n; i += 1) out[i] = Math.floor(Math.random() * 256);
-    return out;
-  };
-
-  it("makes a key on the phone, keeps it until approved, and shows only the public half", async () => {
-    const { store } = fakeSecureStore();
-    const started = await startCodePairing(store, random, "https://d1.cloudfront.net/", "Sam's phone");
-    if ("ok" in started) throw new Error(started.reason);
-    expect(started.credential.baseUrl).toBe("https://d1.cloudfront.net");
-    expect(started.fingerprint).toMatch(/^[0-9a-f]{4} [0-9a-f]{4}$/);
-    expect(started.code).not.toContain(started.credential.privateKey);
-
-    const parsed = parsePairingRequest(started.code);
-    expect(parsed).toEqual({
-      ok: true,
-      request: {
-        deviceId: started.credential.deviceId,
-        publicKeySpki: keyFrom(started.credential).publicKeySpki,
-        label: "Sam's phone",
-        kind: "phone",
-      },
-    });
-
-    // Closing the app does not lose the waiting key.
-    expect((await loadCodePairing(store))?.credential).toEqual(started.credential);
-    await clearCodePairing(store);
-    expect(await loadCodePairing(store)).toBeNull();
-  });
-
-  it("refuses a cloud address the scanned path would refuse", async () => {
-    const { store } = fakeSecureStore();
-    const started = await startCodePairing(store, random, "http://example.com", null);
-    expect("ok" in started && started.ok).toBe(false);
-    expect(await loadCodePairing(store)).toBeNull();
-  });
-
-  it("asks device/self with a signature the cloud verifies, and reads 401 as not yet approved", async () => {
-    const { store } = fakeSecureStore();
-    const started = await startCodePairing(store, random, "https://d1.cloudfront.net", null);
-    if ("ok" in started) throw new Error(started.reason);
-    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
-    let status = 401;
-    const fakeFetch = (async (url: string, init?: RequestInit) => {
-      seen.push({ url, headers: init?.headers as Record<string, string> });
-      return new Response("{}", { status });
-    }) as typeof fetch;
-
-    expect(await checkCodePairing(started.credential, fakeFetch)).toBe(false);
-    status = 200;
-    expect(await checkCodePairing(started.credential, fakeFetch)).toBe(true);
-    status = 503;
-    await expect(checkCodePairing(started.credential, fakeFetch)).rejects.toThrow(/503/);
-
-    expect(seen[0]!.url).toBe("https://d1.cloudfront.net/apps/starkeep-drive/device/self");
-    const headers = seen[0]!.headers;
-    const message = signedMessage("starkeep-drive", "GET", "/device/self", Number(headers[APP_TS_HEADER]), undefined);
-    expect(cloudVerifies(keyFrom(started.credential).publicKeySpki, message, headers[DEVICE_SIG_HEADER]!)).toBe(true);
   });
 });

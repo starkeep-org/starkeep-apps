@@ -34,7 +34,6 @@ import { routes as sessionRoutes } from "./routes/session";
 import { GET as runtimeConfig } from "./routes/runtime-config";
 import { POST as share } from "./routes/share";
 import { POST as resize } from "./routes/resize";
-import { POST as localSyncHandoff } from "./routes/local-sync-handoff";
 import * as photoById from "./routes/photos/by-id";
 import * as captions from "./routes/photos/captions";
 import * as cover from "./routes/photos/cover";
@@ -163,7 +162,6 @@ app.delete("/api/photos/:id", (c) => photoById.DELETE(c.req.raw, c.req.param("id
 
 app.post("/api/resize", (c) => resize(c.req.raw));
 app.post("/api/share", () => share());
-app.post("/api/local-sync-handoff", (c) => localSyncHandoff(c.req.raw));
 
 app.get("/api/derive/status", () => deriveStatus.GET());
 app.post("/api/derive/sweep", (c) => deriveSweep.POST(c.req.raw));

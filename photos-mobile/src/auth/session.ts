@@ -25,12 +25,15 @@
  *
  * Separate items rather than one JSON value, because a Cognito refresh token
  * alone is close to the size where secure-store implementations start to warn.
- * A sign-out that has not reached the pool yet is kept as one more item, so a
- * phone signed out in a tunnel revokes its token at the next launch.
+ * A sign-out that has not reached the pool yet is kept as one more item, with
+ * the pool that issued the token, so a phone signed out in a tunnel revokes
+ * its token at the next launch or sign-in, at the right pool.
  */
 
 import {
   createCognitoClient,
+  DATA_GROUP,
+  endReplacedSession,
   fetchDeviceAuthConfig,
   idTokenClaims,
   parseDeviceAuthConfig,
@@ -39,6 +42,7 @@ import {
   storeSignIn,
   type AuthTokens,
   type CognitoClient,
+  type CognitoClientFor,
   type DeviceAuthConfig,
   type RevocationOutcome,
   type SessionStore,
@@ -84,12 +88,20 @@ export function createSessionStore(store: SecureStore): SessionStore {
       await store.deleteItemAsync(EMAIL_ITEM);
     },
 
-    readPendingRevocation() {
-      return store.getItemAsync(PENDING_REVOCATION_ITEM);
+    async readPendingRevocation() {
+      const stored = await store.getItemAsync(PENDING_REVOCATION_ITEM);
+      if (!stored) return null;
+      try {
+        const parsed = JSON.parse(stored) as { refreshToken?: unknown; auth?: unknown };
+        const auth = parseDeviceAuthConfig(parsed.auth);
+        return typeof parsed.refreshToken === "string" && auth ? { refreshToken: parsed.refreshToken, auth } : null;
+      } catch {
+        return null;
+      }
     },
 
-    writePendingRevocation(refreshToken) {
-      return store.setItemAsync(PENDING_REVOCATION_ITEM, refreshToken);
+    writePendingRevocation(pending) {
+      return store.setItemAsync(PENDING_REVOCATION_ITEM, JSON.stringify(pending));
     },
 
     clearPendingRevocation() {
@@ -129,11 +141,17 @@ export async function loadSignedIn(
 
 /** A Cognito client for a cloud's device client. */
 export function cognitoFor(cloud: SessionCloud, fetchImpl?: typeof fetch): CognitoClient {
-  return createCognitoClient({
-    region: cloud.auth.region,
-    userPoolClientId: cloud.auth.deviceClientId,
-    ...(fetchImpl ? { fetch: fetchImpl } : {}),
-  });
+  return clientsFor(fetchImpl)(cloud.auth);
+}
+
+/** Cognito clients for any pool, over one `fetch`. */
+function clientsFor(fetchImpl?: typeof fetch): CognitoClientFor {
+  return (auth: DeviceAuthConfig) =>
+    createCognitoClient({
+      region: auth.region,
+      userPoolClientId: auth.deviceClientId,
+      ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    });
 }
 
 /**
@@ -157,6 +175,14 @@ export class LibraryBelongsElsewhereError extends Error {
       "This phone's library belongs to another account. Sign in as that account, or reset this phone's library first.",
     );
     this.name = "LibraryBelongsElsewhereError";
+  }
+}
+
+/** Thrown when an account with no data library, such as an admin-only one, signs in. */
+export class NoDataLibraryError extends Error {
+  constructor() {
+    super("This account has no library to sync. Ask your admin to give it one.");
+    this.name = "NoDataLibraryError";
   }
 }
 
@@ -190,7 +216,8 @@ export type SignInOutcome =
  * screen calls again with the temporary password and the new one.
  *
  * Throws Cognito's own error for a wrong password or a password the policy
- * refuses, the cloud's for an address that is not a Starkeep cloud, and
+ * refuses, the cloud's for an address that is not a Starkeep cloud,
+ * {@link NoDataLibraryError} for an account that can never sync, and
  * {@link LibraryBelongsElsewhereError} for an account other than the library's.
  */
 export async function signInPhone(
@@ -216,8 +243,15 @@ export async function signInPhone(
   } else {
     tokens = result.tokens;
   }
-  const userId = idTokenClaims(tokens.idToken).sub;
+  const claims = idTokenClaims(tokens.idToken);
+  const userId = claims.sub;
   if (!userId) throw new Error("The cloud's sign-in named no user.");
+  // The cloud refuses a token without the data group, so the account could
+  // never sync. Refused before it is kept, as the local data server does.
+  if (!claims.groups.includes(DATA_GROUP)) {
+    await client.revoke(tokens.refreshToken).catch(() => undefined);
+    throw new NoDataLibraryError();
+  }
   // A library already bound to another person stays theirs. Refused before
   // anything is stored, and the new sign-in is ended at the pool, as the local
   // data server does.
@@ -227,13 +261,10 @@ export async function signInPhone(
   }
 
   const sessions = createSessionStore(store);
-  // A previous sign-in on this phone is replaced, and ended at its pool.
-  const previous = await sessions.read();
+  // A sign-out still waiting on its pool finishes now, and a previous sign-in
+  // on this phone is replaced and ended at its own pool.
   const previousCloud = await loadSessionCloud(store);
-  if (previous && previousCloud) {
-    await sessions.writePendingRevocation(previous.refreshToken);
-    void revokePendingSignOut(cognitoFor(previousCloud, fetchImpl), sessions).catch(() => undefined);
-  }
+  await endReplacedSession(clientsFor(fetchImpl), sessions, previousCloud?.auth ?? null);
   await store.setItemAsync(CLOUD_ITEM, JSON.stringify(cloud));
   const session = await storeSignIn(sessions, tokens);
   return { kind: "signed-in", email: session.email ?? args.email, userId };
@@ -252,12 +283,10 @@ export async function signOutPhone(store: SecureStore, fetchImpl?: typeof fetch)
     await sessions.clear();
     return "none";
   }
-  return signOut(cognitoFor(cloud, fetchImpl), sessions, session);
+  return signOut(clientsFor(fetchImpl), sessions, session, cloud.auth);
 }
 
-/** Finish a sign-out that could not reach the pool. Run at launch. */
-export async function finishPendingSignOut(store: SecureStore, fetchImpl?: typeof fetch): Promise<RevocationOutcome> {
-  const cloud = await loadSessionCloud(store);
-  if (!cloud) return "none";
-  return revokePendingSignOut(cognitoFor(cloud, fetchImpl), createSessionStore(store));
+/** Finish a sign-out that could not reach its pool. Run at launch. */
+export function finishPendingSignOut(store: SecureStore, fetchImpl?: typeof fetch): Promise<RevocationOutcome> {
+  return revokePendingSignOut(clientsFor(fetchImpl), createSessionStore(store));
 }

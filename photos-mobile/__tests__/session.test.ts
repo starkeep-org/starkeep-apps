@@ -13,6 +13,7 @@ import {
   finishPendingSignOut,
   LibraryBelongsElsewhereError,
   loadSignedIn,
+  NoDataLibraryError,
   notifySessionRejected,
   onSessionRejected,
   signInPhone,
@@ -30,9 +31,11 @@ function idToken(claims: Record<string, unknown>): string {
 
 /**
  * The cloud's discovery route and the pool's API, as one `fetch`. The pool
- * knows one account, which starts on a temporary password.
+ * knows one account, which starts on a temporary password and has a data
+ * library unless `groups` says otherwise.
  */
-function fakeCloud() {
+function fakeCloud(options: { groups?: string[] } = {}) {
+  const groups = options.groups ?? ["starkeep-users"];
   const calls: Array<{ url: string; target?: string; body?: Record<string, unknown> }> = [];
   let password = "Temp-1";
   let temporary = true;
@@ -43,7 +46,7 @@ function fakeCloud() {
     return {
       AuthenticationResult: {
         AccessToken: "access",
-        IdToken: idToken({ sub: "user-1", email: "sam@example.com", exp: 2_000_000_000 }),
+        IdToken: idToken({ sub: "user-1", email: "sam@example.com", exp: 2_000_000_000, "cognito:groups": groups }),
         RefreshToken: `refresh-${issued}`,
         ExpiresIn: 900,
       },
@@ -108,6 +111,16 @@ describe("signing in", () => {
     const stored = [...items.values()].join("\n");
     expect(stored).toContain("refresh-1");
     expect(stored).not.toContain("header.");
+  });
+
+  it("refuses an account with no data library, ends its sign-in, and keeps nothing", async () => {
+    const { store, items } = fakeSecureStore();
+    const cloud = fakeCloud({ groups: ["starkeep-admins"] });
+    await expect(
+      signInPhone(store, { baseUrl: CLOUD, email: "sam@example.com", password: "Temp-1", newPassword: "Chosen-2" }, cloud.impl),
+    ).rejects.toThrow(NoDataLibraryError);
+    expect(cloud.revoked).toEqual(["refresh-1"]);
+    expect(items.size).toBe(0);
   });
 
   it("says why a wrong password failed, and keeps nothing", async () => {
@@ -187,13 +200,13 @@ describe("signing out", () => {
 });
 
 describe("the session store", () => {
-  it("keeps a pending revocation apart from the session, across a relaunch", async () => {
+  it("keeps a pending revocation and its pool apart from the session, across a relaunch", async () => {
     const { store } = fakeSecureStore();
     const sessions = createSessionStore(store);
     await sessions.write({ refreshToken: "r1", email: "a@example.com" });
-    await sessions.writePendingRevocation("r0");
+    await sessions.writePendingRevocation({ refreshToken: "r0", auth: AUTH });
     await sessions.clear();
-    expect(await createSessionStore(store).readPendingRevocation()).toBe("r0");
+    expect(await createSessionStore(store).readPendingRevocation()).toEqual({ refreshToken: "r0", auth: AUTH });
   });
 
   it("treats an email with no refresh token as no session", async () => {
@@ -234,9 +247,10 @@ describe("a sign-in the pool ends", () => {
  * signs in again, signs out twice, or moves to another cloud. Each pool
  * revokes only tokens it issued, as Cognito does; any other token is refused.
  *
- * Every `it.fails` below records a suspected bug. See
- * `~/projects/starkeep/review-test-gaps-device-sign-in-multi-user-2026-10-18.md`,
- * section "Unit: the phone (photos-mobile)".
+ * The move between clouds and the two sign-outs started as `it.fails` in the
+ * 2026-10-18 test-gap review. See
+ * `~/projects/starkeep/assessment-failing-tests-device-sign-in-2026-10-18.md`,
+ * section "2. The pending revocation: retry at sign-in, and keep the pool".
  */
 function clouds() {
   const pools = new Map<
@@ -265,7 +279,12 @@ function clouds() {
             JSON.stringify({
               AuthenticationResult: {
                 AccessToken: "access",
-                IdToken: idToken({ sub: `user-${pool.auth.userPoolId}`, email: "sam@example.com", exp: 2_000_000_000 }),
+                IdToken: idToken({
+                  sub: `user-${pool.auth.userPoolId}`,
+                  email: "sam@example.com",
+                  exp: 2_000_000_000,
+                  "cognito:groups": ["starkeep-users"],
+                }),
                 RefreshToken: refresh,
                 ExpiresIn: 900,
               },
@@ -308,10 +327,10 @@ describe("signing in again, signing out twice, and moving clouds", () => {
     expect((await createSessionStore(store).read())!.refreshToken).not.toBe(first);
   });
 
-  it.fails("revokes the old cloud's token at the old cloud's pool, after moving to a new cloud", async () => {
-    // Problem 7: the waiting revocation outlives the old cloud's record. At the
-    // next launch it goes to the new cloud's pool, which refuses a token it
-    // never issued, and the phone takes the refusal to mean "revoked".
+  it("revokes the old cloud's token at the old cloud's pool, after moving to a new cloud", async () => {
+    // The waiting revocation outlives the old cloud's record, so it carries
+    // its own pool. The new cloud's pool would refuse a token it never issued,
+    // and the phone would take the refusal to mean "revoked".
     const { store } = fakeSecureStore();
     const world = clouds();
     const x = world.addCloud(CLOUD, "us-east-2", "PoolX");
@@ -330,9 +349,9 @@ describe("signing in again, signing out twice, and moving clouds", () => {
     expect(x.revoked).toEqual([xToken]);
   });
 
-  it.fails("keeps both tokens to revoke when the phone signs out twice without reaching the pool", async () => {
-    // Problem 4: one pending-revocation item. The second sign-out overwrites
-    // the first token, which then stays valid for ten years.
+  it("keeps both tokens to revoke when the phone signs out twice without reaching the pool", async () => {
+    // One pending-revocation item. The sign-in between the two sign-outs
+    // reaches the pool and finishes the first, so the second finds it empty.
     const { store } = fakeSecureStore();
     const world = clouds();
     const x = world.addCloud(CLOUD, "us-east-2", "PoolX");
@@ -345,6 +364,7 @@ describe("signing in again, signing out twice, and moving clouds", () => {
 
     x.online = true;
     await signInPhone(store, args, world.impl);
+    expect(x.revoked).toEqual([first]);
     const second = (await createSessionStore(store).read())!.refreshToken;
     x.online = false;
     expect(await signOutPhone(store, world.impl)).toBe("pending");

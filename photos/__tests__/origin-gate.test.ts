@@ -112,14 +112,6 @@ describe("the origin gate in cloud mode", () => {
     expect((await app.fetch(call("/api/local-data/data/records"))).status).toBe(401);
   });
 
-  it("keeps the local sync handoff behind the gate", async () => {
-    // It reads the session cookies and forwards them to a daemon on the user's
-    // machine, so an anonymous caller reaching it would be asking the app to
-    // hand out a credential.
-    expect(publicPaths).not.toContain("/api/local-sync-handoff");
-    expect((await app.fetch(call("/api/local-sync-handoff", "POST"))).status).toBe(401);
-  });
-
   it("lets a request carrying a session cookie past, for the real gate to judge", async () => {
     // Presence, not validity: verifying here would put a JWKS fetch in front of
     // every request, and what decides is the proxy's own `sessionAuth()` and

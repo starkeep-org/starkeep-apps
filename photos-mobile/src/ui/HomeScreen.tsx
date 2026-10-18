@@ -54,6 +54,7 @@ import {
   OBJECTS_PATH,
   clearPairing,
   createLocalObjectStorage,
+  signOutThisPhone,
   deviceMedia,
   opSqliteDriver,
 } from "../platform";
@@ -91,6 +92,7 @@ import type { JustifiedRow } from "../photos/render-target";
 import type { LibraryItem } from "../library";
 import { MediaGrid } from "./MediaGrid";
 import { styles } from "./theme";
+import { onSessionRejected } from "../auth/session";
 import { useLibrary, useNode, useStorage, type NodeState } from "./use-library";
 import { describeVerify, verifyFoundProblem } from "./verify-text";
 import { describeFreed, describeStorageGroup } from "./free-up-text";
@@ -212,6 +214,17 @@ export function HomeScreen({ onConnect }: Props) {
   // did not re-flow them would leave every row measured for the other width.
   const window = useWindowDimensions();
   const { state: node, reset, reopen } = useNode();
+
+  // The session is already cleared when the pool ends it; reopen the node so it
+  // drops its cloud, and the screen stops saying "Signed in".
+  useEffect(
+    () =>
+      onSessionRejected((reason) => {
+        setSessionEnded(reason);
+        void reopen();
+      }),
+    [reopen],
+  );
   const library = useLibrary(node);
   const storage = useStorage(node);
   /**
@@ -224,8 +237,8 @@ export function HomeScreen({ onConnect }: Props) {
    */
   const [confirmingReset, setConfirmingReset] = useState(false);
   /**
-   * Whether "Disconnect" is armed, for the reason the reset button is: after a
-   * disconnect the phone syncs again only once admin-web pairs it again.
+   * Whether "Sign out" or "Disconnect" is armed, for the reason the reset
+   * button is: afterwards the phone syncs again only once its owner signs in.
    */
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   /**
@@ -234,6 +247,12 @@ export function HomeScreen({ onConnect }: Props) {
    * accepting it until it is revoked there.
    */
   const [disconnected, setDisconnected] = useState<{ deviceId: string; label: string | null } | null>(null);
+  /**
+   * Why the pool ended this phone's sign-in, when it did: an admin signed the
+   * person out everywhere or disabled the account, or the session expired.
+   * Shown under "not connected" so the screen says why sync stopped.
+   */
+  const [sessionEnded, setSessionEnded] = useState<string | null>(null);
   /**
    * Whether the camera-roll grid has been asked for.
    *
@@ -773,8 +792,8 @@ export function HomeScreen({ onConnect }: Props) {
     }
   }, [node, device, backgroundStatus, tickReport]);
 
-  const deviceKey = node.status === "ready" ? node.deviceKey : null;
-  const baseUrl = deviceKey?.baseUrl;
+  const connection = node.status === "ready" ? node.connection : null;
+  const baseUrl = connection?.baseUrl;
 
   const collect = useCallback(async (): Promise<Check[]> => {
     // The node first, and never behind the cloud probe: `Promise.all` rather
@@ -1164,7 +1183,7 @@ export function HomeScreen({ onConnect }: Props) {
         <Text style={styles.mono}>{DATABASE_PATH}</Text>
         <Text style={styles.mono}>{OBJECTS_PATH}</Text>
         <Text style={styles.muted}>
-          {deviceKey ? deviceKey.baseUrl : "not connected to a cloud"}
+          {connection ? connection.baseUrl : "not connected to a cloud"}
         </Text>
       </Section>
 
@@ -1288,11 +1307,14 @@ export function HomeScreen({ onConnect }: Props) {
           </>
         ) : null}
 
-        {deviceKey ? (
+        {connection ? (
           <>
             <Text style={styles.muted}>
-              Connected to {hostLabel(deviceKey.baseUrl)} as{" "}
-              {deviceKey.label ? `\u201c${deviceKey.label}\u201d` : deviceKey.deviceId}.
+              {connection.kind === "session"
+                ? `Signed in to ${hostLabel(connection.baseUrl)} as ${connection.email ?? "you"}.`
+                : `Paired with ${hostLabel(connection.baseUrl)} as ${
+                    connection.label ? `\u201c${connection.label}\u201d` : connection.deviceId
+                  }. Sign in to keep syncing once pairing ends.`}
             </Text>
             <Pressable
               onPress={() => {
@@ -1301,7 +1323,13 @@ export function HomeScreen({ onConnect }: Props) {
                   return;
                 }
                 setConfirmingDisconnect(false);
-                const was = { deviceId: deviceKey.deviceId, label: deviceKey.label };
+                if (connection.kind === "session") {
+                  void signOutThisPhone()
+                    .then(() => reopen())
+                    .catch((err: unknown) => setSyncError(String(err)));
+                  return;
+                }
+                const was = { deviceId: connection.deviceId, label: connection.label };
                 void clearPairing()
                   .then(() => reopen())
                   .then(() => setDisconnected(was))
@@ -1312,13 +1340,25 @@ export function HomeScreen({ onConnect }: Props) {
             >
               <Text style={confirmingDisconnect ? styles.error : styles.linkLabel}>
                 {confirmingDisconnect
-                  ? "Tap again to disconnect. Pairing again needs admin-web."
-                  : "Disconnect"}
+                  ? "Tap again to sign out. Syncing stops until you sign in again."
+                  : connection.kind === "session"
+                    ? "Sign out"
+                    : "Disconnect"}
               </Text>
             </Pressable>
+            {connection.kind === "paired" && node.status === "ready" ? (
+              <Pressable onPress={onConnect} style={[styles.button, { marginTop: 4 }]}>
+                <Text style={styles.buttonLabel}>Sign in</Text>
+              </Pressable>
+            ) : null}
           </>
         ) : (
           <>
+            {sessionEnded ? (
+              <Text style={styles.error}>
+                Your sign-in ended ({sessionEnded}). Sign in again to keep syncing.
+              </Text>
+            ) : null}
             {disconnected ? (
               // The key is gone from this phone, but the cloud accepts it until
               // admin-web revokes it, and only the operator can do that.
@@ -1330,12 +1370,12 @@ export function HomeScreen({ onConnect }: Props) {
             ) : null}
             <Text style={styles.muted}>
               This device is not connected to a cloud, so nothing leaves it and nothing arrives.
-              Everything above is local and stays that way. To connect it, pair it in admin-web and
-              scan the code it shows.
+              Everything above is local and stays that way. To sync it, sign in with the Starkeep
+              account your admin created for you.
             </Text>
             {node.status === "ready" ? (
               <Pressable onPress={onConnect} style={[styles.button, { marginTop: 4 }]}>
-                <Text style={styles.buttonLabel}>Connect this device</Text>
+                <Text style={styles.buttonLabel}>Sign in</Text>
               </Pressable>
             ) : null}
           </>
@@ -1442,8 +1482,9 @@ export function HomeScreen({ onConnect }: Props) {
  */
 export function connectionLabel(node: NodeState): string {
   if (node.status !== "ready") return "local node";
-  if (!node.deviceKey) return "local node · not connected";
-  return `${node.deviceKey.label ?? "paired"} · ${hostLabel(node.deviceKey.baseUrl)}`;
+  if (!node.connection) return "local node · not connected";
+  const who = node.connection.kind === "session" ? (node.connection.email ?? "signed in") : (node.connection.label ?? "paired");
+  return `${who} · ${hostLabel(node.connection.baseUrl)}`;
 }
 
 /** A cloud's address, as a person reads it: the host alone. */

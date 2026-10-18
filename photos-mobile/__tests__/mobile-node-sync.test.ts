@@ -110,7 +110,7 @@ beforeEach(async () => {
         clock: createHLCClock({ nodeId: "cloud" }),
         objectStorage: cloudStorage,
       }),
-      readDeviceSelf: async () => ({ userId: "8f1c2d3e-0000-4000-8000-0000000000aa" }),
+      readSyncUser: async () => ({ userId: "8f1c2d3e-0000-4000-8000-0000000000aa" }),
       readDeploymentSettings: async () => {
         if (cloudSettings === "fail") throw new Error("the cloud answered 503");
         return cloudSettings;

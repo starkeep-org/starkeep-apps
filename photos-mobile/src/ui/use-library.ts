@@ -37,7 +37,7 @@ import {
 } from "../media/import";
 import { THUMB_HASH_BACKFILL_LIMIT } from "../media/thumb-hash";
 import type { NodeIdentity } from "../node-identity";
-import type { DeviceKey } from "../auth/device-key";
+import type { CloudConnection } from "../auth/connection";
 import type { MobileNode, StorageReport } from "../node";
 import type { FreeUpSpaceReport } from "@starkeep/sync-engine";
 import {
@@ -280,8 +280,8 @@ export type NodeState =
       readonly node: MobileNode;
       readonly identity: NodeIdentity;
       readonly clock: HLCClock;
-      /** This phone's pairing, or null when it is not paired. */
-      readonly deviceKey: DeviceKey | null;
+      /** What connects this phone to a cloud, or null when it is signed out. */
+      readonly connection: CloudConnection | null;
     }
   | { readonly status: "failed"; readonly error: string };
 
@@ -305,8 +305,8 @@ export interface NodeHandle {
   /**
    * Close the node and open it again, keeping everything it holds.
    *
-   * For pairing and disconnecting: the credential decides whether the node has
-   * a cloud, and the node reads it only when it opens.
+   * For signing in and out: the session decides whether the node has a cloud,
+   * and the node reads it only when it opens.
    */
   reopen: () => Promise<void>;
 }
@@ -338,7 +338,7 @@ export function useNode(): NodeHandle {
           node: acquired.node,
           identity: acquired.identity,
           clock: createHLCClock({ nodeId: acquired.identity.nodeId }),
-          deviceKey: acquired.deviceKey,
+          connection: acquired.connection,
         });
       })
       .catch((err: unknown) => {

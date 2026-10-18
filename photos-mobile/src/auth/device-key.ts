@@ -1,5 +1,12 @@
 /**
- * This device's signing key — how the phone proves itself to the cloud.
+ * This device's signing key — how a phone paired before sign-in existed proves
+ * itself to the cloud.
+ *
+ * **On its way out.** A phone now signs in (`session.ts`); this file only lets a
+ * phone paired by an older build keep syncing until its owner signs in. The
+ * pairing screens are gone, so nothing writes a new key. Pairing is retired in
+ * phase 5 of `~/projects/starkeep/plan-device-sign-in-2026-10-18.md`, with this
+ * file.
  *
  * ## What it replaces, and why not the obvious thing
  *
@@ -61,18 +68,11 @@ import {
   canonicalSignedPath,
   DEVICE_ID_HEADER,
   DEVICE_ID_PATTERN,
-  DEVICE_SELF_ROUTE,
   DEVICE_SIG_HEADER,
-  deviceFingerprint,
   deviceSigner,
-  encodePairingRequest,
   fromBase64,
-  generateDeviceId,
-  generateDeviceSeed,
   MAX_DEVICE_LABEL_LENGTH,
   signedMessage,
-  toBase64,
-  type RandomBytes,
 } from "@starkeep/protocol-primitives";
 
 export {
@@ -84,12 +84,8 @@ export {
   signedMessage,
 };
 
-/** Where the private key lives. Supplied at the edge; see `platform.ts`. */
-export interface SecureStore {
-  getItemAsync(key: string): Promise<string | null>;
-  setItemAsync(key: string, value: string): Promise<void>;
-  deleteItemAsync(key: string): Promise<void>;
-}
+import type { SecureStore } from "./session";
+export type { SecureStore };
 
 /** Where the scanned credential lives: one item, so it is stored or absent whole. */
 const CREDENTIAL_ITEM = "starkeep.device.credential";
@@ -102,9 +98,6 @@ const LEGACY_PRIVATE_KEY_ITEM = "starkeep.device.privateKey";
 
 /** The version of the QR payload this build reads. */
 export const PAIRING_PAYLOAD_VERSION = 1;
-
-/** Where a key this phone made waits until an admin approves it. */
-const PENDING_ITEM = "starkeep.device.pending";
 
 /**
  * Hosts a development cloud answers on without TLS: the machine itself, and the
@@ -235,11 +228,6 @@ function hostOf(url: string): string | null {
   return m ? m[1]!.toLowerCase() : null;
 }
 
-/** Keep a scanned credential. Replaces any earlier one. */
-export async function storeDeviceCredential(store: SecureStore, credential: DeviceCredential): Promise<void> {
-  await store.setItemAsync(CREDENTIAL_ITEM, JSON.stringify(credential));
-}
-
 /**
  * Forget this phone's credential. The phone stops syncing at once; the key
  * stays valid in the cloud until the operator revokes it in admin-web.
@@ -282,94 +270,4 @@ export function keyFrom(credential: DeviceCredential): DeviceKey {
     publicKeySpki: signer.publicKeySpki,
     signRequest: (appId, method, path, body) => signer.signRequest(appId, method, path, body),
   };
-}
-
-/** A key this phone made, waiting for an admin, and what the person shows the admin. */
-export interface CodePairing {
-  readonly credential: DeviceCredential;
-  /** The pairing code: the public half, the id, the label and the kind. */
-  readonly code: string;
-  /** What the admin reads back to confirm the code came from this phone. */
-  readonly fingerprint: string;
-}
-
-function codePairingFor(credential: DeviceCredential): CodePairing {
-  const { publicKeySpki } = keyFrom(credential);
-  return {
-    credential,
-    code: encodePairingRequest({
-      deviceId: credential.deviceId,
-      publicKeySpki,
-      label: credential.label,
-      kind: "phone",
-    }),
-    fingerprint: deviceFingerprint(publicKeySpki),
-  };
-}
-
-/**
- * Make a key on this phone for the cloud at `baseUrl`, and keep it until an
- * admin approves it, so closing the app does not lose it. Replaces any earlier
- * key still waiting. Refuses an address the QR path would refuse.
- */
-export async function startCodePairing(
-  store: SecureStore,
-  randomBytes: RandomBytes,
-  baseUrl: string,
-  label: string | null,
-): Promise<CodePairing | { readonly ok: false; readonly reason: string }> {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  const check = parsePairingPayload(
-    JSON.stringify({
-      starkeepPair: PAIRING_PAYLOAD_VERSION,
-      deviceId: "dev_check",
-      privateKey: toBase64(new Uint8Array(32)),
-      baseUrl: trimmed,
-      label,
-    }),
-  );
-  if (!check.ok) return { ok: false, reason: check.reason.replace("The pairing code's", "The") };
-  const credential: DeviceCredential = {
-    deviceId: generateDeviceId(randomBytes),
-    privateKey: toBase64(generateDeviceSeed(randomBytes)),
-    baseUrl: trimmed,
-    label,
-  };
-  await store.setItemAsync(PENDING_ITEM, JSON.stringify(credential));
-  return codePairingFor(credential);
-}
-
-/** The key waiting for an admin, if any. */
-export async function loadCodePairing(store: SecureStore): Promise<CodePairing | null> {
-  const stored = await store.getItemAsync(PENDING_ITEM);
-  if (!stored) return null;
-  try {
-    return codePairingFor(JSON.parse(stored) as DeviceCredential);
-  } catch {
-    return null;
-  }
-}
-
-/** Forget the key waiting for an admin. */
-export async function clearCodePairing(store: SecureStore): Promise<void> {
-  await store.deleteItemAsync(PENDING_ITEM);
-}
-
-/**
- * Whether an admin has approved the waiting key: the cloud answers the
- * device's own record once it holds one, and 401 until then. Throws when the
- * cloud cannot be asked.
- */
-export async function checkCodePairing(
-  credential: DeviceCredential,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<boolean> {
-  const url = `${credential.baseUrl}/apps/starkeep-drive${DEVICE_SELF_ROUTE}`;
-  const res = await fetchImpl(url, {
-    method: "GET",
-    headers: keyFrom(credential).signRequest("starkeep-drive", "GET", DEVICE_SELF_ROUTE, undefined),
-  });
-  if (res.status === 401) return false;
-  if (!res.ok) throw new Error(`the cloud answered ${res.status}`);
-  return true;
 }

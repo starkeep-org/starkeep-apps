@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { storePairing } from "./src/platform";
 import { HomeScreen } from "./src/ui/HomeScreen";
-import { PairScreen } from "./src/ui/PairScreen";
+import { SignInScreen } from "./src/ui/SignInScreen";
 import { closeNodeForReset } from "./src/work/node-handle";
 
 /**
@@ -20,15 +19,15 @@ import { closeNodeForReset } from "./src/work/node-handle";
  * inventing a second, weaker gate in front of a door the user already holds
  * the key to, and then failing shut on it when the network is down.
  *
- * Connecting buys exactly one thing: **sync**. A phone connects by scanning the
- * pairing code admin-web shows, which gives it its own key and names the cloud
- * it syncs to. An unpaired phone is a perfectly good Starkeep node that happens
- * to be the only one that knows what it holds.
+ * Signing in buys exactly one thing: **sync**. The person signs in with the
+ * account an admin created, which names the cloud the phone syncs to. A
+ * signed-out phone is a perfectly good Starkeep node that happens to be the
+ * only one that knows what it holds.
  *
  * ## What that leaves the shell doing
  *
  * Choosing between two screens, neither of which is a precondition for the
- * other: the node, and — when you ask for it — the scanner. No navigator; the
+ * other: the node, and — when you ask for it — the sign-in. No navigator; the
  * day there is a stack to push onto is the day to add one.
  */
 
@@ -47,24 +46,23 @@ export default function App() {
 }
 
 function AppShell() {
-  const [pairing, setPairing] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
 
-  // Reached by asking, and escapable without connecting. A scanner you cannot
-  // back out of is a gate wearing a different name.
-  if (pairing) {
+  // Reached by asking, and escapable without signing in. A sign-in you cannot
+  // back out of is a gate.
+  if (signingIn) {
     return (
-      <PairScreen
-        onCancel={() => setPairing(false)}
-        onPaired={async (credential) => {
-          await storePairing(credential);
-          // The node reads the credential when it opens, so the next one must be
-          // a fresh one. The home screen opens it when it mounts again.
+      <SignInScreen
+        onCancel={() => setSigningIn(false)}
+        onSignedIn={async () => {
+          // The node reads the session when it opens, so the next one must be a
+          // fresh one. The home screen opens it when it mounts again.
           await closeNodeForReset();
-          setPairing(false);
+          setSigningIn(false);
         }}
       />
     );
   }
 
-  return <HomeScreen onConnect={() => setPairing(true)} />;
+  return <HomeScreen onConnect={() => setSigningIn(true)} />;
 }

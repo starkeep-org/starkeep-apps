@@ -106,7 +106,7 @@ beforeEach(async () => {
     }),
     cloud: {
       remoteObjectStorage: cloudStorage,
-      readDeviceSelf: async () => ({ userId: PHONE_USER }),
+      readSyncUser: async () => ({ userId: PHONE_USER }),
       readDeploymentSettings: async () => null,
       transport: createInProcessSyncTransport({
         databaseAdapter: cloudDb,

@@ -24,7 +24,7 @@ function opener() {
     return {
       node: { close } as unknown as OpenNode["node"],
       identity: { nodeId: "n1" } as OpenNode["identity"],
-      deviceKey: {} as OpenNode["deviceKey"],
+      connection: null,
     };
   };
   return { open, close, builds: () => built };
@@ -78,7 +78,7 @@ it("does not cache a failed bring-up as the node", async () => {
     return {
       node: { close: async () => undefined } as unknown as OpenNode["node"],
       identity: { nodeId: "n1" } as OpenNode["identity"],
-      deviceKey: {} as OpenNode["deviceKey"],
+      connection: null,
     };
   };
   await expect(acquireNode(open)).rejects.toThrow("disk full");

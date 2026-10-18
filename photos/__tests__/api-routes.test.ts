@@ -146,7 +146,6 @@ const ROUTES: ReadonlyArray<[string, string]> = [
   ["DELETE", "/api/photos/rec1"],
   ["POST", "/api/resize"],
   ["POST", "/api/share"],
-  ["POST", "/api/local-sync-handoff"],
   ["GET", "/api/derive/status"],
   ["POST", "/api/derive/sweep"],
   ["GET", "/api/vision/config"],

@@ -26,9 +26,13 @@ import * as MediaLibrary from "expo-media-library";
 // computed in JavaScript.
 import { Image } from "expo-image";
 import {
+  createCloudTokenSource,
   DEPLOYMENT_SETTINGS_ROUTE,
   DEVICE_SELF_ROUTE,
   generateId,
+  idTokenClaims,
+  SignedOutError,
+  withUserToken,
   type DataRecord,
   type HLCClock,
 } from "@starkeep/protocol-primitives";
@@ -39,18 +43,19 @@ import {
   HttpObjectStorageAdapter,
   type UploadFile,
 } from "@starkeep/sync-engine";
+import { clearDeviceCredential, loadDeviceKey, type DeviceKey } from "./auth/device-key";
 import {
-  checkCodePairing,
-  clearCodePairing,
-  clearDeviceCredential,
-  loadCodePairing,
-  loadDeviceKey,
-  startCodePairing,
-  storeDeviceCredential,
-  type CodePairing,
-  type DeviceCredential,
-  type DeviceKey,
-} from "./auth/device-key";
+  cognitoFor,
+  createSessionStore,
+  finishPendingSignOut,
+  loadSignedIn,
+  notifySessionRejected,
+  signInPhone,
+  signOutPhone,
+  type SessionCloud,
+  type SignInOutcome,
+} from "./auth/session";
+import type { CloudConnection } from "./auth/connection";
 import {
   backfillImageExif,
   backfillThumbHashes,
@@ -215,38 +220,37 @@ export function createLocalObjectStorage(): ExpoObjectStorageAdapter {
   return new ExpoObjectStorageAdapter({ fs: expoFileSystem, basePath: OBJECTS_PATH });
 }
 
-/** Keep a scanned pairing code's credential. The node picks it up when it next opens. */
-export function storePairing(credential: DeviceCredential): Promise<void> {
-  return storeDeviceCredential(SecureStore, credential);
+/**
+ * Sign this phone in to the cloud at `baseUrl`. The node picks the session up
+ * when it next opens. See `auth/session.ts`.
+ */
+export async function signIn(args: {
+  baseUrl: string;
+  email: string;
+  password: string;
+  newPassword?: string;
+}): Promise<SignInOutcome> {
+  // Whose library this phone holds, so a sign-in as anyone else is refused
+  // before it is kept. Imported here rather than at module scope, because the
+  // node handle imports this module lazily.
+  const { acquireNode } = await import("./work/node-handle");
+  const lease = await acquireNode();
+  try {
+    return await signInPhone(SecureStore, { ...args, libraryOwner: lease.node.libraryOwner() });
+  } finally {
+    await lease.release();
+  }
+}
+
+/** Sign this phone out, here and at the pool. The node drops its cloud when it next opens. */
+export function signOutThisPhone(): Promise<unknown> {
+  return signOutPhone(SecureStore);
 }
 
 /**
- * Make a key on this phone for the cloud at `baseUrl` and a pairing code for
- * an admin to approve. The key waits in the secure store until approved.
+ * Forget this phone's paired key. The node drops its cloud when it next opens.
+ * Only a phone paired before sign-in existed holds one.
  */
-export function startPairingByCode(
-  baseUrl: string,
-  label: string | null,
-): Promise<CodePairing | { readonly ok: false; readonly reason: string }> {
-  return startCodePairing(SecureStore, (n) => Crypto.getRandomBytes(n), baseUrl, label);
-}
-
-/** The key waiting for an admin, if any. */
-export function pendingPairingByCode(): Promise<CodePairing | null> {
-  return loadCodePairing(SecureStore);
-}
-
-/** Whether an admin has approved the waiting key. Throws when the cloud cannot be asked. */
-export function checkPairingByCode(credential: DeviceCredential): Promise<boolean> {
-  return checkCodePairing(credential);
-}
-
-/** Forget the key waiting for an admin. */
-export function clearPairingByCode(): Promise<void> {
-  return clearCodePairing(SecureStore);
-}
-
-/** Forget this phone's pairing. The node drops its cloud when it next opens. */
 export function clearPairing(): Promise<void> {
   return clearDeviceCredential(SecureStore);
 }
@@ -335,11 +339,11 @@ export const deviceMediaStorage = { fs: expoFileSystem };
 /**
  * Bring up this device's node.
  *
- * The node syncs only once the phone is paired. Pairing stores a credential
- * scanned from admin-web's QR code, which carries both the key the phone signs
- * with and the cloud it syncs to. With no credential there is no cloud to
- * exchange with, and the node is complete anyway: it holds records, imports the
- * camera roll and answers every question about what it has.
+ * The node syncs only once the phone is signed in, or — until pairing is
+ * retired — paired by an older build. The sign-in carries both the cloud's
+ * address and the session the phone syncs with. With neither there is no cloud
+ * to exchange with, and the node is complete anyway: it holds records, imports
+ * the camera roll and answers every question about what it has.
  *
  * `generateId` is passed rather than called at module scope because it reaches
  * for a PRNG that Hermes only has after `react-native-get-random-values` has
@@ -348,14 +352,24 @@ export const deviceMediaStorage = { fs: expoFileSystem };
 export async function bringUpNode(): Promise<{
   node: MobileNode;
   identity: NodeIdentity;
-  deviceKey: DeviceKey | null;
+  connection: CloudConnection | null;
 }> {
   // Before anything else, because the thing it collects belongs to a process
   // that is already gone: a viewer killed mid-playback runs no `release()`. See
   // `sweepMotionScratchFiles`.
   sweepMotionScratchFiles();
   const identity = await loadNodeIdentity(expoFileSystem, NODE_IDENTITY_PATH, generateId);
-  const deviceKey = await loadDeviceKey(SecureStore);
+  // A sign-out that could not reach the pool finishes now, in the background.
+  void finishPendingSignOut(SecureStore).catch(() => undefined);
+
+  const signedIn = await loadSignedIn(SecureStore);
+  const deviceKey = signedIn ? null : await loadDeviceKey(SecureStore);
+  const connection: CloudConnection | null = signedIn
+    ? { kind: "session", baseUrl: signedIn.cloud.baseUrl, email: signedIn.email }
+    : deviceKey
+      ? { kind: "paired", baseUrl: deviceKey.baseUrl, deviceId: deviceKey.deviceId, label: deviceKey.label }
+      : null;
+  const cloud = signedIn ? sessionChannel(signedIn.cloud) : deviceKey ? pairedChannel(deviceKey) : null;
 
   const node = await createMobileNode({
     nodeId: identity.nodeId,
@@ -363,9 +377,70 @@ export async function bringUpNode(): Promise<{
     sqliteDriver: opSqliteDriver,
     localObjectStorage: createLocalObjectStorage(),
     deviceMedia: deviceMediaStorage,
-    ...(deviceKey ? { cloud: driveChannel(deviceKey) } : {}),
+    ...(cloud ? { cloud } : {}),
   });
-  return { node, identity, deviceKey };
+  return { node, identity, connection };
+}
+
+/**
+ * Every request either channel makes, bounded by the window that made it.
+ * React Native's `fetch` has no timeouts of its own — `OkHttpClientProvider`
+ * sets connect, read and write to zero — so a stalled socket in a background
+ * window would otherwise hold the process until WorkManager cancelled it ten
+ * minutes later, which is the whole daily allowance in the RARE bucket.
+ */
+function boundedFetch(): typeof fetch {
+  return backgroundWindow.boundFetch((input, init) => globalThis.fetch(input, init));
+}
+
+/**
+ * The Drive channel for a signed-in phone: every data-plane request carries the
+ * device client's ID token and nothing else, which is what the cloud's
+ * device-token branch accepts. The token goes only to the channel's own URL;
+ * presigned S3 and CloudFront URLs never see it.
+ */
+function sessionChannel(cloud: SessionCloud) {
+  const channelUrl = `${cloud.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
+  const tokens = createCloudTokenSource({
+    client: cognitoFor(cloud),
+    store: createSessionStore(SecureStore),
+    // The pool ended the sign-in. The session is already cleared; the screen
+    // hears of it and reopens the node without a cloud.
+    onRejected: notifySessionRejected,
+  });
+  const fetchImpl = withUserToken(boundedFetch(), channelUrl, tokens);
+  return driveChannel(channelUrl, fetchImpl, () => ({}), async () => {
+    // The user the library binds to is the signed-in token's own.
+    const token = await tokens.current();
+    if (!token) throw new SignedOutError();
+    return { userId: idTokenClaims(token).sub };
+  });
+}
+
+/**
+ * The Drive channel for a phone paired before sign-in existed: every request
+ * signed with the paired key. Goes once pairing is retired.
+ */
+function pairedChannel(deviceKey: DeviceKey) {
+  const channelUrl = `${deviceKey.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
+  const fetchImpl = boundedFetch();
+  const signRequest = (method: string, path: string, body?: string | Uint8Array) =>
+    deviceKey.signRequest(
+      DRIVE_APP_ID,
+      method,
+      path,
+      typeof body === "string" ? new TextEncoder().encode(body) : body,
+    );
+  return driveChannel(channelUrl, fetchImpl, signRequest, async () => {
+    // The user an admin paired this phone for.
+    const res = await fetchImpl(`${channelUrl}${DEVICE_SELF_ROUTE}`, {
+      method: "GET",
+      headers: signRequest("GET", DEVICE_SELF_ROUTE),
+    });
+    if (!res.ok) throw new Error(`the cloud answered ${res.status} for this device's record`);
+    const body = (await res.json()) as { userId?: string | null };
+    return { userId: body.userId ?? null };
+  });
 }
 
 /**
@@ -377,33 +452,20 @@ export async function bringUpNode(): Promise<{
  * The `photos` channel carries app-specific rows — captions — and is a second
  * engine against a second base URL, not needed to answer "did my photos sync".
  *
- * **Configured only once the phone is paired.** The pairing code carries the
- * cloud's address with the key, so an unpaired phone has no cloud to name, and
- * the screen says "not connected" rather than showing a sync that fails.
+ * **Configured only once the phone is signed in.** The sign-in names the
+ * cloud's address, so a signed-out phone has no cloud to name, and the screen
+ * says "not connected" rather than showing a sync that fails.
  */
-function driveChannel(deviceKey: DeviceKey) {
-  const channelUrl = `${deviceKey.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
-  const signRequest = (method: string, path: string, body?: string | Uint8Array) =>
-    deviceKey.signRequest(
-      DRIVE_APP_ID,
-      method,
-      path,
-      typeof body === "string" ? new TextEncoder().encode(body) : body,
-    );
-
-  // Every request either channel makes, bounded by the window that made it.
-  // React Native's `fetch` has no timeouts of its own — `OkHttpClientProvider`
-  // sets connect, read and write to zero — so a stalled socket in a background
-  // window would otherwise hold the process until WorkManager cancelled it ten
-  // minutes later, which is the whole daily allowance in the RARE bucket.
-  const boundedFetch = backgroundWindow.boundFetch((input, init) =>
-    globalThis.fetch(input, init),
-  );
-
+function driveChannel(
+  channelUrl: string,
+  fetchImpl: typeof fetch,
+  signRequest: (method: string, path: string, body?: string | Uint8Array) => Record<string, string>,
+  readSyncUser: () => Promise<{ userId: string | null }>,
+) {
   return {
     // Signed over the path below the app, as the sync transport signs.
     async readDeploymentSettings(): Promise<unknown> {
-      const res = await boundedFetch(`${channelUrl}${DEPLOYMENT_SETTINGS_ROUTE}`, {
+      const res = await fetchImpl(`${channelUrl}${DEPLOYMENT_SETTINGS_ROUTE}`, {
         method: "GET",
         headers: signRequest("GET", DEPLOYMENT_SETTINGS_ROUTE),
       });
@@ -411,22 +473,12 @@ function driveChannel(deviceKey: DeviceKey) {
       const body = (await res.json()) as { settings?: unknown };
       return body.settings ?? null;
     },
-    // The user an admin paired this phone for, which the node binds its
-    // library to before the first sync.
-    async readDeviceSelf(): Promise<{ userId: string | null }> {
-      const res = await boundedFetch(`${channelUrl}${DEVICE_SELF_ROUTE}`, {
-        method: "GET",
-        headers: signRequest("GET", DEVICE_SELF_ROUTE),
-      });
-      if (!res.ok) throw new Error(`the cloud answered ${res.status} for this device's record`);
-      const body = (await res.json()) as { userId?: string | null };
-      return { userId: body.userId ?? null };
-    },
-    transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest, fetch: boundedFetch }),
+    readSyncUser,
+    transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest, fetch: fetchImpl }),
     remoteObjectStorage: new HttpObjectStorageAdapter({
       baseUrl: `${channelUrl}/files`,
       signRequest,
-      fetch: boundedFetch,
+      fetch: fetchImpl,
       // Supplying this is what turns on `putFromFileUri`, and with it the path
       // where a video's bytes go from the media store to S3 without passing
       // through Hermes. See {@link uploadFile}.

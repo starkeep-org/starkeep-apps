@@ -19,10 +19,6 @@
  *     The cloud process is a request-scoped Lambda with a third of a core and
  *     thirty seconds, which would time out having done and discarded its work.
  *     Cloud derivation is on demand and bounded to what a viewer is looking at.
- *   - **`/api/local-sync-handoff`** reads the two HttpOnly cookies and hands
- *     them to the sync daemon. In the cloud the server holds the session and
- *     the daemon runs on the user's own machine, so there is nothing to hand
- *     anything to.
  *
  * Driven through the real Hono app, so what is asserted is what a request to
  * that path gets — not what a function returns when called directly.
@@ -142,21 +138,6 @@ describe("routes that run only where the photos and the models live", () => {
     process.env.STARKEEP_DIR = "/nonexistent/photos-should-not-look-here";
     const res = await on("cloud", "GET", "/api/vision/status");
     expect(res.status).toBe(501);
-  });
-});
-
-describe("the local sync handoff", () => {
-  it("answers 400 in cloud mode, where there is no daemon to hand anything to", async () => {
-    const res = await on("cloud", "POST", "/api/local-sync-handoff");
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "No local daemon on the cloud surface" });
-  });
-
-  it("gets as far as asking for a session on the local surface", async () => {
-    // Locally there are no cookies in this request, so 401 is the right answer
-    // — and it is the answer that proves the cloud refusal above ran instead.
-    const res = await on("local", "POST", "/api/local-sync-handoff");
-    expect(res.status).toBe(401);
   });
 });
 

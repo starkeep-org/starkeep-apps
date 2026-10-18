@@ -35,7 +35,7 @@
 
 import type { MobileNode } from "../node";
 import type { NodeIdentity } from "../node-identity";
-import type { DeviceKey } from "../auth/device-key";
+import type { CloudConnection } from "../auth/connection";
 
 /**
  * How the node gets built.
@@ -54,8 +54,8 @@ const defaultOpener: NodeOpener = async () => (await import("../platform")).brin
 export interface OpenNode {
   readonly node: MobileNode;
   readonly identity: NodeIdentity;
-  /** Null until the phone is paired. */
-  readonly deviceKey: DeviceKey | null;
+  /** What connects this phone to a cloud: null until it signs in. */
+  readonly connection: CloudConnection | null;
 }
 
 /** An open node, plus the caller's claim on it. */
@@ -131,7 +131,7 @@ export async function acquireNode(opener: NodeOpener = defaultOpener): Promise<N
  * Close the node whoever holds it, and forget it.
  *
  * For the reset path, which has to close SQLite before deleting the file out
- * from under it, and for pairing and disconnecting, which change whether the
+ * from under it, and for signing in and out, which change whether the
  * node has a cloud and so need the next caller to build a fresh one. Every outstanding lease is invalidated by this — which is the
  * honest shape of the operation, since the thing they hold a claim on is being
  * deleted.

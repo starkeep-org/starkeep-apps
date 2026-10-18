@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
 
 interface SignInFormProps {
@@ -63,19 +62,9 @@ export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
   }, []);
 
   const finishSignIn = async () => {
-    // Local surface only: hand the daemon the tokens it needs to sync. This is
-    // a different thing from the cloud session that happens to share this
-    // form — the daemon is a separate process that has to sign its own
-    // outbound calls, and `startOrKickSupervisor` refuses to run without a
-    // live ID token. On the cloud surface the server holds the session and
-    // there is no daemon to hand anything to.
-    const rc = await fetchRuntimeConfig();
-    if (!rc?.apiGatewayUrl) {
-      await fetch(withBasePath("/api/local-sync-handoff"), {
-        method: "POST",
-        credentials: "same-origin",
-      }).catch(() => {});
-    }
+    // This form signs in to the cloud session only. The local data server
+    // signs itself in to sync from admin-web's "This machine" section, with
+    // its own client; nothing here hands it a token.
     localStorage.setItem("starkeep:dataSource", "remote");
     if (onSignedIn) {
       onSignedIn();

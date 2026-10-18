@@ -23,7 +23,7 @@
  */
 
 import { createHLCClock } from "@starkeep/protocol-primitives";
-import { libraryUserSegment, SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
+import { boundUserId, libraryUserSegment, SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
 import {
   createLibrarySettings,
   createSqliteDeploymentSettingsCache,
@@ -152,10 +152,11 @@ export interface MobileNodeOptions {
      */
     readonly readDeploymentSettings: () => Promise<unknown>;
     /**
-     * This device's own record from the Drive channel's `device/self` route:
-     * the user an admin paired it for. Throws when the cloud cannot answer.
+     * The user this phone syncs for: the signed-in token's `sub`, or for a
+     * phone paired before sign-in existed, the user its device record names.
+     * Throws when it cannot be learned yet.
      */
-    readonly readDeviceSelf: () => Promise<{ readonly userId: string | null }>;
+    readonly readSyncUser: () => Promise<{ readonly userId: string | null }>;
   };
   /**
    * This device's sync-down ceilings — the largest stand-in per category it
@@ -318,6 +319,12 @@ export interface MobileNode {
    * section shows and "Share diagnostics" sends. See `work/sync-trace.ts`.
    */
   syncTrace(limit: number): SyncTraceRound[];
+  /**
+   * The user this library belongs to, or null while it belongs to nobody yet.
+   * A sign-in as anyone else is refused before it is kept: the two libraries
+   * must not mix.
+   */
+  libraryOwner(): string | null;
   /**
    * Work through the acquisition queue: fetch files this device wants and
    * lacks — stand-ins a raised ceiling now covers, bytes that went missing — until the tick's byte cap runs out.
@@ -603,17 +610,17 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   let userSegment = libraryUserSegment(databaseAdapter.getRawDatabase());
   let binding: Promise<void> | null = null;
   /**
-   * Bind the library to the user the cloud paired this phone for, once per
-   * node, before anything is exchanged. Keys then carry that user's segment,
+   * Bind the library to the user this phone syncs for, once per node, before
+   * anything is exchanged. Keys then carry that user's segment,
    * as the cloud requires. A cloud that names another user than the
    * library's refuses: the two libraries must not mix. A failure is retried by
-   * the next operation, because re-pairing is how the person fixes it.
+   * the next operation, because signing in again is how the person fixes it.
    */
   function ensureBound(): Promise<void> {
     if (!cloud) return Promise.resolve();
     binding ??= (async () => {
-      const { userId } = await cloud.readDeviceSelf();
-      if (!userId) throw new Error("The cloud approved this phone for no user. Pair it again.");
+      const { userId } = await cloud.readSyncUser();
+      if (!userId) throw new Error("The cloud named no user for this phone. Sign in again.");
       const storage = options.localObjectStorage.movePrefix ? (options.localObjectStorage as MovableObjectStorage) : null;
       const report = bindPhoneLibrary(databaseAdapter.getRawDatabase(), storage, userId);
       if (userSegment !== userId || report.movedFiles > 0 || report.rewrittenKeys > 0) {
@@ -649,6 +656,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
 
   return {
     databaseAdapter,
+    libraryOwner: () => boundUserId(databaseAdapter.getRawDatabase()),
     objectStorage: localObjectStorage,
     mediaAliases,
     importCursor,

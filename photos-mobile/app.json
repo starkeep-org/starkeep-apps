@@ -5,11 +5,22 @@
     "version": "0.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon/icon.png",
     "newArchEnabled": true,
     "android": {
       "package": "app.starkeep.photos",
       "allowBackup": false,
-      "permissions": ["READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "CAMERA"]
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon/adaptive-foreground.png",
+        "backgroundImage": "./assets/icon/adaptive-background.png",
+        "backgroundColor": "#0a0818",
+        "monochromeImage": "./assets/icon/adaptive-monochrome.png"
+      },
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "CAMERA"
+      ]
     },
     "plugins": [
       "expo-file-system",
@@ -27,7 +38,10 @@
         {
           "photosPermission": "Starkeep shows the photos and videos already on this device.",
           "savePhotosPermission": "Starkeep saves photos back to your device library.",
-          "granularPermissions": ["photo", "video"]
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
         }
       ]
     ]

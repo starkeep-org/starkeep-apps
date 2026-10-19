@@ -152,9 +152,8 @@ export interface MobileNodeOptions {
      */
     readonly readDeploymentSettings: () => Promise<unknown>;
     /**
-     * The user this phone syncs for: the signed-in token's `sub`, or for a
-     * phone paired before sign-in existed, the user its device record names.
-     * Throws when it cannot be learned yet.
+     * The user this phone syncs for: the signed-in token's `sub`. Throws when
+     * it cannot be learned yet.
      */
     readonly readSyncUser: () => Promise<{ readonly userId: string | null }>;
   };

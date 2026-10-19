@@ -2,9 +2,9 @@
  * Binding this phone's library to its user.
  *
  * Every object key carries its owner's segment, `shared/<userId>/...`. A phone
- * may import photos before it is paired, so until a cloud names the user it
- * writes under `LOCAL_USER_SEGMENT`. Before the first sync, the node asks
- * `device/self` whom it syncs for and binds: it moves the files under
+ * may import photos before it signs in, so until a cloud names the user it
+ * writes under `LOCAL_USER_SEGMENT`. Before the first sync, the node reads the
+ * user from its sign-in's ID token and binds: it moves the files under
  * `shared/local/` and rewrites every stored key, including the phone's own
  * alias and Motion Photo tables. The database half is `@starkeep/storage-sqlite`'s
  * `library-owner.ts`, the same code the local data server binds with, and its

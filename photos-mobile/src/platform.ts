@@ -28,7 +28,6 @@ import { Image } from "expo-image";
 import {
   createCloudTokenSource,
   DEPLOYMENT_SETTINGS_ROUTE,
-  DEVICE_SELF_ROUTE,
   generateId,
   idTokenClaims,
   SignedOutError,
@@ -43,7 +42,6 @@ import {
   HttpObjectStorageAdapter,
   type UploadFile,
 } from "@starkeep/sync-engine";
-import { clearDeviceCredential, loadDeviceKey, type DeviceKey } from "./auth/device-key";
 import {
   cognitoFor,
   createSessionStore,
@@ -248,14 +246,6 @@ export function signOutThisPhone(): Promise<unknown> {
 }
 
 /**
- * Forget this phone's paired key. The node drops its cloud when it next opens.
- * Only a phone paired before sign-in existed holds one.
- */
-export function clearPairing(): Promise<void> {
-  return clearDeviceCredential(SecureStore);
-}
-
-/**
  * expo-media-library, adapted to the port `device-library.ts` declares.
  *
  * The builder methods are wrapped rather than passed through because the real
@@ -339,11 +329,10 @@ export const deviceMediaStorage = { fs: expoFileSystem };
 /**
  * Bring up this device's node.
  *
- * The node syncs only once the phone is signed in, or — until pairing is
- * retired — paired by an older build. The sign-in carries both the cloud's
- * address and the session the phone syncs with. With neither there is no cloud
- * to exchange with, and the node is complete anyway: it holds records, imports
- * the camera roll and answers every question about what it has.
+ * The node syncs only once the phone is signed in. The sign-in carries both the
+ * cloud's address and the session the phone syncs with. Signed out there is no
+ * cloud to exchange with, and the node is complete anyway: it holds records,
+ * imports the camera roll and answers every question about what it has.
  *
  * `generateId` is passed rather than called at module scope because it reaches
  * for a PRNG that Hermes only has after `react-native-get-random-values` has
@@ -363,13 +352,10 @@ export async function bringUpNode(): Promise<{
   void finishPendingSignOut(SecureStore).catch(() => undefined);
 
   const signedIn = await loadSignedIn(SecureStore);
-  const deviceKey = signedIn ? null : await loadDeviceKey(SecureStore);
   const connection: CloudConnection | null = signedIn
     ? { kind: "session", baseUrl: signedIn.cloud.baseUrl, email: signedIn.email }
-    : deviceKey
-      ? { kind: "paired", baseUrl: deviceKey.baseUrl, deviceId: deviceKey.deviceId, label: deviceKey.label }
-      : null;
-  const cloud = signedIn ? sessionChannel(signedIn.cloud) : deviceKey ? pairedChannel(deviceKey) : null;
+    : null;
+  const cloud = signedIn ? sessionChannel(signedIn.cloud) : null;
 
   const node = await createMobileNode({
     nodeId: identity.nodeId,
@@ -383,7 +369,7 @@ export async function bringUpNode(): Promise<{
 }
 
 /**
- * Every request either channel makes, bounded by the window that made it.
+ * Every request the channel makes, bounded by the window that made it.
  * React Native's `fetch` has no timeouts of its own — `OkHttpClientProvider`
  * sets connect, read and write to zero — so a stalled socket in a background
  * window would otherwise hold the process until WorkManager cancelled it ten
@@ -414,32 +400,6 @@ function sessionChannel(cloud: SessionCloud) {
     const token = await tokens.current();
     if (!token) throw new SignedOutError();
     return { userId: idTokenClaims(token).sub };
-  });
-}
-
-/**
- * The Drive channel for a phone paired before sign-in existed: every request
- * signed with the paired key. Goes once pairing is retired.
- */
-function pairedChannel(deviceKey: DeviceKey) {
-  const channelUrl = `${deviceKey.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
-  const fetchImpl = boundedFetch();
-  const signRequest = (method: string, path: string, body?: string | Uint8Array) =>
-    deviceKey.signRequest(
-      DRIVE_APP_ID,
-      method,
-      path,
-      typeof body === "string" ? new TextEncoder().encode(body) : body,
-    );
-  return driveChannel(channelUrl, fetchImpl, signRequest, async () => {
-    // The user an admin paired this phone for.
-    const res = await fetchImpl(`${channelUrl}${DEVICE_SELF_ROUTE}`, {
-      method: "GET",
-      headers: signRequest("GET", DEVICE_SELF_ROUTE),
-    });
-    if (!res.ok) throw new Error(`the cloud answered ${res.status} for this device's record`);
-    const body = (await res.json()) as { userId?: string | null };
-    return { userId: body.userId ?? null };
   });
 }
 

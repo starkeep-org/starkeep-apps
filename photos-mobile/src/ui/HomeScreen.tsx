@@ -8,8 +8,8 @@
  * and colouring it as a fault trains someone to ignore the two rows next to it
  * that genuinely are pass-or-fail.
  *
- * Connecting is offered here rather than demanded up front, because pairing
- * buys sync and nothing else. An unpaired device is a whole Starkeep node; it
+ * Signing in is offered here rather than demanded up front, because a sign-in
+ * buys sync and nothing else. A signed-out device is a whole Starkeep node; it
  * is simply the only one that knows what it holds.
  *
  * ## The order of the sections is the argument
@@ -52,7 +52,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   DATABASE_PATH,
   OBJECTS_PATH,
-  clearPairing,
   createLocalObjectStorage,
   signOutThisPhone,
   deviceMedia,
@@ -128,7 +127,7 @@ interface Check {
 }
 
 interface Props {
-  /** Open the scanner for admin-web's pairing code. */
+  /** Open the sign-in screen. */
   readonly onConnect: () => void;
 }
 
@@ -237,16 +236,10 @@ export function HomeScreen({ onConnect }: Props) {
    */
   const [confirmingReset, setConfirmingReset] = useState(false);
   /**
-   * Whether "Sign out" or "Disconnect" is armed, for the reason the reset
-   * button is: afterwards the phone syncs again only once its owner signs in.
+   * Whether "Sign out" is armed, for the reason the reset button is:
+   * afterwards the phone syncs again only once its owner signs in.
    */
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
-  /**
-   * The pairing this phone just let go of, named so the operator can revoke it
-   * in admin-web. Disconnecting deletes the key here; the cloud keeps
-   * accepting it until it is revoked there.
-   */
-  const [disconnected, setDisconnected] = useState<{ deviceId: string; label: string | null } | null>(null);
   /**
    * Why the pool ended this phone's sign-in, when it did: an admin signed the
    * person out everywhere or disabled the account, or the session expired.
@@ -1310,11 +1303,7 @@ export function HomeScreen({ onConnect }: Props) {
         {connection ? (
           <>
             <Text style={styles.muted}>
-              {connection.kind === "session"
-                ? `Signed in to ${hostLabel(connection.baseUrl)} as ${connection.email ?? "you"}.`
-                : `Paired with ${hostLabel(connection.baseUrl)} as ${
-                    connection.label ? `\u201c${connection.label}\u201d` : connection.deviceId
-                  }. Sign in to keep syncing once pairing ends.`}
+              {`Signed in to ${hostLabel(connection.baseUrl)} as ${connection.email ?? "you"}.`}
             </Text>
             <Pressable
               onPress={() => {
@@ -1323,49 +1312,23 @@ export function HomeScreen({ onConnect }: Props) {
                   return;
                 }
                 setConfirmingDisconnect(false);
-                if (connection.kind === "session") {
-                  void signOutThisPhone()
-                    .then(() => reopen())
-                    .catch((err: unknown) => setSyncError(String(err)));
-                  return;
-                }
-                const was = { deviceId: connection.deviceId, label: connection.label };
-                void clearPairing()
+                void signOutThisPhone()
                   .then(() => reopen())
-                  .then(() => setDisconnected(was))
                   .catch((err: unknown) => setSyncError(String(err)));
               }}
               disabled={syncing}
               style={{ paddingVertical: 8 }}
             >
               <Text style={confirmingDisconnect ? styles.error : styles.linkLabel}>
-                {confirmingDisconnect
-                  ? "Tap again to sign out. Syncing stops until you sign in again."
-                  : connection.kind === "session"
-                    ? "Sign out"
-                    : "Disconnect"}
+                {confirmingDisconnect ? "Tap again to sign out. Syncing stops until you sign in again." : "Sign out"}
               </Text>
             </Pressable>
-            {connection.kind === "paired" && node.status === "ready" ? (
-              <Pressable onPress={onConnect} style={[styles.button, { marginTop: 4 }]}>
-                <Text style={styles.buttonLabel}>Sign in</Text>
-              </Pressable>
-            ) : null}
           </>
         ) : (
           <>
             {sessionEnded ? (
               <Text style={styles.error}>
                 Your sign-in ended ({sessionEnded}). Sign in again to keep syncing.
-              </Text>
-            ) : null}
-            {disconnected ? (
-              // The key is gone from this phone, but the cloud accepts it until
-              // admin-web revokes it, and only the operator can do that.
-              <Text style={styles.muted}>
-                Disconnected. In admin-web, revoke{" "}
-                {disconnected.label ? `\u201c${disconnected.label}\u201d` : "this phone"} (
-                <Text style={styles.mono}>{disconnected.deviceId}</Text>) so its key stops working.
               </Text>
             ) : null}
             <Text style={styles.muted}>
@@ -1385,7 +1348,7 @@ export function HomeScreen({ onConnect }: Props) {
       <Section title="How this works">
         <Text style={styles.muted}>
           Photos and videos on this device are added to the node when you open the app, and again
-          in the background every so often. Sync sends them on once this device is paired.
+          in the background every so often. Sync sends them on once you sign in.
         </Text>
         <Text style={styles.muted}>
           Automatic sync waits for Wi-Fi, because it uploads originals and doing that over
@@ -1476,14 +1439,14 @@ export function HomeScreen({ onConnect }: Props) {
 /**
  * Who this device thinks it is.
  *
- * "Local node" rather than "not paired": being unpaired is a way to run, not a
- * thing missing, and a subtitle that reads as a deficiency is a sign-in gate
+ * "Local node" rather than "signed out": being signed out is a way to run, not
+ * a thing missing, and a subtitle that reads as a deficiency is a sign-in gate
  * growing back as copy.
  */
 export function connectionLabel(node: NodeState): string {
   if (node.status !== "ready") return "local node";
   if (!node.connection) return "local node · not connected";
-  const who = node.connection.kind === "session" ? (node.connection.email ?? "signed in") : (node.connection.label ?? "paired");
+  const who = node.connection.email ?? "signed in";
   return `${who} · ${hostLabel(node.connection.baseUrl)}`;
 }
 

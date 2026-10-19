@@ -8,6 +8,7 @@
     "newArchEnabled": true,
     "android": {
       "package": "app.starkeep.photos",
+      "allowBackup": false,
       "permissions": ["READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "CAMERA"]
     },
     "plugins": [

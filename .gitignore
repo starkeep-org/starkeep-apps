@@ -23,6 +23,9 @@ pnpm-lock.yaml
 # had no workspace at all, and a `workspace:*` dependency on a package it did
 # not list would simply fail to install.
 !/pnpm-workspace.yaml
+# The root lockfile is the workspace's, and CI installs from it with
+# --frozen-lockfile, so a clone and CI resolve exactly what a laptop does.
+!/pnpm-lock.yaml
 */public/starkeep-runtime-config.json
 */infra/photos-cloud-config.json
 */infra/src/web-assets.json

@@ -35,9 +35,13 @@
   // there without ever being imported — typecheck passed, esbuild bundled them
   // as undefined globals, and every cloud resize 500'd with a ReferenceError
   // that only a live invocation could surface.
+  // `e2e` and `e2e-aws` import the core harnesses through `link:` into a
+  // sibling starkeep-core checkout. `tsconfig.e2e.json` checks them, through
+  // `typecheck:e2e`, so the main typecheck needs no core checkout.
   "exclude": [
     "node_modules",
     "dist",
-    "e2e"
+    "e2e",
+    "e2e-aws"
   ]
 }

@@ -3,7 +3,7 @@ import type { AppImage } from "@/photos-lib/client";
 import { withBasePath } from "@/lib/base-path";
 import { fetchWithSession } from "@/lib/data-client";
 import { backfillImageMetadata } from "@/lib/data-server-client";
-import { formatBytes, formatMegapixels, formatOrientation } from "./info-format";
+import { photoInfoRows } from "@starkeep/photos-info";
 
 interface InfoRowProps {
   label: string;
@@ -132,7 +132,6 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
   // Prefer the fully-assembled record once loaded; the prop is a sparse
   // placeholder whose dimensions/EXIF are zeroed out.
   const info = details ?? image;
-  const megapixels = formatMegapixels(info.width, info.height);
 
   return (
     <div
@@ -168,38 +167,26 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
         </button>
       </div>
 
-      <InfoRow label="Filename" value={info.originalFilename} />
-      {info.title && <InfoRow label="Title" value={info.title} />}
-      <InfoRow label="Dimensions" value={`${info.width} × ${info.height}px`} />
-      {megapixels && <InfoRow label="Megapixels" value={megapixels} />}
-      <InfoRow label="MIME type" value={info.mimeType} />
-      <InfoRow label="File size" value={formatBytes(info.sizeBytes)} />
-      <InfoRow label="Date taken" value={info.effectiveDateTaken.replace("T", " ").slice(0, 19)} />
-
-      {info.exif.cameraMake && (
-        <InfoRow label="Camera" value={`${info.exif.cameraMake} ${info.exif.cameraModel ?? ""}`.trim()} />
-      )}
-      {info.exif.fNumber != null && (
-        <InfoRow label="Aperture" value={`f/${info.exif.fNumber}`} />
-      )}
-      {info.exif.exposureTime && (
-        <InfoRow label="Exposure" value={info.exif.exposureTime} />
-      )}
-      {info.exif.iso != null && (
-        <InfoRow label="ISO" value={info.exif.iso} />
-      )}
-      {info.exif.lensModel && (
-        <InfoRow label="Lens" value={info.exif.lensModel} />
-      )}
-      {info.exif.orientation != null && (
-        <InfoRow label="Orientation" value={formatOrientation(info.exif.orientation)} />
-      )}
-      {info.exif.gpsLat != null && info.exif.gpsLon != null && (
-        <InfoRow
-          label="Location"
-          value={`${info.exif.gpsLat.toFixed(5)}, ${info.exif.gpsLon.toFixed(5)}`}
-        />
-      )}
+      {photoInfoRows({
+        originalFilename: info.originalFilename,
+        title: info.title,
+        width: info.width,
+        height: info.height,
+        mimeType: info.mimeType,
+        sizeBytes: info.sizeBytes,
+        dateTaken: info.effectiveDateTaken,
+        cameraMake: info.exif.cameraMake,
+        cameraModel: info.exif.cameraModel,
+        fNumber: info.exif.fNumber,
+        exposureTime: info.exif.exposureTime,
+        iso: info.exif.iso,
+        lensModel: info.exif.lensModel,
+        orientation: info.exif.orientation,
+        gpsLat: info.exif.gpsLat,
+        gpsLon: info.exif.gpsLon,
+      }).map((row) => (
+        <InfoRow key={row.label} label={row.label} value={row.value} />
+      ))}
 
       <div style={{ marginTop: 20 }}>
         <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>Caption</div>

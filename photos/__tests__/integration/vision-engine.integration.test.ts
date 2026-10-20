@@ -9,7 +9,7 @@ import { FACE_DETECTOR_MODEL, FACE_EMBEDDER_MODEL } from "@/vision/models";
 import {
   fixturePath,
   fixturesInstalled,
-} from "../scripts/lib/vision-fixtures";
+} from "../../scripts/lib/vision-fixtures";
 import { defaultVisionConfig } from "@/vision/types";
 
 /**

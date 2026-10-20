@@ -4,7 +4,8 @@
   "scripts": {
     "check:links": "node scripts/check-core-links.mjs",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm check:links && pnpm -r test"
+    "test": "pnpm check:links && pnpm -r test",
+    "test:integration": "pnpm -r test:integration"
   },
   "packageManager": "pnpm@10.33.0",
   "pnpm": {

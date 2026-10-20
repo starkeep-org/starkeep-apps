@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Tier 1: the committed-link check, typecheck and unit tests, against core
+  # as published on npm. No starkeep-core checkout exists here, by design.
+  tier-1:
+    name: Tier 1 (links, typecheck, unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:links
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  # Integration: suites under `__tests__/integration/`, which spawn processes,
+  # need Photos' built client and derivation worker, or wire real routes
+  # together. Advisory; branch protection requires tier 1 only.
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter photos-web build
+      - run: pnpm --filter photos-web derive:build-worker
+      - run: pnpm test:integration

@@ -1,6 +1,6 @@
 /**
- * The bar over the grid: a menu button and the title, as the desktop toolbar
- * has. Everything that is not a photograph lives behind the menu.
+ * The bar over the grid: a menu button and the title, as the Photos web app's
+ * toolbar has. Everything that is not a photograph lives behind the menu.
  */
 
 import { useState } from "react";

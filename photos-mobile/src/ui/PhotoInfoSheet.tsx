@@ -1,15 +1,15 @@
 /**
  * What is known about one photograph, in a sheet over the viewer.
  *
- * The rows are the desktop info panel's, built by the same function
- * (`photoInfoRows` in `@starkeep/photos-info`), followed by the two facts only
- * this app showed: the record's type and its content hash, which is what a
- * second device matches it by.
+ * The rows are the ones the Photos web app's info panel lists, built by the
+ * same function (`photoInfoRows` in `@starkeep/photos-info`), followed by the
+ * two facts only this app showed: the record's type and its content hash, which
+ * is what a second device matches it by. The sheet itself is this app's own.
  *
- * A photograph this phone took shows fewer rows than the desktop shows for it.
+ * A photograph this phone took shows fewer rows than the web app shows for it.
  * The phone's own EXIF reader records only the capture time, orientation and
- * dimensions; the camera and exposure rows appear once a desktop node has read
- * the full header and the metadata row has synced back.
+ * dimensions; the camera and exposure rows appear once the Photos app on
+ * another node has read the full header and the metadata row has synced back.
  */
 
 import { useEffect, useState } from "react";

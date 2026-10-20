@@ -1,9 +1,10 @@
 /**
  * The rows a photo's info panel shows, in the order it shows them.
  *
- * Shared by the desktop viewer's `PhotoInfoPanel` and the phone's info sheet, so
- * the two list the same facts the same way. Each surface gathers the facts from
- * its own source and hands them over as {@link PhotoInfoFields}.
+ * Shared by the Photos web app's `PhotoInfoPanel` and the phone's info sheet, so
+ * the two list the same facts the same way. Only the rows are shared: each
+ * surface gathers the facts from its own source, hands them over as
+ * {@link PhotoInfoFields}, and draws the rows with its own components.
  */
 
 /** What an info panel knows about one photo. Null means unknown. */
@@ -32,27 +33,46 @@ export interface PhotoInfoRow {
   readonly value: string;
 }
 
+export interface PhotoInfoRowsOptions {
+  /**
+   * Keep the five rows every photo has — filename, dimensions, MIME type, file
+   * size and date taken — with a blank value when one is unknown, instead of
+   * leaving them out. The web app's panel keeps them; the phone's sheet does
+   * not.
+   */
+  readonly keepCoreRows?: boolean;
+}
+
 /**
- * The labelled rows for one photo. A row whose value is unknown is left out
- * rather than shown empty, because the phone knows far fewer of these facts
- * than the desktop for a photo it took itself.
+ * The labelled rows for one photo.
+ *
+ * A row whose value is unknown is left out rather than shown empty, because the
+ * phone knows far fewer of these facts than the web app for a photo it took
+ * itself. {@link PhotoInfoRowsOptions.keepCoreRows} keeps the core rows anyway.
  */
-export function photoInfoRows(fields: PhotoInfoFields): PhotoInfoRow[] {
+export function photoInfoRows(
+  fields: PhotoInfoFields,
+  { keepCoreRows = false }: PhotoInfoRowsOptions = {},
+): PhotoInfoRow[] {
   const rows: PhotoInfoRow[] = [];
   const add = (label: string, value: string | number | null | undefined): void => {
     if (value === null || value === undefined || value === "") return;
     rows.push({ label, value: String(value) });
   };
+  const addCore = (label: string, value: string | null): void => {
+    if (keepCoreRows) rows.push({ label, value: value ?? "" });
+    else add(label, value);
+  };
+  const { width, height } = fields;
+  const sized = width != null && height != null;
 
-  add("Filename", fields.originalFilename);
+  addCore("Filename", fields.originalFilename);
   add("Title", fields.title);
-  if (fields.width != null && fields.height != null) {
-    add("Dimensions", `${fields.width} × ${fields.height}px`);
-    add("Megapixels", formatMegapixels(fields.width, fields.height));
-  }
-  add("MIME type", fields.mimeType);
-  if (fields.sizeBytes != null) add("File size", formatBytes(fields.sizeBytes));
-  if (fields.dateTaken) add("Date taken", formatDateTaken(fields.dateTaken));
+  addCore("Dimensions", sized ? `${width} × ${height}px` : null);
+  if (sized) add("Megapixels", formatMegapixels(width, height));
+  addCore("MIME type", fields.mimeType);
+  addCore("File size", fields.sizeBytes != null ? formatBytes(fields.sizeBytes) : null);
+  addCore("Date taken", fields.dateTaken ? formatDateTaken(fields.dateTaken) : null);
   if (fields.cameraMake) {
     add("Camera", `${fields.cameraMake} ${fields.cameraModel ?? ""}`.trim());
   }

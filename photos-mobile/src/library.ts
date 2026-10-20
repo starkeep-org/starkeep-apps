@@ -3,8 +3,8 @@
  *
  * ## Why the grid stops reading the media store directly
  *
- * `MediaGrid` reads `expo-media-library` and shows whatever is on the device.
- * That was the right thing when the node held nothing — it made the app useful
+ * The app's first grid read `expo-media-library` and showed whatever was on the
+ * device. That was the right thing when the node held nothing — it made the app useful
  * with no account, no cloud and no import loop. But it shows the *device's*
  * photos, not the *node's*, and those stop being the same set the moment
  * anything syncs in from elsewhere or anything is imported and then removed
@@ -425,8 +425,8 @@ export async function resolveLibraryItems(
     // stopped painting originals means it paints a rung or a placeholder.
     //
     // **This is a real loss and it is taken knowingly.** `expo-image` does paint
-    // a video's first frame — settled on a handset 2026-09-02, and
-    // `ui/MediaGrid.tsx` is the standing demonstration — so a clip whose bytes
+    // a video's first frame — settled on a handset 2026-09-02 in the
+    // camera-roll grid this app used to have — so a clip whose bytes
     // are here *could* show a picture. It is not free: under Android that frame
     // comes out of `MediaMetadataRetriever`, which is a decode of the original
     // and the most expensive one on the surface. And unlike a still, nothing on

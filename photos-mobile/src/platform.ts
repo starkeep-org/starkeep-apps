@@ -86,7 +86,6 @@ import {
   type OpenMotionPhoto,
 } from "./media/motion-photo-playback";
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
-import { clearNodeFiles } from "./node-reset";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
 import { backgroundWindow, nativeTimers } from "./work/native-timers";
 import { MEDIA_QUERY_TIMEOUT_MS } from "./work/tick";
@@ -450,57 +449,6 @@ function driveChannel(
 /** The User-Data-Owner app id. Must match `sync-supervisor.ts`'s constant. */
 export const DRIVE_APP_ID = "starkeep-drive";
 
-/**
- * Throw away everything this node has indexed.
- *
- * ## What this deletes, and what it emphatically does not
- *
- * It deletes the node's **database** — records, labels, sync watermarks and the
- * alias table — and the node's **object store**, which holds renditions and any
- * blobs fetched from a peer.
- *
- * It does not touch a single photograph. The originals were never copied here:
- * import aliases them to the MediaStore assets that already hold them
- * (`import-loop-design.md` §2), so what is being deleted is Starkeep's *index
- * of* the camera roll, not the camera roll. Deleting a pointer is the only
- * destructive operation available, and that is a property of the design worth
- * relying on rather than a coincidence — the same reason
- * `DeviceMediaObjectStorage.delete()` drops an alias row and never an asset.
- *
- * The **node identity survives**. It is not data, it is who this device is: it
- * is stamped into every HLC timestamp, and regenerating it would make the phone
- * look like a brand new peer to everyone it has ever synced with. The session
- * survives too — signing out is a different action, offered separately.
- *
- * The node must be closed first and rebuilt after, which is why this takes one
- * and the caller replaces it: SQLite holds the file open, and deleting it from
- * underneath a live connection is how a database ends up half-there.
- */
-export async function clearNodeData(node: MobileNode): Promise<void> {
-  await node.close();
-  discardNodeFiles();
-}
-
-/**
- * Delete the node's files, assuming it is already closed.
- *
- * Split from {@link clearNodeData} because the node is no longer the caller's
- * to close: it is shared through `work/node-handle.ts`, and closing the handle
- * is a separate step that invalidates every outstanding claim on it. Deleting
- * a database SQLite still has open is how one ends up half-there, so the two
- * halves stay in this order and the caller performs both.
- */
-export function discardNodeFiles(): void {
-  clearNodeFiles(expoFileSystem, {
-    databasePath: DATABASE_PATH,
-    objectsPath: OBJECTS_PATH,
-  });
-  // The scratch clips go too. They are derived from bytes this node is about to
-  // forget, and a clip left behind would be the one thing a cleared node still
-  // held of the photographs it no longer knows about.
-  sweepMotionScratchFiles();
-}
-
 /** Import dependencies, assembled from the real modules for a live node. */
 export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
   if (!node.mediaAliases) {
@@ -573,12 +521,10 @@ export const thumbHashFor: ThumbHashEncoder = async (uri) => {
  * only on a handset, only in the background, and only as a window that reports
  * nothing.
  *
- * ## Both callers pass the cursor, and "Add photos" still does not
+ * ## Both callers pass the cursor
  *
  * The watermark is what makes a repeated scan cheap, which is right for a pass
- * that runs on every app open and on every background window. It is wrong for a
- * person tapping "Add photos from this device" to backfill a library that
- * predates this node, and that control keeps running without one. See
+ * that runs on every app open and on every background window. See
  * `ImportDeps.importCursor`.
  */
 export function importRecentFor(

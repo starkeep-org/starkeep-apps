@@ -39,7 +39,7 @@ function state(overrides: Partial<CatchUpState> = {}): CatchUpState {
 
 describe("the pass that does both halves", () => {
   it("imports and syncs on a ready node, on Wi-Fi, with permission held", async () => {
-    expect(planCatchUp(state())).toEqual({ import: true, sync: true, declined: null });
+    expect(planCatchUp(state())).toEqual({ import: true, sync: true });
   });
 });
 
@@ -49,7 +49,6 @@ describe("what stops a pass entirely", () => {
     expect(planCatchUp(state({ nodeReady: false }))).toEqual({
       import: false,
       sync: false,
-      declined: null,
     });
   });
 
@@ -59,7 +58,6 @@ describe("what stops a pass entirely", () => {
     expect(planCatchUp(state({ syncing: true }))).toEqual({
       import: false,
       sync: false,
-      declined: null,
     });
   });
 
@@ -67,7 +65,7 @@ describe("what stops a pass entirely", () => {
     // Returning from the permission dialog, the sign-in screen and the share
     // sheet each deliver an `active` transition. One intention, three passes.
     const recent = state({ lastRunMs: NOW - (CATCH_UP_MIN_INTERVAL_MS - 1) });
-    expect(planCatchUp(recent)).toEqual({ import: false, sync: false, declined: null });
+    expect(planCatchUp(recent)).toEqual({ import: false, sync: false });
   });
 
   it("runs again once the interval has passed", () => {
@@ -83,32 +81,28 @@ describe("the import half", () => {
     const plan = planCatchUp(state({ mediaPermissionGranted: false }));
     expect(plan.import).toBe(false);
     expect(plan.sync).toBe(true);
-    expect(plan.declined).toContain("no access");
   });
 });
 
 describe("the sync half", () => {
-  it("is declined on a metered connection, and says which control overrides it", () => {
+  it("is declined on a metered connection", () => {
     // `sync()` moves rows and blobs together, so an automatic pass on cellular
     // uploads originals — the one thing on this device that costs money.
     const plan = planCatchUp(state({ device: { ...WIFI, isUnmetered: false } }));
     expect(plan.sync).toBe(false);
     expect(plan.import).toBe(true);
-    expect(plan.declined).toContain("Sync now");
   });
 
-  it("is declined with no network, and says so as offline rather than metered", () => {
+  it("is declined with no network", () => {
     const plan = planCatchUp(
       state({ device: { ...WIFI, hasNetwork: false, isUnmetered: false } }),
     );
     expect(plan.sync).toBe(false);
-    expect(plan.declined).toContain("Offline");
   });
 
-  it("is declined, and explained, when the device could not be read", () => {
+  it("is declined when the device could not be read", () => {
     const plan = planCatchUp(state({ device: null }));
     expect(plan.sync).toBe(false);
-    expect(plan.declined).toContain("could not be read");
   });
 
   it("is silently absent on a node with no cloud", () => {
@@ -117,7 +111,6 @@ describe("the sync half", () => {
     const plan = planCatchUp(state({ hasCloud: false }));
     expect(plan.sync).toBe(false);
     expect(plan.import).toBe(true);
-    expect(plan.declined).toBeNull();
   });
 
   it("names the sync decline ahead of the import one when both apply", () => {
@@ -127,6 +120,5 @@ describe("the sync half", () => {
       state({ mediaPermissionGranted: false, device: { ...WIFI, isUnmetered: false } }),
     );
     expect(plan).toMatchObject({ import: false, sync: false });
-    expect(plan.declined).toContain("Wi");
   });
 });

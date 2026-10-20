@@ -163,47 +163,42 @@ export function gridTileTarget(
 }
 
 /**
- * The height the viewer's footer is given, in layout points.
+ * The height of each of the viewer's two bars, in layout points: the top bar
+ * with the back arrow and the footer with the info button and the Motion Photo
+ * toggle.
  *
  * ## Why a stated height rather than a measurement
  *
- * This replaces `VIEWER_CHROME_ALLOWANCE`, which was a guess at what the footer
- * would render as — 160 points against a footer that actually drew at roughly
- * 200 to 250. Wrong there was wrong twice: the photograph was laid out too large
- * *and* sized too large, because the layout and the rendition request read the
- * same number.
- *
- * Measuring the footer instead would fix the second and make the first worse. A
- * footer whose height is whatever its controls happen to need changes height
+ * A bar whose height is whatever its controls happen to need changes height
  * when a control appears, and the motion control appears a second after the
  * viewer opens — so the stage would resize under a picture already on screen,
  * and `expo-image` reissues its whole load whenever the view it draws into
  * changes size. One late control would cost a second full-screen decode.
  *
- * So the height is decided here instead. The footer is given exactly this much,
- * every control it can show is laid out inside it, and a control that is absent
- * leaves its space empty rather than collapsing it. Nothing below the stage can
- * then change the stage.
+ * So the height is decided here instead. Each bar is given exactly this much, a
+ * control that is absent leaves its space empty, and a control the focused view
+ * hides goes transparent rather than leaving the layout. Nothing above or below
+ * the stage can then change the stage.
  *
- * The number wants checking on a handset against a record offering motion, a
- * fetch and a pin note at once, and at a large font scale. See the plan's list
- * of what it does not settle.
+ * ## Why both bars share one height
+ *
+ * The photograph sits in the middle of the stage, and the stage sits between
+ * the two bars. Equal bars put the middle of the stage at the middle of the
+ * screen, which is where a person expects a photograph to be.
  */
-export const VIEWER_FOOTER_HEIGHT = 240;
+export const VIEWER_BAR_HEIGHT = 56;
 
 /**
  * The box the viewer gives the photograph, in layout points.
  *
  * One computation, read by both the style sheet and {@link viewerTarget}, which
  * is the whole point of it being a function: the layout and the request have to
- * agree about how much room the photograph gets, and the old arrangement had one
- * of them measuring and the other guessing.
+ * agree about how much room the photograph gets.
  *
- * The insets are the system's — the status bar, the gesture bar, a cutout — and
- * come from `useSafeAreaInsets()`, which is a real measurement this code should
- * be reading rather than folding into a constant. The footer is this app's own
- * content and nothing can measure it in advance, so {@link VIEWER_FOOTER_HEIGHT}
- * decides it.
+ * In portrait the insets are the system's — the status bar, the gesture bar, a
+ * cutout — and come from `useSafeAreaInsets()`; the two bars are this app's own
+ * and {@link VIEWER_BAR_HEIGHT} decides them. In landscape the viewer hides the
+ * system bars and its own, and the photograph gets the whole window.
  *
  * A rotation changes the window and therefore this, which is the only thing that
  * should resize the stage.
@@ -211,10 +206,12 @@ export const VIEWER_FOOTER_HEIGHT = 240;
 export function viewerStageBox(
   window: Dimensions,
   insets: { readonly top: number; readonly bottom: number; readonly left: number; readonly right: number },
+  landscape = window.width > window.height,
 ): Dimensions {
+  if (landscape) return { width: window.width, height: window.height };
   return {
     width: Math.max(0, window.width - insets.left - insets.right),
-    height: Math.max(0, window.height - insets.top - insets.bottom - VIEWER_FOOTER_HEIGHT),
+    height: Math.max(0, window.height - insets.top - insets.bottom - 2 * VIEWER_BAR_HEIGHT),
   };
 }
 

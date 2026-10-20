@@ -15,7 +15,9 @@ import {
   DEFAULT_SYNC_DOWN_CEILINGS,
   STAND_IN_CATEGORIES,
   typeCategory,
+  type DataRecord,
   type HLCClock,
+  type MetadataRow,
   type StandInCategory,
   type StarkeepId,
   type SyncDownCeilings,
@@ -24,22 +26,17 @@ import {
   listLibrary,
   refreshLibraryItem,
   resolveForViewer,
-  summarizeLibrary,
   type LibraryItem,
-  type LibrarySummary,
 } from "../library";
 import {
   IMAGE_EXIF_BACKFILL_LIMIT,
-  importDeviceMedia,
   NULL_MODIFIED_SWEEP_LIMIT,
   type ImportOutcome,
-  type ImportProgress,
 } from "../media/import";
 import { THUMB_HASH_BACKFILL_LIMIT } from "../media/thumb-hash";
 import type { NodeIdentity } from "../node-identity";
 import type { CloudConnection } from "../auth/connection";
 import type { MobileNode, StorageReport } from "../node";
-import type { FreeUpSpaceReport } from "@starkeep/sync-engine";
 import {
   backfillImageExifFor,
   backfillThumbHashesFor,
@@ -47,8 +44,6 @@ import {
   deriveRenditionsFor,
   backfillVideoDurationsFor,
   deviceMedia,
-  discardNodeFiles,
-  importDepsFor,
   importRecentFor,
   openMotionPhotoFor,
   sweepNullModifiedFor,
@@ -197,13 +192,10 @@ function gridGeometry(): GridGeometry {
   };
 }
 
-/** How many assets one import pass considers. */
-export const IMPORT_BATCH = 60;
-
 /**
  * How many assets a foreground catch-up considers.
  *
- * Sixty, matching {@link IMPORT_BATCH} rather than the background tick's twenty.
+ * Sixty, rather than the background tick's twenty.
  * The tick's number is small because the OS can take the window back at any
  * moment and a unit that does not finish never finishes; a foreground pass has
  * no window to lose and a person is watching it, so it may as well drain a
@@ -296,13 +288,6 @@ export type NodeState =
 export interface NodeHandle {
   readonly state: NodeState;
   /**
-   * Delete everything this node has indexed and open a fresh one.
-   *
-   * Resolves once the replacement is up, so a caller can reload immediately
-   * afterwards without racing the node it is about to query.
-   */
-  reset: () => Promise<void>;
-  /**
    * Close the node and open it again, keeping everything it holds.
    *
    * For signing in and out: the session decides whether the node has a cloud,
@@ -313,10 +298,10 @@ export interface NodeHandle {
 
 export function useNode(): NodeHandle {
   const [state, setState] = useState<NodeState>({ status: "starting" });
-  /** Bumped to force the effect to build a new node after a reset. */
+  /** Bumped to force the effect to build a new node after a reopen. */
   const [generation, setGeneration] = useState(0);
   const current = useRef<MobileNode | null>(null);
-  /** Resolved by the effect once the post-reset node is up. */
+  /** Resolved by the effect once the reopened node is up. */
   const opening = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -361,33 +346,11 @@ export function useNode(): NodeHandle {
     };
   }, [generation]);
 
-  const reset = useCallback(async () => {
-    if (!current.current) return;
-    current.current = null;
-    setState({ status: "starting" });
-    // Close the shared node before deleting its files, and in that order:
-    // SQLite holds the database open, and removing it underneath a live
-    // connection is how one ends up half-there. Every outstanding claim is
-    // invalidated by the close, which is the honest shape of the operation —
-    // the thing they hold a claim on is being deleted.
-    await closeNodeForReset();
-    discardNodeFiles();
-
-    // Wait for the effect's replacement rather than building one here: two code
-    // paths creating nodes is two code paths that can disagree about how, and
-    // the effect already owns the lifecycle including cleanup.
-    const built = new Promise<void>((resolve) => {
-      opening.current = resolve;
-    });
-    setGeneration((n) => n + 1);
-    await built;
-  }, []);
-
   const reopen = useCallback(async () => {
     current.current = null;
     setState({ status: "starting" });
-    // The same order as a reset, without deleting anything: close the shared
-    // node so the next open builds a fresh one, then let the effect build it.
+    // Close the shared node so the next open builds a fresh one, then let the
+    // effect build it. Every outstanding claim is invalidated by the close.
     await closeNodeForReset();
     const built = new Promise<void>((resolve) => {
       opening.current = resolve;
@@ -396,12 +359,11 @@ export function useNode(): NodeHandle {
     await built;
   }, []);
 
-  return { state, reset, reopen };
+  return { state, reopen };
 }
 
 export interface LibraryState {
   readonly items: readonly LibraryItem[];
-  readonly summary: LibrarySummary | null;
   readonly loading: boolean;
   /**
    * A further page is being appended.
@@ -423,20 +385,6 @@ export interface LibraryState {
    * nothing, forever, with no way to tell a failure from an empty tail.
    */
   readonly loadMoreError: string | null;
-  /** An import somebody asked for by tapping the button. */
-  readonly importing: boolean;
-  /**
-   * An automatic import, started because the app came to the foreground.
-   *
-   * Carried apart from {@link importing} because the two need different words
-   * on screen. A tap is a request and deserves a count against a total; a
-   * catch-up is the app doing its job and deserves one muted line that does not
-   * make the button it did not come from look busy.
-   */
-  readonly catchingUp: boolean;
-  readonly lastImport: ImportOutcome | null;
-  /** Non-null only while an import is running, whichever kind. */
-  readonly progress: ImportProgress | null;
   readonly error: string | null;
   reload: () => Promise<void>;
   /**
@@ -446,20 +394,13 @@ export interface LibraryState {
    * with a load already in flight, resolves without doing anything.
    */
   loadMore: () => Promise<void>;
-  importNow: () => Promise<void>;
   /**
    * Import without asking for anything.
    *
-   * The automatic half of the foreground catch-up. Two differences from
-   * {@link importNow}, and both are what make it safe to run unprompted:
-   *
-   * 1. It reads the media permission rather than requesting it. A system dialog
-   *    raised because somebody opened the app has asked for something before
-   *    saying what for.
-   * 2. It passes the import watermark, so a pass on a quiet phone asks the media
-   *    store for nothing and costs nothing. "Add photos from this device" still
-   *    runs without one, because backfilling a library that predates this node
-   *    is exactly what a watermark prevents. See `ImportDeps.importCursor`.
+   * The import the foreground catch-up runs. It reads the media permission
+   * rather than requesting it — `useForegroundWork` asks once, up front — and it
+   * passes the import watermark, so a pass on a quiet phone asks the media store
+   * for nothing and costs nothing. See `ImportDeps.importCursor`.
    *
    * Resolves null when the pass did not happen — no node, or no permission —
    * which the caller reports rather than swallowing.
@@ -512,6 +453,12 @@ export interface LibraryState {
    * viewing by design. See `media/motion-photo-playback.ts`.
    */
   openMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
+  /**
+   * The record's metadata row — dimensions, capture time and whatever EXIF a
+   * node has read — for the viewer's info sheet. Null for a record with no row
+   * or of a type with no metadata table.
+   */
+  readInfo: (record: DataRecord) => Promise<MetadataRow | null>;
   /**
    * Pull down a record whose bytes are not on this device.
    *
@@ -585,17 +532,8 @@ export interface LibraryState {
 /** What the Storage section shows, and the action that changes it. */
 export interface StorageState {
   readonly report: StorageReport | null;
-  /** Whether a "Free up space" is running. */
-  readonly reclaiming: boolean;
-  /** Result of the last "Free up space", for the line under its button. */
-  readonly lastFreed: FreeUpSpaceReport | null;
   readonly error: string | null;
   refresh: () => void;
-  /**
-   * The person's "Free up space": every original — and, in the wider scope,
-   * every stand-in above this device's ceiling — whose cloud copies are proved.
-   */
-  freeUp: (scope: "originals" | "originals-and-above-ceiling") => Promise<void>;
   /**
    * This device's sync-down ceilings in force, per category, with the sizes a
    * person can pick and the phone defaults; null until the node is up.
@@ -630,7 +568,7 @@ function ceilingsViewOf(node: MobileNode, settings: DeviceSettings): CeilingsVie
 }
 
 /**
- * What this node is holding, and the person's "Free up space".
+ * What this node is holding, and the sync-down ceilings that decide it.
  *
  * A hook of its own rather than a field on {@link LibraryState}, because the two
  * change for different reasons: the library changes when records arrive, and
@@ -639,7 +577,6 @@ function ceilingsViewOf(node: MobileNode, settings: DeviceSettings): CeilingsVie
  */
 export function useStorage(node: NodeState): StorageState {
   const [report, setReport] = useState<StorageReport | null>(null);
-  const [reclaiming, setReclaiming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const ready = node.status === "ready" ? node : null;
@@ -657,26 +594,6 @@ export function useStorage(node: NodeState): StorageState {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  const [lastFreed, setLastFreed] = useState<FreeUpSpaceReport | null>(null);
-  const freeUp = useCallback(
-    async (scope: "originals" | "originals-and-above-ceiling") => {
-      if (!ready) return;
-      setReclaiming(true);
-      try {
-        // Everything the proofs allow: a phone has no amount to type, and the
-        // pass removes largest first and only what the cloud is proved to hold.
-        setLastFreed(await ready.node.freeUpSpace({ bytes: Number.MAX_SAFE_INTEGER, scope }));
-        setError(null);
-      } catch (err) {
-        setError(String(err));
-      } finally {
-        setReclaiming(false);
-        refresh();
-      }
-    },
-    [ready, refresh],
-  );
 
   const [ceilings, setCeilings] = useState<CeilingsView | null>(null);
   useEffect(() => {
@@ -698,11 +615,8 @@ export function useStorage(node: NodeState): StorageState {
 
   return {
     report,
-    reclaiming,
-    lastFreed,
     error,
     refresh,
-    freeUp,
     ceilings,
     setCeiling,
   };
@@ -711,15 +625,10 @@ export function useStorage(node: NodeState): StorageState {
 /** The node's records, and the action that adds the camera roll to them. */
 export function useLibrary(node: NodeState): LibraryState {
   const [items, setItems] = useState<readonly LibraryItem[]>([]);
-  const [summary, setSummary] = useState<LibrarySummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [catchingUp, setCatchingUp] = useState(false);
-  const [lastImport, setLastImport] = useState<ImportOutcome | null>(null);
-  const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const ready = node.status === "ready" ? node : null;
@@ -788,12 +697,10 @@ export function useLibrary(node: NodeState): LibraryState {
         if (!more || !next) break;
       }
 
-      const totals = await summarizeLibrary(deps);
       cursor.current = next;
       pagesLoaded.current = Math.max(1, Math.ceil(collected.length / limit));
       setItems(collected);
       setHasMore(more && next !== null);
-      setSummary(totals);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -879,53 +786,8 @@ export function useLibrary(node: NodeState): LibraryState {
     void reload();
   }, [reload]);
 
-  const importNow = useCallback(async () => {
-    if (!ready) return;
-    setImporting(true);
-    try {
-      const deps = importDepsFor(ready.node, ready.clock);
-
-      // Permission is requested here rather than on mount, because this is the
-      // point at which the user has asked for something that needs it. A system
-      // dialog thrown at someone before they have done anything has asked for
-      // something before saying what for.
-      const permission = await deps.media.requestPermissions();
-      if (!permission.granted) {
-        setError("Starkeep needs access to your photos to add them to this device's library.");
-        return;
-      }
-
-      setLastImport(
-        await importDeviceMedia(
-          {
-            ...deps,
-            onProgress: (p) => {
-              setProgress(p);
-              // Also to logcat, because the on-screen line is a summary and the
-              // per-asset split between "pulling bytes across JSI" and "hashing
-              // them in JavaScript" is what says which one to go and fix.
-              console.log(
-                `[starkeep:import] ${p.done}/${p.total} ${p.filename ?? "?"} ` +
-                  `${p.sizeBytes}B read=${p.readMs}ms hash=${p.hashMs}ms`,
-              );
-            },
-          },
-          { limit: IMPORT_BATCH },
-        ),
-      );
-      setProgress(null);
-      setError(null);
-      await reload();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setImporting(false);
-    }
-  }, [ready, reload]);
-
   const importQuietly = useCallback(async (): Promise<ImportOutcome | null> => {
     if (!ready) return null;
-    setCatchingUp(true);
     try {
       // Read, never requested. The caller has already asked the same question to
       // decide whether to run this at all; asking again here is what keeps the
@@ -936,19 +798,13 @@ export function useLibrary(node: NodeState): LibraryState {
       const outcome = await importRecentFor(ready.node, ready.clock, {
         limit: FOREGROUND_IMPORT_LIMIT,
         background: false,
-        onProgress: setProgress,
       });
-      setLastImport(outcome);
-      setProgress(null);
       setError(null);
       await reload();
       return outcome;
     } catch (err) {
       setError(String(err));
       return null;
-    } finally {
-      setCatchingUp(false);
-      setProgress(null);
     }
   }, [ready, reload]);
 
@@ -1146,6 +1002,22 @@ export function useLibrary(node: NodeState): LibraryState {
         // and the ones that do are a bonus on top of a still that is already
         // rendering; an error line here would attach a fault to a photograph
         // that is displaying perfectly.
+        return null;
+      }
+    },
+    [ready],
+  );
+
+  const readInfo = useCallback(
+    async (record: DataRecord): Promise<MetadataRow | null> => {
+      if (!ready) return null;
+      const category = typeCategory(record.type);
+      if (category !== "image" && category !== "video") return null;
+      try {
+        const rows = await ready.node.databaseAdapter.getMetadataByIds(category, [record.id]);
+        return rows.get(record.id) ?? null;
+      } catch {
+        // The sheet shows what the record itself carries without the row.
         return null;
       }
     },
@@ -1435,19 +1307,13 @@ export function useLibrary(node: NodeState): LibraryState {
 
   return {
     items,
-    summary,
     loading,
     loadingMore,
     hasMore,
     loadMoreError,
-    importing,
-    catchingUp,
-    lastImport,
-    progress,
     error,
     reload,
     loadMore,
-    importNow,
     importQuietly,
     backfillDurations,
     backfillExif,
@@ -1455,6 +1321,7 @@ export function useLibrary(node: NodeState): LibraryState {
     deriveRenditions,
     sweepNullModified,
     openMotion,
+    readInfo,
     fetchBlob,
     fetchRendition,
     deriveNow,

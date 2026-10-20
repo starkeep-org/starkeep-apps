@@ -4,8 +4,8 @@
  * The desktop logs one line per round and the cloud one per exchange, so the
  * phone was the leg nobody could see: logcat needs a cable, and the question is
  * almost always what the phone did while nobody was watching. This table holds
- * the rounds in the node's own database, so the Work section can show them and
- * "Share diagnostics" can hand them to a person who needs them.
+ * the rounds in the node's own database, so a person diagnosing sync can read
+ * them off the phone afterwards.
  *
  * One row per round, written as the round ends. The last round of a sync also
  * carries why the sync stopped. A sync that ran no round at all — aborted
@@ -31,7 +31,7 @@ import {
 /** Rows kept. About a day of foreground use at one sync per thirty seconds. */
 export const SYNC_TRACE_KEEP = 500;
 
-/** What started a sync. Shown verbatim in the Work section. */
+/** What started a sync, as the trace records it. */
 export type SyncTrigger =
   | "open"
   | "after-import"
@@ -239,7 +239,7 @@ export function stopReasonOf(result: SyncResult | null, aborted: boolean, error?
   return "incomplete";
 }
 
-/** The trace as plain text, for "Share diagnostics". Newest first. */
+/** The trace as plain text, one line per round. Newest first. */
 export function formatSyncTrace(rounds: readonly SyncTraceRound[]): string {
   const lines = rounds.map((r) => {
     const parts = [

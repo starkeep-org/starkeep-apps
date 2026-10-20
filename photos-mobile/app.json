@@ -3,7 +3,7 @@
     "name": "Starkeep Photos",
     "slug": "starkeep-photos",
     "version": "0.0.1",
-    "orientation": "portrait",
+    "orientation": "default",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon/icon.png",
     "newArchEnabled": true,

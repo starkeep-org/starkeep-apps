@@ -1,26 +1,16 @@
 /**
  * The node's library, and a photo you can open.
  *
- * ## What is different from `MediaGrid`
- *
- * `MediaGrid` shows the *device's* camera roll, read straight from the media
- * store. This shows the *node's* records. On a phone that has imported its
- * camera roll the pictures are the same; the difference is that these are
- * things Starkeep holds — hashed, addressed, and ready to sync the day there is
- * anywhere to sync to.
- *
- * Both exist on purpose for now. The camera-roll grid is what the app can show
- * before anything is imported, and it is the honest answer to "what is on this
- * phone"; the library is the answer to "what does this node have". They stop
- * agreeing as soon as either syncing or deleting happens, and when they do,
- * saying so plainly beats silently picking one.
+ * These are the node's records rather than the device's camera roll. On a
+ * phone that has imported its camera roll the pictures are the same; the
+ * difference is that these are things Starkeep holds — hashed, addressed, and
+ * ready to sync.
  *
  * ## Justified rows, not a square grid
  *
  * The grid used to be three square tiles across, each showing a centre crop.
- * That is right for `MediaGrid`, whose job is a contact sheet of the camera
- * roll, and wrong here: a square crop of a photograph is not the photograph, and
- * the library is where somebody looks at their pictures.
+ * That is wrong for a library: a square crop of a photograph is not the
+ * photograph, and the library is where somebody looks at their pictures.
  *
  * It was also sizing the renditions wrong. A square tile is the wrong box to
  * measure a request against — a portrait photograph inside one is drawn shorter
@@ -46,14 +36,14 @@
  * records are two and the second of them has an inside.
  *
  * A **video record** gets a player with the platform's own controls, opened on
- * its first frame and never autoplaying. A **still** gets an `<Image>` and a tap
- * anywhere dismisses it. A **Motion Photo** is a still until somebody asks: it is
+ * its first frame and never autoplaying. A **still** gets an `<Image>`, and a tap
+ * on it toggles the focused view. A **Motion Photo** is a still until somebody asks: it is
  * one image record whose bytes happen to carry a trailing MP4, and the control
  * that plays it materialises a scratch file for that viewing and deletes it
  * afterwards. See `media/motion-photo-playback.ts` for why nothing is kept.
  */
 
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
   Text,
@@ -71,6 +61,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 // renders through Glide, which carries its own AVIF decoder.
 // See `photos-mobile-status-2026-08-31.md`.
 import { Image } from "expo-image";
+import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
 import type { LibraryItem } from "../library";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import {
@@ -82,7 +73,7 @@ import {
 import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth, styles } from "./theme";
 import { MotionBadge } from "./MotionBadge";
 import { VideoBadge } from "./VideoBadge";
-import { LibraryViewer, type ViewerStep } from "./LibraryViewer";
+import { LibraryViewer } from "./LibraryViewer";
 import { isVideo } from "./format";
 import { perf } from "./perf";
 
@@ -144,6 +135,10 @@ export interface ViewerHost {
    * when the viewer closes; the scratch file lasts exactly one viewing by design.
    */
   readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
+  /** The record's metadata row, for the info sheet. See `useLibrary().readInfo`. */
+  readonly onReadInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  /** Load the next page, because a swipe came to rest near the end of this one. */
+  readonly onLoadMore: () => void;
 }
 
 /**
@@ -333,24 +328,34 @@ function sameRow(
 }
 
 /**
+ * How long a tap waits for the viewer's resolve before opening on the tile's
+ * rung. A resolve takes about 25 ms on a Pixel 5; this bounds the tap's delay
+ * when the database is busy with an import or a sync.
+ */
+const OPEN_RESOLVE_WAIT_MS = 150;
+
+/**
  * The viewer's state, and the element that draws it.
  *
  * A hook rather than a component wrapping the grid, because the grid is no
  * longer a component that contains its tiles — the rows are items of a list the
  * screen owns. So the screen owns the viewer too, calls {@link open} from a row,
- * and renders {@link element} once, outside the list. Rendering it inside would
- * put a full-screen modal inside a recycled row.
+ * and renders {@link element} once, outside the list.
  *
  * ## Why the whole page comes in, and not just the item that was tapped
  *
- * Swiping to the next photograph needs to know what the next photograph *is*,
- * and the only thing that knows the order is the list the grid is drawing —
+ * The pager pages through what the grid is drawing, in the grid's order —
  * `LIBRARY_ORDER`, applied by `listLibrary`. Passing the page in is what lets
- * the viewer step through it without inventing a second ordering that would
- * disagree with the grid the moment a record's capture time was backfilled.
+ * the viewer move through it without inventing a second ordering that would
+ * disagree with the grid the moment a record's capture time was backfilled. A
+ * swipe that lands near the end of the page asks the library for the next one.
  *
- * A swipe past the last loaded record does nothing rather than paging: the page
- * is what the grid has, and `loadMore` belongs to the list that scrolls.
+ * ## State that outlives a page
+ *
+ * The focused view survives swipes and rotations: it is a choice about how to
+ * look at photographs, not about one photograph. Each record's resolution is
+ * kept while the viewer is open, so swiping back to a photograph paints the
+ * rung it already resolved rather than the tile's.
  */
 export function useLibraryViewer(
   {
@@ -359,6 +364,8 @@ export function useLibraryViewer(
     onDeriveNow,
     onOpenForViewer,
     onOpenMotion,
+    onReadInfo,
+    onLoadMore,
   }: ViewerHost,
   items: readonly LibraryItem[],
 ): { open: (item: LibraryItem) => void; element: React.ReactElement } {
@@ -369,34 +376,36 @@ export function useLibraryViewer(
    *
    * `useWindowDimensions` rather than `Dimensions.get` because a rotation has to
    * re-render — it is the one event that should resize the stage, and the only
-   * one. The insets are the system's own measurement, which the viewer's
-   * arithmetic used to fold into a constant along with the footer.
+   * one.
    */
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const landscape = window.width > window.height;
   const stage = useMemo(
-    () => viewerStageBox({ width: window.width, height: window.height }, insets),
-    [window.width, window.height, insets],
+    () => viewerStageBox({ width: window.width, height: window.height }, insets, landscape),
+    [window.width, window.height, insets, landscape],
   );
   /**
    * The stage, readable from a callback that does not rebuild when it changes.
    *
-   * {@link show} closes over it, and `show` is what a row's `onPress` holds — so
-   * a dependency would re-render every tile in the grid on a rotation.
+   * {@link open} closes over the resolve, and `open` is what a row's `onPress`
+   * holds — so a dependency would re-render every tile in the grid on a rotation.
    */
   const stageRef = useRef(stage);
   stageRef.current = stage;
-  const [item, setItem] = useState<LibraryItem | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  /** Each visited record's resolution for this stage, while the viewer is open. */
+  const [resolved, setResolved] = useState<ReadonlyMap<string, LibraryItem>>(() => new Map());
+  const [focused, setFocused] = useState(false);
   /** The key currently being fetched, so the control can say so. */
   const [fetching, setFetching] = useState<string | null>(null);
   /**
-   * Which record the viewer is showing, for the async work started on open.
+   * Which record the viewer is showing, for the async work started on a page.
    *
-   * The resolve and the fetch both land after the tap, and either can land after
-   * the viewer has been closed or opened on something else. Checking against
-   * this before setting state is what stops one photograph's fetch from
-   * replacing another's picture — a `setItem` from a stale open would show the
-   * wrong record with no visible cause.
+   * The resolve and the fetch both land after the page settles, and either can
+   * land after the viewer has closed or moved on. Checking against this before
+   * setting state is what stops one photograph's fetch from replacing another's
+   * picture.
    */
   const showing = useRef<string | null>(null);
   /**
@@ -409,86 +418,191 @@ export function useLibraryViewer(
   const pageRef = useRef(items);
   pageRef.current = items;
 
-  const show = useCallback(
-    (opened: LibraryItem) => {
-      perf("show:enter");
-      showing.current = opened.record.id;
-      // **The picture first, and the bookkeeping after it.** Opened on the
-      // tile's answer, which is already decoded and already correct — just
-      // smaller than it could be — and improved a moment later. The resolve is a
-      // database round trip, and a viewer that waited for one would show a black
-      // screen for the length of it.
-      setItem(opened);
-      perf("show:setItem");
+  /** Record a resolution, unless it paints what is already recorded. */
+  const remember = useCallback((item: LibraryItem) => {
+    setResolved((current) => {
+      const known = current.get(item.record.id);
+      if (known && samePicture(known, item)) return current;
+      const next = new Map(current);
+      next.set(item.record.id, item);
+      return next;
+    });
+  }, []);
 
+  /** The latest resolutions, readable from a callback without rebuilding it. */
+  const resolvedRef = useRef(resolved);
+  resolvedRef.current = resolved;
+
+  /** The rung this stage wants for one record, among the ones already here. */
+  const resolveNow = useCallback(
+    (base: LibraryItem): Promise<LibraryItem> => onOpenForViewer(base, stageRef.current),
+    [onOpenForViewer],
+  );
+
+  /**
+   * Fetch or derive the rung this stage wants when it is not here, and repaint
+   * the page once it lands. Only ever run for the page on screen.
+   */
+  const improve = useCallback(
+    (current: LibraryItem) => {
+      const id = current.record.id;
+      // A clip downloads nothing on open. Its bytes move when somebody presses
+      // play, which is `playNow`'s job.
+      if (isVideo(current)) return;
       void (async () => {
-        const stage = stageRef.current;
-        const resolved = await onOpenForViewer(opened, stage);
-        perf("show:resolved");
-        if (showing.current !== opened.record.id) return;
-        // **Only when it resolved to a different picture.** A record whose best
-        // resident rung is the one the tile was already painting resolves to the
-        // same URI, and setting it again is a re-render that hands `expo-image`
-        // a fresh `source` object for bytes it has already decoded — a second
-        // full-screen decode, and a second full-screen ThumbHash under it, for
-        // no change on screen.
-        if (!samePicture(resolved, opened)) setItem(resolved);
-
-        // A clip downloads nothing on open. Its bytes move when somebody
-        // presses play, which is `playNow`'s job.
-        if (isVideo(resolved)) return;
-
         // **Two ways to get the rung this screen wants, and a record is only
         // ever in one of them.** `missingRendition` is non-null exactly when the
-        // rung's record exists and its bytes do not, which is a transfer.
-        // Null with the ideal unpainted is the opposite state — nothing has
-        // derived it anywhere — and on a phone showing its own camera roll that
-        // is the ordinary case, because the sweep's ceiling stops at
-        // `image-medium` and this stage wants more.
-        //
-        // The derivation is what removes the network from the second case. The
-        // original is in the camera roll; asking the cloud for a rung made out
-        // of bytes already on the device was never the cheaper answer, and on a
-        // phone with no session it was not an answer at all.
+        // rung's record exists and its bytes do not, which is a transfer. Null
+        // with the ideal unpainted is the opposite state — nothing has derived
+        // it anywhere — and on a phone showing its own camera roll that is the
+        // ordinary case, because the sweep's ceiling stops at `image-medium` and
+        // this stage wants more.
         const improved =
-          resolved.missingRendition !== null
-            ? // Not awaited by anything on screen: the viewer paints what it has
-              // and improves when the bytes land.
-              await onFetchRendition(resolved, "viewer")
-            : await onDeriveNow(resolved, "viewer", resolved.renditionTarget ?? undefined);
+          current.missingRendition !== null
+            ? await onFetchRendition(current, "viewer")
+            : await onDeriveNow(current, "viewer", current.renditionTarget ?? undefined);
         perf(`show:improve arrived=${improved}`);
-        if (!improved || showing.current !== opened.record.id) return;
-        // **And this is what stops the open item going stale.** The fetch or the
+        if (!improved || showing.current !== id) return;
+        // **And this is what stops the page going stale.** The fetch or the
         // encode changed what the store holds, and nothing else would tell the
-        // viewer: it would go on painting the smaller rung and go on saying the
-        // bytes are absent.
-        const better = await onOpenForViewer(resolved, stage);
-        if (showing.current !== opened.record.id) return;
-        if (!samePicture(better, resolved)) setItem(better);
+        // viewer.
+        const better = await resolveNow(current);
+        if (showing.current !== id) return;
+        if (!samePicture(better, current)) remember(better);
       })();
     },
-    [onOpenForViewer, onFetchRendition, onDeriveNow],
+    [onFetchRendition, onDeriveNow, resolveNow, remember],
   );
 
-  /** Where the open record sits in the page, or -1 once a reload has dropped it. */
-  const indexOfOpen = (): number =>
-    showing.current === null
-      ? -1
-      : pageRef.current.findIndex((candidate) => candidate.record.id === showing.current);
-
-  const step = useCallback(
-    (delta: ViewerStep) => {
-      const index = indexOfOpen();
-      if (index < 0) return;
-      const next = pageRef.current[index + delta];
-      // The ends of the page are where a swipe stops. Silently, because a
-      // gesture that does nothing at the edge is what every gallery does, and
-      // there is nothing to report.
-      if (!next) return;
-      show(next);
+  /**
+   * Resolve the photographs either side of the one on screen, before anybody
+   * swipes to them.
+   *
+   * A neighbour's page is already mounted, painting the tile's rung. Resolving
+   * it now means the swap to the right rung happens off screen, and a swipe
+   * lands on the photograph at the size it will stay at.
+   */
+  const resolveNeighbours = useCallback(
+    (id: string, { force = false }: { force?: boolean } = {}) => {
+      const page = pageRef.current;
+      const at = page.findIndex((candidate) => candidate.record.id === id);
+      for (const neighbour of [page[at - 1], page[at + 1]]) {
+        if (!neighbour) continue;
+        if (!force && resolvedRef.current.has(neighbour.record.id)) continue;
+        void resolveNow(neighbour).then((item) => {
+          if (showing.current !== null) remember(item);
+        });
+      }
     },
-    [show],
+    [resolveNow, remember],
   );
+
+  /**
+   * Open the viewer on a record, at the rung the stage wants.
+   *
+   * **Resolved before the viewer appears, not after.** The viewer used to open
+   * on the tile's rung and swap to the stage's rung once the resolve landed — the
+   * picture first, and the bookkeeping after it — which was right when a resolve
+   * could take a second. It now takes about 25 ms on a Pixel 5, and the swap it
+   * bought showed on every open as a blackout between two pictures. So the tap
+   * waits for the resolve and the viewer opens on the right picture. A resolve
+   * slower than {@link OPEN_RESOLVE_WAIT_MS} opens on the tile's rung instead,
+   * and the resolution replaces it when it lands.
+   */
+  const open = useCallback(
+    (opened: LibraryItem) => {
+      const id = opened.record.id;
+      perf(`show:enter ${id.slice(-6)}`);
+      showing.current = id;
+      const resolving = resolveNow(opened);
+      void (async () => {
+        const first = await Promise.race([
+          resolving,
+          new Promise<null>((done) => setTimeout(() => done(null), OPEN_RESOLVE_WAIT_MS)),
+        ]);
+        perf(`show:resolved inTime=${first !== null}`);
+        if (showing.current !== id) return;
+        setResolved(new Map(first ? [[id, first]] : []));
+        setFocused(false);
+        setOpenId(id);
+        const current = first ?? (await resolving);
+        if (showing.current !== id) return;
+        if (!first) remember(current);
+        improve(current);
+        resolveNeighbours(id);
+      })();
+    },
+    [resolveNow, improve, resolveNeighbours, remember],
+  );
+
+  /** A swipe came to rest on a record: it becomes the one being shown. */
+  const settle = useCallback(
+    (id: string) => {
+      if (showing.current === id) return;
+      const base = pageRef.current.find((candidate) => candidate.record.id === id);
+      if (!base) return;
+      perf(`settle ${id.slice(-6)}`);
+      showing.current = id;
+      setOpenId(id);
+      const known = resolvedRef.current.get(id);
+      void (async () => {
+        const current = known ?? (await resolveNow(base));
+        if (showing.current !== id) return;
+        if (!known) remember(current);
+        improve(current);
+        resolveNeighbours(id);
+      })();
+    },
+    [resolveNow, improve, resolveNeighbours, remember],
+  );
+
+  // A rotation changes the stage, and the rung a landscape photograph wants on a
+  // landscape screen is larger. Resolve the page on screen and its neighbours
+  // again for the new box.
+  //
+  // The earlier resolutions stay until the new ones land. Clearing them sent
+  // every page back to the tile's rung for a moment, and a window resizes in two
+  // steps on a rotation, so a second clear could land after the first
+  // resolution and send the page back again.
+  //
+  // Keyed on the stage's size alone. The callbacks are read through a ref,
+  // because a dependency on them would rerun this whenever the library rebuilt
+  // one, and that would throw away every resolution mid-viewing.
+  const rotationWork = useRef({ resolveNow, remember, improve, resolveNeighbours });
+  rotationWork.current = { resolveNow, remember, improve, resolveNeighbours };
+  const firstStage = useRef(true);
+  useEffect(() => {
+    if (firstStage.current) {
+      firstStage.current = false;
+      return;
+    }
+    const id = showing.current;
+    if (id === null) return;
+    const base = pageRef.current.find((candidate) => candidate.record.id === id);
+    if (!base) return;
+    const work = rotationWork.current;
+    void work.resolveNow(base).then((current) => {
+      if (showing.current !== id) return;
+      work.remember(current);
+      work.improve(current);
+      work.resolveNeighbours(id, { force: true });
+    });
+  }, [stage.width, stage.height]);
+
+  const close = useCallback(() => {
+    perf("close:press");
+    showing.current = null;
+    setOpenId(null);
+    setResolved(new Map());
+  }, []);
+
+  // A reload that dropped the open record — deleted elsewhere and synced in —
+  // leaves nothing to show.
+  useEffect(() => {
+    if (openId !== null && !items.some((item) => item.record.id === openId)) close();
+  }, [items, openId, close]);
+
+  const toggleFocus = useCallback(() => setFocused((current) => !current), []);
 
   /**
    * Play pressed on a clip whose bytes are not here: fetch the copy the viewer
@@ -511,36 +625,36 @@ export function useLibraryViewer(
         if (!fetched || showing.current !== target.record.id) return;
         const playable = await onOpenForViewer(target, stageRef.current);
         if (showing.current !== target.record.id) return;
-        setItem(playable);
+        remember(playable);
       } finally {
         setFetching(null);
       }
     },
-    [onFetch, onFetchRendition, onOpenForViewer],
+    [onFetch, onFetchRendition, onOpenForViewer, remember],
   );
-
-  const index = item ? items.findIndex((c) => c.record.id === item.record.id) : -1;
 
   const element = (
     <LibraryViewer
-      item={item}
+      items={items}
+      openId={openId}
+      resolved={resolved}
       stage={stage}
-      busy={item !== null && fetching === item.record.id}
-      hasPrevious={index > 0}
-      hasNext={index >= 0 && index < items.length - 1}
-      onStep={step}
+      window={{ width: window.width, height: window.height }}
+      insets={insets}
+      landscape={landscape}
+      focused={focused}
+      busyId={fetching}
+      onSettle={settle}
+      onNearEnd={onLoadMore}
+      onToggleFocus={toggleFocus}
       onPlay={playNow}
       onOpenMotion={onOpenMotion}
-      onClose={() => {
-        perf("close:press");
-        showing.current = null;
-        setItem(null);
-        perf("close:cleared");
-      }}
+      onReadInfo={onReadInfo}
+      onClose={close}
     />
   );
 
-  return { open: show, element };
+  return { open, element };
 }
 
 /**

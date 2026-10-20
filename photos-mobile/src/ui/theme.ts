@@ -6,13 +6,15 @@
  */
 
 import { StyleSheet } from "react-native";
-import { CONTENT_PADDING, GRID_GAP, TILE_WIDTH_FRACTION } from "./grid-geometry";
-// The footer's height is geometry the rendition request also reads — the stage
-// is the window less the insets less this number — so it lives beside the
+import { CONTENT_PADDING, GRID_GAP } from "./grid-geometry";
+// The viewer's bar height is geometry the rendition request also reads — the
+// stage is the window less the insets less both bars — so it lives beside the
 // arithmetic rather than beside the style. Two copies of it would let the
-// layout and the request disagree about how much room the photograph gets,
-// which is exactly the defect the stated height replaced.
-import { VIEWER_FOOTER_HEIGHT } from "../photos/render-target";
+// layout and the request disagree about how much room the photograph gets.
+import { VIEWER_BAR_HEIGHT } from "../photos/render-target";
+
+/** The height of the grid's app bar, below the status bar. */
+export const APP_BAR_HEIGHT = 56;
 
 export const colors = {
   background: "#111",
@@ -34,11 +36,9 @@ export const colors = {
  */
 export {
   CONTENT_PADDING,
-  GRID_COLUMNS,
   GRID_GAP,
   LIBRARY_ROW_HEIGHT,
   libraryGridWidth,
-  TILE_WIDTH_FRACTION,
 } from "./grid-geometry";
 
 export const styles = StyleSheet.create({
@@ -82,74 +82,28 @@ export const styles = StyleSheet.create({
   buttonLabel: { color: colors.background, fontSize: 16, fontWeight: "600" },
   linkLabel: { color: colors.muted, fontSize: 14 },
 
-  // Three across, by percentage rather than a measured width: the tiles then
-  // survive a rotation and a tablet without anyone measuring the screen.
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: GRID_GAP },
   /**
-   * One row of the library grid, as a virtualized list item.
-   *
-   * Its own style rather than a reuse of `grid`, because the two lay out
-   * differently now: `grid` wraps a whole set of tiles and is what the device
-   * grid still uses, and this is a single row whose height the list computes in
-   * advance. `marginBottom` rather than a container `gap`, because the list puts
-   * nothing between its items.
+   * One row of the library grid, as a virtualized list item. `marginBottom`
+   * rather than a container `gap`, because the list puts nothing between its
+   * items.
    */
   gridRow: { flexDirection: "row", gap: GRID_GAP, marginBottom: GRID_GAP },
   /**
-   * The list's own padding, without `content`'s gap and without side padding.
-   *
-   * `content` separates the screen's sections by 20; applied to a list it would
-   * separate every grid row by 20 as well. The sections keep their spacing by
-   * carrying it on the header and footer instead.
-   *
-   * Vertical only, because the grid runs the full width of the screen. What
-   * needs the side inset is the text around the grid, which takes it from
-   * `listGutter`.
-   */
-  listContent: { paddingVertical: CONTENT_PADDING },
-  /**
    * The side inset the list's text carries, now that the list itself does not.
    *
-   * The header, the footer and the empty message; never a grid row.
+   * The access prompt and the empty message; never a grid row.
    */
   listGutter: { paddingHorizontal: CONTENT_PADDING },
-  tile: {
-    width: `${TILE_WIDTH_FRACTION * 100}%`,
-    aspectRatio: 1,
-    backgroundColor: colors.surface,
-    justifyContent: "flex-end",
-  },
   /**
    * One tile of the justified library grid.
    *
-   * No `width` and no `aspectRatio`, unlike `tile` above: the layout assigns
-   * both per photograph, so a style that carried either would be a second
+   * No `width` and no `aspectRatio`: the layout assigns both per photograph, so a style that carried either would be a second
    * opinion about the shape and the two would disagree on every row.
    */
   justifiedTile: { backgroundColor: colors.surface, justifyContent: "flex-end" },
   tileImage: { width: "100%", height: "100%" },
   /**
-   * A device asset this node does not hold.
-   *
-   * Dimmed rather than badged alone, because the question somebody opens the
-   * device grid to answer is "which ones are missing" — and scanning sixty
-   * tiles for a small mark is not answering it. The mark beside this says which
-   * state the dimming means, since a faded tile on its own reads as one still
-   * loading.
-   */
-  tileNotImported: { opacity: 0.35 },
-  tileMissingMark: {
-    position: "absolute",
-    bottom: 3,
-    left: 3,
-    right: 3,
-    color: colors.danger,
-    fontSize: 9,
-    fontWeight: "700",
-    textAlign: "center",
-  },
-  /**
-   * The mark on a video tile, in both grids. See `VideoBadge.tsx`.
+   * The mark on a video tile. See `VideoBadge.tsx`.
    *
    * Top right rather than bottom right, which is where the device grid used to
    * put a bare duration. The bottom of a tile is where a photograph's subject
@@ -176,8 +130,6 @@ export const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
 
-  /** A record this node has but whose bytes are elsewhere. Not an error state. */
-  tilePlaceholder: { alignItems: "center", justifyContent: "center" },
   /**
    * The mark on a tile with no bytes here at all, over whatever is behind it.
    *
@@ -199,15 +151,57 @@ export const styles = StyleSheet.create({
   tilePlaceholderMark: { color: colors.border, fontSize: 22 },
 
   /**
-   * The viewer's own surface, over the screen that opened it.
+   * The app bar over the grid: the menu button and the title, below the status
+   * bar. Landscape hides it, so the grid has the whole screen.
+   */
+  appBar: {
+    height: APP_BAR_HEIGHT,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 4,
+    gap: 4,
+    backgroundColor: colors.background,
+  },
+  appBarTitle: { color: colors.heading, fontSize: 20, fontWeight: "600" },
+  /** A 48-point touch target around a 24-point icon. */
+  iconButton: { width: 48, height: 48, alignItems: "center", justifyContent: "center" },
+  /** The menu the hamburger opens, anchored under the app bar's left edge. */
+  menuBackdrop: { flex: 1 },
+  menu: {
+    position: "absolute",
+    left: 8,
+    minWidth: 180,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    elevation: 8,
+  },
+  menuItem: { paddingHorizontal: 16, paddingVertical: 12 },
+  menuItemLabel: { color: colors.text, fontSize: 16 },
+
+  /**
+   * A full-screen surface over the grid: the viewer and Settings.
    *
    * Absolute rather than a `Modal`, which is what stops this costing a second
    * view hierarchy and a window animation for a surface the app already owns —
    * and what keeps the grid mounted underneath, so returning to it costs no
-   * scroll position and no re-decoded tiles. It sits inside `HomeScreen`'s own
-   * `SafeAreaView`, so its box is the window less the system insets, which is
-   * exactly what `viewerStageBox` subtracts.
+   * scroll position and no re-decoded tiles. It sits at the root of
+   * `HomeScreen`, outside any safe-area padding, so its box is the whole window
+   * and it applies the insets itself.
    */
+  overlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: colors.background,
+  },
+  // The viewer deliberately goes black rather than using the app background:
+  // a photograph is the only thing on screen and every other pixel should get
+  // out of its way.
   viewerOverlay: {
     position: "absolute",
     top: 0,
@@ -216,10 +210,33 @@ export const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: "#000",
   },
-  // The viewer deliberately goes black rather than using the app background:
-  // a photograph is the only thing on screen and every other pixel should get
-  // out of its way.
-  viewerSafe: { flex: 1, backgroundColor: "#000" },
+  /**
+   * The viewer's top bar and footer, at the height the stage arithmetic
+   * reserved for each.
+   *
+   * Stated rather than grown, because the stage is computed as the window less
+   * the insets less exactly these two numbers — and a bar that took more or less
+   * than it was given would resize the picture between them. The focused view
+   * hides a bar's controls and leaves the bar.
+   */
+  viewerTopBar: {
+    height: VIEWER_BAR_HEIGHT,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 4,
+  },
+  viewerFooter: {
+    height: VIEWER_BAR_HEIGHT,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+  },
+  /** The landscape back arrow, floating over the stage's top-left corner. */
+  viewerFloatingBack: { position: "absolute", top: 8 },
+  viewerMotionLabel: { color: "#fff", fontSize: 14 },
+  /** One page of the pager: the stage, centred in a page as wide as the window. */
+  viewerPage: { alignItems: "center", justifyContent: "center" },
   /**
    * The swipe wrapper around the still, and deliberately nothing but `flex`.
    *
@@ -259,39 +276,27 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  viewerPlayGlyph: { color: "#fff", fontSize: 30, marginLeft: 4 },
   viewerPlayBusy: { color: "#fff", fontSize: 12 },
-  /**
-   * The footer, at the height the stage arithmetic reserved for it.
-   *
-   * Stated rather than grown, because the stage is computed as the window less
-   * the insets less exactly this number — and a footer that took more or less
-   * than it was given would resize the picture above it. `VIEWER_FOOTER_HEIGHT`
-   * is the number and `photos/render-target.ts` argues for it.
-   */
-  viewerFooter: {
-    height: VIEWER_FOOTER_HEIGHT,
-    padding: 20,
-    gap: 4,
-    backgroundColor: colors.background,
+  /** The info sheet: a panel rising from the bottom over a dimmed viewer. */
+  sheetBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+  sheet: {
+    maxHeight: "75%",
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: CONTENT_PADDING,
+    paddingTop: 8,
   },
-  /**
-   * The pixel-count readout, over the photograph rather than under it.
-   *
-   * Absolute so it takes no room: the footer is what sizes the stage, and a
-   * readout that grew the footer would change the very numbers it reports. See
-   * `RenderedSize` in `LibraryViewer.tsx`.
-   */
-  renderedSize: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: "rgba(0,0,0,0.55)",
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-  renderedSizeText: { color: "#ddd", fontSize: 11, fontFamily: "monospace" },
+  sheetTitle: { color: colors.heading, fontSize: 16, fontWeight: "600" },
+  infoRow: { flexDirection: "row", gap: 12, paddingVertical: 6 },
+  infoLabel: { color: colors.muted, fontSize: 13, width: 110 },
+  infoValue: { color: colors.text, fontSize: 13, flex: 1 },
+  infoValueMono: { color: colors.text, fontSize: 12, flex: 1, fontFamily: "monospace" },
 
   row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
   /** A row of mutually exclusive choices, such as the photo ceiling. */
@@ -307,9 +312,4 @@ export const styles = StyleSheet.create({
   chipLabel: { color: colors.text, fontSize: 13 },
   chipLabelSelected: { color: colors.background, fontSize: 13, fontWeight: "600" },
   rowText: { flex: 1, gap: 2 },
-  badge: { fontSize: 11, fontWeight: "700", paddingTop: 3, width: 34 },
-  ok: { color: colors.accent },
-  bad: { color: colors.danger },
-  /** For a check that failed without anything being wrong — see `Check.required`. */
-  info: { color: colors.muted },
 });

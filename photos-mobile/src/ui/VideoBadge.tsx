@@ -3,8 +3,9 @@
  *
  * ## Why one component rather than two badges
  *
- * `MediaGrid` and `LibraryGrid` draw the same files — on a phone that has
- * imported its camera roll they are the same pictures — and they used to mark
+ * The app once had two grids, the camera roll's and the library's, drawing the
+ * same files — on a phone that has imported its camera roll they are the same
+ * pictures — and they used to mark
  * them differently: the device grid put a bare duration in the bottom-right
  * corner, and the library grid painted a `▶` in the middle of an empty
  * placeholder and said nothing about length. Two grids that mark the same file

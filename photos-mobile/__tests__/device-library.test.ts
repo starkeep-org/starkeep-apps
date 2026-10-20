@@ -13,6 +13,7 @@ import { describe, it, expect } from "vitest";
 import {
   describeAccess,
   formatDuration,
+  nextAccessStep,
   listRecentMedia,
   type AssetMetadataLike,
   type DeviceMediaModule,
@@ -391,5 +392,36 @@ describe("when the media store does not answer", () => {
     clock.fireAll();
 
     expect(items).toHaveLength(1);
+  });
+});
+
+describe("nextAccessStep", () => {
+  it("asks on open when Android will still show the dialog", () => {
+    expect(nextAccessStep("denied", "open", false)).toBe("ask");
+  });
+
+  it("asks at most once per launch on open", () => {
+    // A refusal leaves the grid's own prompt, which asks again only when tapped.
+    expect(nextAccessStep("denied", "open", true)).toBe("nothing");
+  });
+
+  it("does not send anybody to settings unasked", () => {
+    expect(nextAccessStep("blocked", "open", false)).toBe("nothing");
+  });
+
+  it("does nothing on open with access, or with a permission it could not read", () => {
+    expect(nextAccessStep("granted", "open", false)).toBe("nothing");
+    expect(nextAccessStep("limited", "open", false)).toBe("nothing");
+    expect(nextAccessStep(null, "open", false)).toBe("nothing");
+  });
+
+  it("opens settings from the prompt once Android has stopped asking", () => {
+    expect(nextAccessStep("blocked", "prompt", true)).toBe("open-settings");
+  });
+
+  it("asks from the prompt every time Android still will", () => {
+    // The person tapped, so an ask already made this launch does not count.
+    expect(nextAccessStep("denied", "prompt", true)).toBe("ask");
+    expect(nextAccessStep("denied", "prompt", false)).toBe("ask");
   });
 });

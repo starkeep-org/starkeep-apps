@@ -113,9 +113,9 @@ describe("the sync half", () => {
     expect(plan.import).toBe(true);
   });
 
-  it("names the sync decline ahead of the import one when both apply", () => {
-    // The import half has its own control on the same screen saying the same
-    // thing; the sync half has nothing else that would ever mention it.
+  it("declines both halves when the permission is missing on a metered connection", () => {
+    // Each half reads its own condition, so one decline neither causes nor
+    // hides the other.
     const plan = planCatchUp(
       state({ mediaPermissionGranted: false, device: { ...WIFI, isUnmetered: false } }),
     );

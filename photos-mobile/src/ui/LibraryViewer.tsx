@@ -67,6 +67,7 @@ import { styles } from "./theme";
 import { isVideo } from "./format";
 import { perf } from "./perf";
 import { PhotoInfoSheet } from "./PhotoInfoSheet";
+import { collapseLayers, nextLayers, thumbHashLayer } from "./viewer-layers";
 
 /** How close to the end of the loaded page a settled swipe asks for more. */
 const LOAD_MORE_WITHIN = 5;
@@ -581,21 +582,9 @@ function StillStage({
       setLayers([]);
       return;
     }
-    // A stage that mounted with nothing to draw gives the ThumbHash to the first
-    // layer that arrives, decided before that layer mounts.
-    placeholderLayer.current ??= uri;
-    // Appended, never replaced. The layer beneath is the previous photograph,
-    // which is a far better thing to have under a decode than a blur.
-    //
-    // A URI already in the stack is a page going back to a picture it showed
-    // earlier, which happens when a resolution is replaced by an older one. The
-    // stack drops back to that layer rather than mounting a second `<Image>`
-    // under the same key, which React would treat as one element.
-    setLayers((current) => {
-      const at = current.indexOf(uri);
-      if (at === current.length - 1) return current;
-      return at >= 0 ? current.slice(0, at + 1) : [...current, uri];
-    });
+    // Decided before the layer mounts. See `viewer-layers.ts` for both rules.
+    placeholderLayer.current = thumbHashLayer(placeholderLayer.current, uri);
+    setLayers((current) => nextLayers(current, uri));
   }, [uri]);
 
   /**
@@ -647,7 +636,7 @@ function StillStage({
     (layer: string) => {
       perf("image:display");
       setShown(layer);
-      setLayers((current) => (current[current.length - 1] === layer ? [layer] : current));
+      setLayers((current) => collapseLayers(current, layer));
       onPainted();
     },
     [onPainted],

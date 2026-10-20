@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Linking } from "react-native";
 import { deviceMedia } from "../platform";
-import { describeAccess, type MediaAccess } from "../media/device-library";
+import { describeAccess, nextAccessStep, type MediaAccess } from "../media/device-library";
 import { planCatchUp } from "../work/foreground-catchup";
 import {
   createDebouncer,
@@ -491,7 +491,8 @@ export function useForegroundWork(
     if (!nodeReady) return;
     void (async () => {
       const permission = await readMediaAccess();
-      if (permission && !permission.granted && permission.canAskAgain && !askedForMedia.current) {
+      const access = permission ? describeAccess(permission) : null;
+      if (nextAccessStep(access, "open", askedForMedia.current) === "ask") {
         askedForMedia.current = true;
         const answered = await deviceMedia.requestPermissions().catch(() => null);
         if (answered) setMediaAccess(describeAccess(answered));
@@ -510,7 +511,7 @@ export function useForegroundWork(
   }, [readMediaAccess]);
 
   const requestMediaAccess = useCallback(async () => {
-    if (mediaAccess === "blocked") {
+    if (nextAccessStep(mediaAccess, "prompt", askedForMedia.current) === "open-settings") {
       await Linking.openSettings();
       return;
     }

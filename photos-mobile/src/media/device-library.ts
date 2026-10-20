@@ -169,6 +169,33 @@ export function describeAccess(permission: MediaPermission): MediaAccess {
   return permission.canAskAgain ? "denied" : "blocked";
 }
 
+/** What the app does next about the photo permission. */
+export type AccessStep = "ask" | "open-settings" | "nothing";
+
+/**
+ * The next step for the photo permission, at one of the two moments the app
+ * acts on it.
+ *
+ * - `open`: the node has just opened. The library is the camera roll, so a
+ *   refusal Android will still ask about gets the system dialog, once per
+ *   launch at most. A blocked one gets nothing: sending somebody to system
+ *   settings unasked is not an explanation.
+ * - `prompt`: somebody tapped the grid's prompt. The system dialog when
+ *   Android will still show one, the app's settings page when it will not. A
+ *   tap is asked every time, because the person asked.
+ *
+ * `access` is null when the permission could not be read. On open, nothing
+ * follows from a read that failed.
+ */
+export function nextAccessStep(
+  access: MediaAccess | null,
+  moment: "open" | "prompt",
+  askedThisLaunch: boolean,
+): AccessStep {
+  if (moment === "prompt") return access === "blocked" ? "open-settings" : "ask";
+  return access === "denied" && !askedThisLaunch ? "ask" : "nothing";
+}
+
 function kindOf(mediaType: string): MediaKind {
   return mediaType === "image" || mediaType === "video" || mediaType === "audio"
     ? mediaType

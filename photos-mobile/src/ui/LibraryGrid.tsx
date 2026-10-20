@@ -62,6 +62,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 // See `photos-mobile-status-2026-08-31.md`.
 import { Image } from "expo-image";
 import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
+import { EXPIRED, REAL_TIMERS, raceDeadline } from "../deadline";
 import type { LibraryItem } from "../library";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import {
@@ -516,10 +517,12 @@ export function useLibraryViewer(
       showing.current = id;
       const resolving = resolveNow(opened);
       void (async () => {
-        const first = await Promise.race([
-          resolving,
-          new Promise<null>((done) => setTimeout(() => done(null), OPEN_RESOLVE_WAIT_MS)),
-        ]);
+        // The platform's timers: a tap happens in the foreground. See `deadline.ts`.
+        const raced = await raceDeadline(resolving, {
+          ms: OPEN_RESOLVE_WAIT_MS,
+          timers: REAL_TIMERS,
+        });
+        const first = raced === EXPIRED ? null : raced;
         perf(`show:resolved inTime=${first !== null}`);
         if (showing.current !== id) return;
         setResolved(new Map(first ? [[id, first]] : []));

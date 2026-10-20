@@ -12,6 +12,7 @@ import { BackHandler, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { STAND_IN_CATEGORIES } from "@starkeep/protocol-primitives";
+import { hostLabel } from "../auth/connection";
 import { signOutThisPhone } from "../platform";
 import { CEILING_CATEGORY_LABELS, ceilingLabel } from "./ceiling-text";
 import { describeStorageGroup } from "./storage-text";
@@ -258,9 +259,4 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </View>
   );
-}
-
-/** A cloud's address, as a person reads it: the host alone. */
-export function hostLabel(baseUrl: string): string {
-  return baseUrl.replace(/^https?:\/\//, "").replace(/[/:].*$/, "");
 }

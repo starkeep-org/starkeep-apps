@@ -53,3 +53,52 @@ describe("photoInfoRows", () => {
     expect(rows.map((row) => row.label)).toEqual(["Filename", "MIME type", "File size"]);
   });
 });
+
+describe("photoInfoRows with keepCoreRows", () => {
+  it("keeps the five core rows with a blank value when unknown", () => {
+    // The web app's panel showed these rows for every photo, filled or not.
+    const rows = photoInfoRows(
+      {
+        originalFilename: "IMG_1.jpg",
+        width: 4000,
+        height: 3000,
+        mimeType: "",
+        sizeBytes: null,
+        dateTaken: "",
+      },
+      { keepCoreRows: true },
+    );
+    expect(rows).toEqual([
+      { label: "Filename", value: "IMG_1.jpg" },
+      { label: "Dimensions", value: "4000 × 3000px" },
+      { label: "Megapixels", value: "12.0 MP" },
+      { label: "MIME type", value: "" },
+      { label: "File size", value: "" },
+      { label: "Date taken", value: "" },
+    ]);
+  });
+
+  it("still leaves out an unknown row that is not a core row", () => {
+    const rows = photoInfoRows(
+      {
+        originalFilename: null,
+        title: "",
+        width: null,
+        height: null,
+        mimeType: null,
+        sizeBytes: null,
+        dateTaken: null,
+        cameraMake: null,
+        iso: null,
+      },
+      { keepCoreRows: true },
+    );
+    expect(rows.map((row) => row.label)).toEqual([
+      "Filename",
+      "Dimensions",
+      "MIME type",
+      "File size",
+      "Date taken",
+    ]);
+  });
+});

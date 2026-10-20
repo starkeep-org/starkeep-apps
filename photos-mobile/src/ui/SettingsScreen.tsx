@@ -208,7 +208,7 @@ function StorageSection({ storage }: { readonly storage: StorageState }) {
       {ceilings ? (
         <View style={{ gap: 12, marginTop: 8 }}>
           {/* The platform's ceilings for this node, shown here because a phone
-              has no admin-web. Same categories and sizes as the desktop's
+              has no admin-web. Same categories and sizes as admin-web's
               "Sync-down ceilings". Raising one downloads the sizes it now
               covers. */}
           <Text style={styles.body}>Sync-down ceilings</Text>

@@ -184,7 +184,7 @@ export function PhotoInfoPanel({ image, visible, onClose, onCaptionChange }: Pho
         orientation: info.exif.orientation,
         gpsLat: info.exif.gpsLat,
         gpsLon: info.exif.gpsLon,
-      }).map((row) => (
+      }, { keepCoreRows: true }).map((row) => (
         <InfoRow key={row.label} label={row.label} value={row.value} />
       ))}
 

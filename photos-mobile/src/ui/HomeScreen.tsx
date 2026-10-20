@@ -8,7 +8,7 @@
  *
  * ## What is on the screen
  *
- * The photographs, under an app bar with a menu, as on the desktop. Settings
+ * The photographs, under an app bar with a menu, as in the web app. Settings
  * and the viewer open over the grid rather than in place of it, so the grid
  * keeps its scroll position and its decoded tiles underneath them. Landscape
  * hides the app bar and the system bars, and the grid fills the screen.

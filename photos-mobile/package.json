@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p __ui_tests__",
+    "test": "vitest run && jest",
+    "test:ui": "jest",
     "test:android": "cd android && ./gradlew :starkeep-media-trigger:testDebugUnitTest",
     "start": "expo start",
     "android": "expo run:android",
@@ -41,8 +42,15 @@
     "react-native-safe-area-context": "~5.7.0"
   },
   "devDependencies": {
+    "@react-native/jest-preset": "0.86.2",
+    "@testing-library/react-native": "^13.3.3",
+    "@types/jest": "29.5.14",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.14",
+    "babel-preset-expo": "~57.0.5",
+    "jest": "~29.7.0",
+    "jest-expo": "~57.0.6",
+    "react-test-renderer": "19.2.7",
     "typescript": "^5.7.0",
     "vitest": "^3.2.7"
   },

@@ -1,101 +1,137 @@
 /**
- * One photo, full screen.
+ * The photographs, full screen, one page each.
  *
- * Split out of `LibraryGrid` when the grid became virtualized. The two now have
+ * Split out of `LibraryGrid` when the grid became virtualized. The two have
  * genuinely different lifetimes: a row is mounted and unmounted as it scrolls,
  * and the viewer must outlive every one of them — it is opened *from* a tile and
  * has to survive that tile being recycled out from under it while somebody is
- * looking at the picture. Leaving it inside the component that renders rows
- * would have tied it to whichever row happened to open it.
+ * looking at the picture.
  *
- * ## Why the stage is three components rather than one body with three branches
+ * ## The frame and the pages
+ *
+ * The frame is fixed: a top bar with the back arrow, the pager, and a footer
+ * with the info button and the Motion Photo toggle. The pages scroll inside it.
+ * A horizontal `FlatList` with `pagingEnabled` is the pager, so Android's own
+ * scroll view handles the drag: the photograph follows the finger, a fling
+ * respects its speed, and the photographs either side are already mounted and
+ * decoded when the swipe lands. The hand-rolled `PanResponder` this replaced
+ * did none of the three, which is why a swipe so often seemed not to work.
+ *
+ * Only the page on screen is *active*. It alone resolves the rung the stage
+ * wants, asks whether the photograph has motion, and plays anything; its
+ * neighbours paint whatever the grid's tile already had.
+ *
+ * ## Why the bars never leave the layout
+ *
+ * `expo-image` on Android reloads an image whenever the view it draws into
+ * changes size, and a reload of a photograph already on screen is a visible
+ * blackout. So nothing the person does resizes the stage. The focused view, and
+ * a playing video, hide the bars' *controls*; the bars keep their boxes, and
+ * being black on black they disappear without moving the photograph. Only a
+ * rotation resizes the stage, and a rotation redraws everything anyway.
+ *
+ * ## Why a page's stage is three components rather than one body with three branches
  *
  * `useVideoPlayer` is a hook, so a component that holds one pays for it on every
- * render — and constructing a player is not free. A single body that called it
- * twice, once for a video record and once for a Motion Photo's clip, built two
- * `ExoPlayer` instances every time anybody opened anything. Measured on a Pixel 5
- * against an ordinary still photograph with no video anywhere in it, the two
- * `ExoPlayerImpl.Init` lines landed 260 ms and 335 ms after the tap, and the tap
- * cost about 700 ms end to end.
- *
- * So the branch moved up. A still mounts {@link StillStage}, which holds no
- * player at all; a video mounts {@link VideoStage}, which holds one; and the
- * clip inside a Motion Photo gets {@link MotionStage}, which is mounted only
- * once somebody presses play — a control that might do nothing is worse than no
- * control, but a player nobody asked for is worse than both.
+ * render — and constructing a player is not free. Measured on a Pixel 5 against
+ * an ordinary still photograph, two `ExoPlayerImpl.Init` lines landed 260 ms and
+ * 335 ms after the tap. So a still mounts {@link StillStage}, which holds no
+ * player at all; a video mounts {@link VideoStage} once somebody presses play;
+ * and the clip inside a Motion Photo gets {@link MotionStage}, mounted only once
+ * somebody asks for it.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState,
   BackHandler,
+  FlatList,
   InteractionManager,
-  PanResponder,
-  PixelRatio,
   Pressable,
   Text,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from "react-native";
+import type { EdgeInsets } from "react-native-safe-area-context";
+import { MaterialIcons } from "@expo/vector-icons";
 // The only video player this app has. `expo-av` is not an option — the package
 // is removed from SDK 54 onward — and React Native ships none of its own.
 import { useVideoPlayer, VideoView } from "expo-video";
-import { Image, type ImageLoadEventData } from "expo-image";
+import { Image } from "expo-image";
+import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
 import type { LibraryItem } from "../library";
 import type { Dimensions as Box } from "../photos/render-target";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { styles } from "./theme";
-import { formatBytes, isVideo } from "./format";
+import { isVideo } from "./format";
 import { perf } from "./perf";
+import { PhotoInfoSheet } from "./PhotoInfoSheet";
 
-/**
- * How far a finger has to travel sideways before it counts as "next photo".
- *
- * In layout points, and deliberately larger than the slop that distinguishes a
- * tap from a drag: a tap anywhere on a still dismisses the viewer, so a gesture
- * that is *nearly* a tap must not navigate. The dominance test beside it is what
- * keeps a diagonal from counting.
- */
-const SWIPE_DISTANCE = 60;
+/** How close to the end of the loaded page a settled swipe asks for more. */
+const LOAD_MORE_WITHIN = 5;
 
-/** Which way somebody swiped, as a step through the library. */
-export type ViewerStep = -1 | 1;
+/** What the active page tells the frame, so the frame can draw its controls. */
+interface PageReport {
+  readonly id: string;
+  /** Whether the photograph carries a Motion Photo clip. */
+  readonly motion: boolean;
+  /** Whether a video is playing right now. */
+  readonly videoPlaying: boolean;
+}
 
 export function LibraryViewer({
-  item,
+  items,
+  openId,
+  resolved,
   stage,
-  busy,
-  hasPrevious,
-  hasNext,
-  onStep,
+  window,
+  insets,
+  landscape,
+  focused,
+  busyId,
+  onSettle,
+  onNearEnd,
+  onToggleFocus,
   onPlay,
   onOpenMotion,
+  onReadInfo,
   onClose,
 }: {
-  item: LibraryItem | null;
+  /** The page the grid is drawing, in the grid's order. */
+  readonly items: readonly LibraryItem[];
+  /** The record on screen, or null while the viewer is closed. */
+  readonly openId: string | null;
+  /** Each record's viewer resolution, where one has landed. */
+  readonly resolved: ReadonlyMap<string, LibraryItem>;
   /** The box the photograph gets, in layout points. See `viewerStageBox`. */
-  stage: Box;
-  busy: boolean;
-  hasPrevious: boolean;
-  hasNext: boolean;
-  onStep: (step: ViewerStep) => void;
+  readonly stage: Box;
+  readonly window: Box;
+  readonly insets: EdgeInsets;
+  readonly landscape: boolean;
+  /** Whether the focused view hides the controls. */
+  readonly focused: boolean;
+  /** The record whose video bytes are downloading, if any. */
+  readonly busyId: string | null;
+  /** A swipe came to rest on this record. */
+  readonly onSettle: (id: string) => void;
+  /** A swipe came to rest near the end of the loaded page. */
+  readonly onNearEnd: () => void;
+  readonly onToggleFocus: () => void;
   /** Play pressed on a clip: fetch what it needs to play, when that is not here. */
-  onPlay: (item: LibraryItem) => Promise<void>;
-  onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
-  onClose: () => void;
+  readonly onPlay: (item: LibraryItem) => Promise<void>;
+  readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
+  readonly onReadInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  readonly onClose: () => void;
 }) {
   /**
    * The hardware back button, which is the one thing `Modal` was doing for free.
    *
    * Registered whenever a record is open and removed when it is not, so the
-   * button falls through to whatever else claims it — and to the OS, which exits
-   * the app — while the grid is what is on screen. Returning true is what tells
-   * Android the press was handled.
-   *
-   * Above the early return rather than inside the body, because hooks may not be
-   * conditional and the viewer is mounted with `item === null` for most of the
-   * app's life.
+   * button falls through to the grid's own handling while the grid is what is on
+   * screen. The info sheet is a `Modal` and takes the button first while open.
    */
-  const open = item !== null;
+  const open = openId !== null;
   useEffect(() => {
     if (!open) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -105,130 +141,287 @@ export function LibraryViewer({
     return () => subscription.remove();
   }, [open, onClose]);
 
-  if (!item) return null;
+  const [report, setReport] = useState<PageReport | null>(null);
+  /** Whether the active page's Motion Photo clip is playing. Off on every page change. */
+  const [playingMotion, setPlayingMotion] = useState(false);
+  const [infoRecord, setInfoRecord] = useState<DataRecord | null>(null);
+  useEffect(() => {
+    setPlayingMotion(false);
+  }, [openId]);
+
+  const onReport = useCallback((next: PageReport) => {
+    setReport((current) =>
+      current &&
+      current.id === next.id &&
+      current.motion === next.motion &&
+      current.videoPlaying === next.videoPlaying
+        ? current
+        : next,
+    );
+  }, []);
+  const stopMotion = useCallback(() => setPlayingMotion(false), []);
+
+  const index = openId === null ? -1 : items.findIndex((item) => item.record.id === openId);
+
+  /**
+   * Keeps the pager on the open record when the page shifts under it.
+   *
+   * A sync can land photographs ahead of the one on screen, which moves its
+   * index. The pager scrolls by offset, so without this it would go on showing
+   * whatever now sits at the old index.
+   */
+  const listRef = useRef<FlatList<LibraryItem>>(null);
+  const shownIndex = useRef(index);
+  useEffect(() => {
+    if (index >= 0 && index !== shownIndex.current) {
+      listRef.current?.scrollToIndex({ index, animated: false });
+    }
+    shownIndex.current = index;
+  }, [index]);
+
+  const pageWidth = window.width;
+  const onMomentumScrollEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const landed = Math.round(event.nativeEvent.contentOffset.x / pageWidth);
+      const item = items[landed];
+      if (!item) return;
+      shownIndex.current = landed;
+      onSettle(item.record.id);
+      if (landed >= items.length - LOAD_MORE_WITHIN) onNearEnd();
+    },
+    [items, pageWidth, onSettle, onNearEnd],
+  );
+
+  const renderPage = useCallback(
+    ({ item }: { item: LibraryItem }) => {
+      const id = item.record.id;
+      const active = id === openId;
+      return (
+        <ViewerPage
+          item={resolved.get(id) ?? item}
+          active={active}
+          stage={stage}
+          pageWidth={pageWidth}
+          busy={busyId === id}
+          playingMotion={active && playingMotion}
+          onTapStill={onToggleFocus}
+          onPlay={onPlay}
+          onOpenMotion={onOpenMotion}
+          onStopMotion={stopMotion}
+          onReport={onReport}
+        />
+      );
+    },
+    [
+      openId,
+      resolved,
+      stage,
+      pageWidth,
+      busyId,
+      playingMotion,
+      onToggleFocus,
+      onPlay,
+      onOpenMotion,
+      stopMotion,
+      onReport,
+    ],
+  );
+
+  if (index < 0) return null;
+  const current = items[index]!;
+  const currentReport = report?.id === current.record.id ? report : null;
+  // A video ignores the focused view: whether it is playing decides. A still
+  // shows its controls unless the person tapped them away.
+  const controlsVisible = isVideo(current) ? !currentReport?.videoPlaying : !focused;
+  const fade = { opacity: controlsVisible ? 1 : 0 };
+  const touchable = controlsVisible ? "auto" : "none";
+
+  const back = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+      onPress={onClose}
+      style={styles.iconButton}
+    >
+      <MaterialIcons name="arrow-back" size={24} color="#fff" />
+    </Pressable>
+  );
+
+  const pager = (
+    <FlatList
+      // Remounted on rotation, at the open record. A page's width is the
+      // window's, so every offset the old list held is wrong afterwards.
+      key={`pager-${pageWidth}`}
+      ref={listRef}
+      data={items}
+      horizontal
+      pagingEnabled
+      showsHorizontalScrollIndicator={false}
+      keyExtractor={(item) => item.record.id}
+      getItemLayout={(_data, i) => ({ length: pageWidth, offset: pageWidth * i, index: i })}
+      initialScrollIndex={index}
+      // The page on screen and one either side: enough that a swipe lands on a
+      // photograph already decoded, few enough that three full-screen bitmaps
+      // are the most this holds.
+      windowSize={3}
+      initialNumToRender={1}
+      maxToRenderPerBatch={1}
+      extraData={renderPage}
+      renderItem={renderPage}
+      onMomentumScrollEnd={onMomentumScrollEnd}
+      style={{ height: stage.height, flexGrow: 0 }}
+    />
+  );
+
   return (
     // **A screen, not a dialog window.** `Modal` builds a second view hierarchy
-    // and animates it in front of a screen this app already owns, which costs a
-    // window animation and a second inset measurement for a surface that is
-    // simply the next thing to look at. This is a full-bleed overlay in
-    // `HomeScreen`'s own tree instead — no navigator needed, and the grid stays
+    // and animates it in front of a screen this app already owns. This is a
+    // full-bleed overlay in `HomeScreen`'s own tree instead, and the grid stays
     // mounted underneath, which is what keeps its scroll position and stops
     // every tile re-decoding on the way back.
-    //
-    // The day this app has a third destination, the overlay becomes a route with
-    // no change to anything below here.
     <View style={styles.viewerOverlay}>
-      <ViewerBody
-        // Keyed on the record, so opening a second photograph builds a fresh
-        // body rather than reusing one whose motion handle belongs to the first.
-        // Stepping to the next photograph goes through the same key, which is
-        // what releases the previous one's scratch clip.
-        key={item.record.id}
-        item={item}
-        stage={stage}
-        busy={busy}
-        hasPrevious={hasPrevious}
-        hasNext={hasNext}
-        onStep={onStep}
-        onPlay={onPlay}
-        onOpenMotion={onOpenMotion}
-        onClose={onClose}
+      {landscape ? (
+        <>
+          {pager}
+          {/* The one control landscape keeps, bare over the photograph. */}
+          {controlsVisible ? (
+            <View style={[styles.viewerFloatingBack, { left: 4 + insets.left }]}>{back}</View>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <View style={{ height: insets.top }} />
+          <View style={[styles.viewerTopBar, { paddingLeft: 4 + insets.left }]}>
+            <View style={fade} pointerEvents={touchable}>
+              {back}
+            </View>
+          </View>
+          {pager}
+          {/* Given the height the stage arithmetic reserved for it, so a control
+              that is absent leaves its space empty rather than collapsing it
+              and resizing the picture above. See `VIEWER_BAR_HEIGHT`. */}
+          <View style={[styles.viewerFooter, fade]} pointerEvents={touchable}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Photo info"
+              onPress={() => setInfoRecord(current.record)}
+              style={styles.iconButton}
+            >
+              <MaterialIcons name="info-outline" size={24} color="#fff" />
+            </Pressable>
+            {/* Offered only when there is genuinely motion in these bytes. The
+                record stays one image everywhere else in the app — it sorts,
+                syncs and counts as a single still — and this is the only place
+                its bytes behave differently. */}
+            {currentReport?.motion ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={playingMotion ? "Stop motion" : "Play motion"}
+                onPress={() => setPlayingMotion((playing) => !playing)}
+                style={[styles.iconButton, { flexDirection: "row", width: undefined, gap: 6, paddingHorizontal: 12 }]}
+              >
+                <MaterialIcons
+                  name={playingMotion ? "motion-photos-pause" : "motion-photos-on"}
+                  size={24}
+                  color="#fff"
+                />
+                <Text style={styles.viewerMotionLabel}>{playingMotion ? "Stop" : "Motion"}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          <View style={{ height: insets.bottom }} />
+        </>
+      )}
+      <PhotoInfoSheet
+        record={infoRecord}
+        readInfo={onReadInfo}
+        onClose={() => setInfoRecord(null)}
       />
     </View>
   );
 }
 
-function ViewerBody({
+/**
+ * One photograph or clip, centred in a page as wide as the window.
+ *
+ * Memoized because the pager re-renders every mounted page whenever anything in
+ * the frame changes, and a page whose props did not change has nothing to redo.
+ */
+const ViewerPage = memo(function ViewerPage({
   item,
+  active,
   stage,
+  pageWidth,
   busy,
-  hasPrevious,
-  hasNext,
-  onStep,
+  playingMotion,
+  onTapStill,
   onPlay,
   onOpenMotion,
-  onClose,
+  onStopMotion,
+  onReport,
 }: {
-  item: LibraryItem;
-  stage: Box;
-  busy: boolean;
-  hasPrevious: boolean;
-  hasNext: boolean;
-  onStep: (step: ViewerStep) => void;
-  onPlay: (item: LibraryItem) => Promise<void>;
-  onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
-  onClose: () => void;
+  readonly item: LibraryItem;
+  /** Whether this is the page on screen. Only the active page plays or probes. */
+  readonly active: boolean;
+  readonly stage: Box;
+  readonly pageWidth: number;
+  readonly busy: boolean;
+  readonly playingMotion: boolean;
+  readonly onTapStill: () => void;
+  readonly onPlay: (item: LibraryItem) => Promise<void>;
+  readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
+  readonly onStopMotion: () => void;
+  readonly onReport: (report: PageReport) => void;
 }) {
   const { record, uri, bytesHere, playbackUri, thumbHash } = item;
   const clip = isVideo(item);
+
   /**
    * Whether somebody pressed play on this clip. The player mounts once this is
-   * set and there is something to play, which may be after a download.
-   * Reset by remounting, like `painted` below.
+   * set and there is something to play, which may be after a download. Cleared
+   * when the page stops being the one on screen, which unmounts the player — a
+   * clip must not go on playing on a page somebody swiped away from.
    */
   const [playRequested, setPlayRequested] = useState(false);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  useEffect(() => {
+    if (active) return;
+    setPlayRequested(false);
+    setVideoPlaying(false);
+  }, [active]);
   const pressPlay = useCallback(() => {
     setPlayRequested(true);
     if (!playbackUri) void onPlay(item);
   }, [item, onPlay, playbackUri]);
-  perf("body:render");
-  useEffect(() => {
-    perf("body:mounted");
-    return () => perf("body:unmount");
-  }, []);
 
   /**
    * The clip inside this photograph, if it is a Motion Photo.
    *
-   * Opened when the viewer opens rather than when the control is tapped, so the
-   * control can appear at all: whether a photograph has motion is not knowable
-   * without asking, and a button that might do nothing is worse than no button.
-   * Released on the way out, and on the way to the background — a scratch file
-   * lasts exactly one viewing by design, and a process the OS is about to freeze
-   * is not one that will get to release anything later.
+   * Opened when the page becomes active rather than when the control is
+   * tapped, so the control can appear at all: whether a photograph has motion
+   * is not knowable without asking, and a button that might do nothing is worse
+   * than no button. Released when the page stops being active, and on the way
+   * to the background — a scratch file lasts exactly one viewing by design.
    *
-   * Not asked at all of a video record. `openMotionPhoto` would answer null for
-   * one anyway — the format is Google's and it is defined over JPEG — and
-   * skipping the call keeps a clip's open free of a question about stills.
+   * Not asked at all of a video record, and not asked of a neighbour page.
    *
    * ## Asked after the screen has settled, not while it is arriving
    *
    * A record the motion index has already covered answers in about 3 ms. One it
    * has not costs a whole-file read and a scan for XMP — 900 ms on a Pixel 5 for
-   * a 1.6 MB JPEG — on the JavaScript thread, and it used to run before anything
-   * was on screen. It was the largest single item in the 1.2 s between tapping a
-   * tile and seeing the photograph, and it delayed the viewer's own resolve
-   * behind it, because both wait on the same thread.
-   *
-   * So the ask waits for the stage to say it has something on screen, and
-   * `runAfterInteractions` then puts it in an idle frame rather than inside the
-   * display callback itself. Waiting on the *picture* rather than on the mount
-   * is deliberate and was measured: `runAfterInteractions` alone fired 36 ms
-   * after mount and the scan landed in front of the photograph exactly as
-   * before. That was against a `Modal`, whose fade is animated natively and
-   * registers no interaction handle; the overlay that replaced it has no
-   * animation to register one either, so the reasoning carries over unchanged.
-   *
-   * The scan costs the same whenever it runs, and it writes its answer down, so
-   * a record pays it once ever rather than once per opening.
+   * a 1.6 MB JPEG — on the JavaScript thread. So the ask waits for the stage to
+   * say it has something on screen, and `runAfterInteractions` then puts it in
+   * an idle frame rather than inside the display callback itself.
    */
   const [motion, setMotion] = useState<OpenMotionPhoto | null>(null);
-  const [playingMotion, setPlayingMotion] = useState(false);
-  /**
-   * Whether the stage has drawn what it has, so background work may start.
-   *
-   * Reset by remounting rather than by a setter: {@link LibraryViewer} keys the
-   * body on the record, so stepping to the next photograph builds a fresh body
-   * and a fresh `false`.
-   */
   const [painted, setPainted] = useState(false);
   const onPainted = useCallback(() => setPainted(true), []);
   useEffect(() => {
-    if (clip || !painted) return;
+    if (clip || !painted || !active) return;
     let released = false;
     let handle: OpenMotionPhoto | null = null;
     const deferred = InteractionManager.runAfterInteractions(() => {
-      // Cancelled and already-run race on a fast close, and `cancel()` does not
+      // Cancelled and already-run race on a fast swipe, and `cancel()` does not
       // unschedule a task that has begun. The flag is what makes the late one
       // harmless.
       if (released) return;
@@ -236,15 +429,16 @@ function ViewerBody({
       void onOpenMotion(item).then((opened) => {
         perf(`motion:answered found=${opened !== null}`);
         handle = opened;
-        // Opened after the viewer already closed. Hand the file straight back
-        // rather than leave one nothing will ever collect but the start-up sweep.
+        // Opened after the page stopped being active. Hand the file straight
+        // back rather than leave one nothing will ever collect but the start-up
+        // sweep.
         if (released) opened?.release();
         else setMotion(opened);
       });
     });
     const background = AppState.addEventListener("change", (state) => {
       if (state === "active") return;
-      setPlayingMotion(false);
+      onStopMotion();
       handle?.release();
       handle = null;
       released = true;
@@ -255,71 +449,37 @@ function ViewerBody({
       deferred.cancel();
       background.remove();
       handle?.release();
+      setMotion(null);
     };
-  }, [item, onOpenMotion, clip, painted]);
+    // The record, not the item: a resolution landing for the same record is a
+    // new item object and must not close and reopen the clip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record.id, onOpenMotion, clip, painted, active, onStopMotion]);
 
-  /**
-   * Sideways to move through the library, and nothing else claimed.
-   *
-   * `onMoveShouldSetPanResponder` rather than `onStartShouldSet`, so a touch is
-   * only taken away from the children once it has travelled — a tap on a still
-   * still dismisses, and a press on a control still presses. The dominance test
-   * is what separates this from the vertical drag somebody makes reaching for
-   * the footer.
-   *
-   * Only the still stage wires this up. A video's own scrubber is a horizontal
-   * drag on a native view, and a viewer that stole it to change photographs
-   * would make the platform's controls unusable — which is the argument the
-   * video branch already makes about not dismissing on tap.
-   */
-  const stepRef = useRef(onStep);
-  stepRef.current = onStep;
-  const swipe = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) =>
-          Math.abs(gesture.dx) > SWIPE_DISTANCE &&
-          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
-        onPanResponderRelease: (_event, gesture) => {
-          if (Math.abs(gesture.dx) < SWIPE_DISTANCE) return;
-          // Dragging the picture to the left brings the next one in from the
-          // right, which is the direction every other gallery on the device
-          // moves.
-          stepRef.current(gesture.dx < 0 ? 1 : -1);
-        },
-      }),
-    [],
-  );
+  useEffect(() => {
+    if (active) onReport({ id: record.id, motion: motion !== null, videoPlaying });
+  }, [active, record.id, motion, videoPlaying, onReport]);
 
-  const stopMotion = useCallback(() => setPlayingMotion(false), []);
-
+  const playingVideo = active && clip && playRequested && playbackUri;
   return (
-    <View style={styles.viewerSafe}>
-      {/* **An explicit height, not `flex: 1`.** The stage is computed from the
-          window, the system insets and the footer's stated height, and the
-          footer below is given exactly what the same arithmetic reserved. So
-          nothing under the photograph can change the box it is drawn into —
-          which matters because `expo-image` reissues its whole load whenever
-          the view it draws into changes size, and the motion control is a
-          control that arrives a second after the picture. */}
+    <View style={[styles.viewerPage, { width: pageWidth, height: stage.height }]}>
       <View style={{ width: stage.width, height: stage.height }}>
-        {clip && playRequested && playbackUri ? (
-          <VideoStage uri={playbackUri} />
+        {playingVideo ? (
+          <VideoStage uri={playbackUri} onPlayingChange={setVideoPlaying} />
         ) : playingMotion && motion && uri ? (
-          <MotionStage motion={motion} onStop={stopMotion} />
+          <MotionStage motion={motion} onStop={onStopMotion} />
         ) : (
           <StillStage
             uri={uri}
             thumbHash={thumbHash}
             bytesHere={bytesHere}
-            fromRendition={item.paintedRendition !== null}
-            stage={stage}
-            panHandlers={swipe.panHandlers}
             onPainted={onPainted}
-            onClose={onClose}
+            // A clip's poster plays on a tap; a still's tap toggles the focused
+            // view.
+            onTap={clip ? pressPlay : onTapStill}
           />
         )}
-        {clip && !(playRequested && playbackUri) ? (
+        {clip && !playingVideo ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={busy ? "Downloading the video" : "Play"}
@@ -330,102 +490,43 @@ function ViewerBody({
             {busy ? (
               <Text style={styles.viewerPlayBusy}>Loading…</Text>
             ) : (
-              <Text style={styles.viewerPlayGlyph}>▶</Text>
+              <MaterialIcons name="play-arrow" size={40} color="#fff" />
             )}
           </Pressable>
         ) : null}
       </View>
-
-      {/* Given the height the stage arithmetic reserved for it, so a control
-          that is absent leaves its space empty rather than collapsing it and
-          resizing the picture above. See `VIEWER_FOOTER_HEIGHT`. */}
-      <View style={styles.viewerFooter}>
-        <Text style={styles.body}>{record.originalFilename ?? "unnamed"}</Text>
-        {/* Where this photograph sits, and the only thing on screen that says a
-            swipe will do anything. Shown rather than left to be discovered,
-            because a gesture with no affordance is a gesture nobody finds. */}
-        {hasPrevious || hasNext ? (
-          <Text style={styles.muted}>
-            {hasPrevious ? "‹ " : ""}Swipe to move through the library{hasNext ? " ›" : ""}
-          </Text>
-        ) : null}
-        {/* Offered only when there is genuinely motion in these bytes, which is
-            what opening the clip up front buys. The record stays one image
-            everywhere else in the app — it sorts, syncs and counts as a single
-            still — and this is the only place its bytes behave
-            differently. */}
-        {motion ? (
-          <Pressable
-            onPress={() => setPlayingMotion((playing) => !playing)}
-            style={{ paddingVertical: 8 }}
-          >
-            <Text style={styles.linkLabel}>
-              {playingMotion ? "◉ Motion — tap to stop" : "◎ Play motion"}
-            </Text>
-          </Pressable>
-        ) : null}
-        <Text style={styles.muted}>
-          {record.type} · {formatBytes(record.sizeBytes)}
-        </Text>
-        {/* The content hash, abbreviated. On screen because this is the one
-            place the difference between "a photo" and "a record" is visible,
-            and because it is what a second device would match it by. */}
-        <Text style={styles.mono}>{record.contentHash?.slice(0, 16) ?? "no hash"}…</Text>
-        <Pressable onPress={onClose} style={{ paddingVertical: 8 }}>
-          <Text style={styles.linkLabel}>Close</Text>
-        </Pressable>
-      </View>
     </View>
   );
-}
+});
 
 /**
- * A photograph, and the swipe that moves off it.
+ * A photograph, or a clip's poster.
  *
  * Holds no player, which is the whole reason it is a component: this is what
- * most opens mount, and a still that constructs an `ExoPlayer` on the way in is
+ * most pages mount, and a still that constructs an `ExoPlayer` on the way in is
  * paying a quarter of a second for a video it does not have.
  *
- * **The swipe is on a wrapper, not on the `Pressable`.** Spreading
- * `panHandlers` onto the `Pressable` looked right and did nothing: `Pressable`
- * renders `<View {...restProps} {...pressabilityHandlers}>`, so its own
- * responder handlers land on the same node *after* the pan handlers and
- * overwrite every one of them. Worse, `Pressability` claims the responder on
- * touch start, and the responder system never asks a node that already holds
- * the responder whether it would like to set it — so `onMoveShouldSetPanResponder`
- * was unreachable twice over.
- *
- * A parent is asked. With a responder already held, the negotiation runs from
- * the common ancestor and skips the responder itself, which is exactly this
- * wrapper's position; `Pressability` answers a termination request with yes, so
- * a finger that travels far enough sideways moves from the tap to the swipe
- * mid-gesture, and the tap it stole is cancelled rather than fired.
+ * The tap is a `Pressable` inside the pager's scroll view. A horizontal drag
+ * that starts on the photograph hands the touch to the scroll view, which
+ * cancels the press rather than firing it, so a swipe never counts as a tap.
  */
 function StillStage({
   uri,
   thumbHash,
   bytesHere,
-  fromRendition,
-  stage,
-  panHandlers,
   onPainted,
-  onClose,
+  onTap,
 }: {
   uri: string | null;
   thumbHash: string | null;
   bytesHere: boolean;
-  /** Whether these bytes are a rung or the record's own file. See the readout. */
-  fromRendition: boolean;
-  /** The box this stage was given, in layout points. Fixed for the viewing. */
-  stage: Box;
-  panHandlers: ReturnType<typeof PanResponder.create>["panHandlers"];
   /**
    * Called once this stage has drawn what it has, which is what releases the
    * body's background work. A stage with nothing to draw reports immediately —
    * there is no picture coming, so nothing is being waited for.
    */
   onPainted: () => void;
-  onClose: () => void;
+  onTap: () => void;
 }) {
   const nothingToDraw = !uri && !thumbHash;
   useEffect(() => {
@@ -437,9 +538,10 @@ function StillStage({
    *
    * ## Why a mounted `Image`'s `source` never changes
    *
-   * One open paints up to three times — the tile's rung, the rung the viewer's
-   * own resolve finds, and whatever a fetch or an encode brings down — and the
-   * old shape pointed one `<Image>` at each in turn. Re-pointing makes
+   * A page opens on the rung its resolve found, and paints again only when a
+   * fetch or an encode brings down a better one — or, on a neighbour page, when
+   * its resolve lands after the page mounted on the tile's rung. The old shape
+   * pointed one `<Image>` at each rung in turn. Re-pointing makes
    * `expo-image` re-run its whole load against the live view, which is the path
    * that can fall back to the placeholder or, when a layout pass reports zero
    * size, clear the view outright. A resolution upgrade should be a change of
@@ -459,14 +561,41 @@ function StillStage({
   const [layers, setLayers] = useState<readonly string[]>(() => (uri ? [uri] : []));
   /** The layer that has actually rendered, which is the one allowed to be opaque. */
   const [shown, setShown] = useState<string | null>(null);
+  /**
+   * The layer that carries the ThumbHash: the first one this stage mounted, for
+   * as long as it stays mounted.
+   *
+   * **Fixed for the layer's whole life, because `expo-image` reloads on a
+   * placeholder change.** On Android `ExpoImageViewWrapper.rerenderIfNeeded`
+   * treats a new placeholder exactly like a new source and runs the whole Glide
+   * request again. This used to hand the first layer the ThumbHash only until
+   * the layer displayed, then null — so every open reloaded the photograph it
+   * had just drawn, and the reload showed as a blackout of two frames between
+   * two identical pictures. Logged on a Pixel 5 on 2026-10-19: the tile's rung
+   * displayed at +58 ms, started loading again at +80 ms with no placeholder,
+   * and displayed again at +110 ms.
+   */
+  const placeholderLayer = useRef(layers[0] ?? null);
   useEffect(() => {
     if (!uri) {
       setLayers([]);
       return;
     }
+    // A stage that mounted with nothing to draw gives the ThumbHash to the first
+    // layer that arrives, decided before that layer mounts.
+    placeholderLayer.current ??= uri;
     // Appended, never replaced. The layer beneath is the previous photograph,
     // which is a far better thing to have under a decode than a blur.
-    setLayers((current) => (current[current.length - 1] === uri ? current : [...current, uri]));
+    //
+    // A URI already in the stack is a page going back to a picture it showed
+    // earlier, which happens when a resolution is replaced by an older one. The
+    // stack drops back to that layer rather than mounting a second `<Image>`
+    // under the same key, which React would treat as one element.
+    setLayers((current) => {
+      const at = current.indexOf(uri);
+      if (at === current.length - 1) return current;
+      return at >= 0 ? current.slice(0, at + 1) : [...current, uri];
+    });
   }, [uri]);
 
   /**
@@ -502,34 +631,6 @@ function StillStage({
     [thumbHash],
   );
 
-  /** What the last decode actually produced, and where it came from. */
-  const [drawn, setDrawn] = useState<DrawnImage | null>(null);
-  /**
-   * How many times this stage has replaced the picture since it mounted.
-   *
-   * One open paints up to three times — the tile's rung, the rung the viewer's
-   * own resolve finds, and whatever a fetch or an encode brings down — and each
-   * one is a decode somebody can see happen. Counting them on screen is what
-   * makes that visible without a logcat.
-   *
-   * A resize used to count too, because `expo-image` reissues the load when the
-   * view it draws into changes size, and the footer grew when the motion control
-   * arrived. The stage is a stated box now, so that source of paints is gone and
-   * a count above the rungs actually fetched is a real finding.
-   */
-  const [paints, setPaints] = useState(0);
-  const onLoad = useCallback((event: ImageLoadEventData) => {
-    perf(
-      `image:load ${event.source.width}x${event.source.height} cache=${event.cacheType}`,
-    );
-    setDrawn({
-      width: event.source.width,
-      height: event.source.height,
-      cacheType: event.cacheType,
-    });
-    setPaints((count) => count + 1);
-  }, []);
-
   /**
    * A layer has rendered: it becomes the visible one, and the stack collapses to
    * it.
@@ -553,8 +654,8 @@ function StillStage({
   );
 
   return (
-    <View style={styles.viewerStage} {...panHandlers}>
-      <Pressable style={styles.viewerImageArea} onPress={onClose}>
+    <View style={styles.viewerStage}>
+      <Pressable style={styles.viewerImageArea} onPress={onTap}>
         {layers.length > 0 ? (
           layers.map((layer, index) => (
             <Image
@@ -578,7 +679,7 @@ function StillStage({
               // one picture, and the alternative to a ThumbHash is an empty
               // rectangle the size of the display. Decoded natively by
               // `expo-image` from the base64 string — see `media/thumb-hash.ts`.
-              placeholder={index === 0 && shown === null ? placeholder : null}
+              placeholder={layer === placeholderLayer.current ? placeholder : null}
               // Contain, unlike the tile's placeholder. A tile's ThumbHash fills
               // a box of the photograph's own shape, so there is nothing to
               // crop; a full screen is not that shape, and a stretched blur
@@ -592,7 +693,9 @@ function StillStage({
               // thing somebody is waiting for.
               priority="high"
               onLoadStart={() => perf("image:loadStart")}
-              onLoad={onLoad}
+              onLoad={(event) =>
+                perf(`image:load ${event.source.width}x${event.source.height} cache=${event.cacheType}`)
+              }
               // The signal the body's deferred work waits on, and the swap
               // itself. `onDisplay` fires when the view has actually rendered
               // the picture rather than when the bytes finished loading, which
@@ -629,95 +732,6 @@ function StillStage({
           <Text style={styles.muted}>This record&rsquo;s bytes are not on this device.</Text>
         )}
       </Pressable>
-      <RenderedSize
-        stage={stage}
-        drawn={drawn}
-        paints={paints}
-        fromRendition={fromRendition}
-        layers={layers.length}
-      />
-    </View>
-  );
-}
-
-/** What one decode produced, as `expo-image` reports it. */
-interface DrawnImage {
-  /** The decoded drawable's own pixels — after Glide's downsample, not the file's. */
-  readonly width: number;
-  readonly height: number;
-  readonly cacheType: "none" | "disk" | "memory";
-}
-
-/**
- * How many pixels are actually on the screen, over the picture they describe.
- *
- * ## Why the number is worth showing
- *
- * The viewer paints whichever rung is resident, and which rung that is depends
- * on what the tile resolved, what the ladder's boundaries are, and what a fetch
- * has managed to bring down since. None of that is visible in the photograph: a
- * 640-pixel rung across a 1080-pixel screen looks like a soft photograph, which
- * is indistinguishable from a soft photograph. So the counts go on screen.
- *
- * Three numbers, and each answers a different question. **Decoded** is what
- * `expo-image` handed the view — the drawable's own pixels, after Glide's
- * downsample, so it is the bitmap being sampled rather than the file's nominal
- * size. **Stage** is the box it is drawn into, in device pixels. **Scale** is
- * the ratio of the two along the binding edge: above 1 the picture is being
- * stretched, which is the state that costs nothing to fix and everything to
- * miss.
- *
- * The stage is now the stated box rather than a measurement of one, and that is
- * what makes the scale worth reading. While the request was measured against a
- * guessed chrome allowance and the layout against whatever the footer rendered
- * as, this readout was the only way to see the two disagree; now they are the
- * same arithmetic, and a scale far from 1 means the *ladder* chose wrong rather
- * than that the geometry did.
- *
- * `paints` and `layers` are the fourth and fifth, and belong to a different
- * question — see {@link StillStage}. A stage that settles at one layer has
- * finished swapping; one that stays at two has a rung that never displayed.
- *
- * An overlay rather than a line in the footer, deliberately: a readout down
- * there would take room the footer reserves for controls.
- */
-function RenderedSize({
-  stage,
-  drawn,
-  paints,
-  fromRendition,
-  layers,
-}: {
-  stage: Box;
-  drawn: DrawnImage | null;
-  paints: number;
-  fromRendition: boolean;
-  /** How many pictures are mounted. Above one means a swap is in flight. */
-  layers: number;
-}) {
-  if (!drawn) return null;
-  const density = PixelRatio.get();
-  const stagePx = { width: stage.width * density, height: stage.height * density };
-  // `contain`, matching what the image paints with: the picture meets the stage
-  // on one edge and falls short on the other, and the edge it meets is the one
-  // the scale factor is about.
-  const scale = Math.min(stagePx.width / drawn.width, stagePx.height / drawn.height);
-  const shown = { width: drawn.width * scale, height: drawn.height * scale };
-  return (
-    <View style={styles.renderedSize} pointerEvents="none">
-      <Text style={styles.renderedSizeText}>
-        {Math.round(drawn.width)}×{Math.round(drawn.height)} decoded ·{" "}
-        {fromRendition ? "rendition" : "original"} · {drawn.cacheType}
-      </Text>
-      <Text style={styles.renderedSizeText}>
-        drawn at {Math.round(shown.width)}×{Math.round(shown.height)} px in a{" "}
-        {Math.round(stagePx.width)}×{Math.round(stagePx.height)} px stage
-      </Text>
-      <Text style={styles.renderedSizeText}>
-        {scale >= 1 ? `${scale.toFixed(2)}× upscaled` : `${(1 / scale).toFixed(2)}× spare`} ·{" "}
-        {Math.round(stage.width)}×{Math.round(stage.height)} dp @{density}× · paint {paints} ·{" "}
-        {layers} layer{layers === 1 ? "" : "s"}
-      </Text>
     </View>
   );
 }
@@ -725,17 +739,23 @@ function RenderedSize({
 /**
  * A video record, with the platform's own controls.
  *
- * Not inside a dismiss-on-tap `Pressable` and not inside the swipe, for the same
- * reason: every touch on a player is aimed at the player, and closing the viewer
- * on a press of the scrubber — or stepping to the next photograph on a drag of
- * it — would make the controls unusable.
+ * Not inside a `Pressable`: every tap on a player is aimed at the player's own
+ * controls. The pager still pages on a horizontal drag; Android's `SeekBar`
+ * keeps a drag that starts on the scrubber from reaching the scroll view.
  *
  * **Mounted only after somebody pressed play**, so it starts playing at once.
  * The viewer opens on the clip's poster with a play button over it: a video
  * that starts making noise because a tile was tapped is a surprise, and a
  * download nobody asked for spends somebody's data.
  */
-function VideoStage({ uri }: { uri: string }) {
+function VideoStage({
+  uri,
+  onPlayingChange,
+}: {
+  uri: string;
+  /** Whether the clip is playing, so the frame can hide its controls. */
+  onPlayingChange: (playing: boolean) => void;
+}) {
   /**
    * `contentType: "progressive"` is stated rather than left to inference, and
    * the reason is a file with no extension. A blob fetched from the cloud lands
@@ -748,6 +768,18 @@ function VideoStage({ uri }: { uri: string }) {
     p.loop = false;
     p.play();
   });
+  // Read from the player's own event rather than from the controls, because
+  // the native controls pause and resume without telling this app otherwise.
+  useEffect(() => {
+    onPlayingChange(player.playing);
+    const subscription = player.addListener("playingChange", ({ isPlaying }) =>
+      onPlayingChange(isPlaying),
+    );
+    return () => {
+      subscription.remove();
+      onPlayingChange(false);
+    };
+  }, [player, onPlayingChange]);
   return (
     <View style={styles.viewerImageArea}>
       {/* `nativeControls` rather than controls of this app's own: play,

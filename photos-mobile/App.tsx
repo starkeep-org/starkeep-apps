@@ -27,14 +27,15 @@ import { closeNodeForReset } from "./src/work/node-handle";
  * ## What that leaves the shell doing
  *
  * Choosing between two screens, neither of which is a precondition for the
- * other: the node, and — when you ask for it — the sign-in. No navigator; the
- * day there is a stack to push onto is the day to add one.
+ * other: the node, and — when you ask for it from Settings — the sign-in. No
+ * navigator: Settings and the viewer open over the grid inside `HomeScreen`,
+ * which keeps the grid and the work that keeps it current alive underneath.
  */
 
 /**
  * `SafeAreaProvider` sits outside the shell because both screens the shell
- * chooses between use `SafeAreaView`, and the provider is what measures the
- * insets they consume. Wrapping the shell rather than each screen keeps that
+ * chooses between read the safe-area insets, and the provider is what measures
+ * them. Wrapping the shell rather than each screen keeps that
  * single measurement across the switch between them.
  */
 export default function App() {

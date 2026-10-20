@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import {
   gridTileTarget,
   tileBox,
-  VIEWER_FOOTER_HEIGHT,
+  VIEWER_BAR_HEIGHT,
   viewerStageBox,
   viewerTarget,
 } from "../src/photos/render-target";
@@ -102,13 +102,13 @@ describe("what a tile asks for", () => {
 });
 
 describe("the box the viewer lays the photograph out in", () => {
-  it("takes the system insets and the footer out of the window", () => {
+  it("takes the system insets and both bars out of the window", () => {
     // The arithmetic itself, because it is the one number the style sheet and
     // the rendition request both read. A constant standing in for both halves
     // is what it replaced, and that constant was wrong by 40 to 90 points.
     expect(STAGE).toEqual({
       width: 390,
-      height: 844 - 24 - 34 - VIEWER_FOOTER_HEIGHT,
+      height: 844 - 24 - 34 - 2 * VIEWER_BAR_HEIGHT,
     });
   });
 
@@ -117,16 +117,16 @@ describe("the box the viewer lays the photograph out in", () => {
     // negative height would resolve a target from a nonsense box rather than
     // refusing. `viewerTarget` reads zero as "no room", which is the honest
     // answer.
-    const tiny = viewerStageBox({ width: 390, height: 100 }, INSETS);
+    const tiny = viewerStageBox({ width: 390, height: 100 }, INSETS, false);
     expect(tiny.height).toBe(0);
     expect(viewerTarget(tiny, LANDSCAPE, null, 3)).toBeNull();
   });
 
-  it("gives a landscape window a wider, shorter stage", () => {
-    // A rotation is the one event that should resize the stage, and this is what
-    // it does to it.
+  it("gives a landscape window the whole window", () => {
+    // A rotation is the one event that should resize the stage. Landscape hides
+    // the system bars and the viewer's own, so nothing comes out of the window.
     const rotated = viewerStageBox({ width: 844, height: 390 }, INSETS);
-    expect(rotated.width).toBeGreaterThan(rotated.height);
+    expect(rotated).toEqual({ width: 844, height: 390 });
   });
 });
 

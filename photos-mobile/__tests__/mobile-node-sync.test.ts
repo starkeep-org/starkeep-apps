@@ -18,7 +18,6 @@ import { createHLCClock } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter, MockObjectStorageAdapter } from "@starkeep/storage-adapter";
 import { createInProcessSyncTransport } from "@starkeep/sync-engine";
 import { createMobileNode, MOBILE_MAX_BYTES, MOBILE_MAX_ITEMS, type MobileNode } from "../src/node";
-import { describeVerify, verifyFoundProblem } from "../src/ui/verify-text";
 import { createOpSqliteDriver, type OpSqliteConnection } from "../src/db/op-sqlite-driver";
 import { ExpoObjectStorageAdapter } from "../src/storage/expo-object-storage";
 import { fakeExpoFs } from "./helpers/fake-expo-fs";
@@ -354,75 +353,5 @@ describe("durability across a restart", () => {
     // has settled pulls nothing new.
     await phone.exchange();
     expect((await phone.databaseAdapter.query({})).records).toHaveLength(2);
-  });
-});
-
-/**
- * What the phone tells a person about their backup.
- *
- * The sentence someone decides whether to wipe their phone on, so it has to be
- * true in both directions. A check that only asks "is the cloud missing
- * anything?" reports all-clear to a phone that has itself lost rows — which is
- * the case where being wrong costs the most.
- */
-describe("describing an integrity check", () => {
-  const base = {
-    supported: true as const,
-    localRows: 100,
-    peerRows: 100,
-    pendingUpload: 0,
-    pendingDownload: 0,
-  };
-
-  it("reports both counts when everything agrees", () => {
-    const text = describeVerify({ ...base, divergentBuckets: 0, missingLocally: 0 });
-    expect(text).toContain("100 of 100 rows");
-    expect(verifyFoundProblem({ ...base, divergentBuckets: 0, missingLocally: 0 })).toBe(false);
-  });
-
-  it("says so when the cloud is missing rows", () => {
-    const result = { ...base, divergentBuckets: 2, missingLocally: 0 };
-    expect(describeVerify(result)).toContain("The cloud is missing rows in 2 time ranges");
-    expect(verifyFoundProblem(result)).toBe(true);
-  });
-
-  it("says so when this phone is the one missing rows", () => {
-    // The direction a one-sided check cannot see.
-    const result = { ...base, divergentBuckets: 0, missingLocally: 1 };
-    expect(describeVerify(result)).toContain("this phone is missing rows in 1 time range");
-    expect(verifyFoundProblem(result)).toBe(true);
-  });
-
-  it("reports both when both sides have holes", () => {
-    const result = { ...base, divergentBuckets: 1, missingLocally: 1 };
-    const text = describeVerify(result);
-    expect(text).toContain("The cloud is missing rows");
-    expect(text).toContain("this phone is missing rows");
-  });
-
-  it("does not call a backlog a problem", () => {
-    // A phone mid-first-sync disagrees with the cloud in every bucket it has
-    // not pulled yet. Wording that as loss is the difference between "wait" and
-    // "something is wrong with my photos".
-    const result = { ...base, divergentBuckets: 0, missingLocally: 0, pendingDownload: 3 };
-    const text = describeVerify(result);
-    expect(text).toContain("Nothing is missing");
-    expect(text).toContain("3 time ranges are still syncing");
-    expect(text).not.toContain("missing rows");
-    expect(verifyFoundProblem(result)).toBe(false);
-  });
-
-  it("does not call an unanswerable check clean", () => {
-    const result = {
-      supported: false,
-      localRows: 0,
-      peerRows: 0,
-      divergentBuckets: 0,
-      missingLocally: 0,
-      pendingUpload: 0,
-      pendingDownload: 0,
-    };
-    expect(describeVerify(result)).toContain("nothing was verified");
-    expect(verifyFoundProblem(result)).toBe(true);
   });
 });

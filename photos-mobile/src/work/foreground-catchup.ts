@@ -43,9 +43,9 @@ export interface CatchUpState {
   /**
    * The media permission is **already** granted.
    *
-   * Read with `getPermissions`, never requested. An automatic pass must not
-   * raise the system dialog: `MediaGrid` makes the same argument, and a
-   * permission prompt on app launch asks for something before saying what for.
+   * Read with `getPermissions`, never requested. The one request is the
+   * first-open ask in `useForegroundWork`, and a catch-up that raised the
+   * dialog again would ask on every return to the foreground.
    */
   readonly mediaPermissionGranted: boolean;
   /** This node has somewhere to sync to. False on a device nobody signed in. */
@@ -57,23 +57,13 @@ export interface CatchUpState {
   readonly nowMs: number;
 }
 
-/** Which halves of a catch-up pass to run, and what to say about the rest. */
+/** Which halves of a catch-up pass to run. */
 export interface CatchUpPlan {
   readonly import: boolean;
   readonly sync: boolean;
-  /**
-   * Why the pass declined a half, for the muted line under the Sync section, or
-   * null when there is nothing worth saying.
-   *
-   * Null covers both "nothing was declined" and "the decline explains itself
-   * elsewhere on this screen" — a device with no cloud already says so under
-   * the Sync heading, and repeating it as a decline would read as a second,
-   * different problem.
-   */
-  readonly declined: string | null;
 }
 
-const NOTHING: CatchUpPlan = { import: false, sync: false, declined: null };
+const NOTHING: CatchUpPlan = { import: false, sync: false };
 
 /**
  * What a foreground pass should do right now.
@@ -113,41 +103,5 @@ export function planCatchUp(state: CatchUpState): CatchUpPlan {
   return {
     import: mayImport,
     sync: maySync,
-    declined: declinedBy(state, mayImport, maySync),
   };
-}
-
-/**
- * The one sentence a person needs about what this pass did not do.
- *
- * The sync half leads when both were declined, because the import half has a
- * control of its own three lines up the screen — "Add photos from this device"
- * — that says the same thing when tapped, and the sync half has nothing else
- * that would ever mention it. Silence there reads as a broken feature.
- */
-function declinedBy(
-  state: CatchUpState,
-  mayImport: boolean,
-  maySync: boolean,
-): string | null {
-  // A device with no cloud is not declining anything. The Sync section states
-  // it plainly already, and a second sentence would read as a second problem.
-  if (!maySync && state.hasCloud) {
-    if (state.device === null) {
-      return "This device’s connection could not be read, so nothing was uploaded.";
-    }
-    if (!state.device.hasNetwork) {
-      return "Offline, so nothing was uploaded. It goes out when there is a connection.";
-    }
-    if (!state.device.isUnmetered) {
-      return "Waiting for Wi‑Fi before uploading. Tap Sync now to upload over this connection.";
-    }
-    return "This device’s conditions do not allow an upload right now.";
-  }
-
-  if (!mayImport) {
-    return "Starkeep has no access to this device’s photos, so nothing new was added.";
-  }
-
-  return null;
 }

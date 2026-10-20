@@ -314,8 +314,8 @@ export interface MobileNode {
    */
   sync(options?: SyncOptions & { readonly trigger?: SyncTrigger }): Promise<SyncResult | null>;
   /**
-   * The most recent sync rounds this node ran, newest first: what the Work
-   * section shows and "Share diagnostics" sends. See `work/sync-trace.ts`.
+   * The most recent sync rounds this node ran, newest first. See
+   * `work/sync-trace.ts`.
    */
   syncTrace(limit: number): SyncTraceRound[];
   /**

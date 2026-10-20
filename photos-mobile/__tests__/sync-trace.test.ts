@@ -13,7 +13,6 @@ import {
   formatSyncTrace,
   stopReasonOf,
 } from "../src/work/sync-trace";
-import { describeTraceRound } from "../src/ui/trace-text";
 
 const round = (over: Partial<ExchangeResult> = {}): ExchangeResult => ({
   applied: 0,
@@ -108,46 +107,5 @@ describe("formatSyncTrace", () => {
     expect(text).toContain("blocked=true");
     expect(text).toContain("stop=stalled");
     expect(text.split("\n")).toHaveLength(1);
-  });
-});
-
-describe("describeTraceRound", () => {
-  const base = {
-    syncId: "s",
-    startedAt: 0,
-    endedAt: Date.UTC(2026, 9, 14, 12, 0, 0),
-    applied: 0,
-    shipped: 0,
-    landed: 0,
-    landedBytes: 0,
-    uploaded: 0,
-    uploadedBytes: 0,
-    elided: 0,
-    blocked: false,
-    hasMore: false,
-    outboundHasMore: false,
-    bytesHasMore: false,
-    stopReason: null,
-  } as const;
-
-  it("says why it ran and what moved each way", () => {
-    const line = describeTraceRound({ ...base, trigger: "timer", round: 1, shipped: 2, uploaded: 1, uploadedBytes: 2048, applied: 1 });
-    expect(line).toContain("every 30 s");
-    expect(line).toContain("↑ 2 rows, 1 file 2.0 kB");
-    expect(line).toContain("↓ 1 row");
-    expect(line).not.toContain("could not transfer");
-  });
-
-  it("names a blocked round and how the sync ended", () => {
-    const line = describeTraceRound({ ...base, trigger: "media-change", round: 3, blocked: true, stopReason: "stalled" });
-    expect(line).toContain("new photo");
-    expect(line).toContain("something could not transfer");
-    expect(line.endsWith("stalled")).toBe(true);
-  });
-
-  it("shows only the reason for a sync that ran no round", () => {
-    const line = describeTraceRound({ ...base, trigger: "button", round: 0, stopReason: "aborted" });
-    expect(line).not.toContain("↑");
-    expect(line).toContain("aborted");
   });
 });

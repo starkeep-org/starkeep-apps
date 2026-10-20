@@ -1,221 +1,73 @@
 /**
  * The app. Not a screen you reach by signing in — the one you land on.
  *
- * Everything here works with no session and no network: the node's checks are
- * local by construction, and the cloud probe is a single row that is allowed to
- * fail. Which is why that row shows a muted `—` rather than a red `FAIL`: on a
- * phone in a lift, the cloud being unreachable is the app working correctly,
- * and colouring it as a fault trains someone to ignore the two rows next to it
- * that genuinely are pass-or-fail.
+ * Everything here works with no session and no network. Signing in is offered
+ * from Settings rather than demanded up front, because a sign-in buys sync and
+ * nothing else. A signed-out device is a whole Starkeep node; it is simply the
+ * only one that knows what it holds.
  *
- * Signing in is offered here rather than demanded up front, because a sign-in
- * buys sync and nothing else. A signed-out device is a whole Starkeep node; it
- * is simply the only one that knows what it holds.
+ * ## What is on the screen
  *
- * ## The order of the sections is the argument
+ * The photographs, under an app bar with a menu, as on the desktop. Settings
+ * and the viewer open over the grid rather than in place of it, so the grid
+ * keeps its scroll position and its decoded tiles underneath them. Landscape
+ * hides the app bar and the system bars, and the grid fills the screen.
  *
- * The device's own media is first, because it is the content and it depends on
- * nothing: no account, no cloud, no network, just an OS permission the user
- * grants directly. Sync comes after it, as an offer. The diagnostics come last,
- * because they are information about the machinery rather than the point of it.
- *
- * ## Why the last section states how the app behaves
- *
- * Because a person cannot otherwise tell a library that has nothing in it from
- * one that has not looked. The section is worth its place only while every
- * sentence in it is true: it used to say that nothing had synced and that a
- * handset could not hold the secret the data plane required, months after a
- * background tick had imported a photograph, uploaded it to S3 and pulled it to
- * a laptop in 9.2 seconds. Copy that describes a limitation the app no longer
- * has teaches a reader to distrust the rest of the screen, which is the same
- * argument `Check.required` makes about colouring the cloud probe red.
- *
- * The one limitation that stays is the true one: this device derives no
- * renditions, because there is no encoder on it.
+ * The work that keeps the library current — import, sync, derivation, the
+ * background window — runs in `useForegroundWork`, whatever is on screen.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   AppState,
   FlatList,
   Pressable,
   RefreshControl,
-  Share,
   Text,
   useWindowDimensions,
   View,
 } from "react-native";
-// Glide-backed, like both grids. Imported here only for `clearMemoryCache`, so
+// Glide-backed, like the grid. Imported here only for `clearMemoryCache`, so
 // the screen can drop the decoded bitmaps when the app leaves the foreground.
 import { Image } from "expo-image";
-import { SafeAreaView } from "react-native-safe-area-context";
-import {
-  DATABASE_PATH,
-  OBJECTS_PATH,
-  createLocalObjectStorage,
-  signOutThisPhone,
-  deviceMedia,
-  opSqliteDriver,
-} from "../platform";
-import { JOB_GRAPH, runnableJobs, type DeviceState } from "../work/job-graph";
-import { planCatchUp, type CatchUpPlan } from "../work/foreground-catchup";
-import {
-  createDebouncer,
-  createForegroundSyncLoop,
-  createSyncFollowUp,
-  mayAutoSync,
-} from "../work/foreground-sync";
-import {
-  formatSyncTrace,
-  SYNC_TRACE_KEEP,
-  type SyncTraceRound,
-  type SyncTrigger,
-} from "../work/sync-trace";
-import { describeTraceRound, TRACE_ROUNDS_SHOWN } from "./trace-text";
-import {
-  backgroundWorkStatus,
-  readRealDeviceState,
-  registerBackgroundWork,
-  tickReportStore,
-} from "../work/background-task";
-import type { TickReport } from "../work/tick";
-import type { ImportOutcome } from "../media/import";
-import { formatBytes } from "./format";
-import {
-  libraryRowKey,
-  libraryRows,
-  LibraryRow,
-  useLibraryViewer,
-} from "./LibraryGrid";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { libraryRowKey, libraryRows, LibraryRow, useLibraryViewer } from "./LibraryGrid";
 import type { JustifiedRow } from "../photos/render-target";
 import type { LibraryItem } from "../library";
-import { MediaGrid } from "./MediaGrid";
-import { styles } from "./theme";
+import { colors, GRID_GAP, styles } from "./theme";
 import { onSessionRejected } from "../auth/session";
-import { useLibrary, useNode, useStorage, type NodeState } from "./use-library";
-import { describeVerify, verifyFoundProblem } from "./verify-text";
-import { describeFreed, describeStorageGroup } from "./free-up-text";
-import { CEILING_CATEGORY_LABELS, ceilingLabel } from "./ceiling-text";
-import { STAND_IN_CATEGORIES } from "@starkeep/protocol-primitives";
-import type { VerifyResult } from "@starkeep/sync-engine";
-
-/** The device's conditions, as one line under the job count. */
-function describeDevice(device: DeviceState): string {
-  return [
-    device.hasNetwork ? (device.isUnmetered ? "unmetered network" : "metered network") : "offline",
-    device.isCharging ? "charging" : "on battery",
-    device.batteryLevel === undefined
-      ? "battery unknown"
-      : `battery ${Math.round(device.batteryLevel * 100)}%`,
-    device.isLowPowerMode ? "power saver on" : "power saver off",
-    device.isStorageLow ? "storage low" : "storage fine",
-  ].join(" · ");
-}
-
-interface Check {
-  readonly name: string;
-  readonly detail: string;
-  readonly ok: boolean;
-  /**
-   * Whether failing means something is wrong.
-   *
-   * The cloud probe is not required: a phone with no signal is not a broken
-   * phone, and marking that row `FAIL` in red would train someone to ignore the
-   * two rows next to it that genuinely are pass-or-fail.
-   */
-  readonly required?: boolean;
-}
+import { useLibrary, useNode, useStorage } from "./use-library";
+import { useForegroundWork } from "./use-foreground-work";
+import { AppBar } from "./AppBar";
+import { SettingsScreen } from "./SettingsScreen";
+import { useIsLandscape, useSystemBarsHidden } from "./orientation";
 
 interface Props {
   /** Open the sign-in screen. */
   readonly onConnect: () => void;
 }
 
-/**
- * Does the database open and does object storage do a ranged read.
- *
- * These two were the dev shell's whole reason to exist and they stay, because
- * they are still the only answers a laptop cannot give: `executeSync` on real
- * op-sqlite and `FileHandle.offset` on a real filesystem are exactly the
- * behaviours the Node fakes had to assume.
- */
-async function runNodeChecks(): Promise<Check[]> {
-  const results: Check[] = [];
-
-  try {
-    const db = opSqliteDriver.open(DATABASE_PATH);
-    db.exec("CREATE TABLE IF NOT EXISTS shell_probe (k TEXT PRIMARY KEY, v INTEGER)");
-    db.prepare("INSERT OR REPLACE INTO shell_probe VALUES (?, ?)").run("boot", Date.now());
-    const row = db.prepare("SELECT v FROM shell_probe WHERE k = ?").get("boot") as
-      | { v: number }
-      | undefined;
-    opSqliteDriver.close(db);
-    results.push({
-      name: "SQLite (op-sqlite)",
-      detail: row ? `wrote and read back ${new Date(row.v).toISOString()}` : "no row returned",
-      ok: Boolean(row),
-    });
-  } catch (err) {
-    results.push({ name: "SQLite (op-sqlite)", detail: String(err), ok: false });
-  }
-
-  try {
-    const storage = createLocalObjectStorage();
-    await storage.init();
-    const key = "0".repeat(64);
-    const payload = new Uint8Array(Array.from({ length: 32 }, (_, i) => i));
-    await storage.put(key, payload);
-    const stream = await storage.getStream(key, { start: 8, end: 11 });
-    const reader = stream!.getReader();
-    const { value } = await reader.read();
-    await reader.cancel();
-    const got = Array.from(value ?? []);
-    results.push({
-      name: "Object storage (expo-file-system)",
-      detail: `ranged read gave [${got.join(", ")}] — expected [8, 9, 10, 11]`,
-      ok: got.join(",") === "8,9,10,11",
-    });
-  } catch (err) {
-    results.push({ name: "Object storage (expo-file-system)", detail: String(err), ok: false });
-  }
-
-  return results;
-}
-
-/**
- * The cloud's unauthenticated health route.
- *
- * Unauthenticated deliberately, and labelled as such on screen: it proves the
- * handset has a route to the gateway, which is the failure this app is most
- * likely to hit first, and it proves nothing about authorisation.
- */
-async function checkCloud(baseUrl: string): Promise<Check> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/health`;
-  try {
-    const response = await fetch(url);
-    const text = (await response.text()).slice(0, 120);
-    return {
-      name: "Cloud",
-      detail: `GET /health → ${response.status} ${text}`,
-      ok: response.ok,
-      required: false,
-    };
-  } catch (err) {
-    return { name: "Cloud", detail: String(err), ok: false, required: false };
-  }
-}
-
 export function HomeScreen({ onConnect }: Props) {
-  const [checks, setChecks] = useState<Check[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // The hook rather than `Dimensions.get`, because this value has to re-render
   // the screen: the justified rows are laid out against it, and a rotation that
   // did not re-flow them would leave every row measured for the other width.
   const window = useWindowDimensions();
-  const { state: node, reset, reopen } = useNode();
+  const insets = useSafeAreaInsets();
+  const landscape = useIsLandscape();
+  useSystemBarsHidden(landscape);
+  const { state: node, reopen } = useNode();
 
+  /**
+   * Why the pool ended this phone's sign-in, when it did: an admin signed the
+   * person out everywhere or disabled the account, or the session expired.
+   * Settings says so, because otherwise sync would stop without a reason.
+   */
+  const [sessionEnded, setSessionEnded] = useState<string | null>(null);
   // The session is already cleared when the pool ends it; reopen the node so it
-  // drops its cloud, and the screen stops saying "Signed in".
+  // drops its cloud.
   useEffect(
     () =>
       onSessionRejected((reason) => {
@@ -226,595 +78,10 @@ export function HomeScreen({ onConnect }: Props) {
   );
   const library = useLibrary(node);
   const storage = useStorage(node);
-  /**
-   * Whether the reset button is armed.
-   *
-   * Two taps rather than one, because this is destructive and irreversible.
-   * Not a modal: a confirm dialog for a developer affordance is heavier than
-   * the action deserves, and an inline label that changes to say exactly what
-   * is about to happen is more informative than a generic "Are you sure?".
-   */
-  const [confirmingReset, setConfirmingReset] = useState(false);
-  /**
-   * Whether "Sign out" is armed, for the reason the reset button is:
-   * afterwards the phone syncs again only once its owner signs in.
-   */
-  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
-  /**
-   * Why the pool ended this phone's sign-in, when it did: an admin signed the
-   * person out everywhere or disabled the account, or the session expired.
-   * Shown under "not connected" so the screen says why sync stopped.
-   */
-  const [sessionEnded, setSessionEnded] = useState<string | null>(null);
-  /**
-   * Whether the camera-roll grid has been asked for.
-   *
-   * Not persisted across launches, deliberately: a diagnostic panel that stays
-   * open because somebody opened it once last week is a panel nobody meant to
-   * open, and this one costs a media-store scan every time it mounts.
-   */
-  const [showDeviceMedia, setShowDeviceMedia] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  /**
-   * Rounds completed and items moved so far in the running sync.
-   *
-   * Worth showing rather than a bare spinner: a round is deliberately small
-   * (see MOBILE_MAX_BYTES), so a first upload is hundreds of them and a user
-   * otherwise has no way to tell a working sync from a wedged one.
-   */
-  const [syncProgress, setSyncProgress] = useState<{ rounds: number; items: number } | null>(
-    null,
-  );
-  /**
-   * Result of the last integrity check.
-   *
-   * Worth its own control rather than folding into "Sync now": it is a grouped
-   * scan on both sides, and it answers a different question. A watermark says
-   * "caught up"; this says how many rows are actually on the other end, which
-   * is the only form of "your library is backed up" that is a statement of fact
-   * rather than of belief.
-   */
-  const [verifyState, setVerifyState] = useState<
-    { checking: true } | { checking: false; result: VerifyResult | null } | null
-  >(null);
-  const [resetting, setResetting] = useState(false);
-  /**
-   * Aborts the running sync when this screen goes away or the app leaves the
-   * foreground.
-   *
-   * A tap starts an unbounded drain — a first upload of a real library is
-   * hundreds of rounds and can run for as long as the OS lets it. Without a
-   * signal, backgrounding the app left that loop issuing requests until the
-   * platform froze the process mid-round, which is the one way to stop it that
-   * nobody chose. `sync()` checks the signal between rounds and returns what it
-   * has, and every round has already persisted its own watermarks, so stopping
-   * costs at most the round in flight and the next tap resumes in place.
-   */
-  const syncAbort = useRef<AbortController | null>(null);
-  /** True while a sync is in flight, readable from an event handler. */
-  const syncingRef = useRef(false);
-  /**
-   * At most one sync running and one waiting behind it. A sync asked for while
-   * one runs — the rungs a derivation just made, a photograph imported a
-   * moment ago — runs when that one ends instead of being dropped. See
-   * `work/foreground-sync.ts`.
-   */
-  const syncFollowUp = useRef(createSyncFollowUp());
-  /** What asked for the waiting follow-up, for the trace. The latest wins. */
-  const followUpTrigger = useRef<SyncTrigger>("button");
-  /** Whether the app is in the foreground, readable from a sync's `finally`. */
-  const appActive = useRef(AppState.currentState === "active");
-  /**
-   * The last rounds this node ran, for the Work section. Read after every sync
-   * and on mount, from the node's own trace table.
-   */
-  const [trace, setTrace] = useState<SyncTraceRound[]>([]);
-  /**
-   * What the last foreground catch-up did, for the line under the Sync section.
-   *
-   * A pass that declined a half has to say so. "Waiting for Wi-Fi before
-   * uploading" is the common case, and silence there reads as a feature that
-   * does not work rather than as one that is waiting for a condition.
-   */
-  const [lastCatchUp, setLastCatchUp] = useState<{
-    readonly plan: CatchUpPlan;
-    readonly imported: ImportOutcome | null;
-  } | null>(null);
-  /** When the last catch-up that actually ran finished. Feeds the interval guard. */
-  const catchUpAt = useRef<number | null>(null);
-  /** True while a catch-up is deciding or importing, so two cannot overlap. */
-  const catchingUpRef = useRef(false);
-  /**
-   * Whether the duration backfill has reached the end of the camera roll.
-   *
-   * A ref rather than persisted state, because the pass's own watermark is what
-   * persists: this only stops the *repeat asking* within one run of the app, and
-   * a relaunch that asks once more costs one media-store query that answers
-   * empty. See `backfillVideoDurations`.
-   */
-  const durationsBackfilled = useRef(false);
-  /** Same, for the stills' capture time and orientation. */
-  const exifBackfilled = useRef(false);
-  /** Same, for the placeholder every record paints before its bytes resolve. */
-  const thumbHashesBackfilled = useRef(false);
-  /**
-   * Same, for the rungs this device makes for its own photographs.
-   *
-   * The one flag here that a completed pass does not settle for good. The others
-   * repair a fact about a record that was already imported, so "nothing left"
-   * stays true; a derivation sweep that reaches the end of the roll is only
-   * current until the next photograph is taken. Its own cursor resets on
-   * completion, so a later app open walks again. See `photos/derive-ladder.ts`.
-   */
-  const renditionsDerived = useRef(false);
+  const work = useForegroundWork(node, library, storage);
 
-  /**
-   * Run a sync, from a tap or from a foreground catch-up.
-   *
-   * Extracted from the button so the two callers are the same code. A catch-up
-   * sync that differed from a tapped one would be a second implementation of
-   * the only path that matters on this screen, and the difference would show up
-   * exactly once, on a handset, as a library that stopped halfway.
-   *
-   * **The button is the unconstrained one.** A catch-up decides whether the
-   * connection allows an upload before it gets here (see `planCatchUp`); a tap
-   * does not, because a tap is a person deciding to spend their own data.
-   *
-   * `sync()`, not `exchange()`: a round carries at most one round's budget, so
-   * one tap per round would make a first upload of a real library hundreds of
-   * taps.
-   */
-  const startSyncRef = useRef<((trigger: SyncTrigger) => void) | null>(null);
-  const runSync = useCallback(
-    (trigger: SyncTrigger = "button") => {
-      if (node.status !== "ready" || node.node.engine === null) return;
-      // A catch-up, a timer tick and a tap can race — the app comes back to the
-      // foreground while a sync the user started is already draining. A second
-      // sync against the same engine would serialize behind the first anyway
-      // and double the progress counter on the way, so it waits instead, and
-      // many waiting requests collapse into one.
-      if (syncFollowUp.current.request() === "queued") {
-        followUpTrigger.current = trigger;
-        return;
-      }
-      startSyncRef.current?.(trigger);
-    },
-    [node],
-  );
-
-  const startSync = useCallback((trigger: SyncTrigger) => {
-    if (node.status !== "ready" || node.node.engine === null) {
-      // Nothing to run against, so nothing is running and nothing waits.
-      while (syncFollowUp.current.finished());
-      return;
-    }
-    syncingRef.current = true;
-    setSyncing(true);
-    setSyncProgress(null);
-    syncAbort.current?.abort();
-    const abort = new AbortController();
-    syncAbort.current = abort;
-    let items = 0;
-    void node.node
-      .sync({
-        trigger,
-        signal: abort.signal,
-        onRound: (result, rounds) => {
-          items += result.applied + result.shipped;
-          setSyncProgress({ rounds, items });
-          // Per round, because the totals cannot answer the
-          // question that matters here. `blocked` says something
-          // this round *selected* could not be moved — a blob that
-          // would not transfer — and it is deliberately kept out
-          // of `outboundHasMore`, so a sync that ships rows and
-          // moves no bytes looks identical in the totals to one
-          // that had no bytes to move.
-          console.warn(
-            `[sync] trigger=${trigger} round=${rounds} applied=${result.applied} ` +
-              `shipped=${result.shipped} elided=${result.elided} ` +
-              `landed=${result.landed} uploaded=${result.uploaded} ` +
-              `blocked=${result.blocked} hasMore=${result.hasMore} ` +
-              `outboundHasMore=${result.outboundHasMore} ` +
-              `bytesHasMore=${result.bytesHasMore} ` +
-              `progressed=${result.progressed}`,
-          );
-        },
-      })
-      .then(async (result) => {
-        // Every outcome, named. `sync()` has four exits and three
-        // of them used to render identically to success: the round
-        // cap, an abort, and a drained-but-incomplete return all
-        // set `complete: false` with `stalled: false`, and the
-        // chain below tested none of that. On a first library sync
-        // — where one 10 MB round carries one camera original, so
-        // sixty photographs need dozens of rounds — the abort is
-        // not the rare case. It fires every time the app loses
-        // focus, which is what checking whether the photos arrived
-        // does. The one state indistinguishable from success was
-        // the one that happened most.
-        console.warn(
-          `[sync] rounds=${result?.rounds} applied=${result?.applied} ` +
-            `shipped=${result?.shipped} elided=${result?.elided} ` +
-            `complete=${result?.complete} stalled=${result?.stalled} ` +
-            `aborted=${abort.signal.aborted}`,
-        );
-        // A stalled sync is not an error and not a success: the
-        // loop stopped because a round achieved nothing while work
-        // was still outstanding, which in practice is a transfer
-        // that will not go through. Saying nothing would show the
-        // same quiet "Sync now" as a completed sync.
-        // Ordered most specific first, so a diagnosis always beats
-        // the generic "did not finish". An abort leads because it
-        // is the only outcome the user caused and the only one
-        // whose remedy is simply tapping again.
-        setSyncError(
-          abort.signal.aborted
-            ? "Sync paused while the app was in the background. It carries on from where it stopped when you come back."
-            : result?.stalled
-              ? "Sync stopped making progress — something could not transfer. It will retry."
-              : result?.refusedAuthors?.length
-                ? "Some of this device's records are not reaching the cloud. Check backup to try again."
-                : result?.peerCoverageDegraded
-                  ? `The cloud could not report what it holds (${result.peerCoverageDegraded}), so this sync was conservative.`
-                  : result && !result.complete
-                    ? "Sync stopped before it finished. Tap Sync now to carry on."
-                    : null,
-        );
-        await library.reload();
-        storage.refresh();
-      })
-      .catch((err: unknown) => setSyncError(String(err)))
-      .finally(() => {
-        syncingRef.current = false;
-        setSyncing(false);
-        setTrace(node.node.syncTrace(TRACE_ROUNDS_SHOWN));
-        // A sync asked for while this one ran. Not after the app has left the
-        // foreground: the waiting request was for an open app, and the
-        // background windows have their own sync.
-        if (syncFollowUp.current.finished()) {
-          if (appActive.current) startSyncRef.current?.(followUpTrigger.current);
-          else syncFollowUp.current.finished();
-        }
-      });
-  }, [node, library, storage]);
-
-  useEffect(() => {
-    startSyncRef.current = startSync;
-  }, [startSync]);
-
-  /**
-   * A sync nobody tapped for: a timer tick, a photograph just taken. Kept to
-   * the catch-up's rule — never over a metered connection — because the sync
-   * moves originals as well as rows. See `mayAutoSync`.
-   */
-  const autoSync = useCallback(
-    async (trigger: SyncTrigger) => {
-      const conditions = await readRealDeviceState().catch(() => null);
-      const allowed = mayAutoSync({
-        nodeReady: node.status === "ready",
-        hasCloud: node.status === "ready" && node.node.engine !== null,
-        device: conditions,
-      });
-      if (allowed) runSync(trigger);
-    },
-    [node, runSync],
-  );
-
-  /**
-   * The camera roll changed while the app is open: import what is new, ship
-   * its rows, make its sizes, and ship those. Waits for a running catch-up
-   * rather than racing its import, by asking again a moment later.
-   */
-  const mediaChangeRetry = useRef<(() => void) | null>(null);
-  const onMediaChange = useCallback(async () => {
-    if (node.status !== "ready") return;
-    if (catchingUpRef.current) {
-      mediaChangeRetry.current?.();
-      return;
-    }
-    catchingUpRef.current = true;
-    try {
-      const permission = await deviceMedia.getPermissions().catch(() => null);
-      if (!permission?.granted) return;
-      await library.importQuietly();
-      await autoSync("media-change");
-      await library.deriveRenditions();
-      await autoSync("after-derive");
-    } finally {
-      catchingUpRef.current = false;
-    }
-  }, [node, library, autoSync]);
-
-  /**
-   * Bring the library up to date because somebody opened the app.
-   *
-   * Opening the app is the strongest signal this app ever gets that a person
-   * wants their library current, and it used to be ignored: a photograph taken
-   * thirty seconds ago entered the node when somebody tapped "Add photos", or
-   * when a background window fired up to fifteen minutes later.
-   *
-   * The decisions are `planCatchUp`'s and none of them are made here — which is
-   * what lets every branch of them be tested in Node. This performs the plan.
-   */
-  const runCatchUp = useCallback(async () => {
-    // Two `active` transitions can arrive while the first pass is still
-    // importing, and the interval guard below cannot see a pass that has not
-    // finished yet.
-    if (catchingUpRef.current) return;
-    catchingUpRef.current = true;
-    try {
-      // Read here rather than reused from the Work section's copy, which is
-      // fetched once on mount: a phone that was on cellular when the app opened
-      // and is on Wi-Fi now must be allowed to upload now.
-      const conditions = await readRealDeviceState().catch(() => null);
-      const permission = await deviceMedia.getPermissions().catch(() => null);
-
-      const plan = planCatchUp({
-        nodeReady: node.status === "ready",
-        syncing: syncingRef.current,
-        mediaPermissionGranted: permission?.granted ?? false,
-        hasCloud: node.status === "ready" && node.node.engine !== null,
-        device: conditions,
-        lastRunMs: catchUpAt.current,
-        nowMs: Date.now(),
-      });
-      if (!plan.import && !plan.sync) {
-        // Nothing ran, so nothing is recorded and nothing is said. The interval
-        // guard must not be armed by a pass that declined everything, or a node
-        // that was not ready yet would suppress the pass that follows it.
-        return;
-      }
-
-      const imported = plan.import ? await library.importQuietly() : null;
-
-      // Rows first. A photograph this pass noticed ships now, rather than after
-      // four backfills and a derivation pass, which on a real camera roll is
-      // tens of seconds. The sizes derivation makes ship in a second sync,
-      // below. `tick.ts` orders import before sync the same way.
-      if (plan.sync) runSync(plan.import ? "after-import" : "open");
-
-      // One batch of repair per app open, and only while there is repair left.
-      // Gated on the import half's permission, because it reads the same media
-      // store. See `backfillVideoDurations`.
-      if (plan.import && !durationsBackfilled.current) {
-        durationsBackfilled.current = await library.backfillDurations();
-      }
-
-      // The stills' half of the same repair, and the one that decides where a
-      // tile sits: the grid is ordered by capture time, and a record with none
-      // falls into the bucket at the end. Runs until it reports that it has
-      // reached the end of the roll. See `backfillImageExif`.
-      if (plan.import && !exifBackfilled.current) {
-        exifBackfilled.current = await library.backfillExif();
-      }
-
-      // The placeholder every tile falls back to, for the records this device
-      // imported before it could make one. Last of the three, and deliberately:
-      // the two above decide where a tile *sits*, which changes what somebody is
-      // looking at, and this decides what an unresolved tile paints — an
-      // improvement to a grid that is already in the right order.
-      //
-      // Unlike those two it does not finish in one open, and does not need to.
-      // See `MAX_THUMB_HASH_BACKFILL_PASSES`.
-      if (plan.import && !thumbHashesBackfilled.current) {
-        thumbHashesBackfilled.current = await library.backfillThumbHashes();
-      }
-
-      // The rungs this device's own camera roll needs, which is what makes its
-      // grid legible without another node's help. Last of the four, and for the
-      // reason the ThumbHash pass gives about the two above it: this improves
-      // what a tile paints, and where a tile *sits* is the worse thing to have
-      // wrong.
-      //
-      // Run here and not only in the background window, because the window
-      // cannot carry it. Ninety seconds, shared with import and sync, six or
-      // seven times a day, is a handful of records — against a camera roll with
-      // thousands. See `DERIVE_RECORDS_PER_OPEN`.
-      if (plan.import && !renditionsDerived.current) {
-        renditionsDerived.current = await library.deriveRenditions();
-      }
-
-      // The assets the import watermark can never reach. Run on every catch-up
-      // rather than once per launch, because the pass costs ten media-store
-      // probes and a screenshot taken while the app is open would otherwise wait
-      // for a relaunch to be noticed. The catch-up's own interval guard is what
-      // bounds how often that happens. See `importNullModified`.
-      if (plan.import) await library.sweepNullModified();
-
-      // Again, for the rungs derivation just made. If the first sync is still
-      // running this one waits behind it and runs when it ends.
-      if (plan.sync && plan.import) runSync("after-derive");
-
-      catchUpAt.current = Date.now();
-      setLastCatchUp({ plan, imported });
-    } finally {
-      catchingUpRef.current = false;
-    }
-  }, [node, library, runSync]);
-
-  /**
-   * The latest {@link runCatchUp}, reachable from the subscription below.
-   *
-   * A ref rather than a dependency, because the effect's cleanup aborts the
-   * running sync: re-subscribing whenever the callback's identity changed would
-   * abort the very sync this is meant to keep alive, on every render.
-   */
-  const runCatchUpRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    runCatchUpRef.current = () => void runCatchUp();
-  }, [runCatchUp]);
-
-  /** The latest {@link autoSync} and {@link onMediaChange}, for the same reason. */
-  const autoSyncRef = useRef<((trigger: SyncTrigger) => Promise<void>) | null>(null);
-  const onMediaChangeRef = useRef<(() => Promise<void>) | null>(null);
-  useEffect(() => {
-    autoSyncRef.current = autoSync;
-    onMediaChangeRef.current = onMediaChange;
-  }, [autoSync, onMediaChange]);
-
-  useEffect(() => {
-    // While the app is open: a sync every thirty seconds, and an import and a
-    // sync a few seconds after the camera roll changes. Both stop the moment
-    // the app leaves the foreground; background windows are their own thing.
-    const loop = createForegroundSyncLoop({ onTick: () => autoSyncRef.current?.("timer") });
-    const mediaChange = createDebouncer(() => void onMediaChangeRef.current?.());
-    mediaChangeRetry.current = () => mediaChange.trigger();
-    let mediaSubscription: { remove(): void } | null = null;
-
-    const enterForeground = (): void => {
-      appActive.current = true;
-      loop.start();
-      mediaSubscription ??= deviceMedia.onChange?.(() => mediaChange.trigger()) ?? null;
-    };
-    const leaveForeground = (): void => {
-      appActive.current = false;
-      loop.stop();
-      mediaChange.cancel();
-      mediaSubscription?.remove();
-      mediaSubscription = null;
-      // A sync waiting behind the running one was asked for by an open app.
-      syncFollowUp.current.cancel();
-      // Stopping is cheap — every round has persisted its watermarks — and it
-      // is what keeps an unbounded drain from running into the moment the OS
-      // freezes the process. Nothing is armed for the way back: coming to the
-      // foreground starts a pass unconditionally, and that pass syncs.
-      syncAbort.current?.abort();
-    };
-
-    if (AppState.currentState === "active") enterForeground();
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") {
-        leaveForeground();
-        return;
-      }
-      enterForeground();
-      runCatchUpRef.current?.();
-    });
-    return () => {
-      subscription.remove();
-      leaveForeground();
-    };
-  }, []);
-
-  /**
-   * The first pass, run when the node opens rather than when the screen mounts.
-   *
-   * Mounting is too early: the node takes seconds to open — 2.8 s on a Pixel 5
-   * — and a pass that finds `nodeReady` false plans nothing and records
-   * nothing. Keyed on readiness, the first pass happens on the launch that
-   * needs it most, which is the one where nobody backgrounds the app at all.
-   */
-  const nodeReady = node.status === "ready";
-  useEffect(() => {
-    if (!nodeReady) return;
-    runCatchUpRef.current?.();
-  }, [nodeReady]);
-
-  // The trace as the node left it, including the background windows' rounds.
-  useEffect(() => {
-    if (node.status !== "ready") return;
-    setTrace(node.node.syncTrace(TRACE_ROUNDS_SHOWN));
-  }, [node]);
-
-
-  /**
-   * What the last background tick did, whether the OS will run another, and
-   * what this device's conditions actually are.
-   *
-   * Read once on mount rather than polled: a tick cannot run while this screen
-   * is in the foreground — the Android scheduler refuses and reschedules — so
-   * the report file cannot change under an open screen.
-   *
-   * The device reading comes from the same function the tick uses. Two readers
-   * with two sources is how a debug panel comes to disagree with the scheduler
-   * it exists to explain.
-   */
-  const [tickReport, setTickReport] = useState<TickReport | null>(null);
-  const [backgroundStatus, setBackgroundStatus] = useState<string | null>(null);
-  const [device, setDevice] = useState<DeviceState | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        await registerBackgroundWork();
-        const status = await backgroundWorkStatus();
-        if (!cancelled) setBackgroundStatus(status);
-      } catch (err) {
-        if (!cancelled) setBackgroundStatus(String(err));
-      }
-      const [report, conditions] = await Promise.all([
-        tickReportStore.read(),
-        readRealDeviceState(),
-      ]);
-      if (cancelled) return;
-      setTickReport(report);
-      setDevice(conditions);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  /**
-   * Everything a person diagnosing sync needs from this phone, through the
-   * system share sheet — which offers Copy as well as every way to send it.
-   * The sync trace in full, the last background tick, and this device's
-   * conditions.
-   */
-  const shareDiagnostics = useCallback(async () => {
-    if (node.status !== "ready") return;
-    const lines = [
-      `Starkeep Photos diagnostics, ${new Date().toISOString()}`,
-      device ? `Device: ${describeDevice(device)}` : "Device: conditions not read",
-      `Background task: ${backgroundStatus ?? "unknown"}`,
-      tickReport
-        ? `Last background tick ${tickReport.startedAt} (${tickReport.totalMs} ms${tickReport.ranOutOfTime ? ", out of time" : ""})` +
-          (tickReport.abandoned ? `, abandoned while ${tickReport.abandoned}` : "") +
-          "\n" +
-          tickReport.outcomes.map((o) => `  ${o.ran ? "ran" : "—"} ${o.job}: ${o.detail}`).join("\n")
-        : "No background tick has reported yet.",
-      "",
-      "Sync rounds, newest first:",
-      formatSyncTrace(node.node.syncTrace(SYNC_TRACE_KEEP)),
-    ];
-    try {
-      await Share.share({ message: lines.join("\n") });
-    } catch (err) {
-      setSyncError(`Could not open the share sheet: ${String(err)}`);
-    }
-  }, [node, device, backgroundStatus, tickReport]);
-
-  const connection = node.status === "ready" ? node.connection : null;
-  const baseUrl = connection?.baseUrl;
-
-  const collect = useCallback(async (): Promise<Check[]> => {
-    // The node first, and never behind the cloud probe: `Promise.all` rather
-    // than a sequence means a request hanging on a dead network cannot delay
-    // the two answers that came off this device.
-    const [node, cloud] = await Promise.all([
-      runNodeChecks(),
-      baseUrl
-        ? checkCloud(baseUrl)
-        : Promise.resolve({
-            name: "Cloud",
-            detail: "this device is not connected to a cloud",
-            ok: false,
-            required: false,
-          }),
-    ]);
-    return [...node, cloud];
-  }, [baseUrl]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void collect().then((results) => {
-      if (!cancelled) setChecks(results);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [collect]);
+  const { loadMore } = library;
+  const loadMoreQuietly = useCallback(() => void loadMore(), [loadMore]);
 
   /**
    * The viewer, owned here rather than by the grid.
@@ -824,36 +91,24 @@ export function HomeScreen({ onConnect }: Props) {
    * tile being recycled while somebody is looking at the picture. See
    * `useLibraryViewer`.
    */
-  const viewer = useLibraryViewer({
-    onFetch: library.fetchBlob,
-    onFetchRendition: library.fetchRendition,
-    onDeriveNow: library.deriveNow,
-    onOpenForViewer: library.openForViewer,
-    onOpenMotion: library.openMotion,
-  }, library.items);
-
-  /**
-   * Whether the node already holds a device asset, for the device grid's marks.
-   *
-   * Reads the alias table directly, which is the same question `alreadyImported`
-   * asks during an import — so a tile marked absent here is one the next import
-   * pass would consider. On a node that reads no camera roll there is no table,
-   * and the grid is told nothing rather than told "missing": marking every tile
-   * absent because nobody could answer would be worse than marking none.
-   */
-  const aliases = node.status === "ready" ? node.node.mediaAliases : null;
-  const isImported = useCallback(
-    (assetId: string) => aliases?.byAssetId(assetId) != null,
-    [aliases],
+  const viewer = useLibraryViewer(
+    {
+      onFetch: library.fetchBlob,
+      onFetchRendition: library.fetchRendition,
+      onDeriveNow: library.deriveNow,
+      onOpenForViewer: library.openForViewer,
+      onOpenMotion: library.openMotion,
+      onReadInfo: library.readInfo,
+      onLoadMore: loadMoreQuietly,
+    },
+    library.items,
   );
 
   // Laid out against the window's current width, so a rotation re-flows the rows
-  // rather than leaving them measured for the old one. `useWindowDimensions`
-  // re-renders on the change, which is what makes the memo re-run.
-  const rows = useMemo(
-    () => libraryRows(library.items, window.width),
-    [library.items, window.width],
-  );
+  // rather than leaving them measured for the old one. Landscape keeps the rows
+  // clear of a display cutout at either side.
+  const gridWidth = landscape ? window.width - insets.left - insets.right : window.width;
+  const rows = useMemo(() => libraryRows(library.items, gridWidth), [library.items, gridWidth]);
 
   const openItem = viewer.open;
   const renderRow = useCallback(
@@ -866,8 +121,7 @@ export function HomeScreen({ onConnect }: Props) {
    *
    * `expo-image` keeps Glide's memory cache alive across an unmount, which is
    * what makes scrolling back up instant and is also what a process about to be
-   * frozen is holding when Android decides which app to kill. The viewer's own
-   * picture is the only thing worth keeping resident, and it is one picture.
+   * frozen is holding when Android decides which app to kill.
    */
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -876,532 +130,67 @@ export function HomeScreen({ onConnect }: Props) {
     return () => subscription.remove();
   }, []);
 
-  /**
-   * Everything above the grid.
-   *
-   * An element rather than a component, deliberately: `FlatList` remounts a
-   * `ListHeaderComponent` passed as a function type on every render, which
-   * would tear down and rebuild the header — and anything holding state inside
-   * it — on every scroll frame. An element is reconciled like any other child.
-   */
-  const header = (
-    // The gutter rides on the header rather than on the list, so the grid below
-    // it runs to both edges of the screen and only the text is inset.
-    <View style={[styles.listGutter, { gap: 20, marginBottom: 20 }]}>
-      <View style={{ gap: 4 }}>
-        <Text style={styles.title}>Starkeep Photos</Text>
-        <Text style={styles.subtitle}>{connectionLabel(node)}</Text>
-      </View>
-      <Text style={styles.sectionTitle}>This node&rsquo;s library</Text>
-      {library.error ? <Text style={styles.error}>{library.error}</Text> : null}
-    </View>
-  );
-
   /** What the grid says when the node holds nothing. */
   const empty = (
-    <Text style={[styles.muted, styles.listGutter]}>
-      {library.loading
-        ? "Reading this node's library…"
-        : "Nothing has been added to this node yet. The photos on this device are still just on this device."}
+    <Text style={[styles.muted, styles.listGutter, { paddingTop: 24 }]}>
+      {library.loading ? "Loading…" : "No photos yet."}
     </Text>
   );
 
-  /** Everything below the grid, header's argument applying equally. */
-  const footer = (
-    <View style={[styles.listGutter, { gap: 20, marginTop: 20 }]}>
-      <View style={{ gap: 8 }}>
-        {library.loadingMore ? (
-          <Text style={styles.muted}>Loading more…</Text>
-        ) : (
-          <Text style={styles.muted}>
-            {library.summary
-              ? library.items.length < library.summary.records
-                ? `${library.items.length} of ${library.summary.records} records shown.`
-                : `${library.summary.records} ${library.summary.records === 1 ? "record" : "records"} in this node's library. Tap one to open it.`
-              : `${library.items.length} shown.`}
+  /**
+   * The one thing that can sit above the grid: a way back to the camera roll
+   * after a person refused access to it. Without it a refusal would be final,
+   * because nothing else in the app asks again.
+   */
+  const accessPrompt =
+    work.mediaAccess === "denied" || work.mediaAccess === "blocked" ? (
+      <View style={[styles.listGutter, { gap: 10, paddingVertical: 16 }]}>
+        <Text style={styles.muted}>
+          Starkeep needs access to your photos to add them to your library.
+        </Text>
+        <Pressable onPress={() => void work.requestMediaAccess()} style={styles.button}>
+          <Text style={styles.buttonLabel}>
+            {work.mediaAccess === "blocked" ? "Open settings" : "Allow access"}
           </Text>
-        )}
-        {/* **A control, not just a scroll trigger.** Everything below the grid
-            rides in this list's footer, so the end of the tiles is several
-            screens above the end of the content — which means `onEndReached`
-            fires only once somebody has scrolled through the whole rest of the
-            screen. Saying "keep scrolling" and then ending is exactly what that
-            produces. The tap is the reliable route; the scroll trigger stays as
-            the convenient one. */}
-        {library.hasMore && !library.loadingMore ? (
-          <Pressable onPress={() => void library.loadMore()} style={styles.button}>
-            <Text style={styles.buttonLabel}>Show more photos</Text>
-          </Pressable>
-        ) : null}
-        {library.loadMoreError ? (
-          <Text style={styles.error}>{library.loadMoreError}</Text>
-        ) : null}
-          {node.status === "ready" ? (
-            <Pressable
-              onPress={() => void library.importNow()}
-              disabled={library.importing}
-              style={[styles.button, library.importing ? styles.buttonDisabled : null]}
-            >
-              <Text style={styles.buttonLabel}>
-                {library.importing
-                  ? library.progress
-                    ? `Adding ${library.progress.done} of ${library.progress.total}…`
-                    : "Adding…"
-                  : "Add photos from this device"}
-              </Text>
-            </Pressable>
-          ) : null}
-          {library.lastImport ? (
-            <>
-              <Text style={styles.muted}>{describeImport(library.lastImport)}</Text>
-              {/* The reason, not just the count. A screen that can only say
-                  "60 could not be read" cannot be acted on, and that is exactly
-                  what the first version of this said when every asset failed. */}
-              {library.lastImport.failures.length > 0 ? (
-                <Text style={styles.error}>{library.lastImport.failures[0]!.reason}</Text>
-              ) : null}
-            </>
-          ) : null}
-          {library.summary && library.summary.records > 0 ? (
-            <Text style={styles.muted}>
-              {formatBytes(library.summary.aliasedBytes)} of it is held by this device&rsquo;s media
-              store rather than copied — Starkeep points at your photos instead of duplicating them.
-            </Text>
-          ) : null}
-
-          {node.status === "ready" ? (
-            <View style={{ gap: 6, marginTop: 4 }}>
-              <Pressable
-                onPress={() => {
-                  if (!confirmingReset) {
-                    setConfirmingReset(true);
-                    return;
-                  }
-                  setConfirmingReset(false);
-                  setResetting(true);
-                  void reset()
-                    .then(() => library.reload())
-                    .finally(() => setResetting(false));
-                }}
-                disabled={resetting}
-                style={{ paddingVertical: 8 }}
-              >
-                <Text style={confirmingReset ? styles.error : styles.linkLabel}>
-                  {resetting
-                    ? "Clearing…"
-                    : confirmingReset
-                      ? "Tap again to clear this node"
-                      : "Clear this node's data"}
-                </Text>
-              </Pressable>
-              {confirmingReset ? (
-                // Says what is destroyed *and* what is not. The distinction is
-                // the whole reason this is safe: the originals were never
-                // copied here, so there is nothing to lose but the index.
-                <Text style={styles.muted}>
-                  Deletes {library.summary?.records ?? 0} record
-                  {library.summary?.records === 1 ? "" : "s"} and everything in this node&rsquo;s
-                  object store. Your photos are not touched — they live in the device&rsquo;s media
-                  store and Starkeep only points at them.
-                </Text>
-              ) : null}
-            </View>
-          ) : null}
+        </Pressable>
       </View>
-      <Section title="Storage">
-        {storage.report === null ? (
-          <Text style={styles.muted}>Reading what this device holds…</Text>
-        ) : (
-          <>
-            <Text style={styles.body}>
-              {formatBytes(storage.report.heldBytes)} held on this device
-            </Text>
-            {Object.entries(storage.report.groups)
-              // Only groups holding something, largest first: what is filling
-              // the disk is the question being asked.
-              .filter(([, bytes]) => bytes > 0)
-              .sort(([, a], [, b]) => b - a)
-              .map(([group, bytes]) => (
-                <View key={group} style={styles.row}>
-                  <View style={styles.rowText}>
-                    <Text style={styles.body}>{describeStorageGroup(group)}</Text>
-                    <Text style={styles.muted}>{formatBytes(bytes)}</Text>
-                  </View>
-                </View>
-              ))}
-            {storage.report.heldBytes === 0 ? (
-              <Text style={styles.muted}>
-                Nothing has been fetched from the cloud yet. Photos taken on this device are not
-                counted here — Starkeep points at them in your camera roll rather than keeping a
-                second copy, so they take no extra space.
-              </Text>
-            ) : null}
+    ) : null;
 
-            {storage.ceilings ? (
-              <>
-                {/* The platform's ceilings for this node, shown here because a
-                    phone has no admin-web. Same categories and sizes as the
-                    desktop's "Sync-down ceilings". Raising one downloads the
-                    sizes it now covers; lowering one removes nothing. */}
-                <Text style={styles.body}>Sync-down ceilings</Text>
-                {STAND_IN_CATEGORIES.map((category) => {
-                  const view = storage.ceilings!;
-                  const current = view.current[category];
-                  const canonical = view.canonical[category];
-                  const options: (number | null)[] = [null, ...view.choices[category]];
-                  return (
-                    <View key={category}>
-                      <Text style={styles.muted}>
-                        {CEILING_CATEGORY_LABELS[category]}
-                        {current === view.defaults[category] ? " (default)" : ""}
-                      </Text>
-                      <View style={styles.chips}>
-                        {options.map((choice) => {
-                          const selected = current === choice;
-                          return (
-                            <Pressable
-                              key={String(choice)}
-                              accessibilityRole="radio"
-                              accessibilityState={{ selected }}
-                              accessibilityLabel={`${CEILING_CATEGORY_LABELS[category]} ceiling ${ceilingLabel(category, choice, canonical)}`}
-                              onPress={() => storage.setCeiling(category, choice)}
-                              style={[styles.chip, selected ? styles.chipSelected : null]}
-                            >
-                              <Text style={selected ? styles.chipLabelSelected : styles.chipLabel}>
-                                {ceilingLabel(category, choice, canonical)}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  );
-                })}
-                <Text style={styles.muted}>
-                  This device receives every size up to its ceiling for the whole library. Larger
-                  sizes and originals download when you open them. Lowering a ceiling removes
-                  nothing until you free up space.
-                </Text>
-              </>
-            ) : null}
-
-            {/* The person's "Free up space". Originals and larger stand-ins
-                leave this device only here, and only once the cloud is proved
-                to hold them — nothing removes a file on its own. */}
-            <Pressable
-              onPress={() => void storage.freeUp("originals")}
-              disabled={storage.reclaiming}
-              style={[styles.button, storage.reclaiming ? styles.buttonDisabled : null]}
-            >
-              <Text style={styles.buttonLabel}>
-                {storage.reclaiming ? "Freeing…" : "Free up space"}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void storage.freeUp("originals-and-above-ceiling")}
-              disabled={storage.reclaiming}
-              style={[styles.button, storage.reclaiming ? styles.buttonDisabled : null]}
-            >
-              <Text style={styles.buttonLabel}>Also remove large previews</Text>
-            </Pressable>
-            {storage.lastFreed ? (
-              <Text style={styles.muted}>{describeFreed(storage.lastFreed)}</Text>
-            ) : null}
-            {storage.error ? <Text style={styles.error}>{storage.error}</Text> : null}
-          </>
-        )}
-      </Section>
-
-      <Section title="On this device">
-        {/* **Closed until asked for, and the saving is real rather than
-            cosmetic.** `MediaGrid` requests its permission and calls
-            `listRecentMedia` from a mount effect, and that query runs
-            `ExifInterface` and `MediaMetadataRetriever` per returned row
-            inside the media store process — the cost `import-cursor.ts`
-            measured at over nine minutes for twenty rows on a loaded Pixel 5.
-            Not rendering it does not merely hide sixty tiles, it does not ask
-            the question at all. */}
-        {showDeviceMedia ? (
-          <MediaGrid media={deviceMedia} {...(aliases ? { isImported } : {})} />
-        ) : (
-          <Pressable onPress={() => setShowDeviceMedia(true)} style={{ paddingVertical: 8 }}>
-            <Text style={styles.linkLabel}>Show the photos on this device</Text>
-          </Pressable>
-        )}
-        {/* Says what the section is for, which matters more now that opening
-            it takes a deliberate act: this answers "what is on this phone",
-            and the library above answers "what does this node hold". The two
-            stop agreeing the moment anything syncs in or is imported and then
-            deleted from the camera roll. */}
-        <Text style={styles.muted}>
-          The device&rsquo;s own camera roll, read straight from the media store. This node&rsquo;s
-          library is the section at the top; the two are not the same set.
-        </Text>
-      </Section>
-
-      <Section title="Status">
-        {checks === null ? (
-          <Text style={styles.muted}>Checking…</Text>
-        ) : (
-          checks.map((c) => (
-            <View key={c.name} style={styles.row}>
-              <Text
-                style={[styles.badge, c.ok ? styles.ok : c.required === false ? styles.info : styles.bad]}
-              >
-                {c.ok ? "OK" : c.required === false ? "—" : "FAIL"}
-              </Text>
-              <View style={styles.rowText}>
-                <Text style={styles.body}>{c.name}</Text>
-                <Text style={styles.muted}>{c.detail}</Text>
-              </View>
-            </View>
-          ))
-        )}
-        <Text style={styles.muted}>
-          Pull down to run these again.
-        </Text>
-      </Section>
-
-      <Section title="This node">
-        {node.status === "ready" ? (
-          <Text style={styles.mono}>{node.identity.nodeId}</Text>
-        ) : node.status === "failed" ? (
-          // Named as a node failure rather than left to look like an empty
-          // library: "you have no photos" and "the database would not open"
-          // are the same screen otherwise, and only one of them is a bug.
-          <Text style={styles.error}>This node did not open: {node.error}</Text>
-        ) : (
-          <Text style={styles.muted}>Opening…</Text>
-        )}
-        <Text style={styles.mono}>{DATABASE_PATH}</Text>
-        <Text style={styles.mono}>{OBJECTS_PATH}</Text>
-        <Text style={styles.muted}>
-          {connection ? connection.baseUrl : "not connected to a cloud"}
-        </Text>
-      </Section>
-
-      <Section title="Work">
-        <Text style={styles.muted}>
-          {JOB_GRAPH.length} jobs declared,{" "}
-          {device ? `${runnableJobs(device).length} runnable right now` : "conditions loading…"}.
-        </Text>
-        {device ? <Text style={styles.muted}>{describeDevice(device)}</Text> : null}
-        <Text style={styles.muted}>Background task: {backgroundStatus ?? "registering…"}</Text>
-        {/* The last tick, read from the file it left behind. The process that
-            produced it is gone, so this is the only place its report can
-            appear — logcat needs a cable, and the whole question is what the
-            phone does with nobody watching. */}
-        {tickReport ? (
-          <>
-            <Text style={styles.muted}>
-              Last background tick {tickReport.startedAt} ({tickReport.totalMs} ms
-              {tickReport.ranOutOfTime ? ", out of time" : ""})
-            </Text>
-            {/* The whole point of the field is that a person sees it here. A
-                window wedged on a call that never returns writes no report of
-                its own, so this line is the only account of what it was doing
-                when the watchdog gave up on it. */}
-            {tickReport.abandoned ? (
-              <Text style={styles.muted}>Abandoned while {tickReport.abandoned}</Text>
-            ) : null}
-            {tickReport.outcomes.map((outcome) => (
-              <Text key={outcome.job} style={styles.muted}>
-                {outcome.ran ? "ran" : "—"} {outcome.job}: {outcome.detail}
-              </Text>
-            ))}
-          </>
-        ) : (
-          <Text style={styles.muted}>No background tick has reported yet.</Text>
-        )}
-        {/* Every sync this phone ran, foreground and background, from the
-            node's own trace. The desktop and the cloud each log their half;
-            this is the phone's. */}
-        <Text style={styles.muted}>Recent sync rounds:</Text>
-        {trace.length === 0 ? (
-          <Text style={styles.muted}>No sync has run yet.</Text>
-        ) : (
-          trace.map((round, i) => (
-            <Text key={`${round.syncId}-${round.round}-${i}`} style={styles.muted}>
-              {describeTraceRound(round)}
-            </Text>
-          ))
-        )}
-        {node.status === "ready" ? (
-          <Pressable onPress={() => void shareDiagnostics()} style={styles.button}>
-            <Text style={styles.buttonLabel}>Share diagnostics</Text>
-          </Pressable>
-        ) : null}
-      </Section>
-
-      <Section title="Sync">
-        {node.status === "ready" ? (
-          <>
-            <Pressable
-              onPress={() => runSync()}
-              disabled={syncing || node.node.engine === null}
-              style={[
-                styles.button,
-                syncing || node.node.engine === null ? styles.buttonDisabled : null,
-              ]}
-            >
-              <Text style={styles.buttonLabel}>{syncing ? "Syncing…" : "Sync now"}</Text>
-            </Pressable>
-            {syncing && syncProgress ? (
-              <Text style={styles.muted}>
-                {syncProgress.items} item{syncProgress.items === 1 ? "" : "s"} in{" "}
-                {syncProgress.rounds} round{syncProgress.rounds === 1 ? "" : "s"}…
-              </Text>
-            ) : null}
-            {node.node.engine === null ? (
-              <Text style={styles.muted}>
-                This device is not connected to a cloud, so there is nothing to exchange with.
-              </Text>
-            ) : null}
-            {syncError ? <Text style={styles.error}>{syncError}</Text> : null}
-            {/* What happened without anybody asking. A catch-up that declined
-                a half has to say which one: "waiting for Wi-Fi" is the common
-                case, and silence there reads as a feature that does not work
-                rather than as one that is waiting for a condition. */}
-            {library.catchingUp ? (
-              <Text style={styles.muted}>Checking for new photos…</Text>
-            ) : lastCatchUp ? (
-              <Text style={styles.muted}>{describeCatchUp(lastCatchUp)}</Text>
-            ) : null}
-
-            <Pressable
-              onPress={() => {
-                setVerifyState({ checking: true });
-                void node.node
-                  .verify()
-                  .then((result) => setVerifyState({ checking: false, result }))
-                  .catch((err: unknown) => {
-                    setSyncError(String(err));
-                    setVerifyState(null);
-                  });
-              }}
-              disabled={syncing || verifyState?.checking === true || node.node.engine === null}
-              style={[
-                styles.button,
-                syncing || verifyState?.checking === true || node.node.engine === null
-                  ? styles.buttonDisabled
-                  : null,
-              ]}
-            >
-              <Text style={styles.buttonLabel}>
-                {verifyState?.checking ? "Checking…" : "Check backup"}
-              </Text>
-            </Pressable>
-            {verifyState && !verifyState.checking ? (
-              <Text style={verifyFoundProblem(verifyState.result) ? styles.error : styles.muted}>
-                {describeVerify(verifyState.result)}
-              </Text>
-            ) : null}
-
-          </>
-        ) : null}
-
-        {connection ? (
-          <>
-            <Text style={styles.muted}>
-              {`Signed in to ${hostLabel(connection.baseUrl)} as ${connection.email ?? "you"}.`}
-            </Text>
-            <Pressable
-              onPress={() => {
-                if (!confirmingDisconnect) {
-                  setConfirmingDisconnect(true);
-                  return;
-                }
-                setConfirmingDisconnect(false);
-                void signOutThisPhone()
-                  .then(() => reopen())
-                  .catch((err: unknown) => setSyncError(String(err)));
-              }}
-              disabled={syncing}
-              style={{ paddingVertical: 8 }}
-            >
-              <Text style={confirmingDisconnect ? styles.error : styles.linkLabel}>
-                {confirmingDisconnect ? "Tap again to sign out. Syncing stops until you sign in again." : "Sign out"}
-              </Text>
-            </Pressable>
-          </>
-        ) : (
-          <>
-            {sessionEnded ? (
-              <Text style={styles.error}>
-                Your sign-in ended ({sessionEnded}). Sign in again to keep syncing.
-              </Text>
-            ) : null}
-            <Text style={styles.muted}>
-              This device is not connected to a cloud, so nothing leaves it and nothing arrives.
-              Everything above is local and stays that way. To sync it, sign in with the Starkeep
-              account your admin created for you.
-            </Text>
-            {node.status === "ready" ? (
-              <Pressable onPress={onConnect} style={[styles.button, { marginTop: 4 }]}>
-                <Text style={styles.buttonLabel}>Sign in</Text>
-              </Pressable>
-            ) : null}
-          </>
-        )}
-      </Section>
-
-      <Section title="How this works">
-        <Text style={styles.muted}>
-          Photos and videos on this device are added to the node when you open the app, and again
-          in the background every so often. Sync sends them on once you sign in.
-        </Text>
-        <Text style={styles.muted}>
-          Automatic sync waits for Wi-Fi, because it uploads originals and doing that over
-          cellular costs you money. Sync now overrides the wait.
-        </Text>
-        <Text style={styles.muted}>
-          A Motion Photo plays its video when you open it, and stores nothing extra — the video
-          was always inside the photograph.
-        </Text>
-        <Text style={styles.muted}>
-          This device does not make smaller copies of your photos. Everything it shows is either
-          the original or a smaller copy some other device made and sent here, so a photo taken
-          on this phone is decoded at full size every time a tile draws it.
-        </Text>
-      </Section>
-    </View>
-  );
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <View style={styles.safe}>
+      {landscape ? null : (
+        <AppBar topInset={insets.top} onOpenSettings={() => setSettingsOpen(true)} />
+      )}
       {/* **A list, not a `ScrollView`, and the library's rows are its items.**
-          The grid used to map every record into a wrapping `View` inside a
-          scroll view, so nothing ever unmounted: every tile the grid had ever
-          loaded stayed mounted with its bitmap decoded. At sixty tiles that was
-          survivable and at five hundred it is not, which is why paging the
-          library and virtualizing it are one change rather than two — a
-          paginated grid that never releases a tile is worse than the ceiling it
-          replaces.
-
-          The rest of the screen rides along as the header and the footer, so
-          there is still exactly one scroll on this screen and no list nested
-          inside another — the arrangement `MediaGrid`'s own note warns about. */}
+          A wrapping `View` inside a scroll view never unmounts anything, so
+          every tile ever loaded would stay mounted with its bitmap decoded.
+          Paging the library and virtualizing it are one change rather than
+          two — a paginated grid that never releases a tile is worse than the
+          ceiling it replaces. */}
       <FlatList
         data={rows}
         keyExtractor={libraryRowKey}
         renderItem={renderRow}
-        // **No `getItemLayout`.** A row's height is a closed form, so supplying
-        // one was tempting — but `VirtualizedList` expects the offset it returns
-        // to include the header's height, and the header here is a title, a
-        // subtitle and a heading whose height nothing computes. Offsets short by
-        // that amount put every item at the wrong place, which is what made the
-        // list mis-measure its own end and stop asking for more. Measuring costs
-        // a pass per row and is correct.
-        contentContainerStyle={styles.listContent}
-        ListHeaderComponent={header}
-        ListFooterComponent={footer}
+        contentContainerStyle={{
+          paddingTop: landscape ? insets.top : 0,
+          paddingBottom: insets.bottom + GRID_GAP,
+          paddingLeft: landscape ? insets.left : 0,
+          paddingRight: landscape ? insets.right : 0,
+        }}
+        ListHeaderComponent={accessPrompt}
         ListEmptyComponent={empty}
-        // Generous, because the footer below the grid is several screens tall:
-        // the end of the *content* is far below the end of the tiles, so a
-        // tighter threshold would only ever fire once somebody had scrolled
-        // through the whole of the rest of the screen.
-        onEndReachedThreshold={2}
-        onEndReached={() => void library.loadMore()}
+        // Only a spinner while the next page loads. Nothing else sits below the
+        // grid, so the end of the content is the end of the tiles and
+        // `onEndReached` fires when somebody actually reaches it.
+        ListFooterComponent={
+          library.loadingMore ? (
+            <ActivityIndicator color={colors.muted} style={{ marginVertical: 16 }} />
+          ) : null
+        }
+        onEndReachedThreshold={0.5}
+        onEndReached={loadMoreQuietly}
         // Roughly two screens of tiles resident. Enough that a flick does not
         // outrun the renderer, few enough that the decoded bitmaps stay bounded
         // no matter how far the library is scrolled.
@@ -1409,96 +198,37 @@ export function HomeScreen({ onConnect }: Props) {
         initialNumToRender={7}
         maxToRenderPerBatch={6}
         // **No `removeClippedSubviews`.** It detaches an item's native views
-        // while the item stays mounted, which on Android is the second half of
-        // the blank rectangle somebody sees scrolling back over pictures they
-        // were just looking at — the first half being a tile that had to be
-        // decoded again, which `cachePolicy="memory-disk"` now answers.
-        // `windowSize` already bounds how many rows are resident, and it bounds
-        // it by unmounting, which releases the bitmaps rather than orphaning
-        // them.
+        // while the item stays mounted, which on Android is half of the blank
+        // rectangle somebody sees scrolling back over pictures they were just
+        // looking at. `windowSize` already bounds how many rows are resident,
+        // and it bounds it by unmounting, which releases the bitmaps.
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             tintColor="#888"
             onRefresh={() => {
               setRefreshing(true);
-              void Promise.all([collect().then(setChecks), library.reload()]).finally(() =>
-                setRefreshing(false),
-              );
+              // The spinner waits for the grid only. The catch-up imports,
+              // syncs and derives, which can take far longer than a pull should
+              // hold the spinner; the grid reloads again as its work lands.
+              void work.catchUpNow();
+              void library.reload().finally(() => setRefreshing(false));
             }}
           />
         }
       />
-      {/* Outside the list, because a full-screen modal inside a recycled row is
-          a modal that closes when the row it was opened from scrolls away. */}
       {viewer.element}
-    </SafeAreaView>
-  );
-}
-
-/**
- * Who this device thinks it is.
- *
- * "Local node" rather than "signed out": being signed out is a way to run, not
- * a thing missing, and a subtitle that reads as a deficiency is a sign-in gate
- * growing back as copy.
- */
-export function connectionLabel(node: NodeState): string {
-  if (node.status !== "ready") return "local node";
-  if (!node.connection) return "local node · not connected";
-  const who = node.connection.email ?? "signed in";
-  return `${who} · ${hostLabel(node.connection.baseUrl)}`;
-}
-
-/** A cloud's address, as a person reads it: the host alone. */
-export function hostLabel(baseUrl: string): string {
-  return baseUrl.replace(/^https?:\/\//, "").replace(/[/:].*$/, "");
-}
-
-/**
- * What one import pass did.
- *
- * `skipped` and `failed` are only mentioned when non-zero, because on the
- * common second run everything is skipped and "60 skipped" is the sentence
- * that explains why nothing appeared to happen. Silence there would read as
- * the button not working.
- */
-/**
- * What the last automatic pass did, in one line.
- *
- * The decline leads when there is one, because it is the half that did not
- * happen and the only place on this screen that would ever mention it. What did
- * happen follows, so a person can tell "nothing new to bring in" apart from
- * "did not look".
- */
-function describeCatchUp(last: {
-  readonly plan: CatchUpPlan;
-  readonly imported: ImportOutcome | null;
-}): string {
-  const added = last.imported?.imported ?? 0;
-  const found =
-    added > 0
-      ? `Brought in ${added} new item${added === 1 ? "" : "s"}.`
-      : last.plan.import
-        ? "Nothing new on this device to bring in."
-        : null;
-  return [last.plan.declined, found].filter(Boolean).join(" ");
-}
-
-function describeImport(outcome: ImportOutcome): string {
-  const parts: string[] = [];
-  if (outcome.imported > 0) parts.push(`added ${outcome.imported}`);
-  if (outcome.skipped > 0) parts.push(`${outcome.skipped} already here`);
-  if (outcome.failed > 0) parts.push(`${outcome.failed} could not be read`);
-  if (parts.length === 0) return "Nothing on this device to add.";
-  return `${parts.join(", ")} — of ${outcome.scanned} looked at.`;
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {children}
+      {settingsOpen ? (
+        <SettingsScreen
+          node={node}
+          storage={storage}
+          work={work}
+          sessionEnded={sessionEnded}
+          onSignIn={onConnect}
+          onSignedOut={reopen}
+          onClose={closeSettings}
+        />
+      ) : null}
     </View>
   );
 }

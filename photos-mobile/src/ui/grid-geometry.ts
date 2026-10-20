@@ -49,13 +49,10 @@ export const GRID_GAP = 2;
 /**
  * The height a justified library row aims for, in layout points.
  *
- * ## Why the library grid has a row height and the device grid still has columns
+ * ## Why a row height rather than columns
  *
- * They answer different questions. `MediaGrid` shows the camera roll as the
- * media store reports it — a contact sheet, where a square crop is the point
- * because the question is *which of these do I have*. The library shows
- * photographs, and a square crop of a photograph is not the photograph. So the
- * library became justified rows, where every picture in a row shares a height
+ * The library shows photographs, and a square crop of a photograph is not the
+ * photograph. So the library became justified rows, where every picture in a row shares a height
  * and keeps its own shape, and nothing is ever cropped to a square.
  *
  * That also fixed the sizing. A square tile is the wrong box to measure a
@@ -86,20 +83,3 @@ export const GRID_GAP = 2;
  * against this number rather than against the height a row lands on.
  */
 export const LIBRARY_ROW_HEIGHT = 160;
-
-/**
- * The width a tile takes in the *device* grid, as a fraction of the row.
- *
- * `MediaGrid`'s, not the library's — the camera-roll contact sheet is still
- * three square tiles across, for the reason {@link LIBRARY_ROW_HEIGHT} gives
- * about the two grids answering different questions.
- */
-export const TILE_WIDTH_FRACTION = 0.328;
-
-/**
- * Three across, which is what {@link TILE_WIDTH_FRACTION} is chosen to fit.
- *
- * Named rather than left implicit in the fraction, because the paging arithmetic
- * divides by it and `0.328` does not say "three" to a reader.
- */
-export const GRID_COLUMNS = 3;

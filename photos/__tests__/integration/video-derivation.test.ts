@@ -24,17 +24,17 @@ import {
   transcodeArgs,
   UnsupportedVideoError,
   type VideoTools,
-} from "../src/photos-lib/video/video-tools";
+} from "../../src/photos-lib/video/video-tools";
 import {
   deriveVideoLadder,
   videoSourceOf,
   missingVideoClasses,
-} from "../src/photos-lib/video/derive-video-ladder";
+} from "../../src/photos-lib/video/derive-video-ladder";
 import {
   skimDurationSeconds,
   SKIM_INTERVAL_SECONDS,
   VIDEO_LADDER,
-} from "../src/photos-lib/ladder";
+} from "../../src/photos-lib/ladder";
 
 /** The poster rung under test, read off the ladder rather than written down. */
 const POSTER_THUMB_MAX = VIDEO_LADDER.find((v) => v.sizeClass === "video-poster-thumb")!.maxLongEdge;

@@ -36,7 +36,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BASE_PATH = "/apps/photos";
 
 /**

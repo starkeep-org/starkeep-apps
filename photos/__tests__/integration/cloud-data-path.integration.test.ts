@@ -26,11 +26,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAppCredentialsCache, createDataProxyHandler } from "@starkeep/app-client";
-import { GET as libraryRoute } from "../src/routes/photos/library";
-import { LIBRARY_ORDER } from "../src/photos-lib/capture-order";
-import { POST as renditionsRoute } from "../src/routes/photos/renditions";
-import { listPhotos, listPhotosSince, requestOwnApi } from "../src/lib/data-server-client";
-import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
+import { GET as libraryRoute } from "../../src/routes/photos/library";
+import { LIBRARY_ORDER } from "../../src/photos-lib/capture-order";
+import { POST as renditionsRoute } from "../../src/routes/photos/renditions";
+import { listPhotos, listPhotosSince, requestOwnApi } from "../../src/lib/data-server-client";
+import { canonicalTarget, currentRenditionPolicies } from "../../src/photos-lib/rendition-policy";
 
 const HMAC_SECRET = "integration-test-secret";
 const DATA_SERVER_URL = "http://fake-data-server.test";

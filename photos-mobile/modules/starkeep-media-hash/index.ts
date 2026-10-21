@@ -46,12 +46,18 @@ export interface StarkeepMediaHash {
   cancelUpload(requestId: string): void;
 
   /**
-   * What a video's container says: its length, its display size, and its
-   * recording date as ISO UTC (null when it holds none).
+   * What a video's container says: its length, its display size, its
+   * recording date as ISO UTC, and where it was recorded. Each of the last
+   * three is null when the container holds none.
    */
-  videoFactsOfUri(
-    uri: string,
-  ): Promise<{ durationMs: number; width: number; height: number; capturedAt: string | null }>;
+  videoFactsOfUri(uri: string): Promise<{
+    durationMs: number;
+    width: number;
+    height: number;
+    capturedAt: string | null;
+    gpsLat: number | null;
+    gpsLon: number | null;
+  }>;
 
   /**
    * Decode one frame of `uri` at `timeUs`, turn it upright, and write it as a

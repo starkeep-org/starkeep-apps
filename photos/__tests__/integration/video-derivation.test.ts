@@ -412,7 +412,7 @@ describe("ladder completeness", () => {
   const facts = {
     width: 3840, height: 2160, durationMs: 60_000, frameRate: 30,
     videoCodec: "hevc", audioCodec: "aac", bitrate: 40_000_000,
-    capturedAt: null, rotation: 0 as const,
+    capturedAt: null, gpsLat: null, gpsLon: null, rotation: 0 as const,
   };
 
   it("treats a container with no declared bitrate as unbounded, not as zero", () => {

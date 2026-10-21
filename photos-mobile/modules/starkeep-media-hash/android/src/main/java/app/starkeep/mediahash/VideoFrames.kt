@@ -51,4 +51,23 @@ object VideoFrames {
     if (year <= 1970) return null
     return "$y-$mo-${d}T$h:$mi:$s.${ms.ifEmpty { "0" }.padEnd(3, '0')}Z"
   }
+
+  /**
+   * `METADATA_KEY_LOCATION` as a latitude and longitude, or null.
+   *
+   * The retriever reports the container's `©xyz` atom as an ISO 6709 string in
+   * decimal degrees, such as `+42.2545-83.7165/`, the same value ffprobe reports
+   * as the `location` tag. A redacted read zeroes the atom, and a zeroed
+   * position is no location, so `0, 0` answers null.
+   */
+  fun locationOf(raw: String?): Pair<Double, Double>? {
+    if (raw == null) return null
+    val match = Regex("""^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?/?$""").find(raw.trim())
+      ?: return null
+    val lat = match.groupValues[1].toDouble()
+    val lon = match.groupValues[2].toDouble()
+    if (lat == 0.0 && lon == 0.0) return null
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null
+    return lat to lon
+  }
 }

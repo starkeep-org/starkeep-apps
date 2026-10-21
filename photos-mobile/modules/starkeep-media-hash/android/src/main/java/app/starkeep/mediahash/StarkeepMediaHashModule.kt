@@ -107,11 +107,14 @@ class StarkeepMediaHashModule : Module() {
       withContext(Dispatchers.IO) {
         withRetriever(uri) { retriever ->
           val facts = displayFacts(retriever)
+          val location = VideoFrames.locationOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_LOCATION))
           mapOf(
             "durationMs" to (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDoubleOrNull() ?: 0.0),
             "width" to facts.displayWidth,
             "height" to facts.displayHeight,
             "capturedAt" to VideoFrames.captureTimeOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)),
+            "gpsLat" to location?.first,
+            "gpsLon" to location?.second,
           )
         }
       }

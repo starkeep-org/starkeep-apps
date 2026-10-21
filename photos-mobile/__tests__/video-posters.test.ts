@@ -57,6 +57,8 @@ const FACTS: VideoContainerFacts = {
   width: 1920,
   height: 1080,
   capturedAt: "2026-09-27T16:12:21.000Z",
+  gpsLat: null,
+  gpsLon: null,
 };
 
 let database: MockDatabaseAdapter;
@@ -204,6 +206,20 @@ describe("writeVideoFacts", () => {
     expect(await writeVideoFacts(database, id, "video/mp4", { ...FACTS, capturedAt: null }, undefined)).toBe(
       false,
     );
+  });
+
+  it("writes the container's location as a pair when the row has none, and never overwrites one", async () => {
+    const id = "rec-2" as StarkeepId;
+    const located = { ...FACTS, capturedAt: null, gpsLat: 42.2545, gpsLon: -83.7165 };
+    expect(await writeVideoFacts(database, id, "video/mp4", located, undefined)).toBe(true);
+    const row = (await database.getMetadataByIds("video", [id])).get(id);
+    expect([row?.["gps_lat"], row?.["gps_lon"]]).toEqual([42.2545, -83.7165]);
+    expect(
+      await writeVideoFacts(database, id, "video/mp4", located, { recordId: id, gps_lat: 1, gps_lon: 2 }),
+    ).toBe(false);
+    expect(
+      await writeVideoFacts(database, id, "video/mp4", { ...located, gpsLon: null }, undefined),
+    ).toBe(false);
   });
 });
 

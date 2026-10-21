@@ -46,6 +46,10 @@ export async function publishVideoFacts(
   if (facts.audioCodec !== null) metadata.audio_codec = facts.audioCodec;
   if (facts.bitrate !== null) metadata.bitrate = facts.bitrate;
   if (facts.capturedAt !== null) metadata.captured_at = facts.capturedAt;
+  if (facts.gpsLat !== null && facts.gpsLon !== null) {
+    metadata.gps_lat = facts.gpsLat;
+    metadata.gps_lon = facts.gpsLon;
+  }
 
   const res = await signedFetch(`/data/records/${recordId}/metadata`, {
     method: "POST",

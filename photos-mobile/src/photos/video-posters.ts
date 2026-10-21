@@ -69,6 +69,12 @@ export interface VideoContainerFacts {
   readonly height: number;
   /** The container's recording date as ISO UTC, or null when it holds none. */
   readonly capturedAt: string | null;
+  /**
+   * Where the clip was recorded, from the container's `©xyz` atom. Null when it
+   * holds none, which is also what a read without the location grant sees.
+   */
+  readonly gpsLat: number | null;
+  readonly gpsLon: number | null;
 }
 
 export type ReadVideoFacts = (uri: string) => Promise<VideoContainerFacts>;
@@ -117,13 +123,16 @@ function posterClassOf(child: DataRecord): SizeClass | null {
 }
 
 /**
- * Write a video's `captured_at` from its container when its metadata row lacks
- * one. Returns whether anything was written.
+ * Write a video's `captured_at` and location from its container where its
+ * metadata row lacks them. Returns whether anything was written.
  *
  * The rule `writeMediaMetadata` states holds here: a column is written only
  * from the file's bytes. The container's date is in the file; the media store's
  * `DATE_TAKEN` is not. Dimensions are left alone: import already records the
  * stored size, which is what the desktop's probe writes too.
+ *
+ * The location pair is written whole or not at all, as `writeMediaMetadata`
+ * treats width and height.
  */
 export async function writeVideoFacts(
   database: DatabaseAdapter,
@@ -132,8 +141,14 @@ export async function writeVideoFacts(
   facts: VideoContainerFacts,
   existing: MetadataRow | undefined,
 ): Promise<boolean> {
-  if (!facts.capturedAt || existing?.["captured_at"] != null) return false;
-  await database.putMetadata(type, { recordId, captured_at: facts.capturedAt });
+  const row: MetadataRow = { recordId };
+  if (facts.capturedAt && existing?.["captured_at"] == null) row["captured_at"] = facts.capturedAt;
+  if (facts.gpsLat != null && facts.gpsLon != null && existing?.["gps_lat"] == null) {
+    row["gps_lat"] = facts.gpsLat;
+    row["gps_lon"] = facts.gpsLon;
+  }
+  if (Object.keys(row).length === 1) return false;
+  await database.putMetadata(type, row);
   return true;
 }
 

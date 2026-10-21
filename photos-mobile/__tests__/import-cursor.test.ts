@@ -6,6 +6,8 @@ import {
   createSqliteImportCursorStore,
   CURSOR_OVERLAP_MS,
   queryFloorFor,
+  rewindImportCursorForReach,
+  VIDEO_DURATION_CURSOR_TABLE,
 } from "../src/media/import-cursor";
 
 function rawDb(): RawDatabase {
@@ -89,5 +91,81 @@ describe("the stored watermark", () => {
     createSqliteImportCursorStore({ db }).set(1_234);
 
     expect(createSqliteImportCursorStore({ db }).get()).toBe(1_234);
+  });
+});
+
+describe("rewinding when import can read more", () => {
+  let db: RawDatabase;
+
+  beforeEach(() => {
+    db = rawDb();
+  });
+
+  it("rewinds a node that has walked under an older reach to before every asset", () => {
+    // The 10-14 videos sit below the cursor, because the watermark moves past a
+    // failure. Only a walk from the beginning offers them again.
+    const cursor = createSqliteImportCursorStore({ db });
+    cursor.set(1_700_000_000_000);
+
+    expect(rewindImportCursorForReach({ db, reach: 2 })).toBe(true);
+    expect(cursor.get()).toBe(0);
+  });
+
+  it("rewinds to zero rather than null, because null seeds at the newest asset", () => {
+    const cursor = createSqliteImportCursorStore({ db });
+    cursor.set(1_700_000_000_000);
+
+    rewindImportCursorForReach({ db, reach: 2 });
+
+    expect(cursor.get()).not.toBeNull();
+    expect(queryFloorFor(cursor.get())).toBeLessThan(0);
+  });
+
+  it("rewinds once per reach, not on every bring-up", () => {
+    const cursor = createSqliteImportCursorStore({ db });
+    cursor.set(1_700_000_000_000);
+    rewindImportCursorForReach({ db, reach: 2 });
+    cursor.set(1_700_000_500_000);
+
+    expect(rewindImportCursorForReach({ db, reach: 2 })).toBe(false);
+    expect(cursor.get()).toBe(1_700_000_500_000);
+  });
+
+  it("rewinds again when the reach goes up again", () => {
+    const cursor = createSqliteImportCursorStore({ db });
+    cursor.set(1_700_000_000_000);
+    rewindImportCursorForReach({ db, reach: 2 });
+    cursor.set(1_700_000_500_000);
+
+    expect(rewindImportCursorForReach({ db, reach: 3 })).toBe(true);
+    expect(cursor.get()).toBe(0);
+  });
+
+  it("leaves a fresh node's cursor null, so its first pass seeds as before", () => {
+    const cursor = createSqliteImportCursorStore({ db });
+
+    expect(rewindImportCursorForReach({ db, reach: 2 })).toBe(false);
+    expect(cursor.get()).toBeNull();
+    // And records the reach, so the node does not rewind later for assets it
+    // could always read.
+    cursor.set(1_700_000_000_000);
+    expect(rewindImportCursorForReach({ db, reach: 2 })).toBe(false);
+    expect(cursor.get()).toBe(1_700_000_000_000);
+  });
+
+  it("works before the cursor store has created its table", () => {
+    expect(rewindImportCursorForReach({ db, reach: 2 })).toBe(false);
+    expect(createSqliteImportCursorStore({ db }).get()).toBeNull();
+  });
+
+  it("does not touch the duration backfill's cursor", () => {
+    const main = createSqliteImportCursorStore({ db });
+    const durations = createSqliteImportCursorStore({ db, table: VIDEO_DURATION_CURSOR_TABLE });
+    main.set(1_700_000_000_000);
+    durations.set(1_600_000_000_000);
+
+    rewindImportCursorForReach({ db, reach: 2 });
+
+    expect(durations.get()).toBe(1_600_000_000_000);
   });
 });

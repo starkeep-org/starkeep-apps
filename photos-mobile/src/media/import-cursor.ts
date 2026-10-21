@@ -173,3 +173,102 @@ export function createSqliteImportCursorStore(options: {
     },
   };
 }
+
+/** Which reach the import cursor was last walked under. See {@link rewindImportCursorForReach}. */
+export const IMPORT_REACH_TABLE = "media_import_reach";
+
+/**
+ * Which assets the import loop can read, as a number that only goes up.
+ *
+ * Bump it whenever import learns to accept an asset it used to fail on every
+ * time. The watermark moves past a failure (see `importDeviceMedia`), so an
+ * asset that failed under the old reach sits below the cursor and no pass will
+ * offer it again. A bump makes the next bring-up walk the whole roll once.
+ *
+ * 1. Everything up to `MAX_INLINE_READ_BYTES`.
+ * 2. Video of any size, hashed by the native streaming digest.
+ */
+export const IMPORT_REACH_STREAMED_VIDEO = 2;
+
+/**
+ * Walk the camera roll again from the beginning if import can now read more
+ * than it could when the cursor last moved.
+ *
+ * ## Why zero and not null
+ *
+ * A null cursor means "this node has never looked", and the next pass answers
+ * it by seeding the cursor at the newest asset and importing nothing. Clearing
+ * the cursor would therefore skip exactly the assets this exists to reach.
+ * Zero is a position before every asset, so the next pass walks oldest-first
+ * and `alreadyImported` settles each imported asset without reading its bytes.
+ *
+ * ## Why the write bypasses `set`'s contract
+ *
+ * {@link ImportCursorStore.set} promises never to move backwards, and every
+ * caller relies on that through {@link advanceImportCursor}. This is the one
+ * deliberate backwards move, so it writes the table itself rather than teaching
+ * the store an exception.
+ *
+ * ## What a fresh node does
+ *
+ * Records the reach and leaves the cursor null. A node that has never looked
+ * has failed on nothing, and its first pass seeds as it always has.
+ *
+ * Answers whether it rewound, so bring-up can say so.
+ */
+export function rewindImportCursorForReach(options: {
+  readonly db: RawDatabase;
+  readonly reach: number;
+  /** Defaults to {@link IMPORT_CURSOR_TABLE}. */
+  readonly cursorTable?: string;
+}): boolean {
+  const { db, reach } = options;
+  const cursorTable = options.cursorTable ?? IMPORT_CURSOR_TABLE;
+  // The cursor store creates its own table, and this may run before it does.
+  createSqliteImportCursorStore({ db, table: cursorTable });
+
+  db.exec(
+    qb.schema
+      .createTable(IMPORT_REACH_TABLE)
+      .ifNotExists()
+      .addColumn("id", "integer", (c) => c.primaryKey())
+      .addColumn("reach", "integer", (c) => c.notNull())
+      .compile().sql,
+  );
+
+  const stored = db
+    .prepare(
+      qb.selectFrom(IMPORT_REACH_TABLE).select("reach").where("id", "=", sql.lit(0)).compile().sql,
+    )
+    .get() as { reach: number } | undefined;
+  if (stored && stored.reach >= reach) return false;
+
+  const cursor = db
+    .prepare(
+      qb
+        .selectFrom(cursorTable)
+        .select("modification_time_ms")
+        .where("id", "=", sql.lit(0))
+        .compile().sql,
+    )
+    .get() as { modification_time_ms: number | null } | undefined;
+  const rewound = (cursor?.modification_time_ms ?? null) !== null;
+
+  if (rewound) {
+    db.prepare(
+      qb
+        .updateTable(cursorTable)
+        .set({ modification_time_ms: sql.lit(0) })
+        .where("id", "=", sql.lit(0))
+        .compile().sql,
+    ).run();
+  }
+  db.prepare(
+    qb
+      .insertInto(IMPORT_REACH_TABLE)
+      .values({ id: sql.lit(0), reach: sql.raw("?") })
+      .onConflict((oc) => oc.column("id").doUpdateSet((eb) => ({ reach: eb.ref("excluded.reach") })))
+      .compile().sql,
+  ).run(reach);
+  return rewound;
+}

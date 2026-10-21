@@ -223,3 +223,46 @@ describe("the library the UI reads", () => {
     expect(summary).toEqual({ records: 0, aliasedBytes: 0 });
   });
 });
+
+describe("bring-up after import's reach grows", () => {
+  /** One database across two bring-ups, as a handset's file is across an upgrade. */
+  function reopenableOpSqlite() {
+    const inner = fakeOpSqlite();
+    const connection = inner.open();
+    return { open: () => ({ ...connection, close() {} }) };
+  }
+
+  async function bringUp(driver: ReturnType<typeof reopenableOpSqlite>, importReach?: number) {
+    return createMobileNode({
+      nodeId: "phone-b",
+      databasePath: "/data/starkeep/local.sqlite",
+      sqliteDriver: createOpSqliteDriver(driver),
+      localObjectStorage: new ExpoObjectStorageAdapter({ fs: harness.fs, basePath: "/docs/objects" }),
+      deviceMedia: { fs: harness.fs, ...(importReach !== undefined ? { importReach } : {}) },
+    });
+  }
+
+  it("rewinds the import cursor before anything can import", async () => {
+    const driver = reopenableOpSqlite();
+    const before = await bringUp(driver);
+    before.importCursor!.set(1_700_000_000_000);
+    await before.close();
+
+    const after = await bringUp(driver, 2);
+
+    expect(after.importCursor!.get()).toBe(0);
+    await after.close();
+  });
+
+  it("leaves the cursor alone when the binary adds no reach", async () => {
+    const driver = reopenableOpSqlite();
+    const before = await bringUp(driver);
+    before.importCursor!.set(1_700_000_000_000);
+    await before.close();
+
+    const after = await bringUp(driver);
+
+    expect(after.importCursor!.get()).toBe(1_700_000_000_000);
+    await after.close();
+  });
+});

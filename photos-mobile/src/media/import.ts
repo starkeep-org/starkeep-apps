@@ -98,6 +98,25 @@ import type { ThumbHashEncoder } from "./thumb-hash";
  */
 export type HashBytes = (bytes: Uint8Array) => Promise<string>;
 
+/**
+ * SHA-256 of whatever is at a URI, read and hashed in platform code.
+ *
+ * ## Why a second hash at all
+ *
+ * {@link HashBytes} needs the asset whole in the JS heap, which is what
+ * {@link MAX_INLINE_READ_BYTES} bounds and what kept every video above it on the
+ * phone. This one streams the asset through a native digest, so no byte crosses
+ * JSI and no asset is too large.
+ *
+ * It does not replace {@link HashBytes} for stills, because a still's bytes are
+ * wanted for more than the digest: EXIF and the Motion Photo scan read the same
+ * buffer. A video's bytes are wanted for nothing else.
+ *
+ * `sizeBytes` is the count the digest actually covered, not the media store's
+ * report, for the same reason {@link hashFile} returns the buffer's length.
+ */
+export type HashUri = (uri: string) => Promise<{ hex: string; sizeBytes: number }>;
+
 export interface ImportDeps {
   readonly media: DeviceMediaModule;
   readonly aliases: MediaAliasStore;
@@ -106,6 +125,14 @@ export interface ImportDeps {
   /** The same filesystem port everything else uses; content URIs go through it. */
   readonly fs: ExpoFileSystem;
   readonly hash: HashBytes;
+  /**
+   * The streaming native digest, for every asset that is not a still.
+   *
+   * Optional because a development client built before the native module
+   * existed lacks it. Without it, every asset takes the in-memory path and
+   * anything above {@link MAX_INLINE_READ_BYTES} is deferred, as before.
+   */
+  readonly hashUri?: HashUri;
   /**
    * The user segment the keys carry: the library's bound user, or `local`
    * before a cloud binds it. An accessor, because binding happens while the
@@ -271,14 +298,19 @@ export interface ImportOutcome {
 }
 
 /**
- * The largest asset this loop will read.
+ * The largest asset this loop will read into memory.
  *
  * A ceiling rather than a guess: `content://` assets cannot be streamed (see
- * `streamFromFile`), so hashing one means holding it in memory, and a 4K video
- * held whole is the OOM streaming exists to prevent. Above this the asset is
- * reported as deferred rather than attempted — a named limitation beats a
- * process death, and it is lifted by the native streaming read that item 13b
- * needs anyway.
+ * `streamFromFile`), so hashing one in JS means holding it in memory, and a 4K
+ * video held whole is the OOM streaming exists to prevent. Above this the asset
+ * is reported as deferred rather than attempted — a named limitation beats a
+ * process death.
+ *
+ * **It now binds on stills only.** Every other asset is hashed by
+ * {@link ImportDeps.hashUri}, which streams in platform code and has no
+ * ceiling. A still above 64 MB is rare, and its bytes are needed whole anyway
+ * for EXIF and the Motion Photo scan. The ceiling still binds on everything
+ * when `hashUri` is absent.
  *
  * **64 MB, revised down from 256 MB.** The original number was chosen while the
  * suspected cost was reading, and it was picked to be generous. Measurement
@@ -287,10 +319,9 @@ export interface ImportOutcome {
  * reporting 127 MB of large objects at a fraction of that. A ceiling whose only
  * job is to prevent an OOM should not itself be an OOM.
  *
- * 64 MB covers every still including raw, and the clips a phone actually takes
- * — the largest in the test library was 47 MB. Longer video is excluded and
- * *reported* as such, which is the honest state until the native streaming read
- * (item 13b) removes the need to hold anything whole.
+ * 64 MB covers every still including raw. It did not cover video: the 10-14
+ * investigation found camera clips of 75, 227 and 391 MB that never left the
+ * phone, which is why video no longer passes through this ceiling.
  */
 export const MAX_INLINE_READ_BYTES = 64 * 1024 * 1024;
 
@@ -650,16 +681,21 @@ async function importOne(
   if (size === null) {
     return { reason: `the media store has no readable asset at ${item.uri}` };
   }
-  if (size > MAX_INLINE_READ_BYTES) {
+
+  const type = typeOf(item);
+  // Only a still's bytes are wanted past the digest: EXIF and the Motion Photo
+  // scan read the same buffer. Everything else streams through the native
+  // digest when the binary has one, and so meets no ceiling at all.
+  const streamed = deps.hashUri && typeCategory(type) !== "image" ? deps.hashUri : null;
+  if (!streamed && size > MAX_INLINE_READ_BYTES) {
     return {
       reason: `${size} bytes is larger than this device can hash without streaming (${MAX_INLINE_READ_BYTES})`,
     };
   }
 
-  const digest = await hashFile(deps, item.uri);
+  const digest = streamed ? await hashStreamed(streamed, item.uri) : await hashFile(deps, item.uri);
   if (!digest) return { reason: `could not read the bytes of ${item.uri}` };
 
-  const type = typeOf(item);
   const objectStorageKey = dataRecordObjectKey(deps.userId(), type, digest.hex);
 
   const record = createDataRecord(
@@ -724,9 +760,9 @@ function indexMotion(
   objectStorageKey: string,
   type: string,
   item: DeviceMediaItem,
-  bytes: Uint8Array,
+  bytes: Uint8Array | null,
 ): void {
-  if (!deps.motionIndex) return;
+  if (!deps.motionIndex || !bytes) return;
   if (typeCategory(type) !== "image") return;
   if (!isJpeg(type, item.filename)) return;
   try {
@@ -797,6 +833,22 @@ async function hashFile(
   const hashMs = Date.now() - hashStart;
 
   return { hex, sizeBytes: bytes.byteLength, readMs, hashMs, bytes };
+}
+
+/**
+ * The same answer as {@link hashFile}, with no bytes in JS.
+ *
+ * `bytes` is null, which is why only an asset whose bytes nothing else reads
+ * comes here. `readMs` is zero because nothing is pulled into JS; the native
+ * read and the digest are one measurement, reported as `hashMs`.
+ */
+async function hashStreamed(
+  hashUri: HashUri,
+  uri: string,
+): Promise<{ hex: string; sizeBytes: number; readMs: number; hashMs: number; bytes: null }> {
+  const start = Date.now();
+  const { hex, sizeBytes } = await hashUri(uri);
+  return { hex, sizeBytes, readMs: 0, hashMs: Date.now() - start, bytes: null };
 }
 
 /** A stream, whole. Bounded by {@link MAX_INLINE_READ_BYTES} at the call site. */
@@ -1329,7 +1381,8 @@ async function writeMediaMetadata(
   recordId: StarkeepId,
   type: string,
   item: DeviceMediaItem,
-  bytes: Uint8Array,
+  /** Null for an asset hashed by {@link ImportDeps.hashUri}, which is never a still. */
+  bytes: Uint8Array | null,
 ): Promise<void> {
   // The category decides what is worth measuring below; the write itself is
   // labelled with the record's own type. Every adapter now routes a
@@ -1353,7 +1406,7 @@ async function writeMediaMetadata(
   // Only for stills: `readImageExif` walks a JPEG's segment chain and answers
   // nulls for anything else, and running it over a video's bytes is a scan that
   // can only fail.
-  const exif = category === "image" ? readImageExif(bytes) : null;
+  const exif = category === "image" && bytes ? readImageExif(bytes) : null;
 
   // The header's dimensions when it has them, the media store's otherwise. The
   // pair is still all-or-nothing: a width with no height cannot be ordered and

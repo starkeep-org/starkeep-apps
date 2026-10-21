@@ -1,0 +1,21 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.starkeep.mediahash'
+version = '0.1.0'
+
+android {
+  namespace "app.starkeep.mediahash"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  // JVM tests of the digest loop, which needs no Context. Run with
+  // `pnpm test:android`.
+  testImplementation 'junit:junit:4.13.2'
+}

@@ -8,6 +8,7 @@
  * are the ones video actually forces, and each is called out where it happens.
  */
 
+import { videoRenditionFileName, type SizeClass } from "@starkeep/photos-ladder";
 import { PHOTOS_LABEL_KEYS } from "../labels";
 import {
   RenditionPublishError,
@@ -198,10 +199,5 @@ function renditionFileName(
   sizeClass: string,
   kind: DerivedVideoRendition["kind"],
 ): string {
-  const base = originalFilename ?? "video";
-  // The extension has to match what was actually produced: a poster named
-  // `.mov` is a JPEG that half the world will refuse to open.
-  const stripped = base.replace(/\.[^.]+$/, "");
-  const extension = kind === "poster" ? ".jpg" : kind === "transcode" ? ".webm" : ".mp4";
-  return `${sizeClass}_${stripped}${extension}`;
+  return videoRenditionFileName(originalFilename, sizeClass as SizeClass, kind);
 }

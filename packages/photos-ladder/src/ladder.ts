@@ -705,3 +705,42 @@ export function renditionFileName(originalFilename: string | null, sizeClass: st
   const base = originalFilename ?? "image";
   return `${sizeClass}_${base}`;
 }
+
+/**
+ * Where to grab the poster frame.
+ *
+ * Not frame zero. The first frame of real footage is very often black or nearly
+ * so — a fade-in, an auto-exposure ramp, a phone camera whose sensor has not
+ * settled — and a library whose video tiles are uniformly black squares looks
+ * broken in a way that is entirely self-inflicted.
+ *
+ * A tenth of the way in avoids that on ordinary clips, capped at one second so
+ * that a long video does not grab its poster from a minute deep, by which point
+ * the scene may have nothing to do with what the clip is *of*.
+ *
+ * Shared, because a phone and a desktop both make posters, and a poster should
+ * show the same moment whichever node made it.
+ */
+export const POSTER_MAX_OFFSET_SECONDS = 1;
+
+export function posterTimestamp(durationSeconds: number): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 0;
+  return Math.min(POSTER_MAX_OFFSET_SECONDS, durationSeconds / 10);
+}
+
+/**
+ * The file name every node gives a video's derived rendition.
+ *
+ * It is part of the record's content-addressed id, so two spellings would be
+ * two ids for the same rung. The extension matches what was produced: a poster
+ * named `.mov` is a JPEG that half the world will refuse to open.
+ */
+export function videoRenditionFileName(
+  originalFilename: string | null,
+  sizeClass: SizeClass,
+  kind: VideoClassSpec["kind"],
+): string {
+  const stripped = (originalFilename ?? "video").replace(/\.[^.]+$/, "");
+  const extension = kind === "poster" ? ".jpg" : kind === "transcode" ? ".webm" : ".mp4";
+  return `${sizeClass}_${stripped}${extension}`;
+}

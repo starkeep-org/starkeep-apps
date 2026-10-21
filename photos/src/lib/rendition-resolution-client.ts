@@ -64,8 +64,20 @@ export function resolutionKey(recordId: string, policyVersion: string, target: n
   return `${recordId}\u0000${policyVersion}\u0000${target}`;
 }
 
+/**
+ * Whether a decision is still waiting on bytes, so the next change kick asks again.
+ *
+ * A video's decision names no state; a missing poster or playback entry is its
+ * only sign of waiting. Counting that as settled left a tile on its placeholder
+ * for the session when the answer came before the poster did — a phone's
+ * poster lands seconds after its video record, and the grid asks in between.
+ */
 function isPendingDecision(kind: MediaPolicyKind, decision: ResolutionDecision): boolean {
-  return kind === "still" && (decision as RenditionChoice).ideal?.available === false &&
+  if (kind === "video") {
+    const video = decision as VideoDecision;
+    return !video.poster || !video.playback;
+  }
+  return (decision as RenditionChoice).ideal?.available === false &&
     ((decision as RenditionChoice).ideal.state ?? "pending") === "pending";
 }
 

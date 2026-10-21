@@ -98,4 +98,37 @@ describe("RenditionResolutionCache", () => {
     cache.retainRecords(new Set());
     expect(cache.get(resolutionKey("a", "still-v1", 400))).toBeUndefined();
   });
+
+  it("asks again for a video until it has both a poster and playback", async () => {
+    const poster = { id: "p", url: "https://example.test/p", width: 1280, height: 720, type: "image/jpeg" };
+    const playback = { id: "v", url: "https://example.test/v", width: 1280, height: 720, type: "video/webm" };
+    const decisions = [{}, { poster }, { poster, playback }];
+    const send = vi.fn(async () => ({
+      policies,
+      results: [{
+        recordId: "v1",
+        status: "resolved" as const,
+        mediaKind: "video" as const,
+        policyVersion: "video-v1",
+        canonicalTargetLongEdge: 1280,
+        decision: decisions[send.mock.calls.length - 1]!,
+      }],
+    }));
+    const cache = new RenditionResolutionCache(policies, send);
+    const key = resolutionKey("v1", "video-v1", 1280);
+    cache.request("v1", "video", 1138, 1280);
+    await cache.flush();
+    cache.subscribe(key, () => {});
+    expect(cache.get(key)?.status).toBe("pending");
+
+    cache.refreshPending();
+    await cache.flush();
+    expect(cache.get(key)).toMatchObject({ status: "pending", decision: { poster: { id: "p" } } });
+
+    cache.refreshPending();
+    await cache.flush();
+    expect(cache.get(key)?.status).toBe("ready");
+    cache.refreshPending();
+    expect(send).toHaveBeenCalledTimes(3);
+  });
 });

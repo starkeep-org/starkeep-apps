@@ -147,24 +147,9 @@ export interface DerivedOutput {
   readonly durationMs?: number;
 }
 
-/**
- * Where to grab the poster frame.
- *
- * Not frame zero. The first frame of real footage is very often black or nearly
- * so — a fade-in, an auto-exposure ramp, a phone camera whose sensor has not
- * settled — and a library whose video tiles are uniformly black squares looks
- * broken in a way that is entirely self-inflicted.
- *
- * A tenth of the way in avoids that on ordinary clips, capped at one second so
- * that a long video does not grab its poster from a minute deep, by which point
- * the scene may have nothing to do with what the clip is *of*.
- */
-export const POSTER_MAX_OFFSET_SECONDS = 1;
-
-export function posterTimestamp(durationSeconds: number): number {
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 0;
-  return Math.min(POSTER_MAX_OFFSET_SECONDS, durationSeconds / 10);
-}
+// The frame-time rule lives in the shared ladder, so a phone's poster shows the
+// same moment as this one.
+export { POSTER_MAX_OFFSET_SECONDS, posterTimestamp } from "@starkeep/photos-ladder";
 
 /**
  * Scale filter that never upscales.

@@ -83,7 +83,6 @@ import {
   type ImageEncoder,
 } from "./photos/derive-ladder";
 import { createMobileNode, type MobileNode } from "./node";
-import { IMPORT_REACH_STREAMED_VIDEO } from "./media/import-cursor";
 import { backgroundDerivePlan, type BackgroundDerivePass } from "./photos/background-derive";
 import {
   openMotionPhoto,
@@ -434,10 +433,6 @@ const multipartSessions = createFileMultipartSessions({
  */
 export const deviceMediaStorage = {
   fs: expoFileSystem,
-  // Only with the native digest in the binary, because the reach recorded is
-  // the reach that digest provides. Recording it without one would spend the
-  // rewind on a walk that can still read nothing new.
-  ...(sha256OfUri ? { importReach: IMPORT_REACH_STREAMED_VIDEO } : {}),
 };
 
 /**

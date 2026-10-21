@@ -93,6 +93,13 @@ export const ORIGINAL_RUNG = "original";
 const BROWSER_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
 
 /**
+ * Video containers a browser's `<video>` element opens. Whether it can decode
+ * the codec inside — HEVC above all — is the browser's to say, at play time;
+ * the viewer falls back on a decode error. See `resolveVideo`.
+ */
+const BROWSER_VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+
+/**
  * How long a summary URL is trusted. Both data servers sign stand-in URLs for
  * six hours; an hour less leaves room for clock skew and a slow page.
  */
@@ -113,7 +120,8 @@ export function candidatesFromStandIns(
   const out: VariantCandidate[] = [];
   for (const size of summary.sizes) {
     if (size.placement === "missing" || !size.record_id || !size.type) continue;
-    if (size.role === "original" && !BROWSER_IMAGE_TYPES.has(size.type)) continue;
+    const browserTypes = category === "video" ? BROWSER_VIDEO_TYPES : BROWSER_IMAGE_TYPES;
+    if (size.role === "original" && !browserTypes.has(size.type)) continue;
     const label =
       size.role === "original" ? ORIGINAL_RUNG : classForStandIn(category, size.role, size.fidelity);
     // A stand-in at a standard size this ladder does not name is another

@@ -38,6 +38,30 @@ function record(sizes: WireStandInSize[], over: Partial<StandInRecord> = {}): St
 }
 
 describe("candidatesFromStandIns", () => {
+  it("lets a video original answer in a container a browser opens", () => {
+    const withSizes = (type: string) =>
+      candidatesFromStandIns(
+        {
+          id: "orig",
+          type,
+          metadata: { width: 1920, height: 1080 },
+          stand_ins: {
+            category: "video",
+            fidelity: 1920,
+            status: "archivable",
+            top: 1920,
+            sizes: [size({ fidelity: 1920, role: "original", record_id: "orig", type, url: "http://local/orig" })],
+          },
+        },
+        NOW,
+      );
+    expect(withSizes("video/mp4").map((c) => [c.label_value, c.long_edge, c.available_here])).toEqual([
+      [ORIGINAL_RUNG, 1920, true],
+    ]);
+    expect(withSizes("video/x-msvideo")).toEqual([]);
+  });
+
+
   it("names each stand-in by its rung in Photos' ladder", () => {
     const got = candidatesFromStandIns(
       record([

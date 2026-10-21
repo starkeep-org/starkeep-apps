@@ -16,11 +16,13 @@
  * the hash, both uploads, the EXIF read, the poster frame — so marking the URI
  * once, at import, fixes all of them.
  *
- * ## Why only at import, and only new assets
+ * ## Why only at import
  *
- * An asset's object key is the hash of the bytes read at import. An alias
- * recorded before this fix names the redacted bytes, so it keeps its unmarked
- * URI: switching it would make every later read disagree with its key.
+ * An asset's object key is the hash of the bytes read at import, so an alias
+ * keeps the URI it was imported through. Switching it later would make every
+ * read disagree with the key. A one-time pass on 2026-10-21 re-imported the
+ * assets read before this fix under new keys. Only the aliases of deleted
+ * records still carry an unmarked URI.
  */
 
 const REQUIRE_ORIGINAL = "requireOriginal=1";

@@ -297,6 +297,16 @@ export const styles = StyleSheet.create({
   infoLabel: { color: colors.muted, fontSize: 13, width: 110 },
   infoValue: { color: colors.text, fontSize: 13, flex: 1 },
   infoValueMono: { color: colors.text, fontSize: 12, flex: 1, fontFamily: "monospace" },
+  sheetDelete: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  sheetDeleteLabel: { color: colors.danger, fontSize: 15, fontWeight: "600" },
 
   row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
   /** A row of mutually exclusive choices, such as the photo ceiling. */

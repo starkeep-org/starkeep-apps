@@ -33,6 +33,7 @@ function viewer(item: LibraryItem, resolved: ReadonlyMap<string, LibraryItem>, f
       // Never answers: the Motion Photo probe is not what these tests are about.
       onOpenMotion={jest.fn(() => new Promise<null>(() => undefined))}
       onReadInfo={jest.fn(async () => null)}
+      onDelete={jest.fn(async () => undefined)}
       onClose={jest.fn()}
     />
   );

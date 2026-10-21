@@ -72,6 +72,13 @@ export interface StarkeepMediaHash {
 
   /** Whether reads may ask for an asset's unredacted bytes (`ACCESS_MEDIA_LOCATION`). */
   mediaLocationGranted(): boolean;
+
+  /**
+   * Move MediaStore assets to Android's trash, after the person confirms in the
+   * system's dialog. Resolves whether they confirmed; false before Android 11,
+   * which has no trash.
+   */
+  trashMediaUris(uris: string[]): Promise<boolean>;
 }
 
 /**

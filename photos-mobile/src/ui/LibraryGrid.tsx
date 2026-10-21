@@ -138,6 +138,8 @@ export interface ViewerHost {
   readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   /** The record's metadata row, for the info sheet. See `useLibrary().readInfo`. */
   readonly onReadInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  /** Delete the record everywhere, from the info sheet. See `useLibrary().deleteRecord`. */
+  readonly onDelete: (record: DataRecord) => Promise<void>;
   /** Load the next page, because a swipe came to rest near the end of this one. */
   readonly onLoadMore: () => void;
 }
@@ -366,6 +368,7 @@ export function useLibraryViewer(
     onOpenForViewer,
     onOpenMotion,
     onReadInfo,
+    onDelete,
     onLoadMore,
   }: ViewerHost,
   items: readonly LibraryItem[],
@@ -653,6 +656,7 @@ export function useLibraryViewer(
       onPlay={playNow}
       onOpenMotion={onOpenMotion}
       onReadInfo={onReadInfo}
+      onDelete={onDelete}
       onClose={close}
     />
   );

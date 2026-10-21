@@ -99,6 +99,7 @@ export function HomeScreen({ onConnect }: Props) {
       onOpenForViewer: library.openForViewer,
       onOpenMotion: library.openMotion,
       onReadInfo: library.readInfo,
+      onDelete: library.deleteRecord,
       onLoadMore: loadMoreQuietly,
     },
     library.items,

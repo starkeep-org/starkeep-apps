@@ -44,10 +44,12 @@ import {
   deriveRecordFor,
   deriveRenditionsFor,
   backfillVideoDurationsFor,
+  deleteRecordFor,
   deviceMedia,
   importRecentFor,
   openMotionPhotoFor,
   sweepNullModifiedFor,
+  trashCameraRollFiles,
 } from "../platform";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
@@ -471,6 +473,13 @@ export interface LibraryState {
    * or of a type with no metadata table.
    */
   readInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  /**
+   * Delete a library item in Starkeep, then offer Android's trash for its
+   * camera-roll file. The grid reloads before the trash dialog opens, so the
+   * item leaves the grid and the viewer whatever the person answers there.
+   * Rejects when the Starkeep delete fails.
+   */
+  deleteRecord: (record: DataRecord) => Promise<void>;
   /**
    * Pull down a record whose bytes are not on this device.
    *
@@ -1053,6 +1062,18 @@ export function useLibrary(node: NodeState): LibraryState {
     [ready],
   );
 
+  const deleteRecord = useCallback(
+    async (record: DataRecord): Promise<void> => {
+      if (!ready) return;
+      const { cameraRollUris } = await deleteRecordFor(ready.node, ready.clock, record.id);
+      // Before the trash dialog, so the item has left the grid and the viewer
+      // whatever the person answers there.
+      await reload();
+      await trashCameraRollFiles(cameraRollUris);
+    },
+    [ready, reload],
+  );
+
   const readInfo = useCallback(
     async (record: DataRecord): Promise<MetadataRow | null> => {
       if (!ready) return null;
@@ -1368,6 +1389,7 @@ export function useLibrary(node: NodeState): LibraryState {
     sweepNullModified,
     openMotion,
     readInfo,
+    deleteRecord,
     fetchBlob,
     fetchRendition,
     deriveNow,

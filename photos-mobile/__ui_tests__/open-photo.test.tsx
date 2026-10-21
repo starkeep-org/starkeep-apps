@@ -38,6 +38,7 @@ function hostResolvingAfter(delays: ReadonlyMap<string, number>) {
     // Never answers: the Motion Photo probe is not what these tests are about.
     onOpenMotion: jest.fn(() => new Promise<null>(() => undefined)),
     onReadInfo: jest.fn(async () => null),
+    onDelete: jest.fn(async () => undefined),
     onLoadMore: jest.fn(),
   };
   return host;

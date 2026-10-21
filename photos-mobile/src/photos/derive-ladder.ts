@@ -403,8 +403,13 @@ export async function derivePage(
   // interrupted-import window `import.ts` is built around, and it is skipped —
   // the next import re-mints it.
   const ids = page.map((alias) => alias.recordId as StarkeepId);
+  // Live records only: a rendition of a deleted original would be a live child
+  // of a tombstone, synced to every node.
   const found = await deps.database.query({
-    filters: [{ field: "id", operator: "in", value: ids }],
+    filters: [
+      { field: "id", operator: "in", value: ids },
+      { field: "deletedAt", operator: "isNull" },
+    ],
     limit: ids.length,
   });
   const stills = new Map<StarkeepId, DataRecord>();

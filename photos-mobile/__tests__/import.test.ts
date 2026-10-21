@@ -259,6 +259,19 @@ describe("re-import", () => {
     expect(second.skipped).toBe(1);
   });
 
+  // `get` answers the tombstone, and that is what keeps a deletion made in
+  // Starkeep from being undone by the asset still in the camera roll.
+  it("does not bring back an asset deleted in Starkeep", async () => {
+    const first = await importDeviceMedia(deps(), { limit: 10 });
+    const id = first.records[0]!.id;
+    await database.delete(id, createHLCClock({ nodeId: "web" }).now());
+
+    const second = await importDeviceMedia(deps(), { limit: 10 });
+
+    expect(second.imported).toBe(0);
+    expect((await database.get(id))?.deletedAt).not.toBeNull();
+  });
+
   it("re-imports an asset edited in place", async () => {
     await importDeviceMedia(deps(), { limit: 10 });
 
@@ -1711,6 +1724,18 @@ describe("backfillThumbHashes", () => {
     const { written, passes } = await runToCompletion(2, encode);
     expect(first.written + written).toBe(5);
     expect(passes).toBeGreaterThan(1);
+  });
+
+  it("leaves a record deleted in Starkeep alone, without decoding it", async () => {
+    const ids = await importedWithoutThumbHashes(2);
+    await database.delete(ids[0]!, createHLCClock({ nodeId: "web" }).now());
+    const { encode, seen } = encoder();
+
+    const outcome = await backfillThumbHashes(backfillDeps(encode), { limit: 24 });
+
+    expect(outcome.written).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect((await database.getMetadata("image", ids[0]!))?.["thumb_hash"]).toBeUndefined();
   });
 
   it("skips a record that already has one, without decoding it", async () => {

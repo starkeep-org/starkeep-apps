@@ -460,6 +460,20 @@ describe("what a derived rung looks like", () => {
 });
 
 describe("what it does not do twice", () => {
+  // A rung of a tombstone would be a live child of a deleted record, synced to
+  // every node.
+  it("makes no rung for a record deleted in Starkeep", async () => {
+    const parent = await importOriginal();
+    await database.delete(parent.id, clock.now());
+    const encoder = fakeEncoder();
+
+    const outcome = await derivePage(deps(encoder.encode), { limit: 10 });
+
+    expect(outcome.written).toBe(0);
+    expect(encoder.decoded).toEqual([]);
+    expect((await rungsOf(parent)).size).toBe(0);
+  });
+
   it("costs no decode for a record that already has every rung it can make", async () => {
     await importOriginal();
     const first = fakeEncoder();

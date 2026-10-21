@@ -164,3 +164,27 @@ describe("the delta watermark", () => {
     expect(listPhotosSince).toHaveBeenCalledTimes(20);
   });
 });
+
+describe("a kick that moves no parent", () => {
+  // A poster or a stand-in arrives as a child record. The delta excludes it and
+  // the parent's `updated_at` stays put, so the page comes back empty — and the
+  // kick is still the only signal the tiles waiting on it will get.
+  it("re-asks the waiting tiles anyway", async () => {
+    listPhotosSince.mockResolvedValue(page([], false));
+    const refreshActiveResolutions = vi.fn();
+    const { result } = renderHook(() =>
+      usePhotoFreshness({
+        onInitialLoad: () => {},
+        onMerge: () => {},
+        onLoadingChange: () => {},
+        onError: () => {},
+        refreshActiveResolutions,
+      }),
+    );
+    await waitFor(() => expect(listPhotos).toHaveBeenCalled());
+    const before = refreshActiveResolutions.mock.calls.length;
+    await result.current.kick();
+    await settle();
+    expect(refreshActiveResolutions.mock.calls.length).toBeGreaterThan(before);
+  });
+});

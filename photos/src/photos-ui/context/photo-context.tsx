@@ -8,6 +8,7 @@ type PhotoAction =
   | { type: "UPSERT_IMAGES"; images: AppImage[] }
   | { type: "OPTIMISTIC_UPDATE"; image: AppImage }
   | { type: "OPTIMISTIC_DELETE"; id: string }
+  | { type: "REMOVE_IMAGES"; ids: string[] }
   | { type: "SET_SELECTED_ID"; id: string | null }
   | { type: "SET_NEXT_CURSOR"; cursor: string | null }
   | { type: "SET_LOADING"; loading: boolean }
@@ -21,7 +22,7 @@ interface PhotoState {
   policies: RenditionPolicies | null;
 }
 
-function photoReducer(state: PhotoState, action: PhotoAction): PhotoState {
+export function photoReducer(state: PhotoState, action: PhotoAction): PhotoState {
   switch (action.type) {
     case "SET_IMAGES":
       return { ...state, images: action.images };
@@ -43,6 +44,16 @@ function photoReducer(state: PhotoState, action: PhotoAction): PhotoState {
       };
     case "OPTIMISTIC_DELETE":
       return { ...state, images: state.images.filter((img) => img.id !== action.id) };
+    case "REMOVE_IMAGES": {
+      // Records deleted elsewhere. The viewer closes if it was showing one.
+      const gone = new Set(action.ids);
+      if (!state.images.some((img) => gone.has(img.id))) return state;
+      return {
+        ...state,
+        images: state.images.filter((img) => !gone.has(img.id)),
+        selectedId: state.selectedId !== null && gone.has(state.selectedId) ? null : state.selectedId,
+      };
+    }
     case "SET_SELECTED_ID":
       return { ...state, selectedId: action.id };
     case "SET_NEXT_CURSOR":

@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import type { AppImage } from "@/photos-lib/client";
 import { fetchRuntimeConfig } from "./runtime-config";
 import { withBasePath } from "./base-path";
-import { listPhotos, listPhotosSince } from "./data-server-client";
+import { listDeletedPhotosSince, listPhotos, listPhotosSince } from "./data-server-client";
 import { getLatestLibraryPolicies } from "./data-server-client";
 import type { RenditionPolicies } from "@/photos-lib/rendition-policy";
 import { photoRecordToAppImage } from "./photoRecordToAppImage";
@@ -23,6 +23,8 @@ const MAX_DELTA_PAGES = 20;
 interface UsePhotoFreshnessOptions {
   onInitialLoad: (images: AppImage[]) => void;
   onMerge: (images: AppImage[]) => void;
+  /** Receives the ids of records deleted since the page last looked. */
+  onRemove?: (ids: string[]) => void;
   onLoadingChange: (loading: boolean) => void;
   onError: (message: string) => void;
   /** Receives the server-owned policies included with each list response. */
@@ -70,12 +72,22 @@ function getFreshnessStrategy(): Promise<FreshnessStrategy> {
 export function usePhotoFreshness({
   onInitialLoad,
   onMerge,
+  onRemove,
   onLoadingChange,
   onError,
   onPolicies,
   refreshActiveResolutions,
 }: UsePhotoFreshnessOptions): PhotoFreshnessControls {
   const cursorRef = useRef<string | null>(null);
+  /**
+   * Where the deletion feed was last read up to.
+   *
+   * Its own watermark rather than {@link cursorRef}, because the two feeds
+   * advance independently: a tick can bring live changes and no deletions, or
+   * the reverse. A full list starts both from the same point, since it already
+   * leaves out everything deleted before it.
+   */
+  const deletedCursorRef = useRef<string | null>(null);
   const hiddenAtRef = useRef<number | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const esRef = useRef<EventSource | null>(null);
@@ -99,7 +111,10 @@ export function usePhotoFreshness({
       if (policies) onPolicies?.(policies);
       const images = records.map((r) => photoRecordToAppImage(r, r.metadata ?? null));
       const cursor = computeCursor(images);
-      if (cursor) cursorRef.current = cursor;
+      if (cursor) {
+        cursorRef.current = cursor;
+        deletedCursorRef.current = cursor;
+      }
       onInitialLoad(images);
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to load photos");
@@ -108,6 +123,29 @@ export function usePhotoFreshness({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Drop what another node or tab deleted since the last tick.
+   *
+   * The live delta cannot carry this: the route asks for live records only, so
+   * a record tombstoned elsewhere simply stops appearing in it, and the page
+   * kept it until a full reload. Walked with the same watermark rule as the live
+   * delta, and bounded by the same page cap.
+   */
+  const drainDeletions = async () => {
+    if (!onRemove) return;
+    for (let page = 0; page < MAX_DELTA_PAGES; page++) {
+      const cursor = deletedCursorRef.current;
+      if (!cursor) return;
+      const { records, hasMore } = await listDeletedPhotosSince(cursor);
+      if (records.length === 0) return;
+      onRemove(records.map((r) => r.id));
+      const newCursor = records.reduce((max, r) => (r.updated_at > max ? r.updated_at : max), cursor);
+      if (newCursor <= cursor) return;
+      deletedCursorRef.current = newCursor;
+      if (!hasMore) return;
+    }
+  };
 
   const fetchSince = useCallback(async () => {
     // A tile waiting on a better rung cannot be served by the cursor: the rung
@@ -144,6 +182,7 @@ export function usePhotoFreshness({
         cursorRef.current = newCursor;
         if (!hasMore) break;
       }
+      await drainDeletions();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to poll for updates");
     }

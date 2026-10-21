@@ -52,9 +52,15 @@ export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
   const updatedAfter = url.searchParams.get("updated_after");
+  // The deletion feed: what was tombstoned since the caller's watermark. The
+  // live delta never carries a tombstone, so without this an open page keeps
+  // every record another node deleted until a full reload. Only `only` is
+  // honored, so a misspelled value reads the live library rather than mixing
+  // the two. A tombstone needs no metadata or labels, so none are hydrated.
+  const deletedOnly = url.searchParams.get("deleted") === "only";
   const params = [
     `limit=${clampLimit(url.searchParams.get("limit"))}`,
-    "include=metadata,labels",
+    ...(deletedOnly ? ["deleted=only"] : ["include=metadata,labels"]),
     // Renditions are excluded from the page and returned *on* their parents.
     // With a ladder, a 60k-item library is 300k+ records, and a page that mixes
     // them is a page the client cannot use — it cannot tell how far to keep

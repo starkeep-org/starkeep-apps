@@ -51,4 +51,20 @@ class VideoFramesTest {
     assertNull(VideoFrames.captureTimeOf("19700101T000000.000Z"))
     assertNull(VideoFrames.captureTimeOf("not a date"))
   }
+
+  @Test
+  fun `reads the container location in decimal degrees`() {
+    assertEquals(42.2545 to -83.7165, VideoFrames.locationOf("+42.2545-83.7165/"))
+    assertEquals(-33.8568 to 151.2153, VideoFrames.locationOf("-33.8568+151.2153+058.000/"))
+    assertEquals(42.2545 to -83.7165, VideoFrames.locationOf("+42.2545-083.7165"))
+  }
+
+  @Test
+  fun `treats a missing, zeroed or unreadable location as none`() {
+    assertNull(VideoFrames.locationOf(null))
+    assertNull(VideoFrames.locationOf("+00.0000+000.0000/"))
+    assertNull(VideoFrames.locationOf("+4215-08343/"))
+    assertNull(VideoFrames.locationOf("+95.0000+010.0000/"))
+    assertNull(VideoFrames.locationOf(""))
+  }
 }

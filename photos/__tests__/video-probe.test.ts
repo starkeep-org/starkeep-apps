@@ -171,3 +171,32 @@ describe("capture time", () => {
     expect(parseProbeOutput(json)!.capturedAt).toBeNull();
   });
 });
+
+describe("capture location", () => {
+  const locationOf = (tags: Record<string, string>) => {
+    const json = probeJson();
+    json.format.tags = tags;
+    const facts = parseProbeOutput(json)!;
+    return [facts.gpsLat, facts.gpsLon];
+  };
+
+  // The tags ffprobe reported for a Pixel 10a clip in the 2026-10-21 device test.
+  it("reads an Android clip's location tag", () => {
+    expect(locationOf({ location: "+42.2545-83.7165/", "location-eng": "+42.2545-83.7165/" })).toEqual([
+      42.2545, -83.7165,
+    ]);
+  });
+
+  it("reads QuickTime's location and ignores an altitude", () => {
+    expect(locationOf({ "com.apple.quicktime.location.ISO6709": "-33.8568+151.2153+058.000/" })).toEqual([
+      -33.8568, 151.2153,
+    ]);
+  });
+
+  it("reports no location for a missing, zeroed or unreadable tag", () => {
+    expect(locationOf({})).toEqual([null, null]);
+    expect(locationOf({ location: "+00.0000+000.0000/" })).toEqual([null, null]);
+    expect(locationOf({ location: "+4215-08343/" })).toEqual([null, null]);
+    expect(locationOf({ location: "+95.0000+010.0000/" })).toEqual([null, null]);
+  });
+});

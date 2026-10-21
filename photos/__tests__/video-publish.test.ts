@@ -51,7 +51,7 @@ function makeSignedFetch(overrides: Record<string, () => Response> = {}) {
 const facts: VideoFacts = {
   width: 1080, height: 1920, durationMs: 12_500, frameRate: 29.97,
   videoCodec: "hevc", audioCodec: "aac", bitrate: 12_000_000,
-  capturedAt: "2026-03-04T10:00:00.000Z", rotation: 90,
+  capturedAt: "2026-03-04T10:00:00.000Z", gpsLat: 42.2545, gpsLon: -83.7165, rotation: 90,
 };
 
 const rendition = (over: Partial<DerivedVideoRendition> = {}): DerivedVideoRendition => ({
@@ -86,6 +86,8 @@ describe("writing container facts", () => {
       duration_ms: 12_500,
       video_codec: "hevc",
       captured_at: "2026-03-04T10:00:00.000Z",
+      gps_lat: 42.2545,
+      gps_lon: -83.7165,
     });
   });
 
@@ -97,11 +99,15 @@ describe("writing container facts", () => {
       audioCodec: null,
       bitrate: null,
       capturedAt: null,
+      gpsLat: null,
+      gpsLon: null,
     });
     const metadata = bodyOf((c) => c.path.endsWith("/metadata")).metadata as Record<string, unknown>;
     expect(metadata).not.toHaveProperty("audio_codec");
     expect(metadata).not.toHaveProperty("bitrate");
     expect(metadata).not.toHaveProperty("captured_at");
+    expect(metadata).not.toHaveProperty("gps_lat");
+    expect(metadata).not.toHaveProperty("gps_lon");
     expect(metadata).toHaveProperty("width");
   });
 

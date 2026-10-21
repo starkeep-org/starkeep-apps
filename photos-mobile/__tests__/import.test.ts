@@ -431,6 +431,8 @@ describe("assets hashed by the native streaming digest", () => {
             width: 1920,
             height: 1080,
             capturedAt: "2026-09-27T15:02:48.000Z",
+            gpsLat: 42.2545,
+            gpsLon: -83.7165,
           }),
           extractPosters: async (
             uri: string,
@@ -451,7 +453,7 @@ describe("assets hashed by the native streaming digest", () => {
       };
     }
 
-    it("writes the container's capture time and both posters at import", async () => {
+    it("writes the container's capture time, location and both posters at import", async () => {
       const { deps: videoPosters, extracted } = posterDeps();
       const outcome = await importDeviceMedia(
         { ...deps([video]), hashUri: fakeHashUri, videoPosters },
@@ -462,6 +464,7 @@ describe("assets hashed by the native streaming digest", () => {
       // Capture time from the file's own container, so the tile sorts into
       // place now rather than after a desktop has probed the original.
       expect(row?.["captured_at"]).toBe("2026-09-27T15:02:48.000Z");
+      expect([row?.["gps_lat"], row?.["gps_lon"]]).toEqual([42.2545, -83.7165]);
       expect(extracted).toEqual([VIDEO_URI]);
       const { records: children } = await database.query({
         filters: [{ field: "parentId", operator: "eq", value: record.id }],

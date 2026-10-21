@@ -31,6 +31,9 @@ export interface VideoFacts {
   readonly bitrate: number | null;
   /** When the camera says it was shot, ISO-8601, or `null`. */
   readonly capturedAt: string | null;
+  /** Where the camera says it was shot, in decimal degrees, or `null` for both. */
+  readonly gpsLat: number | null;
+  readonly gpsLon: number | null;
   /**
    * Quarter-turns the display matrix applies, normalised to 0/90/180/270.
    *
@@ -135,6 +138,7 @@ export function parseProbeOutput(json: unknown): VideoFacts | null {
     audioCodec: audio?.codec_name ?? null,
     bitrate: numberOrNull(probe.format?.bit_rate) ?? bitrateFromSize(probe.format?.size, durationSeconds),
     capturedAt: captureTime(probe),
+    ...captureLocation(probe),
     rotation,
   };
 }
@@ -173,6 +177,34 @@ function captureTime(probe: ProbeJson): string | null {
   if (!raw) return null;
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/**
+ * Where the camera says it was shot.
+ *
+ * Android writes the position into the MP4's `©xyz` atom and QuickTime into
+ * `com.apple.quicktime.location.ISO6709`. ffprobe reports the first as the
+ * `location` tag. Both hold an ISO 6709 string in decimal degrees, such as
+ * `+42.2545-83.7165/`, optionally followed by an altitude. The phone's
+ * `VideoFrames.locationOf` reads the same string the same way, so a phone and a
+ * desktop write the same pair.
+ *
+ * A read without Android's media-location grant zeroes the atom, and a zeroed
+ * position is no location, so `0, 0` answers null. So does the
+ * degrees-and-minutes form of ISO 6709, which no camera in the library writes.
+ */
+function captureLocation(probe: ProbeJson): { gpsLat: number | null; gpsLon: number | null } {
+  const none = { gpsLat: null, gpsLon: null };
+  const tags = probe.format?.tags ?? {};
+  const raw = tags["com.apple.quicktime.location.ISO6709"] ?? tags["location"];
+  if (!raw) return none;
+  const match = /^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?\/?$/.exec(raw.trim());
+  if (!match) return none;
+  const gpsLat = Number(match[1]);
+  const gpsLon = Number(match[2]);
+  if (gpsLat === 0 && gpsLon === 0) return none;
+  if (Math.abs(gpsLat) > 90 || Math.abs(gpsLon) > 180) return none;
+  return { gpsLat, gpsLon };
 }
 
 /** Long edge in display orientation — what the ladder's maxima compare against. */

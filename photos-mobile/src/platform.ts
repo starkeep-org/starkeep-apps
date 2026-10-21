@@ -40,7 +40,9 @@ import * as SecureStore from "expo-secure-store";
 import {
   createHttpSyncTransport,
   HttpObjectStorageAdapter,
+  type HashFileParts,
   type UploadFile,
+  type UploadFileRange,
 } from "@starkeep/sync-engine";
 import {
   cognitoFor,
@@ -91,6 +93,7 @@ import {
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
 import { backgroundWindow, nativeTimers } from "./work/native-timers";
+import { createFileMultipartSessions } from "./storage/multipart-sessions";
 import { requireOriginalUri } from "./media/original-uri";
 import {
   backfillVideoPosters,
@@ -336,6 +339,89 @@ export const sha256OfUri: HashUri | null = mediaHash
   : null;
 
 /**
+ * The two ports a resumable multipart upload needs, from the same native
+ * module. Null when the binary predates them, and every file then keeps the
+ * single PUT.
+ *
+ * Checked per function rather than per module, because a development client
+ * built when the module held only `sha256OfUri` loads it without the rest.
+ */
+const multipartNative =
+  mediaHash &&
+  typeof mediaHash.sha256PartsOfUri === "function" &&
+  typeof mediaHash.uploadRangeOfUri === "function"
+    ? mediaHash
+    : null;
+
+/** The whole-file and part digests of a file, from one native read. */
+export const hashFileParts: HashFileParts | null = multipartNative
+  ? async (uri, partBytes) => {
+      const digest = await multipartNative.sha256PartsOfUri(uri, partBytes);
+      return { sha256Hex: digest.hex, partSha256Hex: digest.partHexes, sizeBytes: digest.sizeBytes };
+    }
+  : null;
+
+let rangeUploads = 0;
+
+/**
+ * One multipart part's PUT, sent natively from the file.
+ *
+ * Bounded by the background window the same way {@link uploadFile} is. The
+ * native side cannot take an `AbortSignal`, so the abort reaches it as a cancel
+ * by request id, which disconnects the socket mid-write. A part cut off this
+ * way is simply missing next time; the parts before it are already saved.
+ */
+export const uploadFileRange: UploadFileRange | null = multipartNative
+  ? async (fileUri, range, url, init) => {
+      const requestId = `range-${++rangeUploads}`;
+      const abort = backgroundWindow.transferAbort();
+      const cancel = () => {
+        console.warn(`[multipart] cancelling ${requestId} (${range.length} bytes at ${range.offset}): the background window closed`);
+        multipartNative.cancelUpload(requestId);
+      };
+      abort?.signal.addEventListener("abort", cancel);
+      try {
+        if (abort?.signal.aborted) throw new Error("the background window closed before the part began");
+        return await multipartNative.uploadRangeOfUri(
+          requestId,
+          fileUri,
+          range.offset,
+          range.length,
+          url,
+          init.headers,
+        );
+      } finally {
+        abort?.signal.removeEventListener("abort", cancel);
+        abort?.release();
+      }
+    }
+  : null;
+
+// Once per process, so a device log shows which upload path this binary has
+// before any transfer starts.
+console.log(
+  multipartNative
+    ? "[multipart] native part hashing and range upload present; files above 64 MiB go up in parts"
+    : "[multipart] native multipart functions absent from this binary; every file uses a single PUT",
+);
+
+/** In the documents directory, beside the database, so the OS never clears it. */
+const MULTIPART_SESSIONS_PATH = documentPath("multipart-uploads.json");
+
+/** See `storage/multipart-sessions.ts`. */
+const multipartSessions = createFileMultipartSessions({
+  read: () => {
+    const file = new File(MULTIPART_SESSIONS_PATH);
+    return file.exists ? file.textSync() : null;
+  },
+  write: (contents) => {
+    const file = new File(MULTIPART_SESSIONS_PATH);
+    if (!file.exists) file.create();
+    file.write(contents);
+  },
+});
+
+/**
  * What `createMobileNode` needs in order to alias the camera roll.
  *
  * Passing the same filesystem port the object store uses is the whole trick:
@@ -389,6 +475,7 @@ export async function bringUpNode(): Promise<{
     sqliteDriver: opSqliteDriver,
     localObjectStorage: createLocalObjectStorage(),
     deviceMedia: deviceMediaStorage,
+    ...(hashFileParts ? { hashFileParts } : {}),
     ...(cloud ? { cloud } : {}),
   });
   return { node, identity, connection };
@@ -469,6 +556,11 @@ function driveChannel(
       // where a video's bytes go from the media store to S3 without passing
       // through Hermes. See {@link uploadFile}.
       uploadFile,
+      // A video above the multipart threshold goes up in parts that survive a
+      // closed background window. See `storage/multipart-sessions.ts`.
+      ...(hashFileParts && uploadFileRange
+        ? { hashFileParts, uploadFileRange, multipartSessions }
+        : {}),
     }),
   };
 }

@@ -39,6 +39,7 @@ import {
   type ReplicaProbe,
   type ResidencyManager,
   type FreeUpSpaceReport,
+  type HashFileParts,
   type SyncEngine,
   type SyncOptions,
   type SyncResult,
@@ -158,6 +159,12 @@ export interface MobileNodeOptions {
      */
     readonly readSyncUser: () => Promise<{ readonly userId: string | null }>;
   };
+  /**
+   * The platform's whole-and-parts file hasher. "Free up space" proves a large
+   * video uploaded in parts by rehashing this phone's copy, and only native
+   * code reads a file that size without holding it whole.
+   */
+  readonly hashFileParts?: HashFileParts;
   /**
    * This device's sync-down ceilings — the largest stand-in per category it
    * receives without being asked. The platform's phone row unless the person
@@ -573,6 +580,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     // it, but its bytes are the media store's. Removing the key would drop
     // the alias and free nothing, so "Free up space" never offers it.
     ...(mediaAliases ? { borrowsBytes: (key: string) => mediaAliases.get(key) !== null } : {}),
+    ...(options.hashFileParts ? { hashFileParts: options.hashFileParts } : {}),
   });
 
   // No cloud, no engine. Not a stub or an offline transport that queues: there

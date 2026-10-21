@@ -57,6 +57,14 @@ export interface SweepState {
   failed: number;
   /** Records this node has decided it cannot decode. */
   undecodable: number;
+  /**
+   * Records whose source bytes this node could not fetch, counted apart from
+   * `failed` because waiting fixes them. A phone syncs a record before its
+   * upload finishes, so a sweep woken by the record asks for bytes the cloud
+   * does not have yet, and nothing on this node changes when they land. A
+   * pass that ends with any schedules a retry pass (`ingest-watch.ts`).
+   */
+  unavailable: number;
   startedAt: string | null;
   finishedAt: string | null;
   error: string | null;
@@ -73,6 +81,7 @@ export function emptySweepState(): SweepState {
     derived: 0,
     failed: 0,
     undecodable: 0,
+    unavailable: 0,
     startedAt: null,
     finishedAt: null,
     error: null,

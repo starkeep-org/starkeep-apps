@@ -25,17 +25,37 @@
  * it runs collapse into one dirty bit, and worker exit consumes that bit with
  * at most one trailing discovery pass. This gives one new photo prompt service
  * without turning a bulk copy into ten thousand concurrent sweeps.
+ *
+ * ## A retry for bytes that had not arrived
+ *
+ * A phone syncs a video's record before its upload finishes, so the kick that
+ * announces the record starts a sweep that cannot fetch the original yet. The
+ * upload finishing changes nothing on this node and sends no kick, so that
+ * clip stayed underived until something unrelated woke the sweep. A pass that
+ * ends with unavailable sources therefore schedules another, backing off from
+ * a minute to a quarter of an hour, and a pass with none resets the backoff.
+ * Any sweep that starts for another reason replaces the pending retry, since
+ * its outcome decides the next one.
  */
 
 import { isSweeping, startSweep, waitForSweepIdle } from "./sweep-controller";
+import type { SweepState } from "./types";
 
-type SweepTrigger = "server start" | "ingest kick" | "trailing ingest";
+type SweepTrigger = "server start" | "ingest kick" | "trailing ingest" | "unavailable retry";
+
+/** The first retry's delay after a pass that could not fetch some sources. */
+export const UNAVAILABLE_RETRY_FIRST_MS = 60_000;
+/** The longest wait between retries; a large upload can take this long. */
+export const UNAVAILABLE_RETRY_MAX_MS = 15 * 60_000;
 
 interface Watch {
   streamAbort: AbortController | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   sweepTask: Promise<void> | null;
   dirtyWhileSweeping: boolean;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  /** The delay the next retry waits; doubles per retry up to the cap. */
+  retryDelayMs: number;
 }
 
 /**
@@ -56,6 +76,8 @@ function watch(): Watch {
     delete legacy.timer;
     existing.sweepTask ??= null;
     existing.dirtyWhileSweeping ??= false;
+    existing.retryTimer ??= null;
+    existing.retryDelayMs ??= UNAVAILABLE_RETRY_FIRST_MS;
     return existing;
   }
   const created: Watch = {
@@ -63,6 +85,8 @@ function watch(): Watch {
     reconnectTimer: null,
     sweepTask: null,
     dirtyWhileSweeping: false,
+    retryTimer: null,
+    retryDelayMs: UNAVAILABLE_RETRY_FIRST_MS,
   };
   globals[WATCH_KEY] = created;
   return created;
@@ -84,17 +108,43 @@ function trackSweepTask(self: Watch, task: Promise<void>): Promise<void> {
   return tracked;
 }
 
-async function startAndObserveSweep(trigger: SweepTrigger): Promise<void> {
+function clearRetry(self: Watch): void {
+  if (self.retryTimer) clearTimeout(self.retryTimer);
+  self.retryTimer = null;
+}
+
+/** Schedule a retry pass if this one left sources it could not fetch. */
+function noteOutcome(self: Watch, state: SweepState): void {
+  if (!(state.unavailable > 0)) {
+    self.retryDelayMs = UNAVAILABLE_RETRY_FIRST_MS;
+    return;
+  }
+  clearRetry(self);
+  const delayMs = self.retryDelayMs;
+  self.retryDelayMs = Math.min(delayMs * 2, UNAVAILABLE_RETRY_MAX_MS);
+  console.log(
+    `[derive] ${state.unavailable} source(s) could not be fetched; retrying in ${Math.round(delayMs / 1000)} s`,
+  );
+  self.retryTimer = setTimeout(() => {
+    self.retryTimer = null;
+    void requestSweep("unavailable retry");
+  }, delayMs);
+  // A pending retry must not hold a stopping server open.
+  self.retryTimer.unref?.();
+}
+
+async function startAndObserveSweep(self: Watch, trigger: SweepTrigger): Promise<void> {
   const result = await startSweep();
   if (!result.ok) {
     console.warn(`[derive] ${trigger} sweep did not start: ${result.error}`);
     return;
   }
-  await waitForSweepIdle();
+  noteOutcome(self, await waitForSweepIdle());
 }
 
 function requestSweep(trigger: SweepTrigger): Promise<void> {
   const self = watch();
+  clearRetry(self);
   if (self.sweepTask) {
     self.dirtyWhileSweeping = true;
     console.log(`[derive] ${trigger} coalesced into one trailing sweep`);
@@ -103,9 +153,9 @@ function requestSweep(trigger: SweepTrigger): Promise<void> {
   if (isSweeping()) {
     self.dirtyWhileSweeping = true;
     console.log(`[derive] ${trigger} joined the running sweep; one trailing sweep retained`);
-    return trackSweepTask(self, waitForSweepIdle().then(() => undefined));
+    return trackSweepTask(self, waitForSweepIdle().then((state) => noteOutcome(self, state)));
   }
-  return trackSweepTask(self, startAndObserveSweep(trigger));
+  return trackSweepTask(self, startAndObserveSweep(self, trigger));
 }
 
 /** Start the boot sweep now. Exported as the scheduling-policy test seam. */

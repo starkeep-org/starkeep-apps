@@ -52,6 +52,7 @@ import {
   type SizeClass,
 } from "../../photos-lib/ladder";
 import { fileAttemptStore } from "../attempt-store";
+import { fetchSource, SourceUnavailableError } from "./source-fetch";
 import { readSweepState, writeSweepState } from "../sweep-state";
 import {
   fetchSweepPage,
@@ -257,7 +258,8 @@ async function deriveOne(
   } catch (err) {
     // One unreadable photo must not end a 60,000-image pass. It is counted and
     // retried on the next one, since nothing was written for it.
-    state.failed++;
+    if (err instanceof SourceUnavailableError) state.unavailable++;
+    else state.failed++;
     console.warn(`[derive] record=${record.id} stage=${stage} elapsedMs=${Date.now() - startedAt} failed:`, err);
   }
 }
@@ -286,6 +288,7 @@ async function deriveOneVideo(
     if (result.failed.length > 0) state.failed++;
   } catch (error) {
     if (isTerminalVideoError(error)) state.undecodable++;
+    else if (error instanceof SourceUnavailableError) state.unavailable++;
     else state.failed++;
     console.warn(`[derive-video] ${record.id} failed:`, error);
   } finally {
@@ -312,21 +315,12 @@ async function downloadSourceFile(
   recordId: string,
   destination: string,
 ): Promise<void> {
-  const urlRes = await signedFetch(creds, `/data/records/${recordId}/file-url`);
-  if (!urlRes.ok) throw new Error(`file-url failed: ${urlRes.status}`);
-  const { url } = (await urlRes.json()) as { url: string };
-  const fileRes = await fetch(url);
-  if (!fileRes.ok || !fileRes.body) throw new Error(`file fetch failed: ${fileRes.status}`);
+  const fileRes = await fetchSource((path) => signedFetch(creds, path), recordId);
   await pipeline(Readable.fromWeb(fileRes.body as never), createWriteStream(destination));
 }
 
 async function fetchSourceBytes(creds: AppCredentials, recordId: string): Promise<Uint8Array> {
-  const urlRes = await signedFetch(creds, `/data/records/${recordId}/file-url`);
-  if (!urlRes.ok) throw new Error(`file-url failed: ${urlRes.status}`);
-  const { url } = (await urlRes.json()) as { url: string };
-  // A self-signed token URL — no HMAC needed, same as the resize route.
-  const fileRes = await fetch(url);
-  if (!fileRes.ok) throw new Error(`file fetch failed: ${fileRes.status}`);
+  const fileRes = await fetchSource((path) => signedFetch(creds, path), recordId);
   return new Uint8Array(await fileRes.arrayBuffer());
 }
 

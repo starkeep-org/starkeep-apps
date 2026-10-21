@@ -53,6 +53,31 @@ describe("local video rendition resolution", () => {
     expect(result["1280"]?.playback?.id).toBe("best");
   });
 
+  // The original sits on this disk, so playing it costs no transfer. Refusing
+  // it left a clip saying "Preparing…" until a sweep had re-encoded it.
+  it("plays the original on a node that holds it when no transcode exists", () => {
+    const result = resolveVideo(record([
+      candidate("poster", "video-poster-720p", 1280),
+      candidate("orig", "original", 1920),
+    ]), [1280], false);
+    expect(result["1280"]?.playback?.id).toBe("orig");
+  });
+
+  it("prefers a transcode to the original when one exists", () => {
+    const result = resolveVideo(record([
+      candidate("orig", "original", 1920),
+      candidate("playback", "video-720p", 1280),
+    ]), [1280], false);
+    expect(result["1280"]?.playback?.id).toBe("playback");
+  });
+
+  it("never plays the original from the cloud, or one this node lacks", () => {
+    const cloud = resolveVideo(record([candidate("orig", "original", 1920)]), [1280], true);
+    expect(cloud["1280"]?.playback).toBeUndefined();
+    const remote = resolveVideo(record([candidate("orig", "original", 1920, false)]), [1280], false);
+    expect(remote["1280"]?.playback).toBeUndefined();
+  });
+
   it("never uses a nonresident candidate as a local fallback", () => {
     const result = resolveVideo(record([
       candidate("remote", "video-1080p", 1920, false),

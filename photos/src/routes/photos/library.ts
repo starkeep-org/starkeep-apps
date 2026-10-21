@@ -1,6 +1,6 @@
 import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
 import { DERIVED_LABEL_REF } from "@/photos-lib/image-processing/publish-renditions";
-import type { VariantCandidate, WireStandInSummary } from "@/photos-lib/stand-in-candidates";
+import { ORIGINAL_RUNG, type VariantCandidate, type WireStandInSummary } from "@/photos-lib/stand-in-candidates";
 import { cloudCanDecode } from "@/photos-lib/image-processing/derive-ladder";
 import {
   resolveRenditions,
@@ -171,9 +171,20 @@ export function resolveVideo(record: UpstreamRecord, targets: readonly number[],
   const posters = candidates.filter((c) => posterClasses.has(c.label_value as never));
   const playback = candidates.filter((c) => playbackClasses.has(c.label_value as never));
   const out: Record<string, { poster?: (typeof candidates)[number]; playback?: (typeof candidates)[number] }> = {};
+  // The original, as a last resort on a node that holds it. See below.
+  const localOriginal = cloud
+    ? undefined
+    : candidates.find((c) => c.label_value === ORIGINAL_RUNG && c.available_here && Boolean(c.url));
   for (const target of targets) {
     const poster = chooseVideoCandidate(posters, target, cloud);
-    const playable = chooseVideoCandidate(playback, target, cloud);
+    // A transcode when one exists, and otherwise the original — but only on a
+    // node holding the original. The transcode exists so a viewer never
+    // streams the large file across a network, which is the cloud's case and
+    // stays exactly as it was. On the machine whose disk holds the bytes there
+    // is no network to spare, and refusing to play them left a clip saying
+    // "Preparing…" until a sweep had re-encoded it. A browser that cannot
+    // decode the original's codec reports an error, and the player falls back.
+    const playable = chooseVideoCandidate(playback, target, cloud) ?? localOriginal;
     out[String(target)] = {
       ...(poster ? { poster } : {}),
       ...(playable ? { playback: playable } : {}),

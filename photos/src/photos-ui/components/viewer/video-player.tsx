@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib/client";
 import type { VideoDecision } from "@/lib/rendition-resolution-client";
 
@@ -28,8 +29,14 @@ export function VideoPlayer({
   decision?: VideoDecision;
   onToggleInfo: () => void;
 }) {
-  const playback = decision?.playback?.url ? decision.playback : undefined;
+  const resolved = decision?.playback?.url ? decision.playback : undefined;
   const poster = decision?.poster?.url ? decision.poster : undefined;
+  // A source the browser could not decode — an HEVC original in a browser
+  // without HEVC — is treated as no source: the clip is not playable *here*
+  // yet, which is the "Preparing…" state, not a broken player.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  useEffect(() => setFailedUrl(null), [resolved?.url]);
+  const playback = resolved && resolved.url !== failedUrl ? resolved : undefined;
 
   // A clip whose transcode has not been derived yet is not broken — it is not
   // ready. Showing the poster with a clear reason beats offering a play button
@@ -81,6 +88,7 @@ export function VideoPlayer({
       controls
       playsInline
       preload="metadata"
+      onError={() => setFailedUrl(playback.url ?? null)}
       style={{
         position: "absolute",
         inset: 0,

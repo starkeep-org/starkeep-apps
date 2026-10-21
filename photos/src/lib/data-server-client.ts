@@ -398,6 +398,21 @@ export async function listPhotosSince(
 }
 
 /**
+ * One page of the records tombstoned since `updatedAfter`, in `updated_at`
+ * order, so the caller can walk it with the same watermark rule as
+ * {@link listPhotosSince}. A record's `updated_at` here is its deletion time.
+ */
+export async function listDeletedPhotosSince(
+  updatedAfter: string,
+): Promise<{ records: Array<{ id: string; updated_at: string }>; hasMore: boolean }> {
+  const result = await requestOwnApi<{
+    records: Array<{ id: string; updated_at: string }>;
+    hasMore?: boolean;
+  }>(libraryQuery(`updated_after=${encodeURIComponent(updatedAfter)}&deleted=only`));
+  return { records: result.records, hasMore: result.hasMore === true };
+}
+
+/**
  * Fetch one of Photos' own Next routes, same-origin.
  *
  * `withBasePath` is not optional: in the cloud the SPA is mounted under

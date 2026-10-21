@@ -129,6 +129,7 @@ function PhotosAppInner() {
   const freshness = usePhotoFreshness({
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
     onMerge: (images) => dispatch({ type: "UPSERT_IMAGES", images }),
+    onRemove: (ids) => dispatch({ type: "REMOVE_IMAGES", ids }),
     onLoadingChange: (loading) => dispatch({ type: "SET_LOADING", loading }),
     onError: setError,
     onPolicies: (policies) => dispatch({ type: "SET_POLICIES", policies }),

@@ -183,7 +183,8 @@ export const IMPORT_REACH_TABLE = "media_import_reach";
  * Bump it whenever import learns to accept an asset it used to fail on every
  * time. The watermark moves past a failure (see `importDeviceMedia`), so an
  * asset that failed under the old reach sits below the cursor and no pass will
- * offer it again. A bump makes the next bring-up walk the whole roll once.
+ * offer it again. A bump makes the next bring-up walk this node's part of the
+ * roll once more, from the oldest asset it ever imported.
  *
  * 1. Everything up to `MAX_INLINE_READ_BYTES`.
  * 2. Video of any size, hashed by the native streaming digest.
@@ -191,16 +192,23 @@ export const IMPORT_REACH_TABLE = "media_import_reach";
 export const IMPORT_REACH_STREAMED_VIDEO = 2;
 
 /**
- * Walk the camera roll again from the beginning if import can now read more
+ * Walk this node's part of the camera roll again if import can now read more
  * than it could when the cursor last moved.
  *
- * ## Why zero and not null
+ * ## Why the window's start and not the roll's
  *
- * A null cursor means "this node has never looked", and the next pass answers
- * it by seeding the cursor at the newest asset and importing nothing. Clearing
- * the cursor would therefore skip exactly the assets this exists to reach.
- * Zero is a position before every asset, so the next pass walks oldest-first
- * and `alreadyImported` settles each imported asset without reading its bytes.
+ * Import walks forward from a watermark seeded at the newest asset on the
+ * node's first look. So the part of the camera roll in Starkeep begins at the
+ * oldest asset ever imported, and everything older was never offered. A failed
+ * asset sits *inside* that window, behind the cursor. Rewinding to the window's
+ * start re-offers exactly the window: imported assets are settled by
+ * `alreadyImported` without a byte read, and the ones a lower reach refused
+ * import now. Rewinding to zero instead would import the whole camera roll,
+ * which no reach increase ever meant to do.
+ *
+ * `windowStartMs` is the oldest alias mtime (`MediaAliasStore.oldestModificationTimeMs`).
+ * An asset that failed below it, older than anything this node imported, stays
+ * out; the person adds it by hand like any other old asset.
  *
  * ## Why the write bypasses `set`'s contract
  *
@@ -212,17 +220,21 @@ export const IMPORT_REACH_STREAMED_VIDEO = 2;
  * ## What a fresh node does
  *
  * Records the reach and leaves the cursor null. A node that has never looked
- * has failed on nothing, and its first pass seeds as it always has.
+ * has failed on nothing, and its first pass seeds as it always has. A node with
+ * a cursor but no dated alias has nothing to re-offer, and is left alone too.
  *
- * Answers whether it rewound, so bring-up can say so.
+ * Answers the position it rewound to, or null when it did not move the cursor,
+ * so bring-up can say so.
  */
 export function rewindImportCursorForReach(options: {
   readonly db: RawDatabase;
   readonly reach: number;
+  /** Where this node's imported window begins; see above. */
+  readonly windowStartMs: number | null;
   /** Defaults to {@link IMPORT_CURSOR_TABLE}. */
   readonly cursorTable?: string;
-}): boolean {
-  const { db, reach } = options;
+}): number | null {
+  const { db, reach, windowStartMs } = options;
   const cursorTable = options.cursorTable ?? IMPORT_CURSOR_TABLE;
   // The cursor store creates its own table, and this may run before it does.
   createSqliteImportCursorStore({ db, table: cursorTable });
@@ -241,7 +253,7 @@ export function rewindImportCursorForReach(options: {
       qb.selectFrom(IMPORT_REACH_TABLE).select("reach").where("id", "=", sql.lit(0)).compile().sql,
     )
     .get() as { reach: number } | undefined;
-  if (stored && stored.reach >= reach) return false;
+  if (stored && stored.reach >= reach) return null;
 
   const cursor = db
     .prepare(
@@ -252,16 +264,18 @@ export function rewindImportCursorForReach(options: {
         .compile().sql,
     )
     .get() as { modification_time_ms: number | null } | undefined;
-  const rewound = (cursor?.modification_time_ms ?? null) !== null;
+  const current = cursor?.modification_time_ms ?? null;
+  const rewindTo =
+    current !== null && windowStartMs !== null && windowStartMs < current ? windowStartMs : null;
 
-  if (rewound) {
+  if (rewindTo !== null) {
     db.prepare(
       qb
         .updateTable(cursorTable)
-        .set({ modification_time_ms: sql.lit(0) })
+        .set({ modification_time_ms: sql.raw("?") })
         .where("id", "=", sql.lit(0))
         .compile().sql,
-    ).run();
+    ).run(rewindTo);
   }
   db.prepare(
     qb
@@ -270,5 +284,5 @@ export function rewindImportCursorForReach(options: {
       .onConflict((oc) => oc.column("id").doUpdateSet((eb) => ({ reach: eb.ref("excluded.reach") })))
       .compile().sql,
   ).run(reach);
-  return rewound;
+  return rewindTo;
 }

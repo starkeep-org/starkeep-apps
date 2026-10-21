@@ -119,6 +119,15 @@ describe("createSqliteMediaAliasStore", () => {
     expect(store.totalBytes()).toBe(4_000_000);
   });
 
+  it("names the oldest imported asset's mtime, ignoring undated ones", () => {
+    expect(store.oldestModificationTimeMs()).toBeNull();
+    store.add(alias({ objectStorageKey: "k1", assetId: "1", modificationTimeMs: null }));
+    expect(store.oldestModificationTimeMs()).toBeNull();
+    store.add(alias({ objectStorageKey: "k2", assetId: "2", modificationTimeMs: 1_700_000_000_000 }));
+    store.add(alias({ objectStorageKey: "k3", assetId: "3", modificationTimeMs: 1_690_000_000_000 }));
+    expect(store.oldestModificationTimeMs()).toBe(1_690_000_000_000);
+  });
+
   it("keeps a null modification time as null rather than coercing it", () => {
     // Null means "the media store recorded none", which the import loop must
     // read as unverifiable. Coercing it to 0 would make it compare equal to a

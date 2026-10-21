@@ -242,7 +242,31 @@ describe("bring-up after import's reach grows", () => {
     });
   }
 
-  it("rewinds the import cursor before anything can import", async () => {
+  it("rewinds the import cursor to the oldest imported asset before anything can import", async () => {
+    const driver = reopenableOpSqlite();
+    const before = await bringUp(driver);
+    before.importCursor!.set(1_700_000_000_000);
+    before.mediaAliases!.add({
+      objectStorageKey: "shared/local/image/ab/abcd",
+      recordId: "rec-1" as never,
+      contentUri: "content://media/external/images/media/1",
+      assetId: "1",
+      sizeBytes: 1_000,
+      contentType: "image/jpeg",
+      modificationTimeMs: 1_690_000_000_000,
+      addedAtMs: 1_700_000_000_000,
+    });
+    await before.close();
+
+    const after = await bringUp(driver, 2);
+
+    // The start of what this node imported, not zero: zero would walk the
+    // whole camera roll, most of which this node never brought in.
+    expect(after.importCursor!.get()).toBe(1_690_000_000_000);
+    await after.close();
+  });
+
+  it("leaves the cursor alone when the node has imported nothing", async () => {
     const driver = reopenableOpSqlite();
     const before = await bringUp(driver);
     before.importCursor!.set(1_700_000_000_000);
@@ -250,7 +274,7 @@ describe("bring-up after import's reach grows", () => {
 
     const after = await bringUp(driver, 2);
 
-    expect(after.importCursor!.get()).toBe(0);
+    expect(after.importCursor!.get()).toBe(1_700_000_000_000);
     await after.close();
   });
 

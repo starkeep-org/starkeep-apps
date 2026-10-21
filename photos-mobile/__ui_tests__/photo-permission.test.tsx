@@ -9,7 +9,7 @@
  */
 import { act, renderHook } from "@testing-library/react-native";
 import { AppState, Linking, type AppStateStatus } from "react-native";
-import { deviceMedia } from "../src/platform";
+import { deviceMedia, mediaLocationGranted } from "../src/platform";
 import type { MediaPermission } from "../src/media/device-library";
 import { useForegroundWork } from "../src/ui/use-foreground-work";
 import type { LibraryState, NodeState, StorageState } from "../src/ui/use-library";
@@ -20,6 +20,7 @@ jest.mock("../src/platform", () => ({
     requestPermissions: jest.fn(),
     onChange: jest.fn(() => ({ remove: jest.fn() })),
   },
+  mediaLocationGranted: jest.fn(() => true),
 }));
 
 jest.mock("../src/work/background-task", () => ({
@@ -56,6 +57,7 @@ function libraryStub() {
     backfillDurations: jest.fn(async () => true),
     backfillExif: jest.fn(async () => true),
     backfillThumbHashes: jest.fn(async () => true),
+    backfillPosters: jest.fn(async () => true),
     deriveRenditions: jest.fn(async () => true),
     sweepNullModified: jest.fn(async () => undefined),
   } as unknown as LibraryState & { importQuietly: jest.Mock };
@@ -90,6 +92,29 @@ function renderWork(node: NodeState, library = libraryStub()) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+});
+
+describe("the media-location permission", () => {
+  const locationGranted = mediaLocationGranted as jest.Mock;
+  afterEach(() => locationGranted.mockReturnValue(true));
+
+  // A phone that granted photo access before the app declared location access
+  // was never asked for it, and every import since lost its GPS.
+  it("asks once when photos are granted and location is not", async () => {
+    getPermissions.mockResolvedValue(GRANTED);
+    requestPermissions.mockResolvedValue(GRANTED);
+    locationGranted.mockReturnValue(false);
+    renderWork(READY);
+    await settle();
+    expect(requestPermissions).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask when location is already granted", async () => {
+    getPermissions.mockResolvedValue(GRANTED);
+    renderWork(READY);
+    await settle();
+    expect(requestPermissions).not.toHaveBeenCalled();
+  });
 });
 
 describe("the photo permission", () => {

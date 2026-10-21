@@ -19,6 +19,9 @@ object StreamingSha256 {
 
   data class Digest(val hex: String, val sizeBytes: Long)
 
+  /** The whole-file digest and the digest of each `partBytes` part, from one read. */
+  data class PartsDigest(val hex: String, val sizeBytes: Long, val partHexes: List<String>)
+
   fun of(input: InputStream): Digest {
     val digest = MessageDigest.getInstance("SHA-256")
     val buffer = ByteArray(BUFFER_BYTES)
@@ -30,6 +33,44 @@ object StreamingSha256 {
       total += read
     }
     return Digest(toHex(digest.digest()), total)
+  }
+
+  /**
+   * Hash a stream whole and in parts of exactly `partBytes`, the last shorter.
+   *
+   * One read, because the part digests are what S3 checks and the whole-file
+   * digest is what the object key names. Two reads could pair the parts of one
+   * version of a file with the hash of another. An empty stream is one empty
+   * part, as S3 counts it.
+   */
+  fun withParts(input: InputStream, partBytes: Long): PartsDigest {
+    require(partBytes > 0) { "partBytes must be positive" }
+    val whole = MessageDigest.getInstance("SHA-256")
+    var part = MessageDigest.getInstance("SHA-256")
+    val partHexes = ArrayList<String>()
+    val buffer = ByteArray(BUFFER_BYTES)
+    var total = 0L
+    var inPart = 0L
+    while (true) {
+      val read = input.read(buffer)
+      if (read < 0) break
+      whole.update(buffer, 0, read)
+      total += read
+      var offset = 0
+      while (offset < read) {
+        val take = minOf(partBytes - inPart, (read - offset).toLong()).toInt()
+        part.update(buffer, offset, take)
+        inPart += take
+        offset += take
+        if (inPart == partBytes) {
+          partHexes.add(toHex(part.digest()))
+          part = MessageDigest.getInstance("SHA-256")
+          inPart = 0
+        }
+      }
+    }
+    if (inPart > 0 || partHexes.isEmpty()) partHexes.add(toHex(part.digest()))
+    return PartsDigest(toHex(whole.digest()), total, partHexes)
   }
 
   /**

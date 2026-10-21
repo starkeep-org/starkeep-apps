@@ -39,6 +39,7 @@ import type { CloudConnection } from "../auth/connection";
 import type { MobileNode, StorageReport } from "../node";
 import {
   backfillImageExifFor,
+  backfillVideoPostersFor,
   backfillThumbHashesFor,
   deriveRecordFor,
   deriveRenditionsFor,
@@ -225,6 +226,9 @@ export const VIDEO_DURATION_BACKFILL_LIMIT = 25;
  * open.
  */
 export const MAX_EXIF_BACKFILL_PASSES = 60;
+
+/** Aliases per poster-backfill page; only the videos among them cost a decode. */
+export const VIDEO_POSTER_BACKFILL_LIMIT = 24;
 
 /**
  * How many ThumbHash batches one app open will run before giving up the thread.
@@ -427,6 +431,14 @@ export interface LibraryState {
    * signal to stop asking. See `backfillThumbHashes`.
    */
   backfillThumbHashes: () => Promise<boolean>;
+  /**
+   * Give posters and a capture time to videos imported before this device
+   * made them.
+   *
+   * Resolves true when there is nothing left to repair, which is the caller's
+   * signal to stop asking. See `backfillVideoPosters`.
+   */
+  backfillPosters: () => Promise<boolean>;
   /**
    * Make the rungs this device's own photographs are missing.
    *
@@ -939,6 +951,39 @@ export function useLibrary(node: NodeState): LibraryState {
   }, [ready, reload]);
 
   /**
+   * Give a batch of videos the posters and capture time they were imported
+   * without. Bounded by {@link MAX_EXIF_BACKFILL_PASSES}, the walk it shares a
+   * shape with; a page that holds no video costs one query.
+   */
+  const backfillPosters = useCallback(async (): Promise<boolean> => {
+    if (!ready) return true;
+    let written = 0;
+    try {
+      let after: string | null = null;
+      for (let pass = 0; pass < MAX_EXIF_BACKFILL_PASSES; pass += 1) {
+        const outcome = await backfillVideoPostersFor(ready.node, ready.clock, {
+          limit: VIDEO_POSTER_BACKFILL_LIMIT,
+          after,
+        });
+        written += outcome.written;
+        if (outcome.complete) {
+          if (written > 0) await reload();
+          return true;
+        }
+        after = outcome.resumeAfter;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      if (written > 0) await reload();
+      return false;
+    } catch (err) {
+      setError(String(err));
+      if (written > 0) await reload();
+      // Stop asking: a pass that throws will throw again on the next open.
+      return true;
+    }
+  }, [ready, reload]);
+
+  /**
    * Make the rungs this device's own photographs are missing.
    *
    * One sweep per app open, bounded by {@link DERIVE_RECORDS_PER_OPEN}. It runs
@@ -1318,6 +1363,7 @@ export function useLibrary(node: NodeState): LibraryState {
     backfillDurations,
     backfillExif,
     backfillThumbHashes,
+    backfillPosters,
     deriveRenditions,
     sweepNullModified,
     openMotion,

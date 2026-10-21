@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { createHLCClock, dataRecordObjectKey, type StarkeepId, LOCAL_USER_SEGMENT } from "@starkeep/protocol-primitives";
-import { MockDatabaseAdapter, type RawDatabase } from "@starkeep/storage-adapter";
+import { MockDatabaseAdapter, MockObjectStorageAdapter, type RawDatabase } from "@starkeep/storage-adapter";
 import { createSqliteMediaAliasStore, type MediaAliasStore } from "../src/media/media-alias";
 import {
   backfillImageExif,
@@ -393,6 +393,99 @@ describe("assets hashed by the native streaming digest", () => {
 
     expect(hashedUris).toEqual([VIDEO_URI]);
     expect(fs.state.wholeReads).toEqual([]);
+  });
+
+  describe("reading through the location-preserving URI", () => {
+    const MARKED = `${VIDEO_URI}?requireOriginal=1`;
+
+    it("hashes the marked URI's bytes and records that URI on the alias", async () => {
+      // The resolver hands back the unredacted file for the marked URI; here
+      // the two differ, so the test can tell which one was read.
+      const original = new Uint8Array([...CLIP, 1, 2, 3]);
+      putAsset(MARKED, original);
+      const d = { ...deps([video]), hashUri: fakeHashUri, readUriFor: (uri: string) => `${uri}?requireOriginal=1` };
+
+      const outcome = await importDeviceMedia(d, { limit: 10 });
+
+      expect(hashedUris).toEqual([MARKED]);
+      expect(outcome.records[0]!.contentHash).toBe(createHash("sha256").update(original).digest("hex"));
+      expect(aliases.byAssetId(VIDEO_URI)?.contentUri).toBe(MARKED);
+    });
+  });
+
+  describe("a new video's posters and capture time", () => {
+    function posterDeps(overrides: Record<string, unknown> = {}) {
+      const objectStorage = new MockObjectStorageAdapter();
+      const scratch = new Map<string, Uint8Array>();
+      const extracted: string[] = [];
+      return {
+        extracted,
+        deps: {
+          database,
+          objectStorage,
+          clock: createHLCClock({ nodeId: "phone" }),
+          hash: nodeHash,
+          userId: () => LOCAL_USER_SEGMENT,
+          readFacts: async () => ({
+            durationMs: 42_000,
+            width: 1920,
+            height: 1080,
+            capturedAt: "2026-09-27T15:02:48.000Z",
+          }),
+          extractPosters: async (
+            uri: string,
+            _timeUs: number,
+            outputs: ReadonlyArray<{ maxLongEdge: number; path: string }>,
+          ) => {
+            extracted.push(uri);
+            return outputs.map((o) => {
+              scratch.set(o.path, new TextEncoder().encode(o.path));
+              return { path: o.path, width: o.maxLongEdge, height: (o.maxLongEdge * 9) / 16 };
+            });
+          },
+          scratchPath: (name: string) => `file:///cache/${name}`,
+          readScratch: (path: string) => scratch.get(path)!,
+          removeScratch: (path: string) => void scratch.delete(path),
+          ...overrides,
+        },
+      };
+    }
+
+    it("writes the container's capture time and both posters at import", async () => {
+      const { deps: videoPosters, extracted } = posterDeps();
+      const outcome = await importDeviceMedia(
+        { ...deps([video]), hashUri: fakeHashUri, videoPosters },
+        { limit: 10 },
+      );
+      const record = outcome.records[0]!;
+      const row = (await database.getMetadataByIds("video", [record.id])).get(record.id);
+      // Capture time from the file's own container, so the tile sorts into
+      // place now rather than after a desktop has probed the original.
+      expect(row?.["captured_at"]).toBe("2026-09-27T15:02:48.000Z");
+      expect(extracted).toEqual([VIDEO_URI]);
+      const { records: children } = await database.query({
+        filters: [{ field: "parentId", operator: "eq", value: record.id }],
+        limit: 10,
+      });
+      expect(children.map((c) => c.originalFilename).sort()).toEqual([
+        "video-poster-720p_VID_0001.jpg",
+        "video-poster-thumb_VID_0001.jpg",
+      ]);
+    });
+
+    it("still imports a video whose posters cannot be made", async () => {
+      const { deps: videoPosters } = posterDeps({
+        readFacts: async () => {
+          throw new Error("retriever could not open the clip");
+        },
+      });
+      const outcome = await importDeviceMedia(
+        { ...deps([video]), hashUri: fakeHashUri, videoPosters },
+        { limit: 10 },
+      );
+      expect(outcome.imported).toBe(1);
+      expect(outcome.failures).toEqual([]);
+    });
   });
 
   it("produces the key the in-memory path would", async () => {

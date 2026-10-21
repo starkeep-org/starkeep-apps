@@ -30,6 +30,7 @@
         {
           "photosPermission": "Starkeep shows the photos and videos already on this device.",
           "savePhotosPermission": "Starkeep saves photos back to your device library.",
+          "isAccessMediaLocationEnabled": true,
           "granularPermissions": [
             "photo",
             "video"

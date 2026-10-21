@@ -692,6 +692,9 @@ async function alreadyImported(deps: ImportDeps, item: DeviceMediaItem): Promise
   const alias = deps.aliases.byAssetId(item.id);
   if (!alias) return false;
   if (alias.modificationTimeMs !== item.modifiedAt) return false;
+  // A tombstone counts as imported, deliberately. `get` answers deleted rows,
+  // and a record deleted in Starkeep must not come back because its asset is
+  // still in the camera roll.
   return (await deps.database.get(alias.recordId)) !== null;
 }
 
@@ -1041,7 +1044,7 @@ export async function backfillVideoDurations(
     // The record's own type decides the table, not the media store's category.
     // An asset the store calls video whose extension made an image record would
     // otherwise put a row in a table no reader of that record looks in.
-    if (!record || typeCategory(record.type) !== "video") continue;
+    if (!record || record.deletedAt || typeCategory(record.type) !== "video") continue;
     // Carried rather than re-read: the write below is labelled with the
     // record's own type, which is the discriminant every read of the row gates
     // on, and this loop is the only place that already holds the record.
@@ -1173,8 +1176,13 @@ export async function backfillImageExif(
   // a video's alias apart from a photograph whose metadata row was never
   // written — both are simply absent from its answer.
   const ids = page.map((alias) => alias.recordId as StarkeepId);
+  // Live records only. A deleted record keeps its alias, and its metadata is
+  // nobody's to repair.
   const found = await deps.database.query({
-    filters: [{ field: "id", operator: "in", value: ids }],
+    filters: [
+      { field: "id", operator: "in", value: ids },
+      { field: "deletedAt", operator: "isNull" },
+    ],
     limit: ids.length,
   });
   // Keyed by id and carrying the type, because the repair below writes a
@@ -1308,8 +1316,13 @@ export async function backfillThumbHashes(
   // but the database has lost is the interrupted-import window this file is
   // built around, and it is simply skipped — the next import re-mints it.
   const ids = page.map((alias) => alias.recordId as StarkeepId);
+  // Live records only. A deleted record keeps its alias, and its metadata is
+  // nobody's to repair.
   const found = await deps.database.query({
-    filters: [{ field: "id", operator: "in", value: ids }],
+    filters: [
+      { field: "id", operator: "in", value: ids },
+      { field: "deletedAt", operator: "isNull" },
+    ],
     limit: ids.length,
   });
   // The category routes the read (one table per category); the type labels the

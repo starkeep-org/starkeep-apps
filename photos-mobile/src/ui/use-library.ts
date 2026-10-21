@@ -1135,7 +1135,7 @@ export function useLibrary(node: NodeState): LibraryState {
           // resolved from: a rendition record can arrive, or be superseded,
           // between the resolution and this call.
           const rendition = await node.databaseAdapter.get(renditionId);
-          if (!rendition) return false;
+          if (!rendition || rendition.deletedAt) return false;
           // `fetchBlob` takes a `DataRecord` and a rendition *is* one — same
           // key, same content hash, same size. No new transport and no new API.
           const ok = await node.fetchBlob(rendition);

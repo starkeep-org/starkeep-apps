@@ -276,10 +276,19 @@ export interface LibraryQuery {
  */
 /**
  * What makes a record an item of the library rather than a size of one: no
- * stand-in role, and no `photos/derived` label.
+ * stand-in role, and no `photos/derived` label. A tombstoned record is no item
+ * at all.
+ *
+ * The phone reads the adapter directly, and the adapter returns tombstones
+ * unless asked not to, because sync has to carry them. The SDK adds this filter
+ * for every other app. Without it here, a record deleted on another node stayed
+ * in the phone's grid, and only its poster went.
  */
 const ORIGINALS_ONLY = {
-  filters: [{ field: "standInRole", operator: "isNull" }],
+  filters: [
+    { field: "standInRole", operator: "isNull" },
+    { field: "deletedAt", operator: "isNull" },
+  ],
   excludeLabel: { appId: "photos", key: "derived" },
 } satisfies Pick<Query, "filters" | "excludeLabel">;
 
@@ -519,7 +528,8 @@ export async function refreshLibraryItem(
   grid: GridGeometry | null,
 ): Promise<LibraryItem | null> {
   const record = await deps.database.get(recordId);
-  if (!record) return null;
+  // `get` answers a tombstone too, and a deleted record has no tile.
+  if (!record || record.deletedAt) return null;
   const [item] = await resolveLibraryItems(deps, [record], grid);
   return item ?? null;
 }

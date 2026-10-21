@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { createDataRecord, createHLCClock, type DataRecord } from "@starkeep/protocol-primitives";
 import { MockDatabaseAdapter } from "@starkeep/storage-adapter";
 import type { ObjectStorageAdapter } from "@starkeep/storage-adapter";
-import { listLibrary, summarizeLibrary, type LibraryDeps } from "../src/library";
+import { listLibrary, refreshLibraryItem, summarizeLibrary, type LibraryDeps } from "../src/library";
 
 const clock = createHLCClock({ nodeId: "phone" });
 
@@ -372,6 +372,23 @@ describe("the order the library is read in", () => {
 
     expect(seen).toHaveLength(8);
     expect(new Set(seen).size).toBe(8);
+  });
+});
+
+// The adapter answers tombstones, because sync has to carry them, and the phone
+// reads the adapter directly. A video deleted on the web stayed in the phone's
+// grid, still playable from the camera roll, and only its poster went.
+describe("a record deleted in Starkeep", () => {
+  it("leaves the grid, the count and a single-tile refresh", async () => {
+    const kept = await seed("image/jpeg");
+    const deleted = await seed("video/mp4");
+    await database.delete(deleted.id, clock.now());
+
+    const page = await listLibrary(deps(), { limit: 10 });
+    expect(page.items.map((item) => item.record.id)).toEqual([kept.id]);
+    expect((await summarizeLibrary(deps())).records).toBe(1);
+    expect(await refreshLibraryItem(deps(), deleted.id, null)).toBeNull();
+    expect(await refreshLibraryItem(deps(), kept.id, null)).not.toBeNull();
   });
 });
 

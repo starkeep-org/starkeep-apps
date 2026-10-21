@@ -63,6 +63,7 @@ import {
   noYield,
   type BackfillOutcome,
   type HashBytes,
+  type HashUri,
   type ImportDeps,
   type ImageExifBackfillOutcome,
   type ImportOutcome,
@@ -70,6 +71,7 @@ import {
 } from "./media/import";
 import type { ThumbHashEncoder } from "./media/thumb-hash";
 import StarkeepAvif from "../modules/starkeep-avif";
+import StarkeepMediaHash from "../modules/starkeep-media-hash";
 import {
   deriveForRecord,
   deriveRenditions,
@@ -78,6 +80,7 @@ import {
   type ImageEncoder,
 } from "./photos/derive-ladder";
 import { createMobileNode, type MobileNode } from "./node";
+import { IMPORT_REACH_STREAMED_VIDEO } from "./media/import-cursor";
 import { backgroundDerivePlan, type BackgroundDerivePass } from "./photos/background-derive";
 import {
   openMotionPhoto,
@@ -315,6 +318,18 @@ export const sha256Bytes: HashBytes = async (bytes) => {
 };
 
 /**
+ * The streaming digest import uses for every asset that is not a still.
+ *
+ * Null when the binary predates `modules/starkeep-media-hash`, and import then
+ * falls back to {@link sha256Bytes} and its 64 MB ceiling. See
+ * `ImportDeps.hashUri`.
+ */
+const mediaHash = StarkeepMediaHash;
+export const sha256OfUri: HashUri | null = mediaHash
+  ? (uri) => mediaHash.sha256OfUri(uri)
+  : null;
+
+/**
  * What `createMobileNode` needs in order to alias the camera roll.
  *
  * Passing the same filesystem port the object store uses is the whole trick:
@@ -323,7 +338,13 @@ export const sha256Bytes: HashBytes = async (bytes) => {
  * an aliased original is the same code path as reading a stored blob with a
  * different string in it. There is no second module and no native shim.
  */
-export const deviceMediaStorage = { fs: expoFileSystem };
+export const deviceMediaStorage = {
+  fs: expoFileSystem,
+  // Only with the native digest in the binary, because the reach recorded is
+  // the reach that digest provides. Recording it without one would spend the
+  // rewind on a walk that can still read nothing new.
+  ...(sha256OfUri ? { importReach: IMPORT_REACH_STREAMED_VIDEO } : {}),
+};
 
 /**
  * Bring up this device's node.
@@ -461,6 +482,7 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
     clock,
     fs: expoFileSystem,
     hash: sha256Bytes,
+    ...(sha256OfUri ? { hashUri: sha256OfUri } : {}),
     userId: () => node.userId(),
     thumbHash: thumbHashFor,
     ...(node.motionIndex ? { motionIndex: node.motionIndex } : {}),

@@ -57,6 +57,7 @@ import {
 } from "./work/scan-cursor";
 import {
   createSqliteImportCursorStore,
+  rewindImportCursorForReach,
   VIDEO_DURATION_CURSOR_TABLE,
   type ImportCursorStore,
 } from "./media/import-cursor";
@@ -179,7 +180,16 @@ export interface MobileNodeOptions {
    * engine and the importer see the *same* view of what this node holds — in
    * the caller's hands.
    */
-  readonly deviceMedia?: { readonly fs: ExpoFileSystem };
+  readonly deviceMedia?: {
+    readonly fs: ExpoFileSystem;
+    /**
+     * Which assets this binary's import can read. See `IMPORT_REACH_STREAMED_VIDEO`.
+     *
+     * Absent when the binary adds nothing to the original reach, and then the
+     * import cursor is never rewound.
+     */
+    readonly importReach?: number;
+  };
 }
 
 export interface MobileNode {
@@ -457,6 +467,14 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   const importCursor = options.deviceMedia
     ? createSqliteImportCursorStore({ db: databaseAdapter.getRawDatabase() })
     : null;
+  // Before anything can import, so the first pass after an upgrade already
+  // walks from the beginning.
+  if (options.deviceMedia?.importReach !== undefined) {
+    rewindImportCursorForReach({
+      db: databaseAdapter.getRawDatabase(),
+      reach: options.deviceMedia.importReach,
+    });
+  }
   // Same shape, its own table. See `MobileNode.videoDurationCursor`.
   const videoDurationCursor = options.deviceMedia
     ? createSqliteImportCursorStore({

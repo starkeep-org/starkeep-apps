@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p __ui_tests__",
     "test": "vitest run && jest",
     "test:ui": "jest",
-    "test:android": "cd android && ./gradlew :starkeep-media-trigger:testDebugUnitTest",
+    "test:android": "cd android && ./gradlew :starkeep-media-trigger:testDebugUnitTest :starkeep-media-hash:testDebugUnitTest",
     "start": "expo start",
     "android": "expo run:android",
     "prebuild": "expo prebuild --platform android"

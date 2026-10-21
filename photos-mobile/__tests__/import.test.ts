@@ -27,6 +27,7 @@ import {
   noYield,
   MAX_INLINE_READ_BYTES,
   type HashBytes,
+  type HashUri,
 } from "../src/media/import";
 import {
   createSqliteImportCursorStore,
@@ -332,6 +333,123 @@ describe("content:// assets, which cannot be streamed", () => {
 
     expect(outcome.imported).toBe(0);
     expect(outcome.failures[0]!.reason).toMatch(/larger than this device can hash/);
+  });
+});
+
+describe("assets hashed by the native streaming digest", () => {
+  const VIDEO_URI = "content://media/external/video/media/7";
+  const CLIP = new Uint8Array(Array.from({ length: 5000 }, (_, i) => (i * 3) % 256));
+  const video = asset({
+    id: VIDEO_URI,
+    filename: "VID_0001.mp4",
+    mediaType: "video",
+    duration: 42,
+  });
+
+  /** node:crypto over the fake's bytes, without recording a whole read — as the native digest reads none into JS. */
+  let hashedUris: string[];
+  const fakeHashUri: HashUri = async (uri) => {
+    hashedUris.push(uri);
+    const bytes = fs.files.get(uri);
+    if (!bytes) throw new Error(`no stream for ${uri}`);
+    return { hex: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
+  };
+
+  /** Every file reports a size above the ceiling, as the 10-14 videos did. */
+  function oversized() {
+    return {
+      ...fs.fs,
+      file: (p: string) => ({ ...fs.fs.file(p), size: MAX_INLINE_READ_BYTES + 1 }),
+    };
+  }
+
+  beforeEach(() => {
+    hashedUris = [];
+    putAsset(VIDEO_URI, CLIP);
+  });
+
+  it("imports a video above the in-memory ceiling", async () => {
+    // The regression this exists for: three camera clips of 75, 227 and 391 MB
+    // never left the phone, because every asset went through the JS heap.
+    const d = { ...deps([video]), fs: oversized(), hashUri: fakeHashUri };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.imported).toBe(1);
+    const record = outcome.records[0]!;
+    const expected = createHash("sha256").update(CLIP).digest("hex");
+    expect(record.contentHash).toBe(expected);
+    expect(record.objectStorageKey).toBe(dataRecordObjectKey(LOCAL_USER_SEGMENT, "video/mp4", expected));
+    expect(record.sizeBytes).toBe(CLIP.byteLength);
+  });
+
+  it("never reads a video into JS, whatever its size", async () => {
+    // Every video, not only the large ones: a 47 MB clip held whole was most of
+    // the heap pressure import ever caused.
+    const d = { ...deps([video]), hashUri: fakeHashUri };
+
+    await importDeviceMedia(d, { limit: 10 });
+
+    expect(hashedUris).toEqual([VIDEO_URI]);
+    expect(fs.state.wholeReads).toEqual([]);
+  });
+
+  it("produces the key the in-memory path would", async () => {
+    // A content-addressed key that depended on which path hashed the bytes
+    // would stop matching the same clip synced from a laptop.
+    const native = await importDeviceMedia({ ...deps([video]), hashUri: fakeHashUri }, { limit: 10 });
+
+    aliases = createSqliteMediaAliasStore({ db: rawDb() });
+    database = new MockDatabaseAdapter();
+    await database.init();
+    const inMemory = await importDeviceMedia(deps([video]), { limit: 10 });
+
+    expect(native.records[0]!.objectStorageKey).toBe(inMemory.records[0]!.objectStorageKey);
+  });
+
+  it("still reads a still into memory, because EXIF and motion need the bytes", async () => {
+    const d = { ...deps(), hashUri: fakeHashUri };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.imported).toBe(1);
+    expect(hashedUris).toEqual([]);
+    expect(fs.state.wholeReads).toEqual([URI_1]);
+  });
+
+  it("still defers a still above the ceiling", async () => {
+    const d = { ...deps(), fs: oversized(), hashUri: fakeHashUri };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.imported).toBe(0);
+    expect(outcome.failures[0]!.reason).toMatch(/larger than this device can hash/);
+  });
+
+  it("defers a large video when the binary has no native digest", async () => {
+    // A development client built before the module existed keeps the old
+    // behaviour rather than attempting a read that would crash it.
+    const d = { ...deps([video]), fs: oversized() };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.imported).toBe(0);
+    expect(outcome.failures[0]!.reason).toMatch(/larger than this device can hash/);
+  });
+
+  it("reports a digest that fails as that asset's failure, and goes on", async () => {
+    const failing: HashUri = async (uri) => {
+      throw new Error(`the content resolver opened no stream for ${uri}`);
+    };
+    const d = { ...deps([video, asset({ id: URI_1 })]), hashUri: failing };
+
+    const outcome = await importDeviceMedia(d, { limit: 10 });
+
+    expect(outcome.imported).toBe(1);
+    expect(outcome.failures).toHaveLength(1);
+    expect(outcome.failures[0]!.assetId).toBe(VIDEO_URI);
+    expect(outcome.failures[0]!.reason).toMatch(/opened no stream/);
   });
 });
 

@@ -5,9 +5,10 @@
  * rows. These pin how the sheet puts them together: the metadata row it reads
  * for the open record, the shared rows built from it, then Type and Content
  * hash, and nothing from a read for a record the sheet has since moved past.
+ * The last case pins Delete: confirmed, it closes the sheet and then deletes.
  */
-import { act, render, screen } from "@testing-library/react-native";
-import { Text } from "react-native";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { Alert, Text } from "react-native";
 import { photoInfoRows } from "@starkeep/photos-info";
 import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
 import { infoFields } from "../src/ui/info-fields";
@@ -47,7 +48,7 @@ describe("the info sheet", () => {
   it("shows the shared rows for the metadata it read, then Type and Content hash", async () => {
     const record = photoRecord();
     const readInfo = jest.fn(async () => ROW);
-    render(<PhotoInfoSheet record={record} readInfo={readInfo} onClose={jest.fn()} />);
+    render(<PhotoInfoSheet record={record} readInfo={readInfo} onDelete={jest.fn(async () => undefined)} onClose={jest.fn()} />);
     await settle();
 
     expect(readInfo).toHaveBeenCalledWith(record);
@@ -61,7 +62,7 @@ describe("the info sheet", () => {
 
   it("leaves out Content hash for a record that has none", async () => {
     const record = photoRecord({ contentHash: null });
-    render(<PhotoInfoSheet record={record} readInfo={async () => null} onClose={jest.fn()} />);
+    render(<PhotoInfoSheet record={record} readInfo={async () => null} onDelete={jest.fn(async () => undefined)} onClose={jest.fn()} />);
     await settle();
     expect(labels()).not.toContain("Content hash");
     expect(labels().at(-1)).toBe("Type");
@@ -77,14 +78,35 @@ describe("the info sheet", () => {
         : Promise.resolve(null),
     );
     const { rerender } = render(
-      <PhotoInfoSheet record={first} readInfo={readInfo} onClose={jest.fn()} />,
+      <PhotoInfoSheet record={first} readInfo={readInfo} onDelete={jest.fn(async () => undefined)} onClose={jest.fn()} />,
     );
-    rerender(<PhotoInfoSheet record={second} readInfo={readInfo} onClose={jest.fn()} />);
+    rerender(<PhotoInfoSheet record={second} readInfo={readInfo} onDelete={jest.fn(async () => undefined)} onClose={jest.fn()} />);
     await settle();
 
     await act(async () => finishFirst(ROW));
     expect(labels()).not.toContain("Camera");
     const shared = photoInfoRows(infoFields(second, null)).map((row) => row.label);
     expect(labels()).toEqual([...shared, "Type", "Content hash"]);
+  });
+
+  it("deletes only after the confirmation, closing the sheet first", async () => {
+    const record = photoRecord();
+    const calls: string[] = [];
+    const onClose = jest.fn(() => calls.push("close"));
+    const onDelete = jest.fn(async () => {
+      calls.push("delete");
+    });
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+    render(<PhotoInfoSheet record={record} readInfo={async () => null} onDelete={onDelete} onClose={onClose} />);
+    await settle();
+
+    fireEvent.press(screen.getByLabelText("Delete"));
+    expect(onDelete).not.toHaveBeenCalled();
+
+    const buttons = alert.mock.calls[0]![2]!;
+    await act(async () => buttons.find((button) => button.text === "Delete")!.onPress!());
+    expect(calls).toEqual(["close", "delete"]);
+    expect(onDelete).toHaveBeenCalledWith(record);
+    alert.mockRestore();
   });
 });

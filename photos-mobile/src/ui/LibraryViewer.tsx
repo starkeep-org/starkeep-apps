@@ -97,6 +97,7 @@ export function LibraryViewer({
   onPlay,
   onOpenMotion,
   onReadInfo,
+  onDelete,
   onClose,
 }: {
   /** The page the grid is drawing, in the grid's order. */
@@ -123,6 +124,7 @@ export function LibraryViewer({
   readonly onPlay: (item: LibraryItem) => Promise<void>;
   readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   readonly onReadInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  readonly onDelete: (record: DataRecord) => Promise<void>;
   readonly onClose: () => void;
 }) {
   /**
@@ -336,6 +338,7 @@ export function LibraryViewer({
       <PhotoInfoSheet
         record={infoRecord}
         readInfo={onReadInfo}
+        onDelete={onDelete}
         onClose={() => setInfoRecord(null)}
       />
     </View>

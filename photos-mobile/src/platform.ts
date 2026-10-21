@@ -34,6 +34,7 @@ import {
   withUserToken,
   type DataRecord,
   type HLCClock,
+  type StarkeepId,
 } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
@@ -95,6 +96,7 @@ import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver
 import { backgroundWindow, nativeTimers } from "./work/native-timers";
 import { createFileMultipartSessions } from "./storage/multipart-sessions";
 import { requireOriginalUri } from "./media/original-uri";
+import { deleteLibraryRecord, type DeleteRecordOutcome } from "./photos/delete-record";
 import {
   backfillVideoPosters,
   type VideoPosterBackfillOutcome,
@@ -1085,6 +1087,44 @@ export function openMotionPhotoFor(
     cachePath,
   };
   return openMotionPhoto(deps, record);
+}
+
+/**
+ * Delete a library item in Starkeep, and answer the camera-roll files that held
+ * its bytes. See `photos/delete-record.ts`.
+ */
+export function deleteRecordFor(
+  node: MobileNode,
+  clock: HLCClock,
+  recordId: StarkeepId,
+): Promise<DeleteRecordOutcome> {
+  return deleteLibraryRecord(
+    {
+      database: node.databaseAdapter,
+      clock,
+      aliases: node.mediaAliases,
+      assetExists: (uri) => expoFileSystem.file(uri).exists,
+    },
+    recordId,
+  );
+}
+
+/**
+ * Ask Android to move camera-roll files to its trash. Resolves whether the
+ * person confirmed in the system's dialog.
+ *
+ * Never rejects: a binary without the native function, a declined dialog and a
+ * failed request all leave the files where they are, and the Starkeep delete
+ * that came first stands on its own.
+ */
+export async function trashCameraRollFiles(uris: readonly string[]): Promise<boolean> {
+  if (uris.length === 0 || typeof mediaHash?.trashMediaUris !== "function") return false;
+  try {
+    return await mediaHash.trashMediaUris([...uris]);
+  } catch (err) {
+    console.warn(`[delete] could not move ${uris.join(", ")} to the trash: ${String(err)}`);
+    return false;
+  }
 }
 
 /**

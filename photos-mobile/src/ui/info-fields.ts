@@ -47,3 +47,20 @@ export function infoFields(record: DataRecord, row: MetadataRow | null): PhotoIn
     gpsLon: num("gps_lon"),
   };
 }
+
+/**
+ * The confirmation the sheet's Delete shows, as a title and a message.
+ *
+ * The same promise Photos web makes: the item goes to Drive's Trash. The second
+ * sentence is the phone's own, because only the phone holds a camera-roll file
+ * to offer Android's trash for.
+ */
+export function deletePrompt(record: DataRecord): { readonly title: string; readonly message: string } {
+  return {
+    title: `Delete ${record.originalFilename ?? "this item"}?`,
+    message:
+      "It moves to Drive's Trash, where you can restore it for as long as your library keeps " +
+      "deleted items. If its file is on this phone, Android then asks to move that file to the " +
+      "phone's trash.",
+  };
+}

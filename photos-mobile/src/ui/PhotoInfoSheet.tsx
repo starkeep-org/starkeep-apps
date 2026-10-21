@@ -10,25 +10,32 @@
  * The phone's own EXIF reader records only the capture time, orientation and
  * dimensions; the camera and exposure rows appear once the Photos app on
  * another node has read the full header and the metadata row has synced back.
+ *
+ * The sheet also holds Delete, behind a confirmation. It closes before the
+ * delete runs: the grid reload that follows closes the viewer under it, and
+ * Android's trash dialog then opens over the grid.
  */
 
 import { useEffect, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Alert, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { photoInfoRows } from "@starkeep/photos-info";
 import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
-import { infoFields } from "./info-fields";
+import { deletePrompt, infoFields } from "./info-fields";
 import { colors, styles } from "./theme";
 
 export function PhotoInfoSheet({
   record,
   readInfo,
+  onDelete,
   onClose,
 }: {
   /** The record to describe, or null while the sheet is closed. */
   readonly record: DataRecord | null;
   readonly readInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  /** Delete the record everywhere. See `useLibrary().deleteRecord`. */
+  readonly onDelete: (record: DataRecord) => Promise<void>;
   readonly onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -44,6 +51,23 @@ export function PhotoInfoSheet({
       cancelled = true;
     };
   }, [record, readInfo]);
+
+  const confirmDelete = (target: DataRecord) => {
+    const { title, message } = deletePrompt(target);
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          onClose();
+          onDelete(target).catch((err: unknown) =>
+            Alert.alert("Could not delete", err instanceof Error ? err.message : String(err)),
+          );
+        },
+      },
+    ]);
+  };
 
   return (
     <Modal visible={record !== null} transparent animationType="slide" onRequestClose={onClose}>
@@ -71,6 +95,15 @@ export function PhotoInfoSheet({
               {record.contentHash ? (
                 <InfoLine label="Content hash" value={record.contentHash} mono />
               ) : null}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Delete"
+                onPress={() => confirmDelete(record)}
+                style={styles.sheetDelete}
+              >
+                <MaterialIcons name="delete-outline" size={20} color={colors.danger} />
+                <Text style={styles.sheetDeleteLabel}>Delete</Text>
+              </Pressable>
             </ScrollView>
           ) : null}
         </Pressable>

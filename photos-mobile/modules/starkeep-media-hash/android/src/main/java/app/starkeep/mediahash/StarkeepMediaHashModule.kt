@@ -1,11 +1,14 @@
 package app.starkeep.mediahash
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
@@ -14,9 +17,11 @@ import java.net.HttpURLConnection
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Coroutine
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -168,6 +173,38 @@ class StarkeepMediaHashModule : Module() {
       context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
+    // Move camera-roll assets to Android's trash, where the person can restore
+    // them for 30 days. Android shows its own confirmation, because an app may
+    // not trash media it did not create without one. Answers whether the person
+    // confirmed. Main queue, because the confirmation is an activity started
+    // for a result.
+    AsyncFunction("trashMediaUris") { uris: List<String>, promise: Promise ->
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || uris.isEmpty()) {
+        promise.resolve(false)
+        return@AsyncFunction
+      }
+      if (pendingTrash != null) {
+        promise.reject(CodedException("ERR_TRASH_BUSY", "a trash confirmation is already open", null))
+        return@AsyncFunction
+      }
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val request = MediaStore.createTrashRequest(context.contentResolver, uris.map(Uri::parse), true)
+      pendingTrash = promise
+      try {
+        appContext.throwingActivity.startIntentSenderForResult(request.intentSender, TRASH_REQUEST, null, 0, 0, 0)
+      } catch (e: Exception) {
+        pendingTrash = null
+        promise.reject(CodedException("ERR_TRASH_FAILED", e.message ?: "could not ask to trash", e))
+      }
+    }.runOnQueue(Queues.MAIN)
+
+    OnActivityResult { _, payload ->
+      if (payload.requestCode != TRASH_REQUEST) return@OnActivityResult
+      val promise = pendingTrash ?: return@OnActivityResult
+      pendingTrash = null
+      promise.resolve(payload.resultCode == Activity.RESULT_OK)
+    }
+
     // Disconnecting from this thread makes the uploading thread's write throw,
     // which rejects that transfer's promise.
     Function("cancelUpload") { requestId: String ->
@@ -179,9 +216,15 @@ class StarkeepMediaHashModule : Module() {
 
   private val active = ConcurrentHashMap<String, HttpURLConnection>()
 
+  /** The open trash confirmation's promise. One at a time, as the dialog is. */
+  private var pendingTrash: Promise? = null
+
   private companion object {
     /** `adb logcat -s StarkeepMultipart` shows every part's native life. */
     const val TAG = "StarkeepMultipart"
+
+    /** Identifies the trash confirmation's result among the activity's others. */
+    const val TRASH_REQUEST = 0x5354
   }
 
   private class DisplayFacts(

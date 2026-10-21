@@ -10,9 +10,10 @@ import {
   createDataRecord,
   createHLCClock,
   getCategory,
+  type DataRecord,
   type MetadataRow,
 } from "@starkeep/protocol-primitives";
-import { infoFields } from "../src/ui/info-fields";
+import { deletePrompt, infoFields } from "../src/ui/info-fields";
 
 const clock = createHLCClock({ nodeId: "phone" });
 const record = createDataRecord(
@@ -113,5 +114,15 @@ describe("infoFields", () => {
       width: null,
       dateTaken: null,
     });
+  });
+});
+
+describe("deletePrompt", () => {
+  it("names the item, and says where it goes and what Android asks next", () => {
+    const { title, message } = deletePrompt({ originalFilename: "PXL_1.mp4" } as DataRecord);
+    expect(title).toBe("Delete PXL_1.mp4?");
+    expect(message).toContain("Drive's Trash");
+    expect(message).toContain("Android then asks");
+    expect(deletePrompt({ originalFilename: null } as DataRecord).title).toBe("Delete this item?");
   });
 });

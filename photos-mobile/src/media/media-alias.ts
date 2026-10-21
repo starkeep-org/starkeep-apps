@@ -88,6 +88,13 @@ export interface MediaAliasStore {
   /** Total aliased bytes — reported by the residency inspector, never budgeted. */
   totalBytes(): number;
   /**
+   * The oldest media-store mtime among imported assets, or null when no alias
+   * carries one. Import walks forward from its watermark, so this is where the
+   * part of the camera roll this node has brought in begins. See
+   * `rewindImportCursorForReach`.
+   */
+  oldestModificationTimeMs(): number | null;
+  /**
    * A page of aliases, in primary-key order, for a pass that must visit them all.
    *
    * Exists because the EXIF backfill needs *the records this node imported from
@@ -246,6 +253,12 @@ export function createSqliteMediaAliasStore(options: { readonly db: RawDatabase 
       .select(({ fn }) => fn.coalesce(fn.sum<number>("size_bytes"), sql.lit(0)).as("total"))
       .compile().sql,
   );
+  const oldestStmt = db.prepare(
+    qb
+      .selectFrom(TABLE)
+      .select(({ fn }) => fn.min<number | null>("modification_time_ms").as("oldest"))
+      .compile().sql,
+  );
   const pageStmt = db.prepare(
     qb
       .selectFrom(TABLE)
@@ -297,6 +310,10 @@ export function createSqliteMediaAliasStore(options: { readonly db: RawDatabase 
     totalBytes() {
       const row = totalStmt.get() as { total: number } | undefined;
       return row?.total ?? 0;
+    },
+    oldestModificationTimeMs() {
+      const row = oldestStmt.get() as { oldest: number | null } | undefined;
+      return row?.oldest ?? null;
     },
     listAfter(afterKey, limit) {
       const rows = (afterKey === null

@@ -36,6 +36,10 @@
  * a minute to a quarter of an hour, and a pass with none resets the backoff.
  * Any sweep that starts for another reason replaces the pending retry, since
  * its outcome decides the next one.
+ *
+ * Only a retry pass moves the backoff. A phone's sync sends several kicks in
+ * a few seconds, and when every pass doubled the wait, three kicks in thirty
+ * seconds took the first retry from one minute to four.
  */
 
 import { isSweeping, startSweep, waitForSweepIdle } from "./sweep-controller";
@@ -113,15 +117,18 @@ function clearRetry(self: Watch): void {
   self.retryTimer = null;
 }
 
-/** Schedule a retry pass if this one left sources it could not fetch. */
-function noteOutcome(self: Watch, state: SweepState): void {
+/**
+ * Schedule a retry pass if this one left sources it could not fetch. The wait
+ * doubles only after a retry pass that still could not fetch them.
+ */
+function noteOutcome(self: Watch, state: SweepState, wasRetry: boolean): void {
   if (!(state.unavailable > 0)) {
     self.retryDelayMs = UNAVAILABLE_RETRY_FIRST_MS;
     return;
   }
   clearRetry(self);
+  if (wasRetry) self.retryDelayMs = Math.min(self.retryDelayMs * 2, UNAVAILABLE_RETRY_MAX_MS);
   const delayMs = self.retryDelayMs;
-  self.retryDelayMs = Math.min(delayMs * 2, UNAVAILABLE_RETRY_MAX_MS);
   console.log(
     `[derive] ${state.unavailable} source(s) could not be fetched; retrying in ${Math.round(delayMs / 1000)} s`,
   );
@@ -139,7 +146,7 @@ async function startAndObserveSweep(self: Watch, trigger: SweepTrigger): Promise
     console.warn(`[derive] ${trigger} sweep did not start: ${result.error}`);
     return;
   }
-  noteOutcome(self, await waitForSweepIdle());
+  noteOutcome(self, await waitForSweepIdle(), trigger === "unavailable retry");
 }
 
 function requestSweep(trigger: SweepTrigger): Promise<void> {
@@ -153,7 +160,7 @@ function requestSweep(trigger: SweepTrigger): Promise<void> {
   if (isSweeping()) {
     self.dirtyWhileSweeping = true;
     console.log(`[derive] ${trigger} joined the running sweep; one trailing sweep retained`);
-    return trackSweepTask(self, waitForSweepIdle().then((state) => noteOutcome(self, state)));
+    return trackSweepTask(self, waitForSweepIdle().then((state) => noteOutcome(self, state, false)));
   }
   return trackSweepTask(self, startAndObserveSweep(self, trigger));
 }

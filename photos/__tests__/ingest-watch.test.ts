@@ -162,6 +162,20 @@ describe("a pass that could not fetch some sources", () => {
     expect(waited).toBe(60_000 * (1 + 2 + 4 + 8) + UNAVAILABLE_RETRY_MAX_MS * 3);
   });
 
+  // Seen on the device: a phone's sync sent three kicks in thirty seconds, and
+  // when every pass doubled the wait the first retry came after four minutes.
+  it("doubles the wait only after a retry pass, not after kicks", async () => {
+    vi.useFakeTimers();
+    sweep.outcomes = [{ unavailable: 1 }, { unavailable: 1 }, { unavailable: 1 }, {}];
+    await requestIngestSweep();
+    await requestIngestSweep();
+    await requestIngestSweep();
+    expect(sweep.start).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(UNAVAILABLE_RETRY_FIRST_MS);
+    expect(sweep.start).toHaveBeenCalledTimes(4);
+  });
+
   it("lets a kick replace a pending retry instead of adding a second pass", async () => {
     vi.useFakeTimers();
     sweep.outcomes = [{ unavailable: 1 }];

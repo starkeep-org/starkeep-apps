@@ -33,15 +33,15 @@ export function VideoPlayer({
   const poster = decision?.poster?.url ? decision.poster : undefined;
   // A source the browser could not decode — an HEVC original in a browser
   // without HEVC — is treated as no source: the clip is not playable *here*
-  // yet, which is the "Preparing…" state, not a broken player.
+  // yet, which is the "syncing" state, not a broken player.
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   useEffect(() => setFailedUrl(null), [resolved?.url]);
   const playback = resolved && resolved.url !== failedUrl ? resolved : undefined;
 
-  // A clip whose transcode has not been derived yet is not broken — it is not
-  // ready. Showing the poster with a clear reason beats offering a play button
-  // that does nothing, and beats falling back to the original, which is the
-  // large file the transcode exists to avoid streaming.
+  // A clip with nothing playable here yet is not broken — its bytes are still
+  // on their way: the original is uploading or downloading, or the transcode
+  // has not been derived. Showing the poster with a clear reason beats
+  // offering a play button that does nothing.
   if (!playback) {
     return (
       <div style={{ position: "absolute", inset: 0 }}>
@@ -73,7 +73,7 @@ export function VideoPlayer({
             textShadow: "0 1px 3px rgba(0,0,0,0.8)",
           }}
         >
-          Preparing this video for playback…
+          Video data is syncing…
         </div>
       </div>
     );

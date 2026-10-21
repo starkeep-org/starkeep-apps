@@ -54,7 +54,7 @@ describe("local video rendition resolution", () => {
   });
 
   // The original sits on this disk, so playing it costs no transfer. Refusing
-  // it left a clip saying "Preparing…" until a sweep had re-encoded it.
+  // it left a clip marked not ready until a sweep had re-encoded it.
   it("plays the original on a node that holds it when no transcode exists", () => {
     const result = resolveVideo(record([
       candidate("poster", "video-poster-720p", 1280),

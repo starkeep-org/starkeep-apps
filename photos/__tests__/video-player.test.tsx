@@ -5,7 +5,7 @@
  * On a desktop that holds the original, the original is the playback source
  * until a transcode exists. Pixel clips are HEVC, which some browsers cannot
  * decode; the element then fires `error`, and the clip must read as "not ready
- * here" — the poster and "Preparing…" — rather than as a dead player.
+ * here" — the poster and "Video data is syncing…" — rather than as a dead player.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -30,7 +30,7 @@ describe("VideoPlayer", () => {
     expect(screen.getByTestId("video-player").getAttribute("src")).toBe("http://local/orig.mp4");
   });
 
-  it("falls back to the poster and Preparing… when the browser cannot decode it", () => {
+  it("falls back to the poster and the syncing note when the browser cannot decode it", () => {
     render(
       <VideoPlayer
         image={image}

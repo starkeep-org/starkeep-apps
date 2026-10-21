@@ -181,8 +181,8 @@ export function resolveVideo(record: UpstreamRecord, targets: readonly number[],
     // node holding the original. The transcode exists so a viewer never
     // streams the large file across a network, which is the cloud's case and
     // stays exactly as it was. On the machine whose disk holds the bytes there
-    // is no network to spare, and refusing to play them left a clip saying
-    // "Preparing…" until a sweep had re-encoded it. A browser that cannot
+    // is no network to spare, and refusing to play them left a clip marked not
+    // ready until a sweep had re-encoded it. A browser that cannot
     // decode the original's codec reports an error, and the player falls back.
     const playable = chooseVideoCandidate(playback, target, cloud) ?? localOriginal;
     out[String(target)] = {

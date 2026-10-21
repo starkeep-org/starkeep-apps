@@ -16,7 +16,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Linking } from "react-native";
-import { deviceMedia } from "../platform";
+import { deviceMedia, mediaLocationGranted } from "../platform";
+import { shouldAskForMediaLocation } from "../media/original-uri";
 import { describeAccess, nextAccessStep, type MediaAccess } from "../media/device-library";
 import { planCatchUp } from "../work/foreground-catchup";
 import {
@@ -103,6 +104,7 @@ export function useForegroundWork(
   const durationsBackfilled = useRef(false);
   /** Same, for the stills' capture time and orientation. */
   const exifBackfilled = useRef(false);
+  const postersBackfilled = useRef(false);
   /** Same, for the placeholder every record paints before its bytes resolve. */
   const thumbHashesBackfilled = useRef(false);
   /**
@@ -353,6 +355,13 @@ export function useForegroundWork(
         exifBackfilled.current = await library.backfillExif();
       }
 
+      // A video's posters and capture time, for the clips imported before this
+      // device made them. Beside the EXIF repair, because the capture time
+      // decides where the tile sits too. See `backfillVideoPosters`.
+      if (plan.import && !postersBackfilled.current) {
+        postersBackfilled.current = await library.backfillPosters();
+      }
+
       // The placeholder every tile falls back to, for the records this device
       // imported before it could make one. Last of the three, and deliberately:
       // the two above decide where a tile *sits*, which changes what somebody is
@@ -472,6 +481,8 @@ export function useForegroundWork(
   const [mediaAccess, setMediaAccess] = useState<MediaAccess | null>(null);
   /** Whether this launch has shown the system dialog, so it shows at most once. */
   const askedForMedia = useRef(false);
+  /** Whether this launch has asked for the location half, so it asks at most once. */
+  const askedForLocation = useRef(false);
   const readMediaAccess = useCallback(async () => {
     const permission = await deviceMedia.getPermissions().catch(() => null);
     if (permission) setMediaAccess(describeAccess(permission));
@@ -492,10 +503,28 @@ export function useForegroundWork(
     void (async () => {
       const permission = await readMediaAccess();
       const access = permission ? describeAccess(permission) : null;
+      let granted = permission?.granted === true;
       if (nextAccessStep(access, "open", askedForMedia.current) === "ask") {
         askedForMedia.current = true;
         const answered = await deviceMedia.requestPermissions().catch(() => null);
         if (answered) setMediaAccess(describeAccess(answered));
+        granted = answered?.granted === true;
+      }
+      // The location half of the photos permission, which a phone that granted
+      // media access before this app declared it has never been asked for.
+      // Without it every import loses its GPS. See `media/original-uri.ts`.
+      if (
+        shouldAskForMediaLocation({
+          mediaGranted: granted,
+          locationGranted: mediaLocationGranted(),
+          askedThisLaunch: askedForLocation.current,
+        })
+      ) {
+        askedForLocation.current = true;
+        await deviceMedia.requestPermissions().catch(() => null);
+        console.log(
+          `[import] media-location permission ${mediaLocationGranted() ? "granted" : "still not granted"}`,
+        );
       }
       runCatchUpRef.current?.();
     })();

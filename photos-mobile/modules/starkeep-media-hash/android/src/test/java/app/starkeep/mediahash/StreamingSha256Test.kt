@@ -33,6 +33,35 @@ class StreamingSha256Test {
     assertEquals(bytes.size.toLong(), digest.sizeBytes)
   }
 
+  @Test
+  fun `cuts parts at exactly the part size across short reads`() {
+    // Parts that straddle the one-megabyte buffer, read in odd-sized trickles,
+    // so a boundary off by one byte would show as a wrong part digest.
+    val part = 3L * 1024 * 1024 + 7
+    val bytes = ByteArray((part * 2 + 5).toInt()) { (it % 241).toByte() }
+    val digest = StreamingSha256.withParts(Trickle(bytes, 65_521), part)
+    assertEquals(oneShot(bytes), digest.hex)
+    assertEquals(bytes.size.toLong(), digest.sizeBytes)
+    assertEquals(
+      listOf(
+        oneShot(bytes.copyOfRange(0, part.toInt())),
+        oneShot(bytes.copyOfRange(part.toInt(), (2 * part).toInt())),
+        oneShot(bytes.copyOfRange((2 * part).toInt(), bytes.size)),
+      ),
+      digest.partHexes,
+    )
+  }
+
+  @Test
+  fun `gives an exact multiple no empty trailing part, and an empty file one empty part`() {
+    val bytes = ByteArray(2 * 1000) { it.toByte() }
+    assertEquals(2, StreamingSha256.withParts(ByteArrayInputStream(bytes), 1000).partHexes.size)
+    assertEquals(
+      listOf(oneShot(ByteArray(0))),
+      StreamingSha256.withParts(ByteArrayInputStream(ByteArray(0)), 1000).partHexes,
+    )
+  }
+
   private fun oneShot(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 

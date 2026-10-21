@@ -1,13 +1,28 @@
 package app.starkeep.mediahash
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
+import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 /**
- * SHA-256 of a camera-roll asset, without the asset entering JavaScript.
+ * SHA-256 of a camera-roll asset, and its upload in parts, without the asset
+ * entering JavaScript.
  *
  * ## Why this module exists at all
  *
@@ -20,27 +35,187 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * `ContentResolver.openInputStream` reads the same URI as a stream, and
  * `MessageDigest` hashes a stream. The asset never exists whole anywhere.
  *
- * ## Why `AsyncFunction`
+ * ## Why each function moves to `Dispatchers.IO`
  *
  * Expo runs an `AsyncFunction` off the JavaScript thread, so a multi-second
  * read of a large video blocks neither the UI nor the timers a background
- * window depends on.
+ * window depends on. But every module's `AsyncFunction` shares one
+ * `HandlerThread`, so a sixteen-second part upload on a weak signal would hold
+ * every other native call behind it, the AVIF encoder's included, and three
+ * concurrent transfers would run one at a time. The `Coroutine` form with
+ * `withContext(Dispatchers.IO)` frees that thread while the bytes move.
  */
 class StarkeepMediaHashModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("StarkeepMediaHash")
 
-    AsyncFunction("sha256OfUri") { uri: String ->
-      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
-      val stream = context.contentResolver.openInputStream(Uri.parse(uri))
-        ?: throw NoStreamException(uri)
-      val digest = stream.use { StreamingSha256.of(it) }
-      // A Double, because JS numbers are doubles and a Long would arrive as
-      // whatever the bridge decides. Exact up to 2^53 bytes.
-      mapOf("hex" to digest.hex, "sizeBytes" to digest.sizeBytes.toDouble())
+    AsyncFunction("sha256OfUri") Coroutine { uri: String ->
+      withContext(Dispatchers.IO) {
+        val digest = open(uri).use { StreamingSha256.of(it) }
+        // A Double, because JS numbers are doubles and a Long would arrive as
+        // whatever the bridge decides. Exact up to 2^53 bytes.
+        mapOf("hex" to digest.hex, "sizeBytes" to digest.sizeBytes.toDouble())
+      }
     }
+
+    // The whole-file digest and the multipart part digests, from one read.
+    AsyncFunction("sha256PartsOfUri") Coroutine { uri: String, partBytes: Double ->
+      withContext(Dispatchers.IO) {
+        val digest = open(uri).use { StreamingSha256.withParts(it, partBytes.toLong()) }
+        mapOf(
+          "hex" to digest.hex,
+          "sizeBytes" to digest.sizeBytes.toDouble(),
+          "partHexes" to digest.partHexes,
+        )
+      }
+    }
+
+    // One multipart part's PUT. `requestId` names the transfer so that
+    // `cancelUpload` can abort it when a background window closes.
+    AsyncFunction("uploadRangeOfUri") Coroutine {
+      requestId: String,
+      uri: String,
+      offset: Double,
+      length: Double,
+      url: String,
+      headers: Map<String, String>,
+      ->
+      withContext(Dispatchers.IO) {
+        val started = System.nanoTime()
+        val elapsedMs = { (System.nanoTime() - started) / 1_000_000 }
+        Log.i(TAG, "$requestId: sending ${length.toLong()} bytes at ${offset.toLong()}")
+        try {
+          val result = open(uri).use { input ->
+            RangeUpload.send(input, offset.toLong(), length.toLong(), url, headers) { connection ->
+              active[requestId] = connection
+            }
+          }
+          Log.i(TAG, "$requestId: answered ${result.status} in ${elapsedMs()} ms, etag ${result.etag}")
+          mapOf("status" to result.status, "body" to result.body, "etag" to result.etag)
+        } catch (err: Exception) {
+          Log.w(TAG, "$requestId: failed after ${elapsedMs()} ms: ${err.message}")
+          throw err
+        } finally {
+          active.remove(requestId)
+        }
+      }
+    }
+
+    // What the container says about a video, from the file's own bytes: the
+    // length, the display size, and when it was recorded.
+    AsyncFunction("videoFactsOfUri") Coroutine { uri: String ->
+      withContext(Dispatchers.IO) {
+        withRetriever(uri) { retriever ->
+          val facts = displayFacts(retriever)
+          mapOf(
+            "durationMs" to (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDoubleOrNull() ?: 0.0),
+            "width" to facts.displayWidth,
+            "height" to facts.displayHeight,
+            "capturedAt" to VideoFrames.captureTimeOf(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)),
+          )
+        }
+      }
+    }
+
+    // One frame at `timeUs`, upright, written as a JPEG at each requested long
+    // edge. One decode serves every size.
+    AsyncFunction("extractPostersOfUri") Coroutine {
+      uri: String,
+      timeUs: Double,
+      outputs: List<Map<String, Any>>,
+      quality: Int,
+      ->
+      withContext(Dispatchers.IO) {
+        withRetriever(uri) { retriever ->
+          val facts = displayFacts(retriever)
+          val started = System.nanoTime()
+          var frame = retriever.getFrameAtTime(timeUs.toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            ?: throw NoFrameException(uri)
+          if (VideoFrames.needsRotation(frame.width, frame.height, facts.storedWidth, facts.storedHeight, facts.rotation)) {
+            val turn = Matrix().apply { postRotate(facts.rotation.toFloat()) }
+            val upright = Bitmap.createBitmap(frame, 0, 0, frame.width, frame.height, turn, true)
+            frame.recycle()
+            frame = upright
+          }
+          try {
+            outputs.map { output ->
+              val maxLongEdge = (output["maxLongEdge"] as Number).toInt()
+              val path = output["path"] as String
+              val (w, h) = VideoFrames.targetSize(frame.width, frame.height, maxLongEdge)
+              val scaled = if (w == frame.width && h == frame.height) frame else Bitmap.createScaledBitmap(frame, w, h, true)
+              val file = File(path.removePrefix("file://"))
+              file.parentFile?.mkdirs()
+              FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+              if (scaled !== frame) scaled.recycle()
+              mapOf("path" to path, "width" to w, "height" to h, "sizeBytes" to file.length().toDouble())
+            }.also {
+              Log.i(TAG, "posters for $uri: ${it.size} at ${timeUs.toLong()}us in ${(System.nanoTime() - started) / 1_000_000} ms")
+            }
+          } finally {
+            frame.recycle()
+          }
+        }
+      }
+    }
+
+    // Whether reads can ask for an asset's unredacted bytes. Without this grant
+    // Android zeroes the location fields of every photo and video it hands over.
+    Function("mediaLocationGranted") {
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // Disconnecting from this thread makes the uploading thread's write throw,
+    // which rejects that transfer's promise.
+    Function("cancelUpload") { requestId: String ->
+      val connection = active.remove(requestId)
+      Log.i(TAG, "$requestId: cancel requested, ${if (connection != null) "disconnecting" else "not in flight"}")
+      connection?.disconnect()
+    }
+  }
+
+  private val active = ConcurrentHashMap<String, HttpURLConnection>()
+
+  private companion object {
+    /** `adb logcat -s StarkeepMultipart` shows every part's native life. */
+    const val TAG = "StarkeepMultipart"
+  }
+
+  private class DisplayFacts(
+    val storedWidth: Int,
+    val storedHeight: Int,
+    val rotation: Int,
+  ) {
+    val displayWidth get() = if (rotation % 180 == 0) storedWidth else storedHeight
+    val displayHeight get() = if (rotation % 180 == 0) storedHeight else storedWidth
+  }
+
+  private fun displayFacts(retriever: MediaMetadataRetriever): DisplayFacts =
+    DisplayFacts(
+      retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
+      retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0,
+      retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0,
+    )
+
+  private fun <T> withRetriever(uri: String, block: (MediaMetadataRetriever) -> T): T {
+    val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+    val retriever = MediaMetadataRetriever()
+    try {
+      retriever.setDataSource(context, Uri.parse(uri))
+      return block(retriever)
+    } finally {
+      retriever.release()
+    }
+  }
+
+  private fun open(uri: String): InputStream {
+    val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+    return context.contentResolver.openInputStream(Uri.parse(uri)) ?: throw NoStreamException(uri)
   }
 }
 
 private class NoStreamException(uri: String) :
   CodedException("the content resolver opened no stream for $uri")
+
+private class NoFrameException(uri: String) :
+  CodedException("the retriever decoded no frame from $uri")

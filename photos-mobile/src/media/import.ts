@@ -65,6 +65,7 @@ import {
   type ImportCursorStore,
 } from "./import-cursor";
 import type { MediaAliasStore } from "./media-alias";
+import { publishVideoPosters, writeVideoFacts, type VideoPosterDeps } from "../photos/video-posters";
 import { findMotionPhotoVideo } from "./motion-photo";
 import { readImageExif } from "./exif";
 import type { MotionIndexStore } from "./motion-index";
@@ -133,6 +134,21 @@ export interface ImportDeps {
    * anything above {@link MAX_INLINE_READ_BYTES} is deferred, as before.
    */
   readonly hashUri?: HashUri;
+  /**
+   * The URI to read an asset through, recorded on its alias.
+   *
+   * The platform marks a MediaStore URI with `requireOriginal=1` while the
+   * location permission is granted, so the bytes read keep their GPS. Absent,
+   * the media store's URI is read as is. See `original-uri.ts`.
+   */
+  readonly readUriFor?: (uri: string) => string;
+  /**
+   * What makes a new video's posters and reads its container date.
+   *
+   * Optional because a binary without the native functions has neither, and a
+   * failure here never fails the import: the desktop's sweep still makes both.
+   */
+  readonly videoPosters?: VideoPosterDeps;
   /**
    * The user segment the keys carry: the library's bound user, or `local`
    * before a cloud binds it. An accessor, because binding happens while the
@@ -443,8 +459,10 @@ export async function importDeviceMedia(
   let imported = 0;
   let skipped = 0;
 
-  const fail = (item: DeviceMediaItem, reason: string) =>
+  const fail = (item: DeviceMediaItem, reason: string) => {
+    console.warn(`[import] ${item.filename}: not imported, ${reason}`);
     failures.push({ assetId: item.id, filename: item.filename, reason });
+  };
 
   const yieldToUi = deps.yieldToUi ?? (() => new Promise<void>((r) => setTimeout(r, 0)));
 
@@ -503,6 +521,15 @@ export async function importDeviceMedia(
       records.push(record.record);
       imported += 1;
       markDone(item);
+      // Only the files the old in-memory ceiling refused, so the log stays
+      // quiet for ordinary photos and names each large video's key, which is
+      // how its `[multipart]` upload lines are found.
+      if (record.sizeBytes > MAX_INLINE_READ_BYTES) {
+        console.log(
+          `[import] ${item.filename}: imported ${record.sizeBytes} bytes, hashed in ${record.hashMs} ms, ` +
+            `key ${record.record.objectStorageKey}`,
+        );
+      }
       deps.onProgress?.({
         done: index + 1,
         total: items.length,
@@ -673,10 +700,13 @@ async function importOne(
   item: DeviceMediaItem,
   context: { readonly originAppId: string; readonly nowMs: number },
 ): Promise<({ record: DataRecord } & Omit<ImportProgress, "done" | "total" | "filename">) | { reason: string }> {
+  // Every read below goes through this one URI, and the alias records it, so
+  // the hash, the upload and any later read all see the same bytes.
+  const uri = deps.readUriFor?.(item.uri) ?? item.uri;
   // `exists` and `size` are one `file` rather than two. On a content URI both
   // are content-resolver round trips — `exists()` literally opens an input
   // stream — and the old code built the file twice and asked twice.
-  const file = deps.fs.file(item.uri);
+  const file = deps.fs.file(uri);
   const size = file.size;
   if (size === null) {
     return { reason: `the media store has no readable asset at ${item.uri}` };
@@ -693,8 +723,8 @@ async function importOne(
     };
   }
 
-  const digest = streamed ? await hashStreamed(streamed, item.uri) : await hashFile(deps, item.uri);
-  if (!digest) return { reason: `could not read the bytes of ${item.uri}` };
+  const digest = streamed ? await hashStreamed(streamed, uri) : await hashFile(deps, uri);
+  if (!digest) return { reason: `could not read the bytes of ${uri}` };
 
   const objectStorageKey = dataRecordObjectKey(deps.userId(), type, digest.hex);
 
@@ -715,7 +745,7 @@ async function importOne(
   deps.aliases.add({
     objectStorageKey,
     recordId: record.id,
-    contentUri: item.uri,
+    contentUri: uri,
     assetId: item.id,
     sizeBytes: digest.sizeBytes,
     contentType: null,
@@ -726,7 +756,33 @@ async function importOne(
   await writeMediaMetadata(deps, record.id, type, item, digest.bytes);
   indexMotion(deps, objectStorageKey, type, item, digest.bytes);
   await deps.database.put(record);
+  if (deps.videoPosters && typeCategory(type) === "video") {
+    await writeVideoExtras(deps.videoPosters, record, type, uri);
+  }
   return { record, sizeBytes: digest.sizeBytes, readMs: digest.readMs, hashMs: digest.hashMs };
+}
+
+/**
+ * A new video's capture time and posters, from one native read of its
+ * container and one frame.
+ *
+ * After the record is stored, because a poster is a child of it. Never fails
+ * the import: a clip the retriever cannot open is still a video worth having,
+ * and the desktop's sweep makes its posters from the original.
+ */
+async function writeVideoExtras(
+  posters: VideoPosterDeps,
+  record: DataRecord,
+  type: string,
+  uri: string,
+): Promise<void> {
+  try {
+    const facts = await posters.readFacts(uri);
+    await writeVideoFacts(posters.database, record.id, type, facts, undefined);
+    await publishVideoPosters(posters, record, uri, facts);
+  } catch (err) {
+    console.warn(`[posters] ${record.originalFilename ?? record.id}: ${String(err)}`);
+  }
 }
 
 /**

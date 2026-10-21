@@ -91,6 +91,12 @@ import {
 import { loadNodeIdentity, type NodeIdentity } from "./node-identity";
 import { createOpSqliteDriver, type OpSqliteModule } from "./db/op-sqlite-driver";
 import { backgroundWindow, nativeTimers } from "./work/native-timers";
+import { requireOriginalUri } from "./media/original-uri";
+import {
+  backfillVideoPosters,
+  type VideoPosterBackfillOutcome,
+  type VideoPosterDeps,
+} from "./photos/video-posters";
 import { MEDIA_QUERY_TIMEOUT_MS } from "./work/tick";
 import type { DeviceMediaModule, MediaQuery } from "./media/device-library";
 import {
@@ -470,11 +476,71 @@ function driveChannel(
 /** The User-Data-Owner app id. Must match `sync-supervisor.ts`'s constant. */
 export const DRIVE_APP_ID = "starkeep-drive";
 
+/**
+ * The native video functions, checked per function rather than per module:
+ * an older development client loads the module without them.
+ */
+const videoNative =
+  mediaHash &&
+  typeof mediaHash.videoFactsOfUri === "function" &&
+  typeof mediaHash.extractPostersOfUri === "function"
+    ? mediaHash
+    : null;
+
+/** Whether reads may ask for unredacted bytes. False on a binary without the check. */
+export function mediaLocationGranted(): boolean {
+  try {
+    return typeof mediaHash?.mediaLocationGranted === "function" && mediaHash.mediaLocationGranted();
+  } catch {
+    return false;
+  }
+}
+
+let warnedNoLocation = false;
+
+/**
+ * The URI import reads an asset through. Checked per asset, because the grant
+ * can arrive while the app runs. See `media/original-uri.ts`.
+ */
+function readUriFor(uri: string): string {
+  if (mediaLocationGranted()) return requireOriginalUri(uri);
+  if (!warnedNoLocation) {
+    warnedNoLocation = true;
+    console.warn("[import] no media-location permission; imported photos and videos lose their GPS location");
+  }
+  return uri;
+}
+
+/** Where a poster's JPEG sits between the native encode and the object store. */
+function posterScratchPath(name: string): string {
+  return `${Paths.cache.uri.replace(/\/$/, "")}/posters/${name}`;
+}
+
+/** What makes a video's posters on this device, or null on a binary that cannot. */
+function videoPosterDepsFor(node: MobileNode, clock: HLCClock): VideoPosterDeps | null {
+  if (!videoNative) return null;
+  return {
+    database: node.databaseAdapter,
+    objectStorage: node.objectStorage,
+    clock,
+    hash: sha256Bytes,
+    userId: () => node.userId(),
+    readFacts: (uri) => videoNative.videoFactsOfUri(uri),
+    extractPosters: (uri, timeUs, outputs, quality) =>
+      videoNative.extractPostersOfUri(uri, timeUs, [...outputs], quality),
+    scratchPath: posterScratchPath,
+    readScratch: (path) => new File(path).bytesSync(),
+    removeScratch: (path) => new File(path).delete(),
+    noteDerived: (record) => node.noteDerived(record),
+  };
+}
+
 /** Import dependencies, assembled from the real modules for a live node. */
 export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
   if (!node.mediaAliases) {
     throw new Error("this node was built without deviceMedia, so it cannot import a camera roll");
   }
+  const videoPosters = videoPosterDepsFor(node, clock);
   return {
     media: deviceMedia,
     aliases: node.mediaAliases,
@@ -483,10 +549,32 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
     fs: expoFileSystem,
     hash: sha256Bytes,
     ...(sha256OfUri ? { hashUri: sha256OfUri } : {}),
+    readUriFor,
+    ...(videoPosters ? { videoPosters } : {}),
     userId: () => node.userId(),
     thumbHash: thumbHashFor,
     ...(node.motionIndex ? { motionIndex: node.motionIndex } : {}),
   };
+}
+
+/**
+ * Give posters and a capture time to videos imported before this device made
+ * them. Answers `complete: true` on a node that cannot, so the caller stops
+ * asking. Foreground only, like the other repairs: it decodes a frame per clip.
+ */
+export function backfillVideoPostersFor(
+  node: MobileNode,
+  clock: HLCClock,
+  options: { readonly limit: number; readonly after?: string | null },
+): Promise<VideoPosterBackfillOutcome> {
+  const deps = videoPosterDepsFor(node, clock);
+  if (!node.mediaAliases || deps === null) {
+    return Promise.resolve({ scanned: 0, written: 0, complete: true, resumeAfter: null });
+  }
+  return backfillVideoPosters(
+    { ...deps, aliases: node.mediaAliases },
+    { limit: options.limit, ...(options.after !== undefined ? { after: options.after } : {}) },
+  );
 }
 
 /**

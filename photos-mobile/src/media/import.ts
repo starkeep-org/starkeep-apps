@@ -61,7 +61,9 @@ import {
 } from "./device-library";
 import {
   advanceImportCursor,
+  importReachFloor,
   queryFloorFor,
+  reachImportCursor,
   type ImportCursorStore,
 } from "./import-cursor";
 import type { MediaAliasStore } from "./media-alias";
@@ -187,17 +189,26 @@ export interface ImportDeps {
   /**
    * Where this node stopped walking the media store last time.
    *
-   * **Present for the background tick and absent for the foreground control**,
-   * and the split is the point rather than an oversight. A watermark makes a
-   * repeated scan cheap by asking the media store for nothing it has already
-   * been asked about, which is exactly right for work that runs every fifteen
-   * minutes forever and exactly wrong for a person tapping "Add photos" to
-   * backfill a library that predates this node.
+   * The app passes one on every import, foreground and background. A watermark
+   * makes a repeated scan cheap by asking the media store for nothing it has
+   * already been asked about. The walk starts no further back than
+   * `IMPORT_REACH_MS` before now, which is what limits the camera-roll backfill
+   * to the most recent `IMPORT_REACH_MS`. See `import-cursor.ts`.
    *
-   * Absent restores the original behaviour verbatim: the newest `limit` assets
-   * by modification time, no floor, no watermark written.
+   * Absent means the newest `limit` assets by modification time, no floor, no
+   * watermark written. Only tests and the seeding fixtures run that way.
    */
   readonly importCursor?: ImportCursorStore;
+  /**
+   * How far back import has walked, so a release that widens the reach walks
+   * back over the gap once. See `reachImportCursor`.
+   *
+   * Absent means a node with no watermark starts at the reach and a node with
+   * one is never rewound, which is what a test of the forward walk wants.
+   */
+  readonly importFloor?: ImportCursorStore;
+  /** Overrides `IMPORT_REACH_MS`, for tests. */
+  readonly importReachMs?: number;
   /**
    * Where to record the video hiding inside a Motion Photo.
    *
@@ -302,15 +313,6 @@ export interface ImportOutcome {
   /** One entry per failure, in the order they happened. */
   readonly failures: readonly ImportFailure[];
   readonly records: readonly DataRecord[];
-  /**
-   * This pass only established the watermark, and imported nothing.
-   *
-   * Reported rather than left to look like an empty camera roll, because the
-   * two are indistinguishable from the counts alone and mean opposite things:
-   * one is a node that has just learned where "now" is and will import
-   * everything from here, the other is a node with nothing to do.
-   */
-  readonly cursorSeeded?: boolean;
 }
 
 /**
@@ -398,7 +400,7 @@ export async function importDeviceMedia(
   // enough to be worth naming. See `import-cursor.ts` for why the watermark
   // exists at all.
   const cursorStore = deps.importCursor;
-  const cursor = cursorStore?.get() ?? null;
+  let cursor = cursorStore?.get() ?? null;
 
   // Before anything is imported, so every record this pass mints is at or after
   // the marker and is therefore covered by it. Set once and never moved: the
@@ -409,35 +411,24 @@ export async function importDeviceMedia(
     deps.motionIndex.markScannedFrom(now());
   }
 
-  // A node that has never looked. Establishing the watermark is one row's worth
-  // of media-store probe; importing the newest twenty is nine and a half
-  // minutes' worth, and on a first background window that is a tick that gets
-  // stopped and a process that gets frozen holding it.
+  // Before the walk, make sure it starts far enough back to cover this
+  // release's reach. A node that has never looked starts its watermark there;
+  // a node whose release has just widened the reach steps back over the gap
+  // once. Either way the walk below is the ordinary one, so nothing older than
+  // the reach ever enters the node from this device. See `reachImportCursor`.
   //
-  // So the seeding pass imports nothing and says so. The camera roll that
-  // predates this node is the foreground control's job — it takes sixty at a
-  // time and shows a progress count — and it always was: a background window
-  // that took the newest twenty and never looked further down was not
-  // backfilling a library either.
-  if (cursorStore && cursor === null) {
-    const newest = await listRecentMedia(deps.media, {
-      limit: 1,
-      order: "modificationTime",
-      mediaTypes: IMPORTABLE_MEDIA_TYPES,
-      timeoutMs: options.queryTimeoutMs,
-      timers: options.timers,
-    });
-    const seed = newest[0]?.modifiedAt ?? null;
-    if (seed !== null) cursorStore.set(seed);
-    return {
-      scanned: 0,
-      imported: 0,
-      skipped: 0,
-      failed: 0,
-      failures: [],
-      records: [],
-      cursorSeeded: true,
-    };
+  // Read from the clock rather than from a media-store probe, so the first look
+  // costs the same query as every look after it.
+  // Without a floor store nothing records a rewind, so one would repeat on
+  // every pass; such a node only ever seeds.
+  if (cursorStore && (deps.importFloor || cursor === null)) {
+    const floor = importReachFloor(now(), deps.importReachMs);
+    const reached = reachImportCursor(cursor, deps.importFloor?.get() ?? null, floor);
+    if (reached !== null) {
+      cursor = reached;
+      cursorStore.set(reached);
+      deps.importFloor?.set(floor);
+    }
   }
 
   const items = await listRecentMedia(deps.media, {

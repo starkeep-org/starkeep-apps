@@ -58,6 +58,7 @@ import {
 } from "./work/scan-cursor";
 import {
   createSqliteImportCursorStore,
+  IMPORT_FLOOR_TABLE,
   VIDEO_DURATION_CURSOR_TABLE,
   type ImportCursorStore,
 } from "./media/import-cursor";
@@ -199,13 +200,18 @@ export interface MobileNode {
    *
    * Lives here for the same reason {@link MobileNode.mediaAliases} does: the
    * table is in this node's database, which does not exist until
-   * `createMobileNode` builds it. Exposed rather than held privately because the
-   * two callers want opposite things from it — the background tick supplies it
-   * so a repeated scan stays cheap, and the foreground "Add photos" control
-   * deliberately runs without it so a person can backfill a library that
-   * predates this node. See `media/import-cursor.ts`.
+   * `createMobileNode` builds it. Exposed rather than held privately because
+   * both the background tick and the foreground catch-up pass it to import.
+   * The walk starts no further back than the release's reach, which bounds the
+   * camera-roll backfill. See `media/import-cursor.ts`.
    */
   readonly importCursor: ImportCursorStore | null;
+  /**
+   * How far back import has walked, or null when this node reads no camera
+   * roll. A release that widens the reach compares against it and walks back
+   * over the gap once. See `reachImportCursor`.
+   */
+  readonly importFloor: ImportCursorStore | null;
   /**
    * How far the duration backfill has walked the camera roll's videos, or null
    * when this node does not read one.
@@ -466,6 +472,10 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   const importCursor = options.deviceMedia
     ? createSqliteImportCursorStore({ db: databaseAdapter.getRawDatabase() })
     : null;
+  // Same shape, its own table. See `MobileNode.importFloor`.
+  const importFloor = options.deviceMedia
+    ? createSqliteImportCursorStore({ db: databaseAdapter.getRawDatabase(), table: IMPORT_FLOOR_TABLE })
+    : null;
   // Same shape, its own table. See `MobileNode.videoDurationCursor`.
   const videoDurationCursor = options.deviceMedia
     ? createSqliteImportCursorStore({
@@ -669,6 +679,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     objectStorage: localObjectStorage,
     mediaAliases,
     importCursor,
+    importFloor,
     videoDurationCursor,
     derivationCursor,
     fullDerivationCursor,

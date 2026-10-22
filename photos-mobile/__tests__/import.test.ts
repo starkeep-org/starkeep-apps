@@ -31,6 +31,7 @@ import {
 } from "../src/media/import";
 import {
   createSqliteImportCursorStore,
+  IMPORT_REACH_MS,
   VIDEO_DURATION_CURSOR_TABLE,
 } from "../src/media/import-cursor";
 import {
@@ -771,32 +772,123 @@ describe("importing against a watermark", () => {
     return rows;
   }
 
-  it("imports nothing on a first look, and records where 'now' is", async () => {
-    // A node that has never imported must not spend its first background window
-    // hashing a camera roll: on the handset that window was stopped by Android
-    // mid-call and the process frozen holding it. Establishing the watermark
-    // costs one row's worth of media-store probe.
+  it("imports the reach on a first look, and nothing older", async () => {
+    // A node that has never looked adds recent captures at once rather than
+    // nothing, and never reaches back past the window into the rest of the roll.
+    const now = 1_700_000_500_000;
+    const day = 24 * 60 * 60 * 1000;
+    const rows: AssetMetadataLike[] = [];
+    for (const [i, age] of [IMPORT_REACH_MS + day, IMPORT_REACH_MS - day, day].entries()) {
+      const uri = `content://media/external/images/media/${40 + i}`;
+      putAsset(uri, new Uint8Array(PHOTO.map((b) => (b + i) % 256)));
+      rows.push(asset({ id: uri, modificationTime: now - age, creationTime: now - age }));
+    }
     const cursor = fakeCursor();
 
     const outcome = await importDeviceMedia(
-      { ...deps(roll()), importCursor: cursor.store },
+      { ...deps(rows), importCursor: cursor.store, now: () => now },
       { limit: 20 },
     );
 
-    expect(outcome.cursorSeeded).toBe(true);
-    expect(outcome.imported).toBe(0);
-    expect(cursor.value).toBe(3_000_000);
+    expect(outcome.imported).toBe(2);
+    expect(lastOrderBy).toEqual({ key: "modificationTime", ascending: true });
+    expect(cursor.value).toBe(now - day);
   });
 
-  it("asks the media store for one row when seeding, not the whole window", async () => {
-    // The cost being fixed is the *query*, not the loop after it:
-    // `exeForMetadata()` probes every row it returns, inside the media store,
-    // before import can look at any of them.
+  it("starts the watermark at the reach when the reach holds nothing", async () => {
+    const now = 1_700_000_500_000;
     const cursor = fakeCursor();
 
-    await importDeviceMedia({ ...deps(roll()), importCursor: cursor.store }, { limit: 20 });
+    const outcome = await importDeviceMedia(
+      { ...deps(roll()), importCursor: cursor.store, now: () => now },
+      { limit: 20 },
+    );
 
-    expect(lastReturnedRows).toBe(1);
+    expect(outcome.imported).toBe(0);
+    expect(cursor.value).toBe(now - IMPORT_REACH_MS);
+  });
+
+  describe("when a release widens the reach", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = 1_700_000_500_000;
+
+    /** One asset at each age, in days, all readable. */
+    function aged(...ages: number[]): AssetMetadataLike[] {
+      return ages.map((age, i) => {
+        const uri = `content://media/external/images/media/${60 + i}`;
+        putAsset(uri, new Uint8Array(PHOTO.map((b) => (b + 20 + i) % 256)));
+        return asset({ id: uri, modificationTime: now - age * day });
+      });
+    }
+
+    it("walks back over the gap once, and adds what it holds", async () => {
+      const rows = aged(80, 20, 1);
+      const cursor = fakeCursor();
+      const floor = fakeCursor();
+      const run = (reachMs: number) =>
+        importDeviceMedia(
+          { ...deps(rows), importCursor: cursor.store, importFloor: floor.store, importReachMs: reachMs, now: () => now },
+          { limit: 20 },
+        );
+
+      expect((await run(30 * day)).imported).toBe(2);
+      // The next release reaches ninety days.
+      const widened = await run(90 * day);
+
+      expect(widened.imported).toBe(1);
+      expect(widened.skipped).toBe(2);
+      expect(floor.value).toBe(now - 90 * day);
+    });
+
+    it("does not walk back again under the same reach", async () => {
+      const rows = aged(20, 1);
+      const cursor = fakeCursor();
+      const floor = fakeCursor();
+      const d = { ...deps(rows), importCursor: cursor.store, importFloor: floor.store };
+
+      await importDeviceMedia({ ...d, now: () => now }, { limit: 20 });
+      // A day later the floor has moved forward, which is no reason to rewind.
+      const later = await importDeviceMedia({ ...d, now: () => now + day }, { limit: 20 });
+
+      expect(later.scanned).toBe(1);
+      expect(floor.value).toBe(now - IMPORT_REACH_MS);
+    });
+
+    it("reaches the whole roll when the reach is infinite", async () => {
+      const rows = aged(3_000, 1);
+      const cursor = fakeCursor();
+      const floor = fakeCursor();
+
+      const outcome = await importDeviceMedia(
+        {
+          ...deps(rows),
+          importCursor: cursor.store,
+          importFloor: floor.store,
+          importReachMs: Number.POSITIVE_INFINITY,
+          now: () => now,
+        },
+        { limit: 20 },
+      );
+
+      expect(outcome.imported).toBe(2);
+      expect(floor.value).toBe(0);
+    });
+
+    it("walks a node that predates the floor back to the reach", async () => {
+      // The install that seeded at its newest photo, before the reach existed:
+      // a watermark near now and no floor. Its watermark is how far it reached.
+      const rows = aged(IMPORT_REACH_MS / day - 1, 1);
+      const cursor = fakeCursor(now - 1 * day);
+      const floor = fakeCursor();
+
+      const outcome = await importDeviceMedia(
+        { ...deps(rows), importCursor: cursor.store, importFloor: floor.store, now: () => now },
+        { limit: 20 },
+      );
+
+      expect(outcome.imported).toBe(2);
+      expect(floor.value).toBe(now - IMPORT_REACH_MS);
+    });
   });
 
   it("imports only what has appeared since the watermark", async () => {
@@ -930,13 +1022,9 @@ describe("importing against a watermark", () => {
     expect(cursor.value).toBe(2_000_000);
   });
 
-  it("leaves the foreground control walking the whole roll", async () => {
-    // The split is the point. A watermark is right for work that runs every
-    // fifteen minutes forever and wrong for a person tapping "Add photos" to
-    // backfill a library that predates this node.
+  it("walks the whole roll, newest first, when no watermark is passed", async () => {
     const outcome = await importDeviceMedia(deps(roll()), { limit: 20 });
 
-    expect(outcome.cursorSeeded).toBeUndefined();
     expect(outcome.imported).toBe(3);
     expect(lastOrderBy).toEqual({ key: "modificationTime", ascending: false });
   });

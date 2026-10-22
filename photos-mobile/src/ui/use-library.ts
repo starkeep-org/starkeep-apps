@@ -54,7 +54,7 @@ import {
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { acquireNode, closeNodeForReset, type NodeLease } from "../work/node-handle";
 import { ceilingsOf, type DeviceSettings } from "../device-settings";
-import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth } from "./theme";
+import { GRID_GAP, libraryColumns, libraryGridWidth, libraryTileSize } from "./theme";
 import { type Dimensions as Box, type GridGeometry } from "../photos/render-target";
 import {
   createInFlight,
@@ -68,7 +68,7 @@ import {
  * The two differ in size and in when they fire, and both differences matter
  * enough to name rather than to pass a number for.
  *
- * A **tile** wants a box in a justified row, and the page already resolved what
+ * A **tile** wants one square of the grid, and the page already resolved what
  * it is missing — so the fetch costs no resolution. It fires only when the tile
  * has no resident rung at all, because a grid that issued a request per tile per
  * scroll would be a request storm; the rungs the sync prefetches exist so the
@@ -101,50 +101,17 @@ export type RenditionSurface = "tile" | "viewer";
  *
  * Clamped at both ends. The floor keeps a small window from paging in
  * dribs; the ceiling keeps a large one from asking for more tiles than the
- * decoder can keep up with in a single burst. Rounded to a multiple of three
- * because the grid is three columns and a partial trailing row is a ragged edge
- * mid-list.
+ * decoder can keep up with in a single burst. Rounded to whole rows, because a
+ * partial trailing row is a ragged edge mid-list.
  */
 export function libraryPageSize(): number {
   const window = Dimensions.get("window");
-  const rowHeight = LIBRARY_ROW_HEIGHT + GRID_GAP;
-  const rowsOnScreen = Math.ceil(window.height / rowHeight);
-  const tiles = rowsOnScreen * 2 * nominalItemsPerRow(window.width);
-  return Math.round(Math.min(Math.max(tiles, 30), 90));
+  const columns = libraryColumns(window);
+  const rowHeight = libraryTileSize(libraryGridWidth(window.width), columns) + GRID_GAP;
+  const rowsOnScreen = Math.ceil(window.height / Math.max(1, rowHeight));
+  const tiles = Math.min(Math.max(rowsOnScreen * 2 * columns, 30), 90);
+  return Math.ceil(tiles / columns) * columns;
 }
-
-/**
- * Roughly how many photographs a justified row holds, for paging arithmetic.
- *
- * **An estimate, and it has to be, which is the difference from the three
- * columns this replaced.** A justified row's length depends on the shapes it is
- * given: a row of portraits holds more than a row of landscapes, and the
- * layout only knows how many once it has the records — which is the thing the
- * page size is being computed to fetch.
- *
- * So it is estimated from the same mild landscape guess a record with unknown
- * dimensions gets. Being wrong costs a fraction of a screen either way, and the
- * clamp above bounds both directions.
- *
- * Nothing rounds the result to a whole row any more, and nothing should: rows
- * are not a fixed length, so there is no ragged trailing row to avoid.
- */
-function nominalItemsPerRow(windowWidth: number): number {
-  const gridWidth = libraryGridWidth(windowWidth);
-  const nominalTileWidth = LIBRARY_ROW_HEIGHT * UNKNOWN_ASPECT_ESTIMATE + GRID_GAP;
-  return Math.max(1, gridWidth / nominalTileWidth);
-}
-
-/**
- * The shape assumed for a photograph nobody has measured.
- *
- * The same 1.5 the shared layout guesses with, restated here rather than
- * imported because `__tests__/ladder-boundary.test.ts` keeps this file out of
- * `@starkeep/photos-ladder` and routing a paging estimate through the Photos
- * layer would be ceremony for one number. It feeds an estimate, never a layout:
- * the rows themselves are laid out from each record's real aspect ratio.
- */
-const UNKNOWN_ASPECT_ESTIMATE = 1.5;
 
 /**
  * How many pages a reload re-fetches before it gives up and starts over.
@@ -165,13 +132,11 @@ export const MAX_RELOADED_PAGES = 10;
  *
  * ## Geometry, never a pixel count and never a class name
  *
- * This used to answer one `tileLongEdge` for a whole page — 32.8% of the padded
- * width, three across, times the device pixel ratio. That was a closed form over
- * a fixed square grid, and the grid is no longer either: a justified row gives
- * every photograph a box of its own shape, so the pixel count is per record and
- * has to be derived from the shape.
+ * Every tile is the same square, but the pixel count is still per record: a
+ * centre crop needs the photograph's long edge to cover the overflow, and that
+ * depends on the photograph's shape.
  *
- * What travels instead is the geometry the layout will use, and
+ * What travels is the geometry the layout will use, and
  * `photos/render-target.ts` turns it into a request per record. The unit at that
  * boundary is still pixels and never a class name — the contract every Photos
  * surface shares, and what lets the ladder be respecified without touching a
@@ -180,7 +145,7 @@ export const MAX_RELOADED_PAGES = 10;
  * ## Still computed rather than measured
  *
  * Every input is known before layout runs: the window, the padding `theme.ts`
- * owns, and the row height it names. An `onLayout` here would report a number
+ * owns, and the column count it derives from the window. An `onLayout` here would report a number
  * this already has, one frame later. The web app's viewer makes the same
  * argument about its own stage.
  *
@@ -188,9 +153,9 @@ export const MAX_RELOADED_PAGES = 10;
  * reload without a listener.
  */
 function gridGeometry(): GridGeometry {
+  const window = Dimensions.get("window");
   return {
-    targetRowHeight: LIBRARY_ROW_HEIGHT,
-    containerWidth: libraryGridWidth(Dimensions.get("window").width),
+    tileSize: libraryTileSize(libraryGridWidth(window.width), libraryColumns(window)),
     devicePixelRatio: PixelRatio.get(),
   };
 }

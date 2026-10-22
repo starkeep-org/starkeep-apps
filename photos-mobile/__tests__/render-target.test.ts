@@ -13,14 +13,13 @@
 import { describe, it, expect } from "vitest";
 import {
   gridTileTarget,
-  tileBox,
   VIEWER_BAR_HEIGHT,
   viewerStageBox,
   viewerTarget,
 } from "../src/photos/render-target";
 
-/** A 390-point phone at 3x, less the content padding `theme.ts` owns. */
-const GRID = { targetRowHeight: 120, containerWidth: 350, devicePixelRatio: 3 };
+/** A 120-point square tile at 3x. */
+const GRID = { tileSize: 120, devicePixelRatio: 3 };
 const WINDOW = { width: 390, height: 844 };
 /** A gesture bar and a status bar, as `useSafeAreaInsets` would report them. */
 const INSETS = { top: 24, bottom: 34, left: 0, right: 0 };
@@ -31,62 +30,22 @@ const LANDSCAPE = { width: 4272, height: 2848 };
 const PORTRAIT = { width: 2848, height: 4272 };
 const PANORAMA = { width: 6000, height: 600 };
 
-describe("the box a justified row assigns", () => {
-  it("gives a photograph its own shape at the target row height", () => {
-    const box = tileBox(LANDSCAPE, null, GRID);
-
-    expect(box.height).toBeCloseTo(120, 6);
-    expect(box.width).toBeCloseTo(180, 6);
-  });
-
-  it("caps a very wide photograph at the container rather than the row height", () => {
-    // The case that makes the cap necessary. At 120 points a 10:1 photograph
-    // would want 1200 points of width, which is three times the phone; measured
-    // that way it would ask for the top of the ladder for a picture the layout
-    // is about to draw 35 points tall.
-    const box = tileBox(PANORAMA, null, GRID);
-
-    expect(box.width).toBe(GRID.containerWidth);
-    expect(box.height).toBeCloseTo(35, 6);
-  });
-
-  it("measures a quarter-turned photograph in the shape it is shown", () => {
-    // `orientation: 6` rotates the picture, so the stored landscape pair is
-    // displayed as a portrait. The box has to follow the display, or the layout
-    // and the request both size the wrong axis.
-    const upright = tileBox(LANDSCAPE, 6, GRID);
-
-    expect(upright.height).toBeCloseTo(120, 6);
-    expect(upright.width).toBeCloseTo(80, 6);
-  });
-
-  it("gives a photograph nobody has measured a plausible landscape box", () => {
-    // Mid-backfill. The alternative is excluding the record, which gaps the
-    // grid — and a wrong row-width estimate is not a crop.
-    const box = tileBox(null, null, GRID);
-
-    expect(box.width / box.height).toBeCloseTo(1.5, 6);
-  });
-});
-
-describe("what a tile asks for", () => {
-  it("snaps a landscape tile onto the 640 rung", () => {
-    // 180x120 points, contained, is 180 points of long edge; at 3x that is 540
-    // physical pixels, which snaps up to 640.
+describe("what a square tile asks for", () => {
+  it("covers a landscape's overflowing long edge", () => {
+    // The centre crop spans the tile's 120 points on the short edge, so the long
+    // edge is drawn at 180 points; at 3x that is 540 pixels, which snaps to 640.
     expect(gridTileTarget(LANDSCAPE, null, GRID)).toBe(640);
   });
 
-  it("asks for less for a portrait than for a landscape in the same row", () => {
-    // 80x120 points is 120 of long edge and 360 pixels — the rung below. This is
-    // the per-record part: one number for a whole page would have to be the
-    // larger of the two for every tile.
+  it("asks the same for a portrait as for a landscape of the same shape", () => {
     expect(gridTileTarget(PORTRAIT, null, GRID)).toBe(640);
-    expect(gridTileTarget(LANDSCAPE, null, GRID)).toBe(640);
-    // Both land on 640 at this row height, which is the honest result — the
-    // difference in need is real and smaller than the gap between rungs. What
-    // matters is that a panorama, whose need is a rung larger, is not dragged
-    // down to theirs.
-    expect(gridTileTarget(PANORAMA, null, GRID)).toBe(1280);
+    expect(gridTileTarget(LANDSCAPE, 6, GRID)).toBe(640);
+  });
+
+  it("asks for more for a panorama, whose crop shows a sliver of it", () => {
+    expect(gridTileTarget(PANORAMA, null, GRID)!).toBeGreaterThan(
+      gridTileTarget(LANDSCAPE, null, GRID)!,
+    );
   });
 
   it("never asks for more than the source has", () => {
@@ -96,8 +55,14 @@ describe("what a tile asks for", () => {
     expect(gridTileTarget({ width: 200, height: 150 }, null, GRID)).toBe(320);
   });
 
-  it("resolves nothing for a container that has not been measured", () => {
-    expect(gridTileTarget(LANDSCAPE, null, { ...GRID, containerWidth: 0 })).toBeNull();
+  it("still resolves a photograph nobody has measured", () => {
+    // Mid-backfill. The tile is the request's only input, which is what a
+    // record with no dimensions gets measured against.
+    expect(gridTileTarget(null, null, GRID)).toBe(640);
+  });
+
+  it("resolves nothing for a tile that has not been measured", () => {
+    expect(gridTileTarget(LANDSCAPE, null, { ...GRID, tileSize: 0 })).toBeNull();
   });
 });
 

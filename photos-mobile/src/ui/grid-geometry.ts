@@ -14,8 +14,8 @@
  * to change.
  *
  * Several things outside the stylesheet need these. `use-library.ts` turns a
- * tile's width into the pixel long edge it asks the ladder for and into how many
- * records a page should hold; `LibraryGrid` turns the row height into rows.
+ * tile's size into the pixel long edge it asks the ladder for and into how many
+ * records a page should hold; `LibraryGrid` turns the column count into rows.
  */
 
 /**
@@ -47,39 +47,25 @@ export function libraryGridWidth(windowWidth: number): number {
 export const GRID_GAP = 2;
 
 /**
- * The height a justified library row aims for, in layout points.
+ * How many square tiles the library grid puts in a row: two in portrait, four
+ * in landscape.
  *
- * ## Why a row height rather than columns
- *
- * The library shows photographs, and a square crop of a photograph is not the
- * photograph. So the library became justified rows, where every picture in a row shares a height
- * and keeps its own shape, and nothing is ever cropped to a square.
- *
- * That also fixed the sizing. A square tile is the wrong box to measure a
- * rendition request against: a portrait photograph in a square tile is drawn
- * shorter and narrower than the tile, so the request was computed against pixels
- * the picture does not occupy.
- *
- * ## Why 160
- *
- * **Three portraits across a phone, which is what 120 did not give.** A
- * justified row has no column count to set — how many photographs it holds falls
- * out of their shapes — so the row height is the only control there is, and 160
- * is the smallest height at which a row of 3:4 portraits holds three rather than
- * four. At 120 a portrait is 90 points wide, four of them plus their gaps come
- * to 366 against a 353-point container, and `justifiedRows` prefers that
- * overflowing row to the short one it would otherwise cut. At 160 a portrait is
- * 120 points and three of them fit with two points to spare.
- *
- * The height is spent on the other shapes too, which is the trade rather than a
- * side effect: a row of 3:2 landscapes holds two where it used to hold three,
- * and a photograph wide enough fills a row on its own. That is a justified grid
- * spending width on the pictures that can use it, and it is what asking for
- * fewer, larger tiles means.
- *
- * Rows do not hold to this exactly. A row grows or shrinks to fill the width,
- * which is what `justifiedRows` does with the slack; this is the height it aims
- * for. See `photos/render-target.ts` for why the rendition request is measured
- * against this number rather than against the height a row lands on.
+ * Each tile is a centre crop of its photograph. A square grid gives every tile
+ * the same box, so a row never changes shape when a page is appended or a
+ * record is deleted. Four across a landscape window keeps a tile about the size
+ * it is in portrait, so a rotation neither blows the photographs up nor asks
+ * for a larger rung.
  */
-export const LIBRARY_ROW_HEIGHT = 160;
+export function libraryColumns(window: { readonly width: number; readonly height: number }): number {
+  return window.width > window.height ? 4 : 2;
+}
+
+/**
+ * The side of one square tile, in layout points, for a grid this wide.
+ *
+ * One function for the layout, the rendition request and the paging estimate,
+ * so all three measure the same box.
+ */
+export function libraryTileSize(gridWidth: number, columns: number): number {
+  return Math.max(0, (gridWidth - GRID_GAP * (columns - 1)) / columns);
+}

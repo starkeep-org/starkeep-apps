@@ -61,7 +61,13 @@ export type RenditionState =
    * this a temporary, self-healing condition rather than a broken photo, and
    * why it is worth telling the user about.
    */
-  | "undecodable-here";
+  | "undecodable-here"
+  /**
+   * The rung's bytes, or the original they would be derived from, exist on
+   * another device and have not reached this node yet. Nothing here can
+   * produce them, so a client waits rather than asking for a derivation.
+   */
+  | "awaiting-upload";
 
 export interface RenditionEntry {
   /**

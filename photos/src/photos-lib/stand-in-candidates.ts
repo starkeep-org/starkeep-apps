@@ -32,6 +32,11 @@ export interface WireStandInSize {
   readonly size_bytes: number | null;
   readonly placement: "here" | "cloud" | "missing";
   readonly url?: string;
+  /**
+   * Set instead of `url` when the cloud is owed this size's file and does not
+   * hold it yet.
+   */
+  readonly awaiting_upload?: true;
 }
 
 export interface WireStandInSummary {
@@ -66,6 +71,8 @@ export interface VariantCandidate {
   available_here: boolean;
   url?: string;
   url_lifetime?: UrlLifetime;
+  /** Set instead of `url` when the cloud is owed this child's file and lacks it. */
+  awaiting_upload?: true;
 }
 
 export interface StandInRecord {
@@ -141,6 +148,7 @@ export function candidatesFromStandIns(
             url_lifetime: { kind: "expires" as const, expires_at: new Date(now + URL_TRUST_MS).toISOString() },
           }
         : {}),
+      ...(size.awaiting_upload ? { awaiting_upload: true as const } : {}),
     });
   }
   return out;

@@ -149,7 +149,16 @@ async function run(request: Request): Promise<void> {
       }),
     });
     const elapsedMs = Math.round(performance.now() - startedAt);
-    if (!response.ok) {
+    if (response.status === 409 && (await sourceAwaitingUpload(response))) {
+      // Not now rather than not ever: the original is still on the device
+      // that took it. The tile asks again only when its resolution changes,
+      // which happens once the original lands and the rung reads `pending`.
+      console.log(
+        `[derive-demand] record=${request.recordId} target=${request.targetLongEdge} ` +
+          `status=409 source-awaiting-upload elapsedMs=${elapsedMs}`,
+      );
+      requested.delete(`${request.recordId}:${request.targetLongEdge}`);
+    } else if (!response.ok) {
       console.warn(
         `[derive-demand] record=${request.recordId} target=${request.targetLongEdge} ` +
           `status=${response.status} elapsedMs=${elapsedMs}`,
@@ -171,4 +180,9 @@ async function run(request: Request): Promise<void> {
     // cannot do — will still be true in a few seconds, and a retry loop against
     // a shared invocation pool is how one slow tile becomes a broken page.
   }
+}
+
+async function sourceAwaitingUpload(response: Response): Promise<boolean> {
+  const body = (await response.json().catch(() => null)) as { error?: string } | null;
+  return body?.error === "source-awaiting-upload";
 }

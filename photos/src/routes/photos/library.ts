@@ -6,6 +6,7 @@ import {
   resolveRenditions,
   resolveWithoutDimensions,
   type DerivedChild,
+  type RenditionChoice,
   type RenditionState,
 } from "@/photos-lib/rendition-resolution";
 import { MAX_VARIANT_TARGETS } from "@/photos-lib/rendition-targets";
@@ -147,6 +148,11 @@ export interface UpstreamRecord {
   /** The platform's size summary; folded into `variant_candidates` on arrival. */
   stand_ins?: WireStandInSummary;
   variant_candidates?: VariantCandidate[];
+  /**
+   * Where the original's own bytes stand, on the lazy reads. The cloud answers
+   * `awaiting-upload` for an original a device has not uploaded yet.
+   */
+  availability?: { readonly state: string };
 }
 
 /**
@@ -240,28 +246,58 @@ export function resolveFor(
     }));
 
   const sourceLongEdge = Math.max(record.metadata?.width ?? 0, record.metadata?.height ?? 0);
+  const unavailable = unavailableState(record, cloud, localVerdicts);
   // No stored dimensions means no applicable set, so the exact clamped rung
   // cannot be named yet. The compatibility resolver returns existing children
   // as available, or provisional pending targets when there are none. That
   // pending shape is what tells a parent-cursor client to full-relist for the
   // first child publication instead of discovering every cheap child at once.
-  if (sourceLongEdge <= 0) {
-    return resolveWithoutDimensions(
-      targets,
-      candidates,
-      unavailableState(record, cloud, localVerdicts),
-    );
-  }
+  const choices = sourceLongEdge <= 0
+    ? resolveWithoutDimensions(targets, candidates, unavailable)
+    : resolveRenditions(targets, {
+        sourceLongEdge,
+        sourceSizeBytes: record.size_bytes ?? null,
+        candidates,
+        // The platform's answer for this original: its canonical size and the
+        // standard sizes below the threshold stamped on it.
+        target: standInTargetOf(record.stand_ins),
+        unavailableState: unavailable,
+      });
+  return cloud ? markAwaitingUpload(record, choices) : choices;
+}
 
-  return resolveRenditions(targets, {
-    sourceLongEdge,
-    sourceSizeBytes: record.size_bytes ?? null,
-    candidates,
-    // The platform's answer for this original: its canonical size and the
-    // standard sizes below the threshold stamped on it.
-    target: standInTargetOf(record.stand_ins),
-    unavailableState: unavailableState(record, cloud, localVerdicts),
-  });
+/**
+ * Mark the cloud's unavailable ideals whose bytes are still on a device.
+ *
+ * Without this, an ideal the cloud cannot read yet answers `pending`, and the
+ * browser asks the cloud to derive it. That works when the original is in S3.
+ * When the original has not been uploaded either, the derivation fails, and
+ * when the rung itself is on its way, the derivation duplicates it.
+ *
+ * Two cases are waiting: a stand-in at the ideal's edge exists and has not
+ * been uploaded, or no stand-in exists there and the original has not been
+ * uploaded. The first overrides any state, because the device that holds the
+ * bytes has already read the format. The second overrides only `pending`: an
+ * original the cloud cannot decode stays undecodable after it lands.
+ */
+function markAwaitingUpload(
+  record: UpstreamRecord,
+  choices: Record<string, RenditionChoice>,
+): Record<string, RenditionChoice> {
+  const all = record.variant_candidates ?? [];
+  const awaitingEdges = new Set(all.filter((c) => c.awaiting_upload).map((c) => c.long_edge));
+  const knownEdges = new Set(all.map((c) => c.long_edge));
+  const originalAwaiting = record.availability?.state === "awaiting-upload";
+  const out: Record<string, RenditionChoice> = {};
+  for (const [target, choice] of Object.entries(choices)) {
+    const { ideal } = choice;
+    const awaiting = !ideal.available && (
+      awaitingEdges.has(ideal.longEdge) ||
+      (ideal.state === "pending" && originalAwaiting && !knownEdges.has(ideal.longEdge))
+    );
+    out[target] = awaiting ? { ...choice, ideal: { ...ideal, state: "awaiting-upload" } } : choice;
+  }
+  return out;
 }
 
 function unavailableState(

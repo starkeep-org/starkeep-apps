@@ -6,6 +6,18 @@ export const RENDITION_BATCH_MAX = 100;
 const FLUSH_DELAY_MS = 12;
 const EXPIRY_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
+/**
+ * How soon the cache asks again about entries still waiting, doubling up to
+ * the cap. Nothing tells this browser when a phone's upload lands: the rows
+ * arrived long before their files, so the library poll sees no change. The
+ * short start fits the usual case, a phone online and uploading; the cap
+ * bounds the cost of a tile whose bytes are not coming soon. A request that
+ * failed outright waits on the same timer, and the same cap bounds what a
+ * persistent failure costs.
+ */
+export const RETRY_START_MS = 5_000;
+export const RETRY_MAX_MS = 60_000;
+
 export type UrlLifetime =
   | { kind: "expires"; expires_at: string }
   | { kind: "non-expiring" };
@@ -65,7 +77,7 @@ export function resolutionKey(recordId: string, policyVersion: string, target: n
 }
 
 /**
- * Whether a decision is still waiting on bytes, so the next change kick asks again.
+ * Whether a decision is still waiting on bytes, so the retry timer asks again.
  *
  * A video's decision names no state; a missing poster or playback entry is its
  * only sign of waiting. Counting that as settled left a tile on its placeholder
@@ -77,8 +89,16 @@ function isPendingDecision(kind: MediaPolicyKind, decision: ResolutionDecision):
     const video = decision as VideoDecision;
     return !video.poster || !video.playback;
   }
-  return (decision as RenditionChoice).ideal?.available === false &&
-    ((decision as RenditionChoice).ideal.state ?? "pending") === "pending";
+  // A rung awaiting its upload is waiting as much as one being derived; the
+  // difference is only who will produce it, which is not this cache's concern.
+  const ideal = (decision as RenditionChoice).ideal;
+  const state = ideal?.state ?? "pending";
+  return ideal?.available === false && (state === "pending" || state === "awaiting-upload");
+}
+
+/** Whether the retry timer should ask about an entry again. */
+function isWaiting(entry: ResolutionEntry): boolean {
+  return entry.status === "pending" || entry.status === "failed";
 }
 
 function lifetimeOf(entry: { urlLifetime?: UrlLifetime; url_lifetime?: UrlLifetime } | undefined) {
@@ -149,6 +169,10 @@ export class RenditionResolutionCache {
   private queued = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private nextGeneration = 1;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryDelayMs = RETRY_START_MS;
+  /** Keys that have answered `pending` or failed since they were last ready. */
+  private waiting = new Set<string>();
 
   constructor(
     private policies: RenditionPolicies | null,
@@ -199,6 +223,8 @@ export class RenditionResolutionCache {
     let listeners = this.listeners.get(key);
     if (!listeners) this.listeners.set(key, (listeners = new Set()));
     listeners.add(listener);
+    // A tile scrolled back into view over an entry still waiting or failed.
+    this.scheduleRetry();
     return () => {
       listeners!.delete(listener);
       if (listeners!.size === 0) this.listeners.delete(key);
@@ -234,6 +260,7 @@ export class RenditionResolutionCache {
     this.timer = null;
     const keys = [...this.queued];
     this.queued.clear();
+    let progressed = false;
     for (let offset = 0; offset < keys.length; offset += RENDITION_BATCH_MAX) {
       const chunk = keys.slice(offset, offset + RENDITION_BATCH_MAX);
       const batch = chunk.map((key) => this.entries.get(key)).filter(Boolean) as ResolutionEntry[];
@@ -254,7 +281,7 @@ export class RenditionResolutionCache {
           if (result.status === "missing") {
             const matching = batch.filter((entry) => entry.recordId === result.recordId);
             for (const old of matching) handledKeys.add(old.key);
-            for (const old of matching) this.updateIfCurrent(old, { ...old, status: "failed", error: "record not found" });
+            for (const old of matching) this.fail(old, "record not found");
             continue;
           }
           const resultPolicy = response.policies[result.mediaKind];
@@ -285,30 +312,71 @@ export class RenditionResolutionCache {
               this.notify(old.key);
             }
           }
+          if (next.status === "pending") {
+            this.waiting.add(newKey);
+          } else if (matching.some((old) => this.waiting.delete(old.key)) || this.waiting.delete(newKey)) {
+            progressed = true;
+          }
           this.entries.set(newKey, next);
           this.notify(newKey);
         }
         for (const entry of batch) {
           if (!handledKeys.has(entry.key)) {
-            this.updateIfCurrent(entry, { ...entry, status: "failed", error: "resolution omitted" });
+            this.fail(entry, "resolution omitted");
           }
         }
       } catch (error) {
         for (const entry of batch) {
-          this.updateIfCurrent(entry, {
-            ...entry,
-            status: "failed",
-            error: error instanceof Error ? error.message : "resolution failed",
-          });
+          this.fail(entry, error instanceof Error ? error.message : "resolution failed");
         }
       }
     }
+    // Something that was waiting arrived, so more is likely on its way: a
+    // phone uploads a library file after file. Ask again soon.
+    if (progressed) this.resetRetry();
+    else this.scheduleRetry();
+  }
+
+  /**
+   * An image this cache handed out would not load: its bytes are not where
+   * the URL points yet, or the URL lapsed. The entry waits again, without the
+   * URL that failed, so the retry timer resolves it afresh and the tile gets a
+   * newly signed URL rather than the same one back.
+   */
+  reportLoadFailure(key: string, url: string): void {
+    const entry = this.entries.get(key);
+    if (!entry?.decision) return;
+    let found = false;
+    const strip = <T extends { url?: string }>(media: T | undefined): T | undefined => {
+      if (!media || media.url !== url) return media;
+      found = true;
+      const { url: _failed, ...rest } = media;
+      return rest as T;
+    };
+    let decision: ResolutionDecision;
+    if (entry.mediaKind === "video") {
+      const video = entry.decision as VideoDecision;
+      const poster = strip(video.poster);
+      const playback = strip(video.playback);
+      decision = { ...(poster ? { poster } : {}), ...(playback ? { playback } : {}) };
+    } else {
+      const still = entry.decision as RenditionChoice;
+      const fallback = strip(still.fallback);
+      decision = { ideal: strip(still.ideal)!, ...(fallback ? { fallback } : {}) };
+    }
+    // A failure report about a URL this entry no longer holds is about an
+    // answer already replaced.
+    if (!found) return;
+    this.entries.set(key, { ...entry, decision, status: "pending" });
+    this.waiting.add(key);
+    this.notify(key);
+    this.resetRetry();
   }
 
   refreshPending(): void {
     for (const entry of this.entries.values()) {
       const active = (this.listeners.get(entry.key)?.size ?? 0) > 0;
-      if (active && (entry.status === "pending" || (entry.status === "ready" && expiresSoon(entry)))) {
+      if (active && (isWaiting(entry) || (entry.status === "ready" && expiresSoon(entry)))) {
         entry.status = "queued";
         entry.generation = this.nextGeneration++;
         this.queued.add(entry.key);
@@ -323,6 +391,7 @@ export class RenditionResolutionCache {
       if (!recordIds.has(entry.recordId)) {
         this.entries.delete(key);
         this.queued.delete(key);
+        this.waiting.delete(key);
         this.notify(key);
       }
     }
@@ -331,12 +400,50 @@ export class RenditionResolutionCache {
   dispose(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.queued.clear();
   }
 
-  private updateIfCurrent(previous: ResolutionEntry, next: ResolutionEntry): void {
+  /** Arm the retry timer when an entry on screen is still waiting or failed. */
+  private scheduleRetry(): void {
+    if (this.retryTimer) return;
+    if (!this.hasActiveWaiting()) {
+      this.retryDelayMs = RETRY_START_MS;
+      return;
+    }
+    const delay = this.retryDelayMs;
+    this.retryDelayMs = Math.min(delay * 2, RETRY_MAX_MS);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.refreshPending();
+    }, delay);
+  }
+
+  private resetRetry(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryDelayMs = RETRY_START_MS;
+    this.scheduleRetry();
+  }
+
+  private hasActiveWaiting(): boolean {
+    for (const entry of this.entries.values()) {
+      if (isWaiting(entry) && (this.listeners.get(entry.key)?.size ?? 0) > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Mark an entry failed, unless a newer request replaced it. A failed entry
+   * waits like a pending one: the retry timer asks again at the same backoff,
+   * so a dropped request or a brief outage does not strand a tile for the
+   * session.
+   */
+  private fail(previous: ResolutionEntry, error: string): void {
     if (this.entries.get(previous.key)?.generation !== previous.generation) return;
-    this.entries.set(previous.key, next);
+    this.entries.set(previous.key, { ...previous, status: "failed", error });
+    this.waiting.add(previous.key);
     this.notify(previous.key);
   }
 

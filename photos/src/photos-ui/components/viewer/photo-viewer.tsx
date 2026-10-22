@@ -7,7 +7,11 @@ import { canonicalMeasuredTarget, measuredPhysicalLongEdge } from "@/photos-lib/
 import type { VideoDecision } from "@/lib/rendition-resolution-client";
 import { PhotoInfoPanel } from "./photo-info-panel";
 import { VideoPlayer } from "./video-player";
-import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
+import {
+  useMeasuredResolution,
+  useRenditionPolicy,
+  useRenditionResolutionCache,
+} from "../../context/rendition-resolution-context";
 import { useDevicePixelRatio, useViewportSize } from "../../hooks/use-element-size";
 import { useNarrowViewport } from "../../../lib/use-narrow-viewport";
 import { FaceOverlay } from "../vision/face-overlay";
@@ -141,6 +145,7 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
       })
     : null;
   const viewportTarget = policy ? canonicalMeasuredTarget(policy, requiredLongEdge) : null;
+  const cache = useRenditionResolutionCache();
   const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, viewportTarget);
 
   // The rendition, not the original.
@@ -427,6 +432,12 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
               alt={displayedSrc && displayedSrc !== fullSizeSrc ? "" : image.originalFilename}
               aria-hidden={displayedSrc && displayedSrc !== fullSizeSrc ? true : undefined}
               onLoad={() => setDisplayedSrc(fullSizeSrc)}
+              // A failed load stays hidden: the skeleton, or the rung already
+              // on screen, remains. The cache drops the failed URL and asks
+              // again, so the photo appears once its bytes land.
+              onError={() => {
+                if (resolution) cache.reportLoadFailure(resolution.key, fullSizeSrc);
+              }}
               style={displayedSrc && displayedSrc !== fullSizeSrc
                 ? { position: "absolute", width: 1, height: 1, opacity: 0 }
                 : {

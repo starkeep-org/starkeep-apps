@@ -114,6 +114,15 @@ describe("candidatesFromStandIns", () => {
     expect(unsigned!.url).toBeUndefined();
   });
 
+  it("carries the cloud's awaiting-upload flag in place of a URL", () => {
+    const [awaiting] = candidatesFromStandIns(
+      record([size({ fidelity: 640, placement: "cloud", awaiting_upload: true })]),
+      NOW,
+    );
+    expect(awaiting).toMatchObject({ awaiting_upload: true, available_here: false });
+    expect(awaiting!.url).toBeUndefined();
+  });
+
   it("lets a self-canonical original answer as itself when a browser can paint it", () => {
     const jpeg = candidatesFromStandIns(
       record([size({ fidelity: 2000, role: "original", record_id: "orig", type: "image/jpeg" })]),

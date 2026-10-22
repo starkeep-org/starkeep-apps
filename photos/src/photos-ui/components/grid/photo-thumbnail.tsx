@@ -3,10 +3,14 @@ import type { AppImage } from "@/photos-lib/client";
 import { displayForRenditionChoice, isVideoRecord } from "@/photos-lib/client";
 import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
 import { canonicalMeasuredTarget, measuredPhysicalLongEdge } from "@/photos-lib/render-geometry";
-import type { ResolutionStatus, VideoDecision } from "@/lib/rendition-resolution-client";
+import type { VideoDecision } from "@/lib/rendition-resolution-client";
 import { requestDerivation } from "@/lib/on-demand-derivation";
 import { usePhotoUrls } from "../../context/photo-url-context";
-import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
+import {
+  useMeasuredResolution,
+  useRenditionPolicy,
+  useRenditionResolutionCache,
+} from "../../context/rendition-resolution-context";
 import { useInView } from "../../hooks/use-in-view";
 import { useDevicePixelRatio } from "../../hooks/use-element-size";
 
@@ -50,12 +54,6 @@ function usePlaceholderDataUrl(thumbHash: string | null): string | null {
   }, [thumbHash]);
   return url;
 }
-
-/**
- * Resolution states in which the tile's bytes are still on their way: the
- * server has not answered yet, or it answered that the rung is being derived.
- */
-const RESOLVING: ReadonlySet<ResolutionStatus> = new Set(["queued", "in-flight", "pending"]);
 
 /**
  * Fallback box for a tile rendered outside the justified layout — tests and any
@@ -105,6 +103,7 @@ export function PhotoThumbnail({
       })
     : null;
   const target = policy ? canonicalMeasuredTarget(policy, requiredLongEdge) : null;
+  const cache = useRenditionResolutionCache();
   const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, target);
 
   // Ask in pixels: tile size × device pixel ratio, because a 180 px tile on a
@@ -164,9 +163,9 @@ export function PhotoThumbnail({
   const src = resolved?.url ?? fallbackSrc;
   const placeholder = usePlaceholderDataUrl(image.thumbHash);
 
-  // The source whose `<img>` has finished, successfully or not. Keyed by URL so
-  // a tile that moves to a better rung shows its placeholder state only until
-  // the new bytes land, never while the old ones are still on screen.
+  // The source whose `<img>` has loaded. Keyed by URL so a tile that moves to
+  // a better rung shows its placeholder state only until the new bytes land,
+  // never while the old ones are still on screen.
   const [settledSrc, setSettledSrc] = useState<string | null>(null);
   const imageShown = src !== null && settledSrc === src;
 
@@ -176,18 +175,11 @@ export function PhotoThumbnail({
   // is temporary and self-healing and looks exactly like a bug if left silent.
   const undecodable = display?.state === "undecodable-here" && src === null;
 
-  // The spinner marks a placeholder that something is about to replace. With a
-  // source, that is its bytes loading. Without one, it is a resolution the
-  // server has not answered or a rung it is deriving. A placeholder nothing
-  // will replace, such as a large original with no renditions, shows no
-  // spinner, because nothing is in progress.
-  const loading = !undecodable && !imageShown && inView && (
-    src !== null ||
-    policy === null ||
-    !resolution ||
-    RESOLVING.has(resolution.status) ||
-    Boolean(display?.awaitingBetter)
-  );
+  // The spinner marks a tile that has drawn no image yet. Its bytes may be
+  // loading, being derived, or still on the phone that took the photo; the
+  // cache keeps asking in every case, so the spinner never claims progress
+  // that is not being sought.
+  const loading = !undecodable && !imageShown && inView;
 
   return (
     <div
@@ -235,9 +227,12 @@ export function PhotoThumbnail({
           alt={image.originalFilename}
           loading="lazy"
           onLoad={() => setSettledSrc(src)}
-          // A failed load settles too, so the spinner stops rather than
-          // claiming progress on bytes that are not coming.
-          onError={() => setSettledSrc(src)}
+          // A failed load stays hidden over the placeholder rather than
+          // showing a broken icon. The cache drops the failed URL and asks
+          // again, so the tile fills in once the bytes land.
+          onError={() => {
+            if (resolution) cache.reportLoadFailure(resolution.key, src);
+          }}
           style={{
             position: "absolute",
             inset: 0,

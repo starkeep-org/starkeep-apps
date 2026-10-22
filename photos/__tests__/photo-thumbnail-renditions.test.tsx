@@ -17,6 +17,7 @@ import type { AppImage } from "../src/photos-lib";
 import type { RenditionChoice } from "../src/photos-lib/rendition-resolution";
 import { canonicalTarget, currentRenditionPolicies } from "../src/photos-lib/rendition-policy";
 import { RenditionResolutionProvider } from "../src/photos-ui/context/rendition-resolution-context";
+import { RETRY_START_MS } from "../src/lib/rendition-resolution-client";
 
 class FakeIntersectionObserver {
   static instances: FakeIntersectionObserver[] = [];
@@ -233,6 +234,110 @@ describe("the ideal rung is still deriving", () => {
       .map(([, init]) => JSON.parse((init as RequestInit).body as string).targetLongEdge);
     expect(bodies).toEqual([640, 2048]);
   });
+
+  // The original was readable when the rung resolved and is not now, or never
+  // was. That is "not now", so a later resolution may ask again; any other
+  // failure stays unrepeated this session.
+  it.each([
+    { status: 409, body: { error: "source-awaiting-upload" }, asks: 2 },
+    { status: 502, body: { error: "derivation failed" }, asks: 1 },
+  ])("after a $status from the resize Lambda, asks $asks time(s) for the same rung", async ({ status, body, asks }) => {
+    const resizeCalls = () => fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/resize"));
+    const answerAll = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
+      String(url).includes("/api/resize")
+        ? new Response(JSON.stringify(body), { status })
+        : answerAll(url, init),
+    );
+    const settle = () => act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    requestDerivation("rec-1", 1280);
+    await settle();
+    requestDerivation("rec-1", 1280);
+    await settle();
+    expect(resizeCalls()).toHaveLength(asks);
+  });
+});
+
+describe("the ideal rung is still on the phone", () => {
+  const awaiting: RenditionChoice = {
+    ideal: { longEdge: 1280, available: false, state: "awaiting-upload" },
+    fallback: {
+      longEdge: 320,
+      available: true,
+      url: "https://renditions.invalid/320",
+      width: 320,
+      height: 240,
+    },
+  };
+
+  it("paints the fallback and asks for no derivation the cloud cannot do", async () => {
+    await show(appImage(), awaiting);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect((screen.getByRole("img") as HTMLImageElement).src).toBe("https://renditions.invalid/320");
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/resize"))).toBe(false);
+  });
+});
+
+describe("an image that fails to load", () => {
+  const available: RenditionChoice = {
+    ideal: {
+      longEdge: 1280,
+      available: true,
+      url: "https://renditions.invalid/1280",
+      width: 1280,
+      height: 960,
+    },
+  };
+  const resolutionCalls = () =>
+    fetchMock.mock.calls.filter(([u]) => String(u).includes("/api/photos/renditions")).length;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps the placeholder and spinner, shows no broken image, and asks again", async () => {
+    await show(appImage(), available);
+    const asked = resolutionCalls();
+    vi.useFakeTimers();
+
+    fireEvent.error(screen.getByRole("img"));
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByTestId("tile-loading-spinner")).not.toBeNull();
+
+    // The cache dropped the failed URL and asks again on its retry timer.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RETRY_START_MS + 20);
+    });
+    expect(resolutionCalls()).toBe(asked + 1);
+    expect((screen.getByRole("img") as HTMLImageElement).src).toBe("https://renditions.invalid/1280");
+  });
+
+  // A small original with nothing in the cloud yet is served directly, and
+  // that load fails. The decision is still waiting, so the cache keeps asking,
+  // and the tile moves to the original's own URL once it is uploaded.
+  it("recovers a small original served directly once its upload lands", async () => {
+    // The cache arms its retry when the first answer lands, so the fake clock
+    // has to be in place before then. It still advances with real time, so
+    // `show` settles as usual.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await show(appImage({ sizeBytes: 100_000 }), {
+      ideal: { longEdge: 1280, available: false, state: "awaiting-upload" },
+    });
+    expect((screen.getByRole("img") as HTMLImageElement).src).toBe("https://signed/original");
+
+    fireEvent.error(screen.getByRole("img"));
+    expect(screen.queryByTestId("tile-loading-spinner")).not.toBeNull();
+
+    decision = available;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RETRY_START_MS + 20);
+    });
+    expect((screen.getByRole("img") as HTMLImageElement).src).toBe("https://renditions.invalid/1280");
+  });
 });
 
 describe("nothing here can derive it", () => {
@@ -280,11 +385,9 @@ describe("the loading spinner", () => {
     expect(spinner()).toBeNull();
   });
 
-  it("stops when the load fails rather than spinning forever", async () => {
-    await show(appImage(), available);
-
-    fireEvent.error(screen.getByRole("img"));
-    expect(spinner()).toBeNull();
+  it("spins over the placeholder while the only rung awaits its upload", async () => {
+    await show(appImage(), { ideal: { longEdge: 1280, available: false, state: "awaiting-upload" } });
+    expect(spinner()).not.toBeNull();
   });
 
   it("spins over the placeholder while the only rung is still deriving", async () => {

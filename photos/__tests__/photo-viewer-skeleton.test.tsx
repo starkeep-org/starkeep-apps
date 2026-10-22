@@ -16,6 +16,7 @@ import { PhotoUrlProvider } from "../src/photos-ui/context/photo-url-context";
 import { RenditionResolutionProvider } from "../src/photos-ui/context/rendition-resolution-context";
 import type { AppImage } from "../src/photos-lib";
 import { resetDerivationRequests } from "../src/lib/on-demand-derivation";
+import { RETRY_START_MS } from "../src/lib/rendition-resolution-client";
 
 /**
  * The viewer paints what the server resolved, so these tests hand it a resolved
@@ -175,6 +176,25 @@ describe("PhotoViewer skeleton → image cross-fade", () => {
     // Full image is mounted (downloading) but transparent until it loads.
     expect(fullImg().src).toBe("https://signed/full");
     expect(fullImg().style.opacity).toBe("0");
+  });
+
+  it("keeps the skeleton when the image fails, and loads a newly signed URL on the retry", async () => {
+    await open(appImage(), "https://signed/first");
+    vi.useFakeTimers();
+    try {
+      resolvedUrl = "https://signed/second";
+      act(() => fireEvent.error(fullImg()));
+      // The failed URL is gone, so nothing broken sits over the skeleton.
+      expect(screen.queryByRole("img")).toBeNull();
+      expect(skeleton()).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RETRY_START_MS + 20);
+      });
+      expect(fullImg().src).toBe("https://signed/second");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cross-fades the full image in and removes the skeleton once it loads", async () => {

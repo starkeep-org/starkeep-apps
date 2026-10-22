@@ -20,6 +20,13 @@ import { CHEAP_TARGET_LONG_EDGE } from "../../src/photos-lib/ladder.js";
 import { precheckThumbnail } from "../../src/photos-lib/labels.js";
 import { ok, clientErr, type APIGatewayEvent } from "./handler-utils.js";
 
+/**
+ * The data server's refusal for a source whose bytes a device has not
+ * uploaded yet. Thrown out of `loadSource` so the handler answers it as "not
+ * now" rather than as the 500 an unexpected failure gets.
+ */
+class SourceAwaitingUpload extends Error {}
+
 interface BrokerPhotoRecord {
   id: string;
   object_storage_key: string | null;
@@ -137,6 +144,10 @@ export async function handler(event: APIGatewayEvent) {
       },
       loadSource: async () => {
         const fileUrlRes = await call(`/data/records/${targetId}/file-url`);
+        if (fileUrlRes.status === 409) {
+          const refusal = (await fileUrlRes.json().catch(() => null)) as { error?: string } | null;
+          if (refusal?.error === "AwaitingUpload") throw new SourceAwaitingUpload(targetId);
+        }
         if (!fileUrlRes.ok) throw new Error(`file-url failed: ${fileUrlRes.status}`);
         const { url } = (await fileUrlRes.json()) as { url: string };
         const sourceRes = await fetch(url);
@@ -166,6 +177,12 @@ export async function handler(event: APIGatewayEvent) {
       published: result.published,
     });
   } catch (e) {
+    if (e instanceof SourceAwaitingUpload) {
+      // The original is still on the device that took it. Nothing here can
+      // derive from it until it lands, so the caller stops asking for now.
+      console.log(`[resize] source awaiting upload: ${e.message}`);
+      return clientErr("source-awaiting-upload", 409);
+    }
     console.error("[resize] handler error:", e);
     return {
       statusCode: 500,

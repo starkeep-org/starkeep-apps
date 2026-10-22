@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   RenditionResolutionCache,
   resolutionKey,
+  RETRY_MAX_MS,
+  RETRY_START_MS,
 } from "../src/lib/rendition-resolution-client";
 
 const policies = {
@@ -26,6 +28,17 @@ function ready(recordId: string, target: number, id = `${recordId}-rendition`) {
         url: `https://example.test/${id}`,
       },
     },
+  };
+}
+
+function waiting(recordId: string, target: number) {
+  return {
+    recordId,
+    status: "resolved" as const,
+    mediaKind: "still" as const,
+    policyVersion: policies.still.version,
+    canonicalTargetLongEdge: target,
+    decision: { ideal: { available: false, longEdge: target, state: "awaiting-upload" as const } },
   };
 }
 
@@ -130,5 +143,173 @@ describe("RenditionResolutionCache", () => {
     expect(cache.get(key)?.status).toBe("ready");
     cache.refreshPending();
     expect(send).toHaveBeenCalledTimes(3);
+  });
+});
+
+/**
+ * Nothing tells a browser when a phone's upload lands, so the cache asks again
+ * on its own timer about the entries on screen that are still waiting.
+ */
+describe("RenditionResolutionCache retry timer", () => {
+  type Request = { recordId: string };
+  /** The flush the timer's re-queue schedules, after its own delay. */
+  const FLUSH_MS = 12;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Advance to just before `delay` fires, then past it and its flush. */
+  async function expectRetryAfter(send: ReturnType<typeof vi.fn>, delay: number) {
+    const before = send.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(delay - 1);
+    expect(send).toHaveBeenCalledTimes(before);
+    await vi.advanceTimersByTimeAsync(1 + FLUSH_MS);
+    expect(send).toHaveBeenCalledTimes(before + 1);
+  }
+
+  it("asks again about an entry awaiting upload, doubling the wait up to the cap", async () => {
+    const send = vi.fn(async (_requests: Request[]) => ({ policies, results: [waiting("a", 400)] }));
+    const cache = new RenditionResolutionCache(policies, send);
+    const key = cache.request("a", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(key, () => {});
+    expect(cache.get(key)?.status).toBe("pending");
+
+    let delay = RETRY_START_MS;
+    while (delay < RETRY_MAX_MS) {
+      await expectRetryAfter(send, delay);
+      delay *= 2;
+    }
+    await expectRetryAfter(send, RETRY_MAX_MS);
+    await expectRetryAfter(send, RETRY_MAX_MS);
+    cache.dispose();
+  });
+
+  it("starts the wait over when an entry that was waiting arrives", async () => {
+    const send = vi.fn(async (requests: Request[]) => ({
+      policies,
+      results: requests.map((r) =>
+        r.recordId === "b" && send.mock.calls.length >= 4 ? ready("b", 400) : waiting(r.recordId, 400),
+      ),
+    }));
+    const cache = new RenditionResolutionCache(policies, send);
+    const a = cache.request("a", "still", 300, 400)!;
+    const b = cache.request("b", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(a, () => {});
+    cache.subscribe(b, () => {});
+
+    await expectRetryAfter(send, RETRY_START_MS);
+    await expectRetryAfter(send, RETRY_START_MS * 2);
+    // The fourth answer brings b's bytes. A phone uploads file after file, so
+    // the next ask comes soon rather than after the grown wait.
+    await expectRetryAfter(send, RETRY_START_MS * 4);
+    expect(cache.get(b)?.status).toBe("ready");
+    await expectRetryAfter(send, RETRY_START_MS);
+    cache.dispose();
+  });
+
+  it("asks nothing about a waiting entry no tile is showing", async () => {
+    const send = vi.fn(async (_requests: Request[]) => ({ policies, results: [waiting("a", 400)] }));
+    const cache = new RenditionResolutionCache(policies, send);
+    cache.request("a", "still", 300, 400);
+    await cache.flush();
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 3);
+    expect(send).toHaveBeenCalledTimes(1);
+    cache.dispose();
+  });
+
+  it("stops asking once disposed", async () => {
+    const send = vi.fn(async (_requests: Request[]) => ({ policies, results: [waiting("a", 400)] }));
+    const cache = new RenditionResolutionCache(policies, send);
+    const key = cache.request("a", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(key, () => {});
+    cache.dispose();
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 3);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again after a request fails, at the same backoff", async () => {
+    const send = vi.fn((_requests: Request[]) =>
+      Promise.reject<{ policies: typeof policies; results: never[] }>(new Error("network down")),
+    );
+    const cache = new RenditionResolutionCache(policies, send);
+    const key = cache.request("a", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(key, () => {});
+    expect(cache.get(key)).toMatchObject({ status: "failed", error: "network down" });
+
+    await expectRetryAfter(send, RETRY_START_MS);
+    await expectRetryAfter(send, RETRY_START_MS * 2);
+    expect(cache.get(key)?.status).toBe("failed");
+    cache.dispose();
+  });
+
+  it("starts the wait over when a failed request recovers", async () => {
+    const send = vi.fn(async (requests: Request[]) => {
+      if (send.mock.calls.length <= 3) throw new Error("network down");
+      return { policies, results: requests.map((r) => r.recordId === "b" ? ready("b", 400) : waiting(r.recordId, 400)) };
+    });
+    const cache = new RenditionResolutionCache(policies, send);
+    const a = cache.request("a", "still", 300, 400)!;
+    const b = cache.request("b", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(a, () => {});
+    cache.subscribe(b, () => {});
+
+    await expectRetryAfter(send, RETRY_START_MS);
+    await expectRetryAfter(send, RETRY_START_MS * 2);
+    // The network is back: b resolves and a goes on waiting for its upload.
+    await expectRetryAfter(send, RETRY_START_MS * 4);
+    expect(cache.get(b)?.status).toBe("ready");
+    expect(cache.get(a)?.status).toBe("pending");
+    await expectRetryAfter(send, RETRY_START_MS);
+    cache.dispose();
+  });
+
+  it("drops a URL that failed to load and resolves the entry afresh", async () => {
+    const send = vi.fn(async (_requests: Request[]) => {
+      const result = ready("a", 400, "stable-id");
+      result.decision.ideal.url = `https://example.test/signature-${send.mock.calls.length}`;
+      // Still valid for hours, so only the failure report stops the cache
+      // from keeping it.
+      Object.assign(result.decision.ideal, {
+        urlLifetime: { kind: "expires", expires_at: new Date(Date.now() + 7_200_000).toISOString() },
+      });
+      return { policies, results: [result] };
+    });
+    const cache = new RenditionResolutionCache(policies, send);
+    const key = cache.request("a", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(key, () => {});
+    const idealUrl = () => (cache.get(key)!.decision as { ideal: { url?: string } }).ideal.url;
+    expect(idealUrl()).toBe("https://example.test/signature-1");
+
+    cache.reportLoadFailure(key, "https://example.test/signature-1");
+    expect(cache.get(key)?.status).toBe("pending");
+    expect(idealUrl()).toBeUndefined();
+
+    await expectRetryAfter(send, RETRY_START_MS);
+    expect(cache.get(key)?.status).toBe("ready");
+    expect(idealUrl()).toBe("https://example.test/signature-2");
+    cache.dispose();
+  });
+
+  it("ignores a failure report about a URL the entry no longer holds", async () => {
+    const send = vi.fn(async (_requests: Request[]) => ({ policies, results: [ready("a", 400)] }));
+    const cache = new RenditionResolutionCache(policies, send);
+    const key = cache.request("a", "still", 300, 400)!;
+    await cache.flush();
+    cache.subscribe(key, () => {});
+    cache.reportLoadFailure(key, "https://example.test/replaced-long-ago");
+    expect(cache.get(key)?.status).toBe("ready");
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS);
+    expect(send).toHaveBeenCalledTimes(1);
+    cache.dispose();
   });
 });

@@ -259,3 +259,43 @@ describe("nothing here can derive it", () => {
     expect(dialog.textContent).toMatch(/automatically/);
   });
 });
+
+describe("the loading spinner", () => {
+  const spinner = () => screen.queryByTestId("tile-loading-spinner");
+  const available: RenditionChoice = {
+    ideal: {
+      longEdge: 1280,
+      available: true,
+      url: "https://renditions.invalid/1280",
+      width: 1280,
+      height: 960,
+    },
+  };
+
+  it("spins while the rendition's bytes load, and stops once they have", async () => {
+    await show(appImage({ thumbHash: null }), available);
+    expect(spinner()).not.toBeNull();
+
+    fireEvent.load(screen.getByRole("img"));
+    expect(spinner()).toBeNull();
+  });
+
+  it("stops when the load fails rather than spinning forever", async () => {
+    await show(appImage(), available);
+
+    fireEvent.error(screen.getByRole("img"));
+    expect(spinner()).toBeNull();
+  });
+
+  it("spins over the placeholder while the only rung is still deriving", async () => {
+    await show(appImage(), { ideal: { longEdge: 1280, available: false, state: "pending" } });
+    expect(spinner()).not.toBeNull();
+  });
+
+  it("does not spin on a tile nothing is coming for", async () => {
+    await show(appImage({ mimeType: "image/heic" }), {
+      ideal: { longEdge: 1280, available: false, state: "undecodable-here" },
+    });
+    expect(spinner()).toBeNull();
+  });
+});

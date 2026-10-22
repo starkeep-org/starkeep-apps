@@ -3,7 +3,7 @@ import type { AppImage } from "@/photos-lib/client";
 import { displayForRenditionChoice, isVideoRecord } from "@/photos-lib/client";
 import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
 import { canonicalMeasuredTarget, measuredPhysicalLongEdge } from "@/photos-lib/render-geometry";
-import type { VideoDecision } from "@/lib/rendition-resolution-client";
+import type { ResolutionStatus, VideoDecision } from "@/lib/rendition-resolution-client";
 import { requestDerivation } from "@/lib/on-demand-derivation";
 import { usePhotoUrls } from "../../context/photo-url-context";
 import { useMeasuredResolution, useRenditionPolicy } from "../../context/rendition-resolution-context";
@@ -50,6 +50,12 @@ function usePlaceholderDataUrl(thumbHash: string | null): string | null {
   }, [thumbHash]);
   return url;
 }
+
+/**
+ * Resolution states in which the tile's bytes are still on their way: the
+ * server has not answered yet, or it answered that the rung is being derived.
+ */
+const RESOLVING: ReadonlySet<ResolutionStatus> = new Set(["queued", "in-flight", "pending"]);
 
 /**
  * Fallback box for a tile rendered outside the justified layout — tests and any
@@ -158,11 +164,30 @@ export function PhotoThumbnail({
   const src = resolved?.url ?? fallbackSrc;
   const placeholder = usePlaceholderDataUrl(image.thumbHash);
 
+  // The source whose `<img>` has finished, successfully or not. Keyed by URL so
+  // a tile that moves to a better rung shows its placeholder state only until
+  // the new bytes land, never while the old ones are still on screen.
+  const [settledSrc, setSettledSrc] = useState<string | null>(null);
+  const imageShown = src !== null && settledSrc === src;
+
   // The one state a user should be told about. Everything else that is missing
   // is missing *for now* and says nothing, because there is nothing to do about
   // it; this one is a photo in a format the node answering cannot read, which
   // is temporary and self-healing and looks exactly like a bug if left silent.
   const undecodable = display?.state === "undecodable-here" && src === null;
+
+  // The spinner marks a placeholder that something is about to replace. With a
+  // source, that is its bytes loading. Without one, it is a resolution the
+  // server has not answered or a rung it is deriving. A placeholder nothing
+  // will replace, such as a large original with no renditions, shows no
+  // spinner, because nothing is in progress.
+  const loading = !undecodable && !imageShown && inView && (
+    src !== null ||
+    policy === null ||
+    !resolution ||
+    RESOLVING.has(resolution.status) ||
+    Boolean(display?.awaitingBetter)
+  );
 
   return (
     <div
@@ -182,15 +207,46 @@ export function PhotoThumbnail({
         justifyContent: "center",
       }}
     >
-      {src ? (
+      {undecodable ? (
+        <UndisplayableTile />
+      ) : !imageShown && placeholder ? (
+        // Stage zero: the inline ThumbHash, painted with zero requests. This is
+        // what a record looks like before any image bytes are fetched — and
+        // what it keeps looking like if its renditions never arrive. It stays
+        // under the real image until that image has loaded.
+        <img
+          src={placeholder}
+          alt=""
+          aria-hidden
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      ) : !imageShown ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "repeating-linear-gradient(45deg, #1a1a1a, #1a1a1a 4px, #222 4px, #222 8px)",
+          }}
+        />
+      ) : null}
+      {src && !undecodable ? (
         <img
           src={src}
           alt={image.originalFilename}
           loading="lazy"
+          onLoad={() => setSettledSrc(src)}
+          // A failed load settles too, so the spinner stops rather than
+          // claiming progress on bytes that are not coming.
+          onError={() => setSettledSrc(src)}
           style={{
+            position: "absolute",
+            inset: 0,
             width: "100%",
             height: "100%",
             objectFit: "cover",
+            // Hidden rather than absent until it loads, so the placeholder
+            // underneath shows through instead of a half-decoded image.
+            opacity: imageShown ? 1 : 0,
             // Let the browser apply EXIF orientation (the default; set
             // explicitly so a global reset can't leave a rotated image
             // sideways). Never also rotate via CSS transform — that would
@@ -199,29 +255,50 @@ export function PhotoThumbnail({
             imageOrientation: "from-image",
           }}
         />
-      ) : undecodable ? (
-        <UndisplayableTile />
-      ) : placeholder ? (
-        // Stage zero: the inline ThumbHash, painted with zero requests. This is
-        // what a record looks like before any image bytes are fetched — and
-        // what it keeps looking like if its renditions never arrive.
-        <img
-          src={placeholder}
-          alt=""
-          aria-hidden
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      ) : (
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            background: "repeating-linear-gradient(45deg, #1a1a1a, #1a1a1a 4px, #222 4px, #222 8px)",
-          }}
-        />
-      )}
+      ) : null}
+      {loading ? <LoadingSpinner /> : null}
       {video ? <PlayBadge tileShortEdge={Math.min(width, height)} /> : null}
     </div>
+  );
+}
+
+/**
+ * The small spinner in a tile's upper right corner while its placeholder waits
+ * for the real image.
+ *
+ * Animated with SVG's own `animateTransform`, because the app has no stylesheet
+ * to hold a keyframe rule and a `<style>` element per tile would repeat one
+ * for every photo in the grid. Inert to the pointer so a click still lands on
+ * the tile.
+ */
+function LoadingSpinner() {
+  return (
+    <svg
+      data-testid="tile-loading-spinner"
+      aria-hidden
+      viewBox="0 0 16 16"
+      width={16}
+      height={16}
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 6,
+        pointerEvents: "none",
+        filter: "drop-shadow(0 0 2px rgba(0, 0, 0, 0.6))",
+      }}
+    >
+      <circle cx="8" cy="8" r="6" fill="none" stroke="rgba(255, 255, 255, 0.3)" strokeWidth="2" />
+      <path d="M8 2 A6 6 0 0 1 14 8" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
+        <animateTransform
+          attributeName="transform"
+          type="rotate"
+          from="0 8 8"
+          to="360 8 8"
+          dur="0.8s"
+          repeatCount="indefinite"
+        />
+      </path>
+    </svg>
   );
 }
 

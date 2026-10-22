@@ -67,7 +67,6 @@ import { chooseVideoPlayback, loadVideoPosters, videoCopies } from "./photos/vid
 // `__tests__/ladder-boundary.test.ts`. What comes through here is a pixel count
 // and a width-over-height ratio, neither of which is ladder vocabulary.
 import {
-  displayedAspectOf,
   gridTileTarget,
   viewerTarget,
   type Dimensions,
@@ -166,17 +165,6 @@ export interface LibraryItem {
    * finds motion on a record this returns false for, and offers playback there.
    */
   readonly hasMotion: boolean;
-  /**
-   * The width-over-height ratio this record is *shown* at.
-   *
-   * Displayed, not stored: a quarter-turn EXIF orientation swaps the two, and
-   * the media store's own columns carry no rotation correction — which is why
-   * `media/exif.ts` reads the header at all. Always a number, because a
-   * justified row needs a box for every item and a record whose dimensions
-   * nothing has read yet must take a plausible slot rather than gapping the
-   * grid. See `displayedAspectOf`.
-   */
-  readonly aspect: number;
   /**
    * The ~25-byte placeholder this record paints before anything resolves, or
    * null.
@@ -449,7 +437,6 @@ export async function resolveLibraryItems(
     const row = metadataFor(record);
     const duration = row?.["duration_ms"];
     const thumbHash = row?.["thumb_hash"];
-    const dims = dimensionsOf(record);
     return {
       record,
       // **The rungs, or nothing.** The rule is the plan's, unextended: the ideal
@@ -482,10 +469,6 @@ export async function resolveLibraryItems(
       hasMotion:
         record.objectStorageKey !== undefined &&
         (withMotion?.has(record.objectStorageKey) ?? false),
-      aspect: displayedAspectOf(
-        dims && dims.width && dims.height ? { width: dims.width, height: dims.height } : null,
-        orientationOf(record),
-      ),
       thumbHash: typeof thumbHash === "string" && thumbHash.length > 0 ? thumbHash : null,
       missingRendition: resolved?.missingIdeal ?? null,
       // The rendition only when it is the thing on screen. `renditionUri` is

@@ -38,7 +38,6 @@ export function libraryItem(
     playbackUri: null,
     durationMs: null,
     hasMotion: false,
-    aspect: 4 / 3,
     thumbHash: "1QcSHQRnh493V4dIh4eXh1h4kJUI",
     missingRendition: null,
     paintedRendition: null,

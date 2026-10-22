@@ -37,8 +37,9 @@ export const colors = {
 export {
   CONTENT_PADDING,
   GRID_GAP,
-  LIBRARY_ROW_HEIGHT,
+  libraryColumns,
   libraryGridWidth,
+  libraryTileSize,
 } from "./grid-geometry";
 
 export const styles = StyleSheet.create({
@@ -95,12 +96,12 @@ export const styles = StyleSheet.create({
    */
   listGutter: { paddingHorizontal: CONTENT_PADDING },
   /**
-   * One tile of the justified library grid.
+   * One square tile of the library grid.
    *
-   * No `width` and no `aspectRatio`: the layout assigns both per photograph, so a style that carried either would be a second
-   * opinion about the shape and the two would disagree on every row.
+   * No `width` and no `height`: `LibraryRow` sets both from `libraryTileSize`,
+   * the same number the rendition request is measured against.
    */
-  justifiedTile: { backgroundColor: colors.surface, justifyContent: "flex-end" },
+  gridTile: { backgroundColor: colors.surface, justifyContent: "flex-end" },
   tileImage: { width: "100%", height: "100%" },
   /**
    * The mark on a video tile. See `VideoBadge.tsx`.

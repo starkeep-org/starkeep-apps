@@ -6,21 +6,13 @@
  * difference is that these are things Starkeep holds — hashed, addressed, and
  * ready to sync.
  *
- * ## Justified rows, not a square grid
+ * ## Square tiles, two across
  *
- * The grid used to be three square tiles across, each showing a centre crop.
- * That is wrong for a library: a square crop of a photograph is not the
- * photograph, and the library is where somebody looks at their pictures.
- *
- * It was also sizing the renditions wrong. A square tile is the wrong box to
- * measure a request against — a portrait photograph inside one is drawn shorter
- * and narrower than the tile — so the pixel count was computed for pixels the
- * picture does not occupy. Justified rows give each photograph a box of its own
- * shape, which is what makes the layout and the request agree.
- *
- * The layout is the web app's, from `@starkeep/photos-ladder`, reached through
- * `photos/render-target.ts` because a component may not import the ladder
- * directly. See `theme.ts`'s `LIBRARY_ROW_HEIGHT`.
+ * Every photograph is a centre crop in a square tile, two to a row in
+ * portrait and four in landscape. Each tile
+ * has the same box, so the rendition request is the same rule for every
+ * record: `photos/render-target.ts`'s `gridTileTarget` measures the crop with
+ * `cover`. See `grid-geometry.ts`'s `libraryColumns`.
  *
  * ## The tiles are tappable, which they were not before
  *
@@ -65,13 +57,8 @@ import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
 import { EXPIRED, REAL_TIMERS, raceDeadline } from "../deadline";
 import type { LibraryItem } from "../library";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
-import {
-  layOutRows,
-  viewerStageBox,
-  type Dimensions as Box,
-  type JustifiedRow,
-} from "../photos/render-target";
-import { GRID_GAP, LIBRARY_ROW_HEIGHT, libraryGridWidth, styles } from "./theme";
+import { viewerStageBox, type Dimensions as Box } from "../photos/render-target";
+import { libraryTileSize, styles } from "./theme";
 import { MotionBadge } from "./MotionBadge";
 import { VideoBadge } from "./VideoBadge";
 import { LibraryViewer } from "./LibraryViewer";
@@ -144,36 +131,36 @@ export interface ViewerHost {
   readonly onLoadMore: () => void;
 }
 
+/** One row of the library grid: up to `libraryColumns` square tiles. */
+export interface LibraryGridRow {
+  readonly items: readonly LibraryItem[];
+  /** The side of every tile in the row, in layout points. */
+  readonly tileSize: number;
+}
+
 /**
  * The rows a page of records lays out as.
  *
  * Rows rather than tiles, because the list that draws them is virtualized and a
  * virtualized list windows whole items: one tile per item would let a list
- * unmount part of a visible row.
- *
- * How many go in a row is the layout's answer now rather than a constant — that
- * is what a justified grid decides — and it varies row by row with the shapes it
- * is given. A row of portraits holds more than a row of landscapes, which is the
- * point.
- *
- * Every item has an aspect ratio, including one whose dimensions nothing has
- * read: `displayedAspectOf` guesses a mild landscape rather than answering null,
- * so a library mid-backfill renders rather than gapping.
+ * unmount half of a visible row.
  */
 export function libraryRows(
   items: readonly LibraryItem[],
-  windowWidth: number,
-): Array<JustifiedRow<LibraryItem>> {
-  return layOutRows(items, (item) => item.aspect, {
-    containerWidth: libraryGridWidth(windowWidth),
-    targetRowHeight: LIBRARY_ROW_HEIGHT,
-    gap: GRID_GAP,
-  });
+  gridWidth: number,
+  columns: number,
+): LibraryGridRow[] {
+  const tileSize = libraryTileSize(gridWidth, columns);
+  const rows: LibraryGridRow[] = [];
+  for (let at = 0; at < items.length; at += columns) {
+    rows.push({ items: items.slice(at, at + columns), tileSize });
+  }
+  return rows;
 }
 
 /** A stable key for a row: its first record, which never moves within the row. */
-export function libraryRowKey(row: JustifiedRow<LibraryItem>): string {
-  return row.placements[0]?.item.record.id ?? "empty";
+export function libraryRowKey(row: LibraryGridRow): string {
+  return row.items[0]?.record.id ?? "empty";
 }
 
 /**
@@ -188,38 +175,23 @@ export const LibraryRow = memo(function LibraryRow({
   row,
   onOpen,
 }: {
-  readonly row: JustifiedRow<LibraryItem>;
+  readonly row: LibraryGridRow;
   readonly onOpen: (item: LibraryItem) => void;
 }) {
   return (
     <View style={styles.gridRow}>
-      {row.placements.map(({ item, width }) => (
+      {row.items.map((item) => (
         <Pressable
           key={item.record.id}
           onPress={() => onOpen(item)}
-          // The box the layout assigned, and the same box `tileTarget` measured
-          // the rendition request from. A style that carried a width fraction or
-          // an aspect ratio of its own would be a second opinion about the
-          // shape, and the two would disagree on every row.
-          style={[styles.justifiedTile, { width, height: row.height }]}
+          // The same square `gridTileTarget` measured the rendition request
+          // from, so the layout and the request agree about the box.
+          style={[styles.gridTile, { width: row.tileSize, height: row.tileSize }]}
         >
           <Image
             source={item.uri ? { uri: item.uri } : null}
             style={styles.tileImage}
-            // **Cover, because the row has already decided what to crop.** A
-            // justified row closes the gap between its photographs and the
-            // container two ways: it scales the row, and it takes an equal
-            // fraction off every photograph's width — `JustifiedRow.cropScale`,
-            // which is below 1 on most rows of a real library. The box this tile
-            // is given is the *cropped* box, so it is narrower than the
-            // photograph's own shape at this height.
-            //
-            // `contain` refused that crop. Asked to fit a picture into a box
-            // narrower than itself, it shrank the picture on both axes and left
-            // the tile's own colour above and below — 3 to 12 points of it,
-            // which is what made the space between rows look uneven when the
-            // gap between them is a constant two. `cover` spends the difference
-            // where the layout intended it, on the sides.
+            // A centre crop: the tile is square and the photograph is not.
             contentFit="cover"
             // **The floor of the paint rule, and why no tile is ever empty.**
             // `expo-image` decodes the ThumbHash natively from this base64
@@ -308,17 +280,15 @@ export const LibraryRow = memo(function LibraryRow({
  * changes about a record that is otherwise untouched.
  */
 function sameRow(
-  before: { readonly row: JustifiedRow<LibraryItem>; readonly onOpen: unknown },
-  after: { readonly row: JustifiedRow<LibraryItem>; readonly onOpen: unknown },
+  before: { readonly row: LibraryGridRow; readonly onOpen: unknown },
+  after: { readonly row: LibraryGridRow; readonly onOpen: unknown },
 ): boolean {
   if (before.onOpen !== after.onOpen) return false;
-  if (before.row.height !== after.row.height) return false;
-  if (before.row.placements.length !== after.row.placements.length) return false;
-  return before.row.placements.every((placement, index) => {
-    const other = after.row.placements[index];
-    if (!other || placement.width !== other.width) return false;
-    const a = placement.item;
-    const b = other.item;
+  if (before.row.tileSize !== after.row.tileSize) return false;
+  if (before.row.items.length !== after.row.items.length) return false;
+  return before.row.items.every((a, index) => {
+    const b = after.row.items[index];
+    if (!b) return false;
     return (
       a.record.id === b.record.id &&
       a.uri === b.uri &&

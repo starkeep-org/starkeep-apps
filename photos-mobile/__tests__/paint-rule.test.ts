@@ -60,11 +60,10 @@ const SOURCE = { width: 4272, height: 2848 };
  * cases below is that a *given* geometry resolves to a *given* rung, and a
  * geometry that moved with the test runner would assert nothing.
  */
-// `LIBRARY_ROW_HEIGHT`'s value, restated rather than imported: `theme.ts` pulls
-// in React Native, which does not parse under Node. Restating it is also the
-// more honest fixture — these cases assert that *this* geometry lands on *that*
-// rung, and one that moved with the theme would assert nothing.
-const GRID = { targetRowHeight: 120, containerWidth: 350, devicePixelRatio: 3 };
+// A fixed tile rather than `libraryTileSize` of a window: these cases assert
+// that *this* geometry lands on *that* rung, and one that moved with the grid
+// would assert nothing.
+const GRID = { tileSize: 120, devicePixelRatio: 3 };
 const WINDOW = { width: 390, height: 844 };
 /** A gesture bar and a status bar, as `useSafeAreaInsets` would report them. */
 const INSETS = { top: 24, bottom: 34, left: 0, right: 0 };
@@ -519,7 +518,7 @@ describe("the viewer plays a video", () => {
 });
 
 describe("a record whose dimensions nothing has read", () => {
-  it("still gets a box, a target and a resolution", async () => {
+  it("still gets a target and a resolution", async () => {
     // Mid-backfill, which is an ordinary state on this device: the EXIF pass
     // repairs a library in batches, and the grid has to render while it does.
     const parent = await seedParent({ bytesHere: true, dimensions: null });
@@ -527,27 +526,10 @@ describe("a record whose dimensions nothing has read", () => {
 
     const item = await tile();
 
-    // The mild landscape guess, shared with the web app's grid so the two lay a
-    // dimensionless record out the same way.
-    expect(item.aspect).toBeCloseTo(1.5, 6);
-    // And it resolves rather than being excluded — over what exists, since
+    // It resolves rather than being excluded — over what exists, since
     // without a source long edge there is no applicable set to name an ideal
     // from.
     expect(item.uri).not.toBeNull();
-  });
-});
-
-describe("orientation", () => {
-  it("lays a quarter-turned photograph out in the shape it is shown", async () => {
-    // The media store's own width and height carry no rotation correction, which
-    // is why `media/exif.ts` reads the header. A grid that used the stored pair
-    // would give a portrait photograph a landscape box.
-    const parent = await seedParent({ bytesHere: true });
-    await database.putMetadata(parent.type, { recordId: parent.id as StarkeepId, orientation: 6 });
-
-    const item = await tile();
-
-    expect(item.aspect).toBeCloseTo(SOURCE.height / SOURCE.width, 6);
   });
 });
 

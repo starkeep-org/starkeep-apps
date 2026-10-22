@@ -32,10 +32,15 @@ import {
 // the screen can drop the decoded bitmaps when the app leaves the foreground.
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { libraryRowKey, libraryRows, LibraryRow, useLibraryViewer } from "./LibraryGrid";
-import type { JustifiedRow } from "../photos/render-target";
+import {
+  libraryRowKey,
+  libraryRows,
+  LibraryRow,
+  useLibraryViewer,
+  type LibraryGridRow,
+} from "./LibraryGrid";
 import type { LibraryItem } from "../library";
-import { colors, GRID_GAP, styles } from "./theme";
+import { colors, GRID_GAP, libraryColumns, styles } from "./theme";
 import { onSessionRejected } from "../auth/session";
 import { useLibrary, useNode, useStorage } from "./use-library";
 import { useForegroundWork } from "./use-foreground-work";
@@ -52,8 +57,8 @@ export function HomeScreen({ onConnect }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The hook rather than `Dimensions.get`, because this value has to re-render
-  // the screen: the justified rows are laid out against it, and a rotation that
-  // did not re-flow them would leave every row measured for the other width.
+  // the screen: the tiles are sized against it, and a rotation that did not
+  // re-size them would leave every row measured for the other width.
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const landscape = useIsLandscape();
@@ -109,11 +114,15 @@ export function HomeScreen({ onConnect }: Props) {
   // rather than leaving them measured for the old one. Landscape keeps the rows
   // clear of a display cutout at either side.
   const gridWidth = landscape ? window.width - insets.left - insets.right : window.width;
-  const rows = useMemo(() => libraryRows(library.items, gridWidth), [library.items, gridWidth]);
+  const columns = libraryColumns(window);
+  const rows = useMemo(
+    () => libraryRows(library.items, gridWidth, columns),
+    [library.items, gridWidth, columns],
+  );
 
   const openItem = viewer.open;
   const renderRow = useCallback(
-    ({ item }: { item: JustifiedRow<LibraryItem> }) => <LibraryRow row={item} onOpen={openItem} />,
+    ({ item }: { item: LibraryGridRow }) => <LibraryRow row={item} onOpen={openItem} />,
     [openItem],
   );
 

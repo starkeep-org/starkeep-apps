@@ -95,8 +95,6 @@ export interface TickDeps {
     imported: number;
     skipped: number;
     failed: number;
-    /** This pass only established the import watermark. See `media/import-cursor.ts`. */
-    cursorSeeded?: boolean;
   }>;
   /**
    * Make the rungs this device's own photographs are missing.
@@ -308,11 +306,6 @@ async function runJob(
   switch (job) {
     case "scan-media-store": {
       const outcome = await deps.importRecent(shareOf(options, now, IMPORT_DEADLINE_SHARE));
-      // Named rather than left as three zeroes. A seeding pass and an empty
-      // camera roll produce identical counts and mean opposite things — one is
-      // a node that has just learned where "now" is, the other is a node with
-      // nothing to do — and the first is what every fresh install reports once.
-      if (outcome.cursorSeeded) return "watermark established — nothing imported on a first look";
       return `imported=${outcome.imported} skipped=${outcome.skipped} failed=${outcome.failed}`;
     }
 

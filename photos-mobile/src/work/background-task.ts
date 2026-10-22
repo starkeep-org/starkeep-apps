@@ -259,7 +259,6 @@ TaskManager.defineTask(BACKGROUND_WORK_TASK, async () => {
               imported: outcome.imported,
               skipped: outcome.skipped,
               failed: outcome.failed,
-              cursorSeeded: outcome.cursorSeeded ?? false,
             };
           },
           // The rungs this device's own photographs need, made here rather than

@@ -741,6 +741,7 @@ export function importRecentFor(
     {
       ...importDepsFor(node, clock),
       importCursor: node.importCursor ?? undefined,
+      importFloor: node.importFloor ?? undefined,
       ...(options.background ? { yieldToUi: noYield } : {}),
       ...(options.onProgress ? { onProgress: options.onProgress } : {}),
     },

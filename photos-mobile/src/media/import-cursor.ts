@@ -106,6 +106,71 @@ export const VIDEO_DURATION_CURSOR_TABLE = "video_duration_backfill_cursor";
  */
 export const CURSOR_OVERLAP_MS = 1_000;
 
+/**
+ * How far back of now import reaches into the camera roll: fourteen days.
+ *
+ * Import adds the camera roll to this node; it does not decide what the node
+ * syncs. A phone holding years of photographs would otherwise either add none
+ * of them or hash all of them, and neither is what someone opening the app for
+ * the first time expects.
+ *
+ * **A release may widen this, and every install follows.** Raise it to ninety
+ * days, or to `Number.POSITIVE_INFINITY` for the whole camera roll, and the
+ * next pass on each device walks back over the gap once. See
+ * {@link reachImportCursor}. Narrowing it removes nothing: what import has
+ * already added stays added.
+ *
+ * Measured on `DATE_MODIFIED`, the field the whole walk runs on, so the reach
+ * holds what appeared on this device in that span. For a camera capture that
+ * is when it was taken. A photograph saved or received recently counts as
+ * recent even when its EXIF date is old.
+ */
+export const IMPORT_REACH_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Where the reach starts at a given moment: {@link IMPORT_REACH_MS} before
+ * now, and never before the epoch, which is what an infinite reach becomes.
+ */
+export function importReachFloor(nowMs: number, reachMs: number = IMPORT_REACH_MS): number {
+  return Math.max(0, nowMs - reachMs);
+}
+
+/**
+ * How far back import has walked on this node: the oldest floor it has ever
+ * started a walk from.
+ *
+ * Its own table rather than a second column, for the reason the file comment
+ * gives. Not `media_import_reach`: that table belongs to a rewind removed on
+ * 2026-10-21, holds a different column, and may still sit in a phone's
+ * database.
+ */
+export const IMPORT_FLOOR_TABLE = "media_import_floor";
+
+/**
+ * Where the watermark has to be for import to cover this release's reach, or
+ * null when it already does.
+ *
+ * `covered` is null on a node that predates the floor table. Such a node
+ * started its walk wherever the watermark sat when it first looked, so that
+ * watermark is how far back it has reached.
+ *
+ * **The one place a watermark moves backwards**, and only to a floor nothing
+ * has walked from yet. A floor at or after `covered` changes nothing, which is
+ * the steady state: a time-relative floor moves forward every day, so a reach
+ * that never changes never rewinds again after a node's first look. The walk
+ * from the new floor re-offers assets this node already holds, and
+ * `alreadyImported` settles each in an alias lookup.
+ */
+export function reachImportCursor(
+  cursor: number | null,
+  covered: number | null,
+  floor: number,
+): number | null {
+  const reached = covered ?? cursor;
+  if (reached !== null && floor >= reached) return null;
+  return cursor === null ? floor : Math.min(cursor, floor);
+}
+
 /** Where the next query should start, given a watermark. */
 export function queryFloorFor(cursor: number | null): number | null {
   return cursor === null ? null : cursor - CURSOR_OVERLAP_MS;

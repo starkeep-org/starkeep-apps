@@ -43,7 +43,7 @@ const requestPermissions = deviceMedia.requestPermissions as jest.Mock;
 /** A node with no cloud, so a catch-up imports and never syncs. */
 const READY = {
   status: "ready",
-  node: { engine: null },
+  node: { engine: null, uploads: null },
   identity: {},
   clock: {},
   connection: null,

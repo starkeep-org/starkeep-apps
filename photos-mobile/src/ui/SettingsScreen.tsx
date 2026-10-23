@@ -16,6 +16,7 @@ import { hostLabel } from "../auth/connection";
 import { signOutThisPhone } from "../platform";
 import { CEILING_CATEGORY_LABELS, ceilingLabel } from "./ceiling-text";
 import { describeStorageGroup } from "./storage-text";
+import { describeUploads } from "./upload-text";
 import { formatBytes } from "./format";
 import { colors, CONTENT_PADDING, styles } from "./theme";
 import type { ForegroundWork } from "./use-foreground-work";
@@ -179,6 +180,11 @@ function SyncSection({ work }: { readonly work: ForegroundWork }) {
       {/* Only a failure says anything. A sync that stopped short with no line
           under the button would look like a button that does nothing. */}
       {!work.syncing && work.syncError ? <Text style={styles.error}>{work.syncError}</Text> : null}
+      {/* Uploads run beside the syncs, so the button finishing says nothing
+          about the files. This line does. */}
+      {describeUploads(work.uploads) ? (
+        <Text style={styles.muted}>{describeUploads(work.uploads)}</Text>
+      ) : null}
     </Section>
   );
 }

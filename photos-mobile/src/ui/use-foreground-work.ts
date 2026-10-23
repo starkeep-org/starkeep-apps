@@ -25,8 +25,10 @@ import {
   createForegroundSyncLoop,
   createSyncFollowUp,
   mayAutoSync,
+  uploadsMayRun,
 } from "../work/foreground-sync";
 import type { SyncTrigger } from "../work/sync-trace";
+import type { UploaderStats } from "@starkeep/sync-engine";
 import { readRealDeviceState, registerBackgroundWork } from "../work/background-task";
 import type { LibraryState, NodeState, StorageState } from "./use-library";
 
@@ -35,6 +37,8 @@ export interface ForegroundWork {
   readonly syncing: boolean;
   /** Why the last sync stopped short of finishing, or null when it did not. */
   readonly syncError: string | null;
+  /** What the uploader has left, or null with no cloud. Refreshed at most once a second. */
+  readonly uploads: UploaderStats | null;
   /**
    * A sync a person asked for. Unconstrained, unlike the automatic ones: a tap
    * is a person deciding to spend their own data, so it does not wait for
@@ -178,7 +182,7 @@ export function useForegroundWork(
           console.warn(
             `[sync] trigger=${trigger} round=${rounds} applied=${result.applied} ` +
               `shipped=${result.shipped} elided=${result.elided} ` +
-              `landed=${result.landed} uploaded=${result.uploaded} ` +
+              `landed=${result.landed} ` +
               `blocked=${result.blocked} hasMore=${result.hasMore} ` +
               `outboundHasMore=${result.outboundHasMore} ` +
               `bytesHasMore=${result.bytesHasMore} ` +
@@ -226,6 +230,15 @@ export function useForegroundWork(
                     ? "Sync stopped before it finished. Tap Sync now to carry on."
                     : null,
         );
+        // A tap is a person deciding to spend their own data, so it sends
+        // the files too when the uploader is not running — on a metered
+        // connection, typically. Bounded by the same abort as the sync.
+        const uploads = node.node.uploads;
+        if (trigger === "button" && uploads && uploads.stats().state === "stopped") {
+          await uploads.drain({ signal: abort.signal }).catch((err: unknown) => {
+            console.warn(`[upload] Sync now could not send files: ${String(err)}`);
+          });
+        }
         await library.reload();
         storage.refresh();
       })
@@ -248,9 +261,36 @@ export function useForegroundWork(
   }, [startSync]);
 
   /**
+   * Start or stop the uploader for the app's state and the connection now.
+   *
+   * Uploads run beside the syncs, continuously, while the app is open on an
+   * unmetered connection. Checked on entering the foreground and on every timer
+   * tick, so a phone that moves onto Wi-Fi starts uploading within a tick and
+   * one that moves off it stops.
+   */
+  const updateUploads = useCallback(async () => {
+    if (node.status !== "ready" || node.node.uploads === null) return;
+    const uploads = node.node.uploads;
+    const conditions = await readRealDeviceState().catch(() => null);
+    const allowed = uploadsMayRun({
+      nodeReady: true,
+      hasCloud: true,
+      device: conditions,
+      foreground: appActive.current,
+    });
+    if (!allowed) {
+      uploads.stop();
+      return;
+    }
+    await uploads.start().catch((err: unknown) => {
+      console.warn(`[upload] could not start uploads: ${String(err)}`);
+    });
+  }, [node]);
+
+  /**
    * A sync nobody tapped for: a timer tick, a photograph just taken. Kept to
    * the catch-up's rule — never over a metered connection — because the sync
-   * moves originals as well as rows. See `mayAutoSync`.
+   * downloads stand-ins. See `mayAutoSync`.
    */
   const autoSync = useCallback(
     async (trigger: SyncTrigger) => {
@@ -261,8 +301,9 @@ export function useForegroundWork(
         device: conditions,
       });
       if (allowed) runSync(trigger);
+      if (trigger === "timer") await updateUploads();
     },
-    [node, runSync],
+    [node, runSync, updateUploads],
   );
 
   /**
@@ -420,10 +461,20 @@ export function useForegroundWork(
   /** The latest {@link autoSync} and {@link onMediaChange}, for the same reason. */
   const autoSyncRef = useRef<((trigger: SyncTrigger) => Promise<void>) | null>(null);
   const onMediaChangeRef = useRef<(() => Promise<void>) | null>(null);
+  const updateUploadsRef = useRef<(() => Promise<void>) | null>(null);
+  const uploadsRef = useRef<{ stop(): void } | null>(null);
   useEffect(() => {
     autoSyncRef.current = autoSync;
     onMediaChangeRef.current = onMediaChange;
-  }, [autoSync, onMediaChange]);
+    updateUploadsRef.current = updateUploads;
+    uploadsRef.current = node.status === "ready" ? node.node.uploads : null;
+  }, [autoSync, onMediaChange, updateUploads, node]);
+
+  // The node opening is a foreground event of its own: the first chance to
+  // start uploading on this launch.
+  useEffect(() => {
+    void updateUploads();
+  }, [updateUploads]);
 
   useEffect(() => {
     // While the app is open: a sync every thirty seconds, and an import and a
@@ -438,6 +489,7 @@ export function useForegroundWork(
       appActive.current = true;
       loop.start();
       mediaSubscription ??= deviceMedia.onChange?.(() => mediaChange.trigger()) ?? null;
+      void updateUploadsRef.current?.();
     };
     const leaveForeground = (): void => {
       appActive.current = false;
@@ -452,6 +504,9 @@ export function useForegroundWork(
       // freezes the process. Nothing is armed for the way back: coming to the
       // foreground starts a pass unconditionally, and that pass syncs.
       syncAbort.current?.abort();
+      // Uploads in flight finish; nothing new starts. Background windows drain
+      // the queue through the `push-blobs` job.
+      uploadsRef.current?.stop();
     };
 
     if (AppState.currentState === "active") enterForeground();
@@ -561,8 +616,38 @@ export function useForegroundWork(
     );
   }, []);
 
+  // The uploader reports every transfer; the screen needs a second's worth.
+  const [uploadStats, setUploadStats] = useState<UploaderStats | null>(null);
+  useEffect(() => {
+    if (node.status !== "ready" || node.node.uploads === null) {
+      setUploadStats(null);
+      return;
+    }
+    const uploads = node.node.uploads;
+    setUploadStats(uploads.stats());
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = uploads.onChange(() => {
+      timer ??= setTimeout(() => {
+        timer = null;
+        setUploadStats(uploads.stats());
+      }, 1_000);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [node]);
+
   const syncNow = useCallback(() => runSync("button"), [runSync]);
   const catchUpNow = useCallback(() => runCatchUp({ force: true }), [runCatchUp]);
 
-  return { syncing, syncError, syncNow, catchUpNow, mediaAccess, requestMediaAccess };
+  return {
+    syncing,
+    syncError,
+    uploads: uploadStats,
+    syncNow,
+    catchUpNow,
+    mediaAccess,
+    requestMediaAccess,
+  };
 }

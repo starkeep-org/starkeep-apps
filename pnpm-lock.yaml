@@ -129,17 +129,17 @@ importers:
         specifier: workspace:*
         version: link:../packages/photos-ladder
       '@starkeep/protocol-primitives':
-        specifier: ^0.5.0
-        version: 0.5.0(typescript@5.9.3)
-      '@starkeep/storage-adapter':
         specifier: ^0.6.0
         version: 0.6.0(typescript@5.9.3)
-      '@starkeep/storage-sqlite':
-        specifier: ^0.5.1
-        version: 0.5.1(typescript@5.9.3)
-      '@starkeep/sync-engine':
+      '@starkeep/storage-adapter':
         specifier: ^0.7.0
         version: 0.7.0(typescript@5.9.3)
+      '@starkeep/storage-sqlite':
+        specifier: ^0.5.3
+        version: 0.5.3(typescript@5.9.3)
+      '@starkeep/sync-engine':
+        specifier: ^0.9.0
+        version: 0.9.0(typescript@5.9.3)
       expo:
         specifier: ^57.0.9
         version: 57.0.9(@babel/core@7.29.7)(@expo/dom-webview@57.0.1)(react-dom@19.2.7(react@19.2.7))(react-native@0.86.2(@babel/core@7.29.7)(@react-native/jest-preset@0.86.2(@babel/core@7.29.7)(react@19.2.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
@@ -2332,17 +2332,20 @@ packages:
   '@starkeep/protocol-primitives@0.5.0':
     resolution: {integrity: sha512-aLKJTWOS8IdYtKPtRR0Yv+S7/eXxrLm00fI4EsgVqlt8xG+Lef6lP4abBbVdcsXC1VwbihFaLpFpb5YL3+Hwig==}
 
-  '@starkeep/shared-space-api@0.5.1':
-    resolution: {integrity: sha512-ddao8+IWuvV77kf451rdT0kEqXtSuvKxtiI39NLHHIYIfOmIiMg6pzFQS71t66hHTpQQ/helHo906WO4so+NUg==}
+  '@starkeep/protocol-primitives@0.6.0':
+    resolution: {integrity: sha512-XxPxolUPT575Vq5vam0NwoNgoXVkJQw4twbjful+I+NgQLmtBixfEpr6/ODvTQgrvVRLJVN2bxJrDXJ0JLdmkg==}
 
-  '@starkeep/storage-adapter@0.6.0':
-    resolution: {integrity: sha512-cu2R2krOo7vXS07VinGDV81zdTgb49It7X1zKf9tAcNQay8xjRkjCQbM2z2BjM9Sq0voi45irEn8onS8Ibk9bg==}
+  '@starkeep/shared-space-api@0.6.1':
+    resolution: {integrity: sha512-AUmHdAuyVPJXJ+Fh50lhSMKPYGsjHjeOL2H6GczOWVxrDmAIhy39e871Fimcil8FnXtJGC3XAGleG0k2umkAlQ==}
 
-  '@starkeep/storage-sqlite@0.5.1':
-    resolution: {integrity: sha512-LbqnGWZ/hgHZ3ROrsPgDWLfkYsT6d9v9ouAZXfroPyKQ1AH0f0dnSvup/xPUOl6JS/0mMvz5+WBLWelXcQ0OEQ==}
+  '@starkeep/storage-adapter@0.7.0':
+    resolution: {integrity: sha512-eYm2cr2l0EWJkdPwMOwQIgow4JEizVEEBzrBek8qIbFAv3h9CxQ4YEAqMsVq1g09t/J/6NBvP/5x+wWKGnvK6w==}
 
-  '@starkeep/sync-engine@0.7.0':
-    resolution: {integrity: sha512-N0Rjlrg3C4ooLgqcBTlJCCZvr739vAUY8vAluh3ujg9HM07ivnKNJUv4iFvRzxMehyWbZZZaA6LvRa9gsQM6bg==}
+  '@starkeep/storage-sqlite@0.5.3':
+    resolution: {integrity: sha512-g8FklKLk3XomuPvlUgoOhg/Ho8W2Dkg3Lg2Z8xTHn/Xw8dfOM5rrksUdNOhYVRSSgMtvWK0BnKv65Aj1Qc4Kew==}
+
+  '@starkeep/sync-engine@0.9.0':
+    resolution: {integrity: sha512-y+Fiv/RgQA/jHWbcXn+rB5wPgGe0zQ/BknDdN/bHv0DTVpIYjYlnEEZi7gcE7ir20KPz2Gc6zzww+wZ8cjfn1Q==}
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -7610,35 +7613,43 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/shared-space-api@0.5.1(typescript@5.9.3)':
+  '@starkeep/protocol-primitives@0.6.0(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.5.0(typescript@5.9.3)
-      '@starkeep/storage-adapter': 0.6.0(typescript@5.9.3)
-      '@starkeep/sync-engine': 0.7.0(typescript@5.9.3)
+      '@noble/hashes': 1.8.0
+      ulidx: 2.4.1
+      valibot: 1.5.0(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/storage-adapter@0.6.0(typescript@5.9.3)':
+  '@starkeep/shared-space-api@0.6.1(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.5.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
+      '@starkeep/storage-adapter': 0.7.0(typescript@5.9.3)
+      '@starkeep/sync-engine': 0.9.0(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
+
+  '@starkeep/storage-adapter@0.7.0(typescript@5.9.3)':
+    dependencies:
+      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
       js-sha256: 1.0.0
       kysely: 0.28.17
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/storage-sqlite@0.5.1(typescript@5.9.3)':
+  '@starkeep/storage-sqlite@0.5.3(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.5.0(typescript@5.9.3)
-      '@starkeep/shared-space-api': 0.5.1(typescript@5.9.3)
-      '@starkeep/storage-adapter': 0.6.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
+      '@starkeep/shared-space-api': 0.6.1(typescript@5.9.3)
+      '@starkeep/storage-adapter': 0.7.0(typescript@5.9.3)
       kysely: 0.28.17
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/sync-engine@0.7.0(typescript@5.9.3)':
+  '@starkeep/sync-engine@0.9.0(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.5.0(typescript@5.9.3)
-      '@starkeep/storage-adapter': 0.6.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
+      '@starkeep/storage-adapter': 0.7.0(typescript@5.9.3)
       kysely: 0.28.17
     transitivePeerDependencies:
       - typescript

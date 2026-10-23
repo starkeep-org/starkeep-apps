@@ -7,6 +7,10 @@
  * the rounds in the node's own database, so a person diagnosing sync can read
  * them off the phone afterwards.
  *
+ * Rounds move rows and downloads. Uploads run in the engine's uploader,
+ * beside the rounds, and report to the cloud on each batch; see
+ * `starkeep-core/docs/runbook-phone-sync-timeline.md`.
+ *
  * One row per round, written as the round ends. The last round of a sync also
  * carries why the sync stopped. A sync that ran no round at all — aborted
  * before it began, or failed outright — gets one row of its own so the stop is
@@ -52,8 +56,6 @@ export interface SyncTraceRound {
   readonly shipped: number;
   readonly landed: number;
   readonly landedBytes: number;
-  readonly uploaded: number;
-  readonly uploadedBytes: number;
   readonly elided: number;
   readonly blocked: boolean;
   readonly hasMore: boolean;
@@ -101,8 +103,6 @@ export function createSyncTraceStore(db: RawDatabase, keep = SYNC_TRACE_KEEP): S
       .addColumn("shipped", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("landed", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("landed_bytes", "integer", (c) => c.notNull().defaultTo(0))
-      .addColumn("uploaded", "integer", (c) => c.notNull().defaultTo(0))
-      .addColumn("uploaded_bytes", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("elided", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("blocked", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("has_more", "integer", (c) => c.notNull().defaultTo(0))
@@ -126,8 +126,6 @@ export function createSyncTraceStore(db: RawDatabase, keep = SYNC_TRACE_KEEP): S
         shipped: p(),
         landed: p(),
         landed_bytes: p(),
-        uploaded: p(),
-        uploaded_bytes: p(),
         elided: p(),
         blocked: p(),
         has_more: p(),
@@ -173,8 +171,6 @@ export function createSyncTraceStore(db: RawDatabase, keep = SYNC_TRACE_KEEP): S
         result.shipped,
         result.landed,
         result.landedBytes,
-        result.uploaded,
-        result.uploadedBytes,
         result.elided,
         flag(result.blocked),
         flag(result.hasMore),
@@ -190,7 +186,7 @@ export function createSyncTraceStore(db: RawDatabase, keep = SYNC_TRACE_KEEP): S
         setReason.run(reason, last.id);
         return;
       }
-      insert.run(syncId, trigger, 0, startedAt, Date.now(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, reason);
+      insert.run(syncId, trigger, 0, startedAt, Date.now(), 0, 0, 0, 0, 0, 0, 0, 0, 0, reason);
       prune.run();
     },
     recent(limit) {
@@ -211,8 +207,6 @@ function rowToRound(row: Record<string, unknown>): SyncTraceRound {
     shipped: num("shipped"),
     landed: num("landed"),
     landedBytes: num("landed_bytes"),
-    uploaded: num("uploaded"),
-    uploadedBytes: num("uploaded_bytes"),
     elided: num("elided"),
     blocked: num("blocked") === 1,
     hasMore: num("has_more") === 1,
@@ -251,7 +245,6 @@ export function formatSyncTrace(rounds: readonly SyncTraceRound[]): string {
       `applied=${r.applied}`,
       `shipped=${r.shipped}`,
       `landed=${r.landed}/${r.landedBytes}B`,
-      `uploaded=${r.uploaded}/${r.uploadedBytes}B`,
       `elided=${r.elided}`,
       `blocked=${r.blocked}`,
       `hasMore=${r.hasMore}`,

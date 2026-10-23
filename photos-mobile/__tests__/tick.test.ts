@@ -90,8 +90,42 @@ describe("what runs", () => {
   });
 });
 
+describe("uploads", () => {
+  const stats = {
+    state: "draining",
+    queued: { fast: { count: 0, bytes: 0 }, full: { count: 2, bytes: 6_000_000 } },
+    blocked: { count: 1, bytes: 10 },
+    backingOff: 0,
+    inFlight: { count: 0, bytes: 0 },
+    sent: { count: 5, bytes: 400_000 },
+  };
+
+  it("drains the uploader's queue within a share of the window", async () => {
+    let signal: { aborted: boolean } | undefined;
+    let deadlineAt: number | undefined;
+    const drain = vi.fn(async (options?: { signal?: { aborted: boolean }; deadlineAt?: number }) => {
+      signal = options?.signal;
+      deadlineAt = options?.deadlineAt;
+      return stats;
+    });
+    const node = fakeNode({ uploads: { drain } as unknown as MobileNode["uploads"] });
+    const deadlineMs = Date.now() + 60_000;
+    const report = await runWorkTick(deps({ node }), { deadlineMs });
+
+    expect(drain).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(false);
+    expect(deadlineAt).toBeLessThan(deadlineMs);
+    expect(find(report, "push-blobs").detail).toBe("sent=5/400000B queued=0+2 blocked=1 state=draining");
+  });
+
+  it("says so on a node with no cloud", async () => {
+    const report = await runWorkTick(deps({ node: fakeNode({ uploads: null }) }), far());
+    expect(find(report, "push-blobs").detail).toContain("no cloud");
+  });
+});
+
 describe("the metered connection", () => {
-  it("holds sync back entirely, because one call moves blobs as well as rows", async () => {
+  it("holds sync back entirely, because the round downloads stand-ins", async () => {
     const d = deps({ device: device({ isUnmetered: false }) });
     const report = await runWorkTick(d, far());
     expect(d.node.sync).not.toHaveBeenCalled();

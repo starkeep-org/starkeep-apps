@@ -337,6 +337,14 @@ export interface LibraryState {
   readonly items: readonly LibraryItem[];
   readonly loading: boolean;
   /**
+   * Whether a read of the library has finished at least once.
+   *
+   * Apart from {@link loading} because `loading` is false before the node is
+   * ready, too, when nothing has been read yet. An empty grid means "no
+   * photos" only once this holds; before it, the grid does not know.
+   */
+  readonly loaded: boolean;
+  /**
    * A further page is being appended.
    *
    * Carried apart from {@link loading} because the two need different words on
@@ -612,6 +620,7 @@ export function useStorage(node: NodeState): StorageState {
 export function useLibrary(node: NodeState): LibraryState {
   const [items, setItems] = useState<readonly LibraryItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
@@ -687,6 +696,7 @@ export function useLibrary(node: NodeState): LibraryState {
       pagesLoaded.current = Math.max(1, Math.ceil(collected.length / limit));
       setItems(collected);
       setHasMore(more && next !== null);
+      setLoaded(true);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -1339,6 +1349,7 @@ export function useLibrary(node: NodeState): LibraryState {
   return {
     items,
     loading,
+    loaded,
     loadingMore,
     hasMore,
     loadMoreError,

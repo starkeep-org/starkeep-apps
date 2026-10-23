@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
@@ -11,6 +11,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * cloud bundle, a local app build) take that long.
  */
 export default defineConfig({
+  // The journey's member steps import admin-web's Users routes straight out of
+  // the sibling starkeep-core checkout. Vite loads nothing outside this
+  // workspace unless allowed, and refuses the file as "Cannot find module".
+  server: { fs: { allow: [resolve(__dirname, "../.."), resolve(__dirname, "../../../starkeep-core")] } },
   test: {
     // Relative to this config's directory, which is where the journey lives.
     dir: __dirname,

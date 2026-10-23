@@ -309,6 +309,8 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
 
   return (
     <div
+      data-testid="photo-viewer"
+      data-record-id={image.id}
       style={{
         position: "fixed",
         inset: 0,

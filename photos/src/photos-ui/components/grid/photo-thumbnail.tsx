@@ -184,6 +184,8 @@ export function PhotoThumbnail({
   return (
     <div
       ref={containerRef}
+      data-testid="photo-tile"
+      data-record-id={image.id}
       onClick={() => onSelect(image.id)}
       style={{
         width,

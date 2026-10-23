@@ -140,10 +140,14 @@ export function HomeScreen({ onConnect }: Props) {
     return () => subscription.remove();
   }, []);
 
-  /** What the grid says when the node holds nothing. */
+  /**
+   * What the grid says when it has nothing to draw: "No photos yet" only once a
+   * read has finished and found none. Before the first read — while the node is
+   * still opening — the grid does not know, and said "No photos yet" anyway.
+   */
   const empty = (
     <Text style={[styles.muted, styles.listGutter, { paddingTop: 24 }]}>
-      {library.loading ? "Loading…" : "No photos yet."}
+      {library.loaded && !library.loading ? "No photos yet." : "Loading…"}
     </Text>
   );
 

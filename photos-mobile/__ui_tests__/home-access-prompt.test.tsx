@@ -18,6 +18,7 @@ jest.mock("../src/ui/use-library", () => {
   const library = {
     items: [],
     loading: false,
+    loaded: true,
     loadingMore: false,
     hasMore: false,
     loadMoreError: null,

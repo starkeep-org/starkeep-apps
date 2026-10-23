@@ -278,6 +278,21 @@ export const styles = StyleSheet.create({
     justifyContent: "center",
   },
   viewerPlayBusy: { color: "#fff", fontSize: 12 },
+  /**
+   * The note over a photograph whose bytes are here and have not drawn. Near
+   * the bottom of the stage, so the blur it sits on stays readable as the
+   * photograph it stands in for.
+   */
+  viewerStallNote: {
+    position: "absolute",
+    alignSelf: "center",
+    bottom: 24,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
+  },
+  viewerStallText: { color: "#fff", fontSize: 13 },
   /** The info sheet: a panel rising from the bottom over a dimmed viewer. */
   sheetBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
   sheet: {

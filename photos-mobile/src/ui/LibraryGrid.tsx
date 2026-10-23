@@ -54,7 +54,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 // See `photos-mobile-status-2026-08-31.md`.
 import { Image } from "expo-image";
 import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
-import { EXPIRED, REAL_TIMERS, raceDeadline } from "../deadline";
 import type { LibraryItem } from "../library";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { viewerStageBox, type Dimensions as Box } from "../photos/render-target";
@@ -301,13 +300,6 @@ function sameRow(
 }
 
 /**
- * How long a tap waits for the viewer's resolve before opening on the tile's
- * rung. A resolve takes about 25 ms on a Pixel 5; this bounds the tap's delay
- * when the database is busy with an import or a sync.
- */
-const OPEN_RESOLVE_WAIT_MS = 150;
-
-/**
  * The viewer's state, and the element that draws it.
  *
  * A hook rather than a component wrapping the grid, because the grid is no
@@ -472,38 +464,28 @@ export function useLibraryViewer(
   );
 
   /**
-   * Open the viewer on a record, at the rung the stage wants.
+   * Open the viewer on a record, on the tap, with whatever is here.
    *
-   * **Resolved before the viewer appears, not after.** The viewer used to open
-   * on the tile's rung and swap to the stage's rung once the resolve landed — the
-   * picture first, and the bookkeeping after it — which was right when a resolve
-   * could take a second. It now takes about 25 ms on a Pixel 5, and the swap it
-   * bought showed on every open as a blackout between two pictures. So the tap
-   * waits for the resolve and the viewer opens on the right picture. A resolve
-   * slower than {@link OPEN_RESOLVE_WAIT_MS} opens on the tile's rung instead,
-   * and the resolution replaces it when it lands.
+   * **Nothing waits.** The viewer opens on the tile's rung and its ThumbHash,
+   * and the resolve for the rung the stage wants runs behind it. A better rung
+   * mounts as a layer of its own and covers the tile's once it has drawn — see
+   * `StillStage` — so the swap changes sharpness and nothing else. The tap used
+   * to wait up to 150 ms for the resolve, because a swap then showed as a
+   * blackout. A swap that cannot black out is cheaper than any wait.
    */
   const open = useCallback(
     (opened: LibraryItem) => {
       const id = opened.record.id;
       perf(`show:enter ${id.slice(-6)}`);
       showing.current = id;
-      const resolving = resolveNow(opened);
+      setResolved(new Map());
+      setFocused(false);
+      setOpenId(id);
       void (async () => {
-        // The platform's timers: a tap happens in the foreground. See `deadline.ts`.
-        const raced = await raceDeadline(resolving, {
-          ms: OPEN_RESOLVE_WAIT_MS,
-          timers: REAL_TIMERS,
-        });
-        const first = raced === EXPIRED ? null : raced;
-        perf(`show:resolved inTime=${first !== null}`);
+        const current = await resolveNow(opened);
+        perf(`show:resolved better=${!samePicture(current, opened)}`);
         if (showing.current !== id) return;
-        setResolved(new Map(first ? [[id, first]] : []));
-        setFocused(false);
-        setOpenId(id);
-        const current = first ?? (await resolving);
-        if (showing.current !== id) return;
-        if (!first) remember(current);
+        remember(current);
         improve(current);
         resolveNeighbours(id);
       })();
@@ -639,7 +621,7 @@ export function useLibraryViewer(
  *
  * Compared on what the viewer draws with rather than by identity, because
  * `resolveForViewer` builds a fresh object every time and most of the time it
- * has resolved to the rung the tile had already found. See {@link show}.
+ * has resolved to the rung the tile had already found. See {@link open}.
  */
 function samePicture(a: LibraryItem, b: LibraryItem): boolean {
   return (

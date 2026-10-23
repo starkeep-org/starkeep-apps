@@ -28,7 +28,9 @@
  * blackout. So nothing the person does resizes the stage. The focused view, and
  * a playing video, hide the bars' *controls*; the bars keep their boxes, and
  * being black on black they disappear without moving the photograph. Only a
- * rotation resizes the stage, and a rotation redraws everything anyway.
+ * rotation resizes the stage. The pager keeps every page mounted across one, and
+ * a resized `expo-image` view keeps drawing its old picture in one of its two
+ * internal views until the reload lands in the other.
  *
  * ## Why a page's stage is three components rather than one body with three branches
  *
@@ -67,10 +69,24 @@ import { styles } from "./theme";
 import { isVideo } from "./format";
 import { perf } from "./perf";
 import { PhotoInfoSheet } from "./PhotoInfoSheet";
-import { collapseLayers, nextLayers, thumbHashLayer } from "./viewer-layers";
+import {
+  collapseBelow,
+  dropLayer,
+  initialStack,
+  markDisplayed,
+  withUri,
+  type LayerStack,
+} from "./viewer-layers";
 
 /** How close to the end of the loaded page a settled swipe asks for more. */
 const LOAD_MORE_WITHIN = 5;
+
+/**
+ * How long a rung already on this device may go undrawn before the stage says
+ * it is having trouble. A local rendition decodes in well under a second on a
+ * Pixel 5, so two seconds is a picture that is not coming the ordinary way.
+ */
+const STALLED_AFTER_MS = 2000;
 
 /** What the active page tells the frame, so the frame can draw its controls. */
 interface PageReport {
@@ -183,6 +199,30 @@ export function LibraryViewer({
   }, [index]);
 
   const pageWidth = window.width;
+  /**
+   * Back onto the open record after a rotation.
+   *
+   * A page is as wide as the window, so the offset the list held for the old
+   * width points at a different record at the new one. The scroll waits for
+   * the list to report content of the new width: scrolled any sooner, from a
+   * layout effect, Android clamped the offset to the old, shorter content, and
+   * landscape showed another photograph, or the halves of two.
+   *
+   * A stopgap. The pager still decides what is on screen from its offset; a
+   * pager positioned from the open record would not need this at all.
+   */
+  const laidOutWidth = useRef(pageWidth);
+  const onContentSizeChange = useCallback(
+    (contentWidth: number) => {
+      if (laidOutWidth.current === pageWidth) return;
+      if (Math.abs(contentWidth - items.length * pageWidth) > 1) return;
+      laidOutWidth.current = pageWidth;
+      if (index >= 0) {
+        listRef.current?.scrollToOffset({ offset: index * pageWidth, animated: false });
+      }
+    },
+    [pageWidth, items.length, index],
+  );
   const onMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const landed = Math.round(event.nativeEvent.contentOffset.x / pageWidth);
@@ -252,9 +292,10 @@ export function LibraryViewer({
 
   const pager = (
     <FlatList
-      // Remounted on rotation, at the open record. A page's width is the
-      // window's, so every offset the old list held is wrong afterwards.
-      key={`pager-${pageWidth}`}
+      // **Not keyed on the page width.** A key remounted every page on a
+      // rotation, and each new native view was empty until its first load
+      // landed. The offsets go wrong instead, which `onContentSizeChange`
+      // puts right once the list has resized.
       ref={listRef}
       data={items}
       horizontal
@@ -272,6 +313,7 @@ export function LibraryViewer({
       extraData={renderPage}
       renderItem={renderPage}
       onMomentumScrollEnd={onMomentumScrollEnd}
+      onContentSizeChange={onContentSizeChange}
       style={{ height: stage.height, flexGrow: 0 }}
     />
   );
@@ -283,58 +325,60 @@ export function LibraryViewer({
     // mounted underneath, which is what keeps its scroll position and stops
     // every tile re-decoding on the way back.
     <View style={styles.viewerOverlay}>
-      {landscape ? (
-        <>
-          {pager}
-          {/* The one control landscape keeps, bare over the photograph. */}
-          {controlsVisible ? (
-            <View style={[styles.viewerFloatingBack, { left: 4 + insets.left }]}>{back}</View>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <View style={{ height: insets.top }} />
-          <View style={[styles.viewerTopBar, { paddingLeft: 4 + insets.left }]}>
-            <View style={fade} pointerEvents={touchable}>
-              {back}
-            </View>
+      {/* **Every slot is present in both orientations, the pager at the same
+          index.** The two layouts used to be two branches, and the pager sat
+          first in one and third in the other, so React saw a different element
+          at each position and remounted the pager on every rotation — every
+          page's native view rebuilt empty, then reloaded as the window resized
+          in steps. Nulls hold the places of what an orientation leaves out. */}
+      {landscape ? null : <View style={{ height: insets.top }} />}
+      {landscape ? null : (
+        <View style={[styles.viewerTopBar, { paddingLeft: 4 + insets.left }]}>
+          <View style={fade} pointerEvents={touchable}>
+            {back}
           </View>
-          {pager}
-          {/* Given the height the stage arithmetic reserved for it, so a control
-              that is absent leaves its space empty rather than collapsing it
-              and resizing the picture above. See `VIEWER_BAR_HEIGHT`. */}
-          <View style={[styles.viewerFooter, fade]} pointerEvents={touchable}>
+        </View>
+      )}
+      {pager}
+      {/* Given the height the stage arithmetic reserved for it, so a control
+          that is absent leaves its space empty rather than collapsing it
+          and resizing the picture above. See `VIEWER_BAR_HEIGHT`. */}
+      {landscape ? null : (
+        <View style={[styles.viewerFooter, fade]} pointerEvents={touchable}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Photo info"
+            onPress={() => setInfoRecord(current.record)}
+            style={styles.iconButton}
+          >
+            <MaterialIcons name="info-outline" size={24} color="#fff" />
+          </Pressable>
+          {/* Offered only when there is genuinely motion in these bytes. The
+              record stays one image everywhere else in the app — it sorts,
+              syncs and counts as a single still — and this is the only place
+              its bytes behave differently. */}
+          {currentReport?.motion ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Photo info"
-              onPress={() => setInfoRecord(current.record)}
-              style={styles.iconButton}
+              accessibilityLabel={playingMotion ? "Stop motion" : "Play motion"}
+              onPress={() => setPlayingMotion((playing) => !playing)}
+              style={[styles.iconButton, { flexDirection: "row", width: undefined, gap: 6, paddingHorizontal: 12 }]}
             >
-              <MaterialIcons name="info-outline" size={24} color="#fff" />
+              <MaterialIcons
+                name={playingMotion ? "motion-photos-pause" : "motion-photos-on"}
+                size={24}
+                color="#fff"
+              />
+              <Text style={styles.viewerMotionLabel}>{playingMotion ? "Stop" : "Motion"}</Text>
             </Pressable>
-            {/* Offered only when there is genuinely motion in these bytes. The
-                record stays one image everywhere else in the app — it sorts,
-                syncs and counts as a single still — and this is the only place
-                its bytes behave differently. */}
-            {currentReport?.motion ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={playingMotion ? "Stop motion" : "Play motion"}
-                onPress={() => setPlayingMotion((playing) => !playing)}
-                style={[styles.iconButton, { flexDirection: "row", width: undefined, gap: 6, paddingHorizontal: 12 }]}
-              >
-                <MaterialIcons
-                  name={playingMotion ? "motion-photos-pause" : "motion-photos-on"}
-                  size={24}
-                  color="#fff"
-                />
-                <Text style={styles.viewerMotionLabel}>{playingMotion ? "Stop" : "Motion"}</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          <View style={{ height: insets.bottom }} />
-        </>
+          ) : null}
+        </View>
       )}
+      {landscape ? null : <View style={{ height: insets.bottom }} />}
+      {/* The one control landscape keeps, bare over the photograph. */}
+      {landscape && controlsVisible ? (
+        <View style={[styles.viewerFloatingBack, { left: 4 + insets.left }]}>{back}</View>
+      ) : null}
       <PhotoInfoSheet
         record={infoRecord}
         readInfo={onReadInfo}
@@ -377,7 +421,7 @@ const ViewerPage = memo(function ViewerPage({
   readonly onStopMotion: () => void;
   readonly onReport: (report: PageReport) => void;
 }) {
-  const { record, uri, bytesHere, playbackUri, thumbHash } = item;
+  const { record, uri, bytesHere, playbackUri } = item;
   const clip = isVideo(item);
 
   /**
@@ -468,21 +512,24 @@ const ViewerPage = memo(function ViewerPage({
   return (
     <View style={[styles.viewerPage, { width: pageWidth, height: stage.height }]}>
       <View style={{ width: stage.width, height: stage.height }}>
+        {/* **Mounted under a playing clip, not replaced by it.** A player's view
+            is empty until its first frame renders, so a clip that took the
+            still's place showed black between the two. The clip draws over the
+            still instead, transparent until that first frame, and the still is
+            what is there again the moment the clip stops. */}
+        <StillStage
+          uri={uri}
+          bytesHere={bytesHere}
+          onPainted={onPainted}
+          // A clip's poster plays on a tap; a still's tap toggles the focused
+          // view.
+          onTap={clip ? pressPlay : onTapStill}
+        />
         {playingVideo ? (
           <VideoStage uri={playbackUri} onPlayingChange={setVideoPlaying} />
         ) : playingMotion && motion && uri ? (
           <MotionStage motion={motion} onStop={onStopMotion} />
-        ) : (
-          <StillStage
-            uri={uri}
-            thumbHash={thumbHash}
-            bytesHere={bytesHere}
-            onPainted={onPainted}
-            // A clip's poster plays on a tap; a still's tap toggles the focused
-            // view.
-            onTap={clip ? pressPlay : onTapStill}
-          />
-        )}
+        ) : null}
         {clip && !playingVideo ? (
           <Pressable
             accessibilityRole="button"
@@ -516,13 +563,11 @@ const ViewerPage = memo(function ViewerPage({
  */
 function StillStage({
   uri,
-  thumbHash,
   bytesHere,
   onPainted,
   onTap,
 }: {
   uri: string | null;
-  thumbHash: string | null;
   bytesHere: boolean;
   /**
    * Called once this stage has drawn what it has, which is what releases the
@@ -532,186 +577,189 @@ function StillStage({
   onPainted: () => void;
   onTap: () => void;
 }) {
-  const nothingToDraw = !uri && !thumbHash;
+  const nothingToDraw = !uri;
   useEffect(() => {
     if (nothingToDraw) onPainted();
   }, [nothingToDraw, onPainted]);
 
   /**
-   * The pictures on this stage, oldest first, each one a rung.
+   * The pictures on this stage, oldest first, one per rung.
    *
    * ## Why a mounted `Image`'s `source` never changes
    *
-   * A page opens on the rung its resolve found, and paints again only when a
-   * fetch or an encode brings down a better one — or, on a neighbour page, when
-   * its resolve lands after the page mounted on the tile's rung. The old shape
-   * pointed one `<Image>` at each rung in turn. Re-pointing makes
-   * `expo-image` re-run its whole load against the live view, which is the path
-   * that can fall back to the placeholder or, when a layout pass reports zero
-   * size, clear the view outright. A resolution upgrade should be a change of
-   * sharpness and nothing else, and that was the one thing it visibly was not.
+   * A page opens on whatever rung is here — the tile's, usually — and paints
+   * again when its resolve finds a better one, or when a fetch or an encode
+   * brings one down. The old shape pointed one `<Image>` at each rung in turn.
+   * Re-pointing makes `expo-image` re-run its whole load against the live view,
+   * which is the path that can fall back to the placeholder or, when a layout
+   * pass reports zero size, clear the view outright. A resolution upgrade should
+   * be a change of sharpness and nothing else, and that was the one thing it
+   * visibly was not.
    *
-   * So each rung gets an `<Image>` of its own, keyed on its URI, and a new rung
-   * mounts a new layer rather than re-pointing an existing one. The incoming
-   * layer decodes at `opacity: 0` behind nothing; on its `onDisplay` — which
-   * fires when the view has actually rendered the picture, not when the bytes
-   * finished loading — it goes opaque and everything beneath it unmounts on the
-   * same commit. Both layers draw `contain` in an identical box, so the picture
-   * is in exactly the same place at both resolutions and the swap changes
-   * nothing but sharpness.
+   * So each rung gets an `<Image>` of its own, keyed on its URI, and a new one
+   * mounts a new layer rather than re-pointing an existing one. The rules live
+   * in `viewer-layers.ts`; the one that matters is that **a picture on screen
+   * stays mounted and opaque until a newer layer has drawn above it.** An
+   * incoming layer decodes at `opacity: 0`. On its `onDisplay` — which fires
+   * once the native view holds the decoded picture, not when the bytes finished
+   * loading — it turns opaque, and the layers beneath it unmount on the next
+   * frame rather than on the same commit. Every layer draws `contain` in an
+   * identical box, so the picture is in exactly the same place at every
+   * resolution and the swap changes nothing but sharpness.
+   *
+   * ## Why no ThumbHash
+   *
+   * This screen drew the record's ThumbHash under the first rung for a while.
+   * On a Pixel 10a it showed on every open as a frame or two of a blur that
+   * looked nothing like the photograph, before the tile's rung — which decodes
+   * almost as fast — replaced it. A stand-in that is visibly wrong is worse here
+   * than a frame of the black backdrop. The grid keeps its ThumbHashes, where a
+   * blur in a small square reads as a picture arriving.
    *
    * No transition and no cross-fade: the resolution changes between two frames.
    */
-  const [layers, setLayers] = useState<readonly string[]>(() => (uri ? [uri] : []));
-  /** The layer that has actually rendered, which is the one allowed to be opaque. */
-  const [shown, setShown] = useState<string | null>(null);
-  /**
-   * The layer that carries the ThumbHash: the first one this stage mounted, for
-   * as long as it stays mounted.
-   *
-   * **Fixed for the layer's whole life, because `expo-image` reloads on a
-   * placeholder change.** On Android `ExpoImageViewWrapper.rerenderIfNeeded`
-   * treats a new placeholder exactly like a new source and runs the whole Glide
-   * request again. This used to hand the first layer the ThumbHash only until
-   * the layer displayed, then null — so every open reloaded the photograph it
-   * had just drawn, and the reload showed as a blackout of two frames between
-   * two identical pictures. Logged on a Pixel 5 on 2026-10-19: the tile's rung
-   * displayed at +58 ms, started loading again at +80 ms with no placeholder,
-   * and displayed again at +110 ms.
-   */
-  const placeholderLayer = useRef(layers[0] ?? null);
+  const [stack, setStack] = useState<LayerStack>(() => initialStack(uri));
   useEffect(() => {
-    if (!uri) {
-      setLayers([]);
-      return;
-    }
-    // Decided before the layer mounts. See `viewer-layers.ts` for both rules.
-    placeholderLayer.current = thumbHashLayer(placeholderLayer.current, uri);
-    setLayers((current) => nextLayers(current, uri));
+    // A page whose URI goes away keeps what it drew. The picture is decoded
+    // and on screen, and an empty stage would be the one thing worse.
+    if (uri) setStack((current) => withUri(current, uri));
   }, [uri]);
 
+  // Mounts and unmounts, for the timing log: a stage that remounts during a
+  // swipe starts empty, and that is a flicker no layer rule can prevent.
+  const firstUri = useRef(uri);
+  useEffect(() => {
+    perf(`stage:mount ${layerTag(firstUri.current)}`);
+    return () => perf(`stage:unmount ${layerTag(firstUri.current)}`);
+  }, []);
+
   /**
-   * One `source` object per URI, for the lifetime of this stage.
+   * One `source` object per layer, for the lifetime of this stage.
    *
-   * A fresh `{ uri }` literal on every render would undo the layering entirely.
-   * React reuses a keyed `<Image>` across re-renders — which is the point — and
-   * hands it whatever props that render produced, so a new object identity in
-   * `source` is `expo-image` being told the source changed for bytes it has
-   * already decoded. The layer stack exists precisely to stop that happening,
-   * and it re-renders on every `shown` change, so it would have caused the
-   * problem it was written to prevent.
-   *
-   * A ref rather than `useMemo` over `layers`: appending a layer produces a new
-   * array, and a memo keyed on it would rebuild the *existing* layers' sources
-   * too.
+   * Native `expo-image` compares sources by value, so a fresh literal would not
+   * reload a layer today. Kept stable anyway: React's prop diff then has nothing
+   * to send for a layer that has not changed, and a layer that has not changed
+   * is the whole design.
    */
   const sources = useRef(new Map<string, { uri: string }>());
-  const sourceFor = useCallback((uri: string) => {
-    let source = sources.current.get(uri);
-    if (!source) sources.current.set(uri, (source = { uri }));
+  const sourceFor = useCallback((layer: string) => {
+    let source = sources.current.get(layer);
+    if (!source) sources.current.set(layer, (source = { uri: layer }));
     return source;
   }, []);
 
   /**
-   * The ThumbHash as one stable object, for the same reason.
+   * The collapse a frame after each display, cancelled with the stage.
    *
-   * `expo-image` treats the placeholder as a source of its own, so a fresh
-   * literal per render is a second thing being re-pointed under the picture.
+   * `onDisplay` fires once the native view holds the picture, which is not the
+   * same as a frame having shown it. Turning the layer opaque and unmounting the
+   * one beneath on the same commit would rely on the two landing in one frame;
+   * a frame apart, the layer beneath is still there if they do not.
    */
-  const placeholder = useMemo(
-    () => (thumbHash ? { thumbhash: thumbHash } : null),
-    [thumbHash],
-  );
+  const frames = useRef(new Set<number>());
+  useEffect(() => {
+    const pending = frames.current;
+    return () => pending.forEach((frame) => cancelAnimationFrame(frame));
+  }, []);
 
-  /**
-   * A layer has rendered: it becomes the visible one, and the stack collapses to
-   * it.
-   *
-   * Both state writes in one handler, so React commits them together — the frame
-   * the incoming layer becomes opaque is the frame the layer beneath unmounts,
-   * and there is never a frame with two opaque pictures or none.
-   *
-   * The collapse is guarded on the layer still being the top one. A display
-   * callback from a layer that has since been superseded must not throw away the
-   * newer layer above it.
-   */
   const onDisplayed = useCallback(
     (layer: string) => {
-      perf("image:display");
-      setShown(layer);
-      setLayers((current) => collapseLayers(current, layer));
+      perf(`image:display ${layerTag(layer)}`);
+      setStack((current) => markDisplayed(current, layer));
+      const frame = requestAnimationFrame(() => {
+        frames.current.delete(frame);
+        setStack((current) => collapseBelow(current, layer));
+      });
+      frames.current.add(frame);
       onPainted();
     },
     [onPainted],
   );
 
+  /**
+   * A rung that will not decode leaves the stack, and whatever is beneath it
+   * stays. It still settles the stage, so the body's deferred work never waits
+   * on a picture that is not coming.
+   */
+  const [failed, setFailed] = useState(false);
+  const onFailed = useCallback(
+    (layer: string) => {
+      perf(`image:error ${layerTag(layer)}`);
+      setStack((current) => dropLayer(current, layer));
+      setFailed(true);
+      onPainted();
+    },
+    [onPainted],
+  );
+
+  /**
+   * Whether a rung that is on this device has gone unseen for too long.
+   *
+   * Armed only while the stack holds a rung and none has drawn: a rung in the
+   * stack is a file on this device, and a local file decodes in a fraction of
+   * a second. A page waiting on a fetch has no rung yet and no timer, because
+   * the fetch has its own state. A timer, not a wait — the stage goes on
+   * drawing whatever it has, and the note only says so.
+   */
+  const shown = stack.displayed.size > 0;
+  const pending = stack.layers.some((layer) => !stack.displayed.has(layer));
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (!pending || shown) return;
+    const timer = setTimeout(() => {
+      perf("image:stalled");
+      setStalled(true);
+    }, STALLED_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [pending, shown]);
+  const troubled = !shown && (stalled || (failed && !pending));
+
   return (
     <View style={styles.viewerStage}>
       <Pressable style={styles.viewerImageArea} onPress={onTap}>
-        {layers.length > 0 ? (
-          layers.map((layer, index) => (
-            <Image
-              // **Keyed on its own URI**, which is what makes this a new mount
-              // rather than a re-point. See the layer stack above.
-              key={layer}
-              source={sourceFor(layer)}
-              style={[
-                styles.viewerImage,
-                // Opaque once it has rendered, and the bottom layer is opaque
-                // from the start — it is either the first picture of the viewing
-                // or the survivor of the last collapse, and in both cases it is
-                // what is on screen.
-                { opacity: index === 0 || shown === layer ? 1 : 0 },
-              ]}
-              contentFit="contain"
-              // **The first layer only.** Under any later layer is the previous
-              // photograph, which is a better placeholder than a blur of it.
-              //
-              // The floor matters more here than on a tile: this screen shows
-              // one picture, and the alternative to a ThumbHash is an empty
-              // rectangle the size of the display. Decoded natively by
-              // `expo-image` from the base64 string — see `media/thumb-hash.ts`.
-              placeholder={layer === placeholderLayer.current ? placeholder : null}
-              // Contain, unlike the tile's placeholder. A tile's ThumbHash fills
-              // a box of the photograph's own shape, so there is nothing to
-              // crop; a full screen is not that shape, and a stretched blur
-              // reads as a rendering fault rather than as a picture arriving.
-              placeholderContentFit="contain"
-              // Memory, unlike the grid's tiles. One picture at a time, and
-              // re-decoding a full-size rendition every time somebody swipes
-              // back to it is exactly the cost worth paying once.
-              cachePolicy="memory-disk"
-              // The opposite of the tile's. Whatever is on this screen is the
-              // thing somebody is waiting for.
-              priority="high"
-              onLoadStart={() => perf("image:loadStart")}
-              onLoad={(event) =>
-                perf(`image:load ${event.source.width}x${event.source.height} cache=${event.cacheType}`)
-              }
-              // The signal the body's deferred work waits on, and the swap
-              // itself. `onDisplay` fires when the view has actually rendered
-              // the picture rather than when the bytes finished loading, which
-              // is the difference between swapping to a decoded layer and
-              // swapping to an empty one.
-              onDisplay={() => onDisplayed(layer)}
-              // A source that will not decode still settles the stage, and still
-              // collapses the stack — otherwise one unreadable rung would leave
-              // a transparent layer over the picture beneath it forever.
-              onError={() => onDisplayed(layer)}
-            />
-          ))
-        ) : thumbHash ? (
-          // No bytes anywhere, and a blurred version of the right photograph is
-          // a far better answer than a line of text about storage.
-          <Image
-            source={null}
-            style={styles.viewerImage}
-            contentFit="contain"
-            placeholder={placeholder}
-            placeholderContentFit="contain"
-            onDisplay={onPainted}
-            onError={onPainted}
-          />
+        {stack.layers.length > 0 || failed ? (
+          <>
+            {stack.layers.map((layer, index) => (
+              <Image
+                // **Keyed on its own URI**, which is what makes this a new mount
+                // rather than a re-point. See the layer stack above.
+                key={layer}
+                source={sourceFor(layer)}
+                // A layer over another is transparent until it has drawn, so it
+                // never covers a picture with nothing. The bottom layer has
+                // nothing beneath it to cover, and an empty `expo-image` view
+                // draws nothing, so it is opaque from the start: waiting for
+                // `onDisplay` there only added a trip through JavaScript —
+                // a frame or two of black backdrop on every open — after the
+                // native view already held the picture.
+                style={[
+                  styles.viewerImage,
+                  { opacity: index === 0 || stack.displayed.has(layer) ? 1 : 0 },
+                ]}
+                contentFit="contain"
+                // Memory, unlike the grid's tiles. One picture at a time, and
+                // re-decoding a full-size rendition every time somebody swipes
+                // back to it is exactly the cost worth paying once.
+                cachePolicy="memory-disk"
+                // The opposite of the tile's. Whatever is on this screen is the
+                // thing somebody is waiting for.
+                priority="high"
+                onLoadStart={() => perf(`image:loadStart ${layerTag(layer)}`)}
+                onLoad={(event) =>
+                  perf(
+                    `image:load ${layerTag(layer)} ${event.source.width}x${event.source.height} cache=${event.cacheType}`,
+                  )
+                }
+                onDisplay={() => onDisplayed(layer)}
+                onError={() => onFailed(layer)}
+              />
+            ))}
+            {troubled ? (
+              <View style={styles.viewerStallNote} pointerEvents="none">
+                <Text style={styles.viewerStallText}>Having trouble loading this photo</Text>
+              </View>
+            ) : null}
+          </>
         ) : bytesHere ? (
           // A record whose bytes are here and which has no still to draw and
           // nothing to play. Not a video — those take the branch above — so
@@ -726,6 +774,14 @@ function StillStage({
       </Pressable>
     </View>
   );
+}
+
+/**
+ * The end of a layer's URI, enough to tell rungs and records apart in the
+ * timing log without writing whole paths into it.
+ */
+function layerTag(uri: string | null): string {
+  return uri ? uri.slice(-24) : "none";
 }
 
 /**
@@ -772,13 +828,21 @@ function VideoStage({
       onPlayingChange(false);
     };
   }, [player, onPlayingChange]);
+  const [rendered, setRendered] = useState(false);
   return (
-    <View style={styles.viewerImageArea}>
+    // Over the poster, transparent until the first frame. See `clipOver`.
+    <View style={clipOver(rendered)}>
       {/* `nativeControls` rather than controls of this app's own: play,
           scrub and the fullscreen button are the platform's, which is what
           makes them behave the way every other video on the device does.
           Fullscreen is enabled by default and is not restated here. */}
-      <VideoView player={player} style={styles.viewerImage} nativeControls contentFit="contain" />
+      <VideoView
+        player={player}
+        style={styles.viewerImage}
+        nativeControls
+        contentFit="contain"
+        onFirstFrameRender={() => setRendered(true)}
+      />
     </View>
   );
 }
@@ -814,14 +878,31 @@ function MotionStage({ motion, onStop }: { motion: OpenMotionPhoto; onStop: () =
       p.play();
     },
   );
+  const [rendered, setRendered] = useState(false);
   return (
-    <Pressable style={styles.viewerImageArea} onPress={onStop}>
+    <Pressable style={clipOver(rendered)} onPress={onStop}>
       <VideoView
         player={player}
         style={styles.viewerImage}
         contentFit="contain"
         nativeControls={false}
+        onFirstFrameRender={() => {
+          perf("motion:firstFrame");
+          setRendered(true);
+        }}
       />
     </Pressable>
   );
+}
+
+/**
+ * A player laid over the still it plays from, transparent until its first frame.
+ *
+ * `expo-video` already hides its own surface until that frame, so this is a
+ * second guard rather than the only one: the player's view, its controls and
+ * anything the platform paints behind them stay invisible until there is a
+ * frame to show, and until then the still beneath is what is on screen.
+ */
+function clipOver(rendered: boolean) {
+  return [styles.viewerImage, { opacity: rendered ? 1 : 0 }];
 }

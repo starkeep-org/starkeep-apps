@@ -1,10 +1,9 @@
 /**
  * Opening a photograph from the grid.
  *
- * A tap waits up to 150 ms for the viewer's resolve, so the viewer opens on the
- * rung the stage wants rather than swapping to it a moment later. A slower
- * resolve opens on the tile's rung, and the resolution replaces it when it
- * lands. See `open` in `useLibraryViewer`.
+ * A tap opens the viewer at once, on the tile's rung. The
+ * resolve for the rung the stage wants runs behind it, and its answer mounts as
+ * a layer above. See `open` in `useLibraryViewer`.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { Image, type ImageProps } from "expo-image";
@@ -66,28 +65,33 @@ beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
 
 describe("opening a photograph", () => {
-  it("opens on the resolved rung when the resolve lands within the wait", async () => {
-    const photo = libraryItem(photoRecord());
-    render(<Harness host={hostResolvingAfter(new Map([[photo.record.id, 25]]))} items={[photo]} />);
-
-    act(() => openItem(photo));
-    expect(shownUris()).toEqual([]);
-    await advance(25);
-    // No tile layer under it, so there was never a swap to see.
-    expect(shownUris()).toEqual([sharp(photo).uri]);
-  });
-
-  it("opens on the tile's rung after the wait, and adds the resolution when it lands", async () => {
+  it("opens on the tap, on the tile's rung, before any resolve lands", async () => {
     const photo = libraryItem(photoRecord());
     render(<Harness host={hostResolvingAfter(new Map([[photo.record.id, 400]]))} items={[photo]} />);
 
     act(() => openItem(photo));
-    await advance(149);
-    expect(shownUris()).toEqual([]);
-    await advance(1);
     expect(shownUris()).toEqual([photo.uri]);
+  });
 
-    await advance(250);
+  it("replaces the tile's rung with the resolution when the tile's rung has not drawn yet", async () => {
+    // One picture on open, not the tile's rung and then the sharper one a frame
+    // or two later.
+    const photo = libraryItem(photoRecord());
+    render(<Harness host={hostResolvingAfter(new Map([[photo.record.id, 25]]))} items={[photo]} />);
+
+    act(() => openItem(photo));
+    await advance(25);
+    expect(shownUris()).toEqual([sharp(photo).uri]);
+  });
+
+  it("mounts the resolution above the tile's rung once the tile's rung has drawn", async () => {
+    const photo = libraryItem(photoRecord());
+    render(<Harness host={hostResolvingAfter(new Map([[photo.record.id, 25]]))} items={[photo]} />);
+
+    act(() => openItem(photo));
+    const [tile] = screen.UNSAFE_queryAllByType(Image);
+    act(() => (tile!.props as ImageProps).onDisplay!());
+    await advance(25);
     expect(shownUris()).toEqual([photo.uri, sharp(photo).uri]);
   });
 

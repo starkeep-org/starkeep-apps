@@ -20,6 +20,10 @@
  *    with 8 GB against a 60k-item library holds the library it can show and
  *    fetches the rest when asked.
  * 3. **Its rounds are smaller.** See {@link MOBILE_MAX_BYTES}.
+ *
+ * Uploads are not configuration either. The engine's uploader drains a queue
+ * beside the rounds with the same tiers, order and lanes on every node; this
+ * node only decides when it runs. See {@link MobileNode.uploads}.
  */
 
 import { createHLCClock } from "@starkeep/protocol-primitives";
@@ -29,6 +33,7 @@ import {
   createSqliteDeploymentSettingsCache,
   createSyncEngine,
   createSqliteSyncStateStore,
+  createSqliteUploadQueueStore,
   createResidencyManager,
   residencyHooks,
   runAcquisition,
@@ -45,6 +50,7 @@ import {
   type SyncResult,
   type VerifyResult,
   type SyncTransport,
+  type UploaderStats,
 } from "@starkeep/sync-engine";
 import type { ConfiguredCeilings, DataRecord, SyncDownCeilings } from "@starkeep/protocol-primitives";
 import type { DatabaseAdapter, ObjectStorageAdapter } from "@starkeep/storage-adapter";
@@ -74,11 +80,12 @@ import {
 } from "./work/sync-trace";
 
 /**
- * Byte budget for one exchange round on a phone.
+ * Byte budget for one exchange round's downloads on a phone, and for one
+ * acquisition pass.
  *
- * The budget that actually binds here, because a round on this channel is
- * photos: at ~3 MB each this is three or four of them, roughly fifteen seconds
- * on a mobile uplink. Constraint 2 of the phase — no work item may assume more
+ * Uploads no longer spend it: they run in the engine's uploader, beside the
+ * round. Downloads still do, and on this channel they are photos: at ~3 MB
+ * each this is three or four of them, roughly fifteen seconds on a mobile link. Constraint 2 of the phase — no work item may assume more
  * than a few seconds — is not a suggestion on a handset, because the OS decides
  * when the app stops, and a round that takes a minute is a round that gets
  * abandoned partway over and over, making progress impossible rather than
@@ -105,8 +112,9 @@ export const MOBILE_MAX_BYTES = 10 * 1024 * 1024;
 export const MOBILE_MAX_ITEMS = 200;
 
 /**
- * Concurrent blob transfers per round. Below the engine's default of 4 because
+ * Concurrent downloads per round. Below the engine's default of 4 because
  * every in-flight transfer costs memory and a handset has little to spare.
+ * Uploads use the uploader's own lanes, the same on every node.
  */
 export const MOBILE_TRANSFER_CONCURRENCY = 3;
 
@@ -286,6 +294,16 @@ export interface MobileNode {
    */
   readonly engine: SyncEngine | null;
   /**
+   * The engine's uploader, behind this node's library binding, or null with no
+   * cloud.
+   *
+   * Not serialized behind the engine lock: the uploader writes only its own
+   * tables, which no round reads, so a sync and the uploads run side by side.
+   * Every call binds the library first, because a file's key carries the
+   * user's segment and binding rewrites it.
+   */
+  readonly uploads: MobileUploads | null;
+  /**
    * The user segment every key this node writes carries: the user a cloud
    * bound the library to, or `local` until one does. Read on every write,
    * because binding happens while the node runs, before its first sync.
@@ -419,6 +437,23 @@ export interface MobileNode {
    */
   storageReport(): StorageReport;
   close(): Promise<void>;
+}
+
+/** The phone's handle on the engine's uploader. See {@link MobileNode.uploads}. */
+export interface MobileUploads {
+  /** Run continuously: the app is in the foreground on an unmetered network. */
+  start(): Promise<void>;
+  /** Start nothing new. Transfers in flight finish. */
+  stop(): void;
+  /** Run until nothing is ready to send or the signal aborts: a background window. */
+  drain(options?: {
+    readonly signal?: { readonly aborted: boolean };
+    readonly deadlineAt?: number;
+  }): Promise<UploaderStats>;
+  stats(): UploaderStats;
+  onChange(listener: (stats: UploaderStats) => void): () => void;
+  /** New files may exist, or the network came back. */
+  nudge(): void;
 }
 
 export interface StorageReport {
@@ -585,6 +620,12 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
         maxItems: MOBILE_MAX_ITEMS,
         transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
         residency: residencyHooks(residency),
+        // In the records' own database, for the reason the sync state is:
+        // the queue names files those rows describe.
+        uploadQueue: createSqliteUploadQueueStore({
+          db: databaseAdapter.getRawDatabase(),
+          channel: "starkeep-drive",
+        }),
       })
     : null;
 
@@ -673,6 +714,23 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     return next;
   }
 
+  const uploads: MobileUploads | null = engine
+    ? {
+        async start() {
+          await ensureBound();
+          engine.uploader.start();
+        },
+        stop: () => engine.uploader.stop(),
+        async drain(drainOptions) {
+          await ensureBound();
+          return engine.uploader.drain(drainOptions);
+        },
+        stats: () => engine.uploader.stats(),
+        onChange: (listener) => engine.uploader.onChange(listener),
+        nudge: () => engine.uploader.nudge(),
+      }
+    : null;
+
   return {
     databaseAdapter,
     libraryOwner: () => boundUserId(databaseAdapter.getRawDatabase()),
@@ -685,6 +743,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     fullDerivationCursor,
     motionIndex,
     engine,
+    uploads,
     userId: () => userSegment,
     residency,
     librarySettings,
@@ -819,6 +878,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
 
     async noteDerived(record) {
       await residency.noteArrival(candidateOf(record));
+      // A new stand-in is the fast tier's whole business.
+      engine?.uploader.nudge();
     },
 
     async freeUpSpace(request) {

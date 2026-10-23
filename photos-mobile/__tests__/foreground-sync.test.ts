@@ -14,6 +14,7 @@ import {
   FOREGROUND_SYNC_INTERVAL_MS,
   MEDIA_CHANGE_DEBOUNCE_MS,
   mayAutoSync,
+  uploadsMayRun,
   type Timers,
 } from "../src/work/foreground-sync";
 import type { DeviceState } from "../src/work/job-graph";
@@ -67,6 +68,20 @@ describe("mayAutoSync", () => {
     expect(mayAutoSync({ nodeReady: true, hasCloud: false, device: WIFI })).toBe(false);
     expect(mayAutoSync({ nodeReady: false, hasCloud: true, device: WIFI })).toBe(false);
     expect(mayAutoSync({ nodeReady: true, hasCloud: true, device: null })).toBe(false);
+  });
+});
+
+describe("uploadsMayRun", () => {
+  it("runs the uploader in the foreground on Wi-Fi", () => {
+    expect(uploadsMayRun({ nodeReady: true, hasCloud: true, device: WIFI, foreground: true })).toBe(true);
+  });
+
+  it("stops it in the background, and on a metered or unknown connection", () => {
+    expect(uploadsMayRun({ nodeReady: true, hasCloud: true, device: WIFI, foreground: false })).toBe(false);
+    expect(
+      uploadsMayRun({ nodeReady: true, hasCloud: true, device: { ...WIFI, isUnmetered: false }, foreground: true }),
+    ).toBe(false);
+    expect(uploadsMayRun({ nodeReady: true, hasCloud: true, device: null, foreground: true })).toBe(false);
   });
 });
 

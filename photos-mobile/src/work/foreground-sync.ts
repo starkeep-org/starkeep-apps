@@ -18,6 +18,7 @@
  *     {@link createForegroundSyncLoop}.
  *   - **Import and sync when the camera roll changes** while open, a few
  *     seconds after the last change. See {@link createDebouncer}.
+ *   - **Upload continuously while open on Wi-Fi.** See {@link uploadsMayRun}.
  *
  * Every automatic sync keeps the Wi-Fi gate the catch-up pass already had
  * (decision 3 of `plan-sync-latency-fixes-2026-10-14.md`): `MobileNode.sync()`
@@ -68,6 +69,16 @@ export function mayAutoSync(state: AutoSyncState): boolean {
     state.device !== null &&
     canRun(jobSpec("push-blobs"), state.device)
   );
+}
+
+/**
+ * Whether the uploader may run continuously now: the app in the foreground,
+ * under the same gate as an automatic sync. Uploads are where originals cross
+ * the network, so they keep the Wi-Fi rule; background windows drain the
+ * queue through the `push-blobs` job instead, under the job graph's rule.
+ */
+export function uploadsMayRun(state: AutoSyncState & { readonly foreground: boolean }): boolean {
+  return state.foreground && mayAutoSync(state);
 }
 
 /**

@@ -40,6 +40,7 @@ function workWith(mediaAccess: MediaAccess | null): ForegroundWork {
   return {
     syncing: false,
     syncError: null,
+    uploads: null,
     syncNow: jest.fn(),
     catchUpNow: jest.fn(async () => undefined),
     mediaAccess,

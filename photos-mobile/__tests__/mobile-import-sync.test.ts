@@ -171,6 +171,8 @@ describe("an imported photo syncs", () => {
     const record = records[0]!;
 
     await phone.exchange();
+    // The bytes go through the uploader, beside the round.
+    await phone.uploads!.drain();
 
     const remote = await cloudDb.get(record.id);
     expect(remote).not.toBeNull();

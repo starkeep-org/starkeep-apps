@@ -172,6 +172,15 @@ export const SYNC_DEADLINE_SHARE = 0.8;
 export const IMPORT_DEADLINE_SHARE = 0.25;
 
 /**
+ * How much of what is left of a window the uploads may take.
+ *
+ * A share rather than the rest, because the two jobs behind this one —
+ * scanning and fetching — bring down the stand-ins this device wants. Larger
+ * than sync's needs now are, since the round no longer carries the bytes.
+ */
+export const UPLOAD_DEADLINE_SHARE = 0.7;
+
+/**
  * How much of a window derivation may take.
  *
  * Half of what is left when it starts, which on an ordinary window is a handful
@@ -309,18 +318,14 @@ async function runJob(
       return `imported=${outcome.imported} skipped=${outcome.skipped} failed=${outcome.failed}`;
     }
 
-    // One call covers two jobs, and the loop reaches this branch only under the
-    // stricter of the two. `MobileNode.sync()` moves metadata and blobs
-    // together, while the graph lets `sync-metadata` run on cellular and holds
-    // `push-blobs` to an unmetered connection. Running the pair on a metered
-    // connection would push originals under a constraint that exists to prevent
-    // exactly that, so the pair waits for Wi-Fi. The cost is real and is stated
-    // rather than hidden: a phone that only ever sees cellular exchanges no
-    // metadata in the background. Splitting it belongs in the engine, where a
-    // metadata-only round can be expressed, rather than here.
+    // Uploads left the round for the engine's uploader, which `push-blobs`
+    // drains below. The round still downloads stand-ins, so it keeps the
+    // unmetered gate for now: a phone that only ever sees cellular exchanges
+    // no metadata in the background. Letting rows sync on cellular is a
+    // separate change.
     case "sync-metadata": {
       if (!canRun(jobSpec("push-blobs"), deps.device)) {
-        return "skipped — sync moves blobs too, and this connection is metered";
+        return "skipped — sync downloads stand-ins too, and this connection is metered";
       }
       // The share exists so the jobs after sync still get a window. See
       // SYNC_DEADLINE_SHARE.
@@ -364,11 +369,23 @@ async function runJob(
       );
     }
 
-    // Already done by the `sync-metadata` branch, which moves both. Reported
-    // rather than dropped, so the graph's seven jobs all appear in the report
-    // and nobody reads a missing line as a job that failed.
-    case "push-blobs":
-      return "covered by the sync round above";
+    // The uploader's queue, drained until it is empty or this job's share of
+    // the window runs out. Each transfer is bounded by the window guard as
+    // well, so a stalled PUT cannot hold the window open.
+    case "push-blobs": {
+      if (!node.uploads) return "no cloud on this node — nothing to upload";
+      const remaining = Math.max(0, options.deadlineMs - now());
+      const deadlineAt = now() + Math.floor(remaining * UPLOAD_DEADLINE_SHARE);
+      const stats = await node.uploads.drain({
+        signal: shareOf(options, now, UPLOAD_DEADLINE_SHARE),
+        deadlineAt,
+      });
+      return (
+        `sent=${stats.sent.count}/${stats.sent.bytes}B ` +
+        `queued=${stats.queued.fast.count}+${stats.queued.full.count} ` +
+        `blocked=${stats.blocked.count} state=${stats.state}`
+      );
+    }
 
     case "scan-acquirable": {
       const outcome = await node.scanForAcquirable();

@@ -307,6 +307,7 @@ function PhotosAppInner() {
         <PhotoGrid
           images={displayImages}
           loading={state.loading}
+          loaded={state.loaded}
           hasMore={false}
           onLoadMore={() => {}}
           onSelect={(id) => dispatch({ type: "SET_SELECTED_ID", id })}

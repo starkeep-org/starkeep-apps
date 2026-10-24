@@ -9,6 +9,7 @@ const state = (selectedId: string | null) => ({
   selectedId,
   nextCursor: null,
   loading: false,
+  loaded: true,
   policies: null,
 });
 

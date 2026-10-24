@@ -19,13 +19,19 @@ interface PhotoState {
   selectedId: string | null;
   nextCursor: string | null;
   loading: boolean;
+  /**
+   * Whether a load of the library has succeeded at least once. Apart from
+   * `loading`, which a failed first load also turns off: only a load that
+   * succeeded and found nothing means the library is empty.
+   */
+  loaded: boolean;
   policies: RenditionPolicies | null;
 }
 
 export function photoReducer(state: PhotoState, action: PhotoAction): PhotoState {
   switch (action.type) {
     case "SET_IMAGES":
-      return { ...state, images: action.images };
+      return { ...state, images: action.images, loaded: true };
     case "APPEND_IMAGES":
       return { ...state, images: [...state.images, ...action.images] };
     case "UPSERT_IMAGES": {
@@ -85,6 +91,7 @@ export function PhotoProvider({ children }: { children: React.ReactNode }) {
     // cloud load showed "No photos yet. Upload some to get started." to people
     // whose library was already there. The first fetchAll clears it.
     loading: true,
+    loaded: false,
     policies: null,
   });
 

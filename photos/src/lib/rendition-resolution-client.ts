@@ -231,7 +231,36 @@ export class RenditionResolutionCache {
     };
   }
 
-  request(recordId: string, kind: MediaPolicyKind, requiredLongEdge: number, target: number): string | null {
+  /**
+   * The largest still picture this cache already holds a URL for, at any
+   * target, with the key of the entry that holds it.
+   *
+   * What the viewer draws the moment it opens. The grid's tile resolved its own,
+   * smaller target, and the browser has that tile's bytes cached, so drawing
+   * it costs no request and no wait — the viewer's own resolution, for the size
+   * it actually wants, replaces it when it lands.
+   */
+  largestKnownStill(recordId: string): { key: string; url: string; longEdge: number } | null {
+    let best: { key: string; url: string; longEdge: number } | null = null;
+    for (const entry of this.entries.values()) {
+      if (entry.recordId !== recordId || entry.mediaKind !== "still") continue;
+      for (const media of mediaEntries("still", entry.decision) as RenditionChoice["ideal"][]) {
+        if (!media.url) continue;
+        if (!best || media.longEdge > best.longEdge) {
+          best = { key: entry.key, url: media.url, longEdge: media.longEdge };
+        }
+      }
+    }
+    return best;
+  }
+
+  request(
+    recordId: string,
+    kind: MediaPolicyKind,
+    requiredLongEdge: number,
+    target: number,
+    { immediate = false }: { immediate?: boolean } = {},
+  ): string | null {
     const policy = this.policies?.[kind];
     if (!policy || requiredLongEdge <= 0 || target <= 0) return null;
     const key = resolutionKey(recordId, policy.version, target);
@@ -251,7 +280,11 @@ export class RenditionResolutionCache {
     });
     this.queued.add(key);
     this.notify(key);
-    this.timer ??= setTimeout(() => void this.flush(), FLUSH_DELAY_MS);
+    // The window gathers a screenful of tiles into one request. A request
+    // somebody is waiting on, such as the viewer's, goes now and takes whatever
+    // else is queued with it.
+    if (immediate) void this.flush();
+    else this.timer ??= setTimeout(() => void this.flush(), FLUSH_DELAY_MS);
     return key;
   }
 

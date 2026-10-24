@@ -37,6 +37,7 @@ export function useMeasuredResolution(
   kind: MediaPolicyKind,
   requiredLongEdge: number | null,
   canonicalTargetLongEdge: number | null,
+  { immediate = false }: { immediate?: boolean } = {},
 ) {
   const cache = useRenditionResolutionCache();
   const policy = cache.getPolicy(kind);
@@ -45,9 +46,9 @@ export function useMeasuredResolution(
     : null;
   useEffect(() => {
     if (requiredLongEdge && canonicalTargetLongEdge) {
-      cache.request(recordId, kind, requiredLongEdge, canonicalTargetLongEdge);
+      cache.request(recordId, kind, requiredLongEdge, canonicalTargetLongEdge, { immediate });
     }
-  }, [cache, canonicalTargetLongEdge, kind, recordId, requiredLongEdge]);
+  }, [cache, canonicalTargetLongEdge, kind, recordId, requiredLongEdge, immediate]);
   return useSyncExternalStore(
     (listener) => cache.subscribe(key, listener),
     () => cache.get(key),

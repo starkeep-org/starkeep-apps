@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AppImage } from "@/photos-lib/client";
 import { displayForRenditionChoice, isVideoRecord } from "@/photos-lib/client";
 import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
@@ -13,6 +13,7 @@ import {
 } from "../../context/rendition-resolution-context";
 import { useInView } from "../../hooks/use-in-view";
 import { useDevicePixelRatio } from "../../hooks/use-element-size";
+import { useSteadySrc } from "../../hooks/use-steady-src";
 
 /**
  * Below this, serving a record's own bytes into a tile is not worth a round
@@ -160,20 +161,27 @@ export function PhotoThumbnail({
       ? getFullSizeSrc(image.id)
       : null;
 
-  const src = resolved?.url ?? fallbackSrc;
+  const desiredSrc = resolved?.url ?? fallbackSrc;
   const placeholder = usePlaceholderDataUrl(image.thumbHash);
 
-  // The source whose `<img>` has loaded. Keyed by URL so a tile that moves to
-  // a better rung shows its placeholder state only until the new bytes land,
-  // never while the old ones are still on screen.
-  const [settledSrc, setSettledSrc] = useState<string | null>(null);
-  const imageShown = src !== null && settledSrc === src;
+  // **The picture stays through an upgrade.** The tile's one `<img>` moves to a
+  // better rung's URL in place, after that URL has loaded off screen, so the
+  // old picture shows until the new one replaces it. This used to hide the
+  // `<img>` whenever its URL changed, which dropped the tile back to its
+  // ThumbHash between two pictures. See `useSteadySrc`.
+  const reportFailure = useCallback(
+    (url: string) => {
+      if (resolution) cache.reportLoadFailure(resolution.key, url);
+    },
+    [cache, resolution],
+  );
+  const { src, shown: imageShown, onLoad, onError } = useSteadySrc(desiredSrc, reportFailure);
 
   // The one state a user should be told about. Everything else that is missing
   // is missing *for now* and says nothing, because there is nothing to do about
   // it; this one is a photo in a format the node answering cannot read, which
   // is temporary and self-healing and looks exactly like a bug if left silent.
-  const undecodable = display?.state === "undecodable-here" && src === null;
+  const undecodable = display?.state === "undecodable-here" && desiredSrc === null && !imageShown;
 
   // The spinner marks a tile that has drawn no image yet. Its bytes may be
   // loading, being derived, or still on the phone that took the photo; the
@@ -228,21 +236,20 @@ export function PhotoThumbnail({
           src={src}
           alt={image.originalFilename}
           loading="lazy"
-          onLoad={() => setSettledSrc(src)}
+          onLoad={onLoad}
           // A failed load stays hidden over the placeholder rather than
           // showing a broken icon. The cache drops the failed URL and asks
           // again, so the tile fills in once the bytes land.
-          onError={() => {
-            if (resolution) cache.reportLoadFailure(resolution.key, src);
-          }}
+          onError={onError}
           style={{
             position: "absolute",
             inset: 0,
             width: "100%",
             height: "100%",
             objectFit: "cover",
-            // Hidden rather than absent until it loads, so the placeholder
-            // underneath shows through instead of a half-decoded image.
+            // Hidden rather than absent until its first picture loads, so the
+            // placeholder underneath shows through instead of a half-decoded
+            // image. Never hidden again after that.
             opacity: imageShown ? 1 : 0,
             // Let the browser apply EXIF orientation (the default; set
             // explicitly so a global reset can't leave a rotated image

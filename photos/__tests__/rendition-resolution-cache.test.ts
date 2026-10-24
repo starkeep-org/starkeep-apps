@@ -43,6 +43,37 @@ function waiting(recordId: string, target: number) {
 }
 
 describe("RenditionResolutionCache", () => {
+  it("answers the largest URL it holds for a record, across targets", async () => {
+    const cache = new RenditionResolutionCache(policies, async (requests) => ({
+      policies,
+      results: (requests as Array<{ recordId: string; targetLongEdge: number }>).map((request) =>
+        ready(request.recordId, request.targetLongEdge, `${request.recordId}-${request.targetLongEdge}`),
+      ),
+    }));
+    expect(cache.largestKnownStill("a")).toBeNull();
+    cache.request("a", "still", 100, 128);
+    cache.request("a", "still", 300, 400);
+    cache.request("b", "still", 1000, 1280);
+    await cache.flush();
+    expect(cache.largestKnownStill("a")).toEqual({
+      key: resolutionKey("a", "still-v1", 400),
+      url: "https://example.test/a-400",
+      longEdge: 400,
+    });
+  });
+
+  it("sends an immediate request without waiting for the batching window", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn(async () => ({ policies, results: [ready("a", 400)] }));
+      const cache = new RenditionResolutionCache(policies, send);
+      cache.request("a", "still", 300, 400, { immediate: true });
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("deduplicates canonical keys and coalesces records into one batch", async () => {
     const send = vi.fn(async (_requests: unknown[]) => ({ policies, results: [ready("a", 400), ready("b", 400)] }));
     const cache = new RenditionResolutionCache(policies, send);

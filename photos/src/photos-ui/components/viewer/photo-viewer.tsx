@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from "react";
+import { useCallback, useState, useEffect, useMemo } from "react";
 import type { AppImage } from "@/photos-lib/client";
 import { displayForRenditionChoice, isVideoRecord } from "@/photos-lib/client";
 import type { RenditionChoice } from "@/photos-lib/rendition-resolution";
@@ -13,6 +13,7 @@ import {
   useRenditionResolutionCache,
 } from "../../context/rendition-resolution-context";
 import { useDevicePixelRatio, useViewportSize } from "../../hooks/use-element-size";
+import { useSteadySrc } from "../../hooks/use-steady-src";
 import { useNarrowViewport } from "../../../lib/use-narrow-viewport";
 import { FaceOverlay } from "../vision/face-overlay";
 import type { ImageFaces } from "../../../lib/vision-client";
@@ -103,6 +104,66 @@ function keyBelongsToTarget(target: EventTarget | null): boolean {
   return ["INPUT", "TEXTAREA", "SELECT", "VIDEO", "AUDIO"].includes(target.tagName);
 }
 
+/**
+ * The photograph, as one `<img>` whose `src` moves up the ladder in place.
+ *
+ * See `useSteadySrc` for why one element is enough. A pulse skeleton fills the
+ * box until the first picture draws; the element stays hidden until then, so a
+ * URL that fails before anything drew never shows the browser's broken-image
+ * glyph. No fade: the picture appears and sharpens between two frames.
+ */
+function SteadyPicture({
+  desired,
+  alt,
+  onFailure,
+  onClick,
+}: {
+  desired: string | null;
+  alt: string | undefined;
+  onFailure: (url: string) => void;
+  onClick: () => void;
+}) {
+  const { src, shown, onLoad, onError } = useSteadySrc(desired, onFailure);
+  return (
+    <>
+      {!shown && (
+        <div
+          aria-hidden
+          data-testid="photo-skeleton"
+          style={{
+            position: "absolute",
+            inset: 0,
+            animation: "starkeep-skeleton-pulse 1.5s ease-in-out infinite",
+          }}
+        />
+      )}
+      {src && (
+        <img
+          src={src}
+          alt={alt}
+          onLoad={onLoad}
+          onError={onError}
+          onClick={onClick}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            // Let the browser apply EXIF orientation (this is the default,
+            // but set explicitly so a global reset can't turn it off and
+            // leave rotated originals sideways). We deliberately do NOT
+            // also rotate via CSS transform, which would double-apply.
+            imageOrientation: "from-image",
+            opacity: shown ? 1 : 0,
+            cursor: "pointer",
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: PhotoViewerProps) {
   const [infoVisible, setInfoVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -111,10 +172,6 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
     setDeleting(false);
     setDeleteError(null);
   }, [image.id]);
-  // Track whether the full-size image has actually finished downloading. Until
-  // then we show a placeholder instead of a bare <img>, which would otherwise
-  // render the browser's broken-image glyph while its signed URL is still being
-  // fetched (a cache miss on open) and while the original downloads.
   const isVideo = isVideoRecord(image);
   const kind = isVideo ? "video" : "still";
   const policy = useRenditionPolicy(kind);
@@ -146,7 +203,11 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
     : null;
   const viewportTarget = policy ? canonicalMeasuredTarget(policy, requiredLongEdge) : null;
   const cache = useRenditionResolutionCache();
-  const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, viewportTarget);
+  // Sent at once rather than in the cache's batching window: somebody is
+  // looking at this viewer, waiting.
+  const resolution = useMeasuredResolution(image.id, kind, requiredLongEdge, viewportTarget, {
+    immediate: true,
+  });
 
   // The rendition, not the original.
   //
@@ -182,11 +243,30 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
         `ideal=${rendition?.idealLongEdge ?? "unknown"} state=${rendition?.state ?? "ready"}`,
     );
   }, [image.id, rendition?.idealLongEdge, rendition?.source, rendition?.state, viewportTarget]);
-  const [displayedSrc, setDisplayedSrc] = useState<string | undefined>();
-  useEffect(() => {
-    setDisplayedSrc(undefined);
-  }, [image.id]);
-  const loaded = Boolean(displayedSrc);
+
+  // **What the viewer draws first: the largest picture this browser already
+  // has for the record**, which is usually the grid tile's. Its bytes are in
+  // the browser's cache, so it paints on open with no request; the rendition
+  // above, sized for this viewport, replaces it when its resolution lands.
+  // Read once per record — it is the opening picture, not a live answer.
+  const seed = useMemo(
+    () => (isVideo ? null : cache.largestKnownStill(image.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cache, image.id, isVideo],
+  );
+  const resolvedLongEdge = rendition?.source
+    ? Math.max(rendition.source.width, rendition.source.height)
+    : 0;
+  // Never down: a resolution smaller than the opening picture leaves it alone.
+  const desiredSrc =
+    fullSizeSrc && (!seed || resolvedLongEdge >= seed.longEdge) ? fullSizeSrc : (seed?.url ?? null);
+  const reportFailure = useCallback(
+    (url: string) => {
+      if (resolution) cache.reportLoadFailure(resolution.key, url);
+      if (seed) cache.reportLoadFailure(seed.key, url);
+    },
+    [cache, resolution, seed],
+  );
 
   // Dimensions come with the record now (the list is fetched with
   // ?include=metadata), so the placeholder box is proportioned from real
@@ -383,20 +463,6 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
             overflow: "hidden",
           }}
         >
-          {/* Video has no `onLoad`, so `loaded` never flips for it and the
-              skeleton would pulse forever behind a playing clip. The player
-              draws its own poster while it buffers. */}
-          {!loaded && !isVideo && (
-            <div
-              aria-hidden
-              data-testid="photo-skeleton"
-              style={{
-                position: "absolute",
-                inset: 0,
-                animation: "starkeep-skeleton-pulse 1.5s ease-in-out infinite",
-              }}
-            />
-          )}
           {isVideo && viewportTarget && (
             <VideoPlayer
               image={image}
@@ -405,54 +471,16 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
               onToggleInfo={() => setInfoVisible((v) => !v)}
             />
           )}
-          {!isVideo && displayedSrc && displayedSrc !== fullSizeSrc && (
-            <img
-              src={displayedSrc}
+          {/* Keyed on the record, so the arrow keys start a new picture in its
+              own box rather than moving the last photograph's <img> to a new
+              URL, which would draw the old photograph until the new one loads. */}
+          {!isVideo && (
+            <SteadyPicture
+              key={image.id}
+              desired={desiredSrc}
               alt={image.originalFilename}
+              onFailure={reportFailure}
               onClick={() => setInfoVisible((v) => !v)}
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                objectFit: "contain",
-                // Let the browser apply EXIF orientation (this is the default,
-                // but set explicitly so a global reset can't turn it off and
-                // leave rotated originals sideways). We deliberately do NOT
-                // also rotate via CSS transform, which would double-apply.
-                imageOrientation: "from-image",
-                opacity: 1,
-                transition: "opacity 0.3s ease",
-                cursor: "pointer",
-              }}
-            />
-          )}
-          {!isVideo && fullSizeSrc && (
-            <img
-              key="candidate"
-              src={fullSizeSrc}
-              alt={displayedSrc && displayedSrc !== fullSizeSrc ? "" : image.originalFilename}
-              aria-hidden={displayedSrc && displayedSrc !== fullSizeSrc ? true : undefined}
-              onLoad={() => setDisplayedSrc(fullSizeSrc)}
-              // A failed load stays hidden: the skeleton, or the rung already
-              // on screen, remains. The cache drops the failed URL and asks
-              // again, so the photo appears once its bytes land.
-              onError={() => {
-                if (resolution) cache.reportLoadFailure(resolution.key, fullSizeSrc);
-              }}
-              style={displayedSrc && displayedSrc !== fullSizeSrc
-                ? { position: "absolute", width: 1, height: 1, opacity: 0 }
-                : {
-                    position: "absolute",
-                    inset: 0,
-                    width: "100%",
-                    height: "100%",
-                    objectFit: "contain",
-                    imageOrientation: "from-image",
-                    opacity: displayedSrc === fullSizeSrc ? 1 : 0,
-                    transition: "opacity 0.3s ease",
-                    cursor: "pointer",
-                  }}
             />
           )}
           {/* Inside the same box the <img> fills, so bbox percentages land on

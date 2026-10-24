@@ -8,6 +8,13 @@ import { PhotoRows } from "./photo-rows";
 interface PhotoGridProps {
   images: AppImage[];
   loading: boolean;
+  /**
+   * Whether a load has succeeded at least once. Until it has, an empty grid
+   * says it is loading rather than that the library is empty: a first load
+   * that failed knows nothing about what the library holds. Callers with no
+   * such state get the old behaviour.
+   */
+  loaded?: boolean;
   hasMore: boolean;
   onSelect: (id: string) => void;
   onLoadMore: () => void;
@@ -26,6 +33,7 @@ interface PhotoGridProps {
 export function PhotoGrid({
   images,
   loading,
+  loaded = true,
   hasMore,
   onSelect,
   onLoadMore,
@@ -92,7 +100,7 @@ export function PhotoGrid({
           fontSize: 16,
         }}
       >
-        No photos yet. Upload some to get started.
+        {loaded ? "No photos yet. Upload some to get started." : "Loading..."}
       </div>
     );
   }

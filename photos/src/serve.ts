@@ -75,6 +75,27 @@ function distIsStale(): boolean {
   return built > 0 && CLIENT_INPUTS.some((p) => newestMtime(join(PKG_DIR, p)) > built);
 }
 
+/**
+ * Loopback only. Local data carries no sign-in gate, which is safe only while
+ * whoever reaches this server is the person at this machine: the server reads
+ * the library for any caller. Binding every interface let any device on the
+ * LAN read it (found 2026-10-24).
+ *
+ * The bind keeps other devices out. The `Host` check keeps out a DNS-rebinding
+ * page in this machine's own browser, the same way the local data server does;
+ * starkeep-core's `apps/local-data-server/loopback-host.ts` explains why. A
+ * request with no `Host` did not come from a browser and passes.
+ */
+const LISTEN_HOST = "127.0.0.1";
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function isLoopbackHost(host: string | undefined): boolean {
+  if (host === undefined) return true;
+  const lower = host.trim().toLowerCase();
+  const end = lower.startsWith("[") ? lower.indexOf("]") + 1 : lower.indexOf(":");
+  return LOOPBACK_HOSTNAMES.has(end > 0 ? lower.slice(0, end) : lower);
+}
+
 function portFromArgv(argv: string[]): number {
   // `-p` as well as `--port`: the manifest's `portFlag` is `-p`, which is what
   // admin-web passes, and `--port` is what a person typing this by hand reaches
@@ -157,12 +178,17 @@ async function main(): Promise<void> {
   }
 
   const server = createServer((req, res) => {
+    if (!isLoopbackHost(req.headers.host)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Photos answers on its loopback address only" }));
+      return;
+    }
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     if (isServerPath(pathname)) api(req, res);
     else client(req, res);
   });
 
-  server.listen(port, () => {
+  server.listen(port, LISTEN_HOST, () => {
     console.log(`photos listening on http://localhost:${port}${dev ? " (dev)" : ""}`);
   });
 

@@ -31,6 +31,7 @@ import {
   generateId,
   idTokenClaims,
   SignedOutError,
+  withMobileKeySignature,
   withUserToken,
   type DataRecord,
   type HLCClock,
@@ -38,6 +39,7 @@ import {
 } from "@starkeep/protocol-primitives";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
+import * as WebBrowser from "expo-web-browser";
 import {
   createHttpSyncTransport,
   HttpObjectStorageAdapter,
@@ -57,6 +59,8 @@ import {
   type SignInOutcome,
 } from "./auth/session";
 import type { CloudConnection } from "./auth/connection";
+import { createRequestSigner } from "./auth/attested-key";
+import StarkeepAttestedKey from "../modules/starkeep-attested-key";
 import {
   backfillImageExif,
   backfillThumbHashes,
@@ -230,23 +234,33 @@ export function createLocalObjectStorage(): ExpoObjectStorageAdapter {
   return new ExpoObjectStorageAdapter({ fs: expoFileSystem, basePath: OBJECTS_PATH });
 }
 
+/** SHA-256 as bytes, natively. */
+async function sha256Raw(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes as BufferSource));
+}
+
 /**
- * Sign this phone in to the cloud at `baseUrl`. The node picks the session up
- * when it next opens. See `auth/session.ts`.
+ * Sign this phone in to the cloud at `baseUrl`, on the cloud's sign-in page in
+ * the system browser. The node picks the session up when it next opens. See
+ * `auth/session.ts`.
  */
-export async function signIn(args: {
-  baseUrl: string;
-  email: string;
-  password: string;
-  newPassword?: string;
-}): Promise<SignInOutcome> {
+export async function signIn(args: { baseUrl: string }): Promise<SignInOutcome> {
   // Whose library this phone holds, so a sign-in as anyone else is refused
   // before it is kept. Imported here rather than at module scope, because the
   // node handle imports this module lazily.
   const { acquireNode } = await import("./work/node-handle");
   const lease = await acquireNode();
   try {
-    return await signInPhone(SecureStore, { ...args, libraryOwner: lease.node.libraryOwner() });
+    return await signInPhone(
+      SecureStore,
+      { ...args, libraryOwner: lease.node.libraryOwner() },
+      {
+        openAuthSession: (url, redirectUrl) => WebBrowser.openAuthSessionAsync(url, redirectUrl),
+        randomBytes: (count) => Crypto.getRandomBytes(count),
+        sha256: sha256Raw,
+        attestedKey: StarkeepAttestedKey,
+      },
+    );
   } finally {
     await lease.release();
   }
@@ -254,7 +268,7 @@ export async function signIn(args: {
 
 /** Sign this phone out, here and at the pool. The node drops its cloud when it next opens. */
 export function signOutThisPhone(): Promise<unknown> {
-  return signOutPhone(SecureStore);
+  return signOutPhone(SecureStore, StarkeepAttestedKey);
 }
 
 /**
@@ -491,9 +505,10 @@ function boundedFetch(): typeof fetch {
 
 /**
  * The Drive channel for a signed-in phone: every data-plane request carries the
- * device client's ID token and nothing else, which is what the cloud's
- * device-token branch accepts. The token goes only to the channel's own URL;
- * presigned S3 and CloudFront URLs never see it.
+ * mobile-apps client's ID token and a signature by this app's attested key,
+ * which is what the cloud's mobile branch accepts. The cloud resolves Photos
+ * from the key and scopes the exchange to Photos' types. Both go only to the
+ * channel's own URL; presigned S3 and CloudFront URLs never see either.
  */
 function sessionChannel(cloud: SessionCloud) {
   const channelUrl = `${cloud.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
@@ -504,7 +519,15 @@ function sessionChannel(cloud: SessionCloud) {
     // hears of it and reopens the node without a cloud.
     onRejected: notifySessionRejected,
   });
-  const fetchImpl = withUserToken(boundedFetch(), channelUrl, tokens);
+  const fetchImpl = withUserToken(
+    withMobileKeySignature(
+      boundedFetch(),
+      channelUrl,
+      createRequestSigner(SecureStore, StarkeepAttestedKey, sha256Raw),
+    ),
+    channelUrl,
+    tokens,
+  );
   return driveChannel(channelUrl, fetchImpl, () => ({}), async () => {
     // The user the library binds to is the signed-in token's own.
     const token = await tokens.current();

@@ -15,6 +15,15 @@
     ],
     "portFlag": "-p"
   },
+  "mobile": {
+    "android": {
+      "package": "app.starkeep.photos",
+      "signingCertSha256": [
+        "fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c"
+      ],
+      "callbackScheme": "starkeep-photos"
+    }
+  },
   "infraRequirements": {
     "fileAccess": [
       {
@@ -73,7 +82,7 @@
       },
       {
         "key": "live-photo",
-        "description": "This record is the motion half of its parent's Live Photo — a short clip belonging to the still it is a child of, not an item in its own right. The value says how the pairing was decided: 'identifier' when both files carried Apple's shared content identifier (authoritative), 'filename' when it was inferred from matching names in the same folder (circumstantial). Other apps should render the parent still and treat this child as a detail of it; a grid that listed it separately would show every Live Photo twice."
+        "description": "This record is the motion half of its parent's Live Photo \u2014 a short clip belonging to the still it is a child of, not an item in its own right. The value says how the pairing was decided: 'identifier' when both files carried Apple's shared content identifier (authoritative), 'filename' when it was inferred from matching names in the same folder (circumstantial). Other apps should render the parent still and treat this child as a detail of it; a grid that listed it separately would show every Live Photo twice."
       },
       {
         "key": "face-count",

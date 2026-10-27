@@ -1,16 +1,16 @@
 /**
  * This phone's sign-in: the person's Starkeep account, through the pool's
- * device client.
+ * mobile-apps client, on the cloud's managed login page.
  *
- * ## Why a sign-in, and what it replaced
+ * ## What a sign-in is
  *
- * A phone used to sync with a key an admin approved: a QR code from admin-web,
- * or a pairing code the phone showed and an admin pasted. Both needed a second
- * person. Signing in needs only the cloud's address and the account an admin
- * already created. The phone then syncs with the device client's ID token
- * alone; the cloud's device-token branch accepts no other client's token
- * without an app signature, and the identity pool does not trust the device
- * client, so the token reaches no AWS role.
+ * The person types the cloud's address; the phone opens the managed login page
+ * in the system browser (`browser-sign-in.ts`), and the page takes the
+ * password. The phone never sees it. The phone then registers an attested
+ * Keystore key (`attested-key.ts`), and syncs with the ID token plus that key's
+ * signature on every request. The cloud resolves the app from the key and lets
+ * it reach Photos' types alone. The identity pool does not trust the
+ * mobile-apps client, so the token reaches no AWS role.
  *
  * The sign-in, refresh and sign-out rules are protocol-primitives'
  * device-session module, the same code the local data server uses. This file
@@ -34,19 +34,26 @@ import {
   createCognitoClient,
   DATA_GROUP,
   endReplacedSession,
-  fetchDeviceAuthConfig,
+  fetchMobileAuthConfig,
   idTokenClaims,
-  parseDeviceAuthConfig,
+  parseMobileAuthConfig,
   revokePendingSignOut,
   signOut,
   storeSignIn,
-  type AuthTokens,
   type CognitoClient,
   type CognitoClientFor,
-  type DeviceAuthConfig,
+  type MobileAuthConfig,
   type RevocationOutcome,
   type SessionStore,
 } from "@starkeep/protocol-primitives";
+import {
+  forgetAttestedKey,
+  registerAttestedKey,
+  storeKeyId,
+  type AttestedKeyNative,
+  type Sha256,
+} from "./attested-key";
+import { signInWithBrowser, type BrowserSignInDeps } from "./browser-sign-in";
 
 /** Where secrets live. Supplied at the edge; see `platform.ts`. */
 export interface SecureStore {
@@ -67,7 +74,7 @@ const CLOUD_ITEM = "starkeep.session.cloud";
  */
 const PLAIN_HTTP_HOSTS = new Set(["localhost", "127.0.0.1", "10.0.2.2"]);
 
-export function createSessionStore(store: SecureStore): SessionStore {
+export function createSessionStore(store: SecureStore): SessionStore<MobileAuthConfig> {
   return {
     async read() {
       const refreshToken = await store.getItemAsync(REFRESH_TOKEN_ITEM);
@@ -93,7 +100,7 @@ export function createSessionStore(store: SecureStore): SessionStore {
       if (!stored) return null;
       try {
         const parsed = JSON.parse(stored) as { refreshToken?: unknown; auth?: unknown };
-        const auth = parseDeviceAuthConfig(parsed.auth);
+        const auth = parseMobileAuthConfig(parsed.auth);
         return typeof parsed.refreshToken === "string" && auth ? { refreshToken: parsed.refreshToken, auth } : null;
       } catch {
         return null;
@@ -113,7 +120,7 @@ export function createSessionStore(store: SecureStore): SessionStore {
 /** The cloud a session belongs to. Kept after sign-out, to finish a revocation. */
 export interface SessionCloud {
   readonly baseUrl: string;
-  readonly auth: DeviceAuthConfig;
+  readonly auth: MobileAuthConfig;
 }
 
 export async function loadSessionCloud(store: SecureStore): Promise<SessionCloud | null> {
@@ -121,7 +128,7 @@ export async function loadSessionCloud(store: SecureStore): Promise<SessionCloud
   if (!stored) return null;
   try {
     const parsed = JSON.parse(stored) as { baseUrl?: unknown; auth?: unknown };
-    const auth = parseDeviceAuthConfig(parsed.auth);
+    const auth = parseMobileAuthConfig(parsed.auth);
     if (typeof parsed.baseUrl !== "string" || !auth) return null;
     return { baseUrl: parsed.baseUrl, auth };
   } catch {
@@ -139,24 +146,24 @@ export async function loadSignedIn(
   return cloud ? { cloud, email: session.email } : null;
 }
 
-/** A Cognito client for a cloud's device client. */
+/** A Cognito client for a cloud's mobile-apps client. */
 export function cognitoFor(cloud: SessionCloud, fetchImpl?: typeof fetch): CognitoClient {
   return clientsFor(fetchImpl)(cloud.auth);
 }
 
 /** Cognito clients for any pool, over one `fetch`. */
-function clientsFor(fetchImpl?: typeof fetch): CognitoClientFor {
-  return (auth: DeviceAuthConfig) =>
+function clientsFor(fetchImpl?: typeof fetch): CognitoClientFor<MobileAuthConfig> {
+  return (auth: MobileAuthConfig) =>
     createCognitoClient({
       region: auth.region,
-      userPoolClientId: auth.deviceClientId,
+      userPoolClientId: auth.mobileClientId,
       ...(fetchImpl ? { fetch: fetchImpl } : {}),
     });
 }
 
 /**
  * Check a typed cloud address, and normalize it. Refuses plain http except to
- * a development machine, because the password and the photos go to it.
+ * a development machine, because the session and the photos go to it.
  */
 export function checkCloudAddress(address: string): { ok: true; baseUrl: string } | { ok: false; reason: string } {
   const trimmed = address.trim().replace(/\/+$/, "");
@@ -204,45 +211,44 @@ export function notifySessionRejected(reason: string): void {
   for (const listener of rejectionListeners) listener(reason);
 }
 
-export type SignInOutcome =
-  | { readonly kind: "signed-in"; readonly email: string | null; readonly userId: string }
-  | { readonly kind: "new-password-required" };
+export interface SignInOutcome {
+  readonly email: string | null;
+  readonly userId: string;
+}
+
+/** What a sign-in reaches outside this module: the browser, the Keystore and the network. */
+export interface PhoneSignInDeps extends Omit<BrowserSignInDeps, "fetch"> {
+  readonly attestedKey: AttestedKeyNative | null;
+  readonly sha256: Sha256;
+  readonly fetch?: typeof fetch;
+}
 
 /**
- * Sign this phone in to the cloud at `baseUrl`.
+ * Sign this phone in to the cloud at `baseUrl`, on the cloud's managed login
+ * page, and register this app's attested key.
  *
- * Stateless across the new-password step, as the local data server's route
- * is: an account's first sign-in answers `new-password-required`, and the
- * screen calls again with the temporary password and the new one.
- *
- * Throws Cognito's own error for a wrong password or a password the policy
- * refuses, the cloud's for an address that is not a Starkeep cloud,
- * {@link NoDataLibraryError} for an account that can never sync, and
- * {@link LibraryBelongsElsewhereError} for an account other than the library's.
+ * Throws `SignInCancelledError` when the person closes the page, the page's
+ * own reason when it refuses, the cloud's for an address that is not a
+ * Starkeep cloud, {@link NoDataLibraryError} for an account that can never
+ * sync, {@link LibraryBelongsElsewhereError} for an account other than the
+ * library's, and `AttestationRefusedError` when the cloud cannot confirm the
+ * app. Nothing is kept on any refusal, and a session the page granted is
+ * ended at the pool.
  */
 export async function signInPhone(
   store: SecureStore,
   args: {
     baseUrl: string;
-    email: string;
-    password: string;
-    newPassword?: string;
     /** The user this phone's library belongs to, or null while it belongs to nobody. */
     libraryOwner?: string | null;
   },
-  fetchImpl: typeof fetch = globalThis.fetch,
+  deps: PhoneSignInDeps,
 ): Promise<SignInOutcome> {
-  const auth = await fetchDeviceAuthConfig(args.baseUrl, fetchImpl);
+  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const auth = await fetchMobileAuthConfig(args.baseUrl, fetchImpl);
   const cloud: SessionCloud = { baseUrl: args.baseUrl, auth };
   const client = cognitoFor(cloud, fetchImpl);
-  const result = await client.signIn(args.email, args.password);
-  let tokens: AuthTokens;
-  if (result.kind === "new-password-required") {
-    if (!args.newPassword) return { kind: "new-password-required" };
-    tokens = await client.setNewPassword(args.email, result.session, args.newPassword);
-  } else {
-    tokens = result.tokens;
-  }
+  const tokens = await signInWithBrowser(auth, { ...deps, fetch: fetchImpl });
   const claims = idTokenClaims(tokens.idToken);
   const userId = claims.sub;
   if (!userId) throw new Error("The cloud's sign-in named no user.");
@@ -259,6 +265,21 @@ export async function signInPhone(
     await client.revoke(tokens.refreshToken).catch(() => undefined);
     throw new LibraryBelongsElsewhereError();
   }
+  // The key comes before the session is kept: a phone the cloud will not
+  // trust to speak for Photos cannot sync, so it is not signed in either.
+  let keyId: string;
+  try {
+    ({ keyId } = await registerAttestedKey({
+      baseUrl: args.baseUrl,
+      idToken: tokens.idToken,
+      native: deps.attestedKey,
+      sha256: deps.sha256,
+      fetch: fetchImpl,
+    }));
+  } catch (err) {
+    await client.revoke(tokens.refreshToken).catch(() => undefined);
+    throw err;
+  }
 
   const sessions = createSessionStore(store);
   // A sign-out still waiting on its pool finishes now, and a previous sign-in
@@ -267,14 +288,22 @@ export async function signInPhone(
   await endReplacedSession(clientsFor(fetchImpl), sessions, previousCloud?.auth ?? null);
   await store.setItemAsync(CLOUD_ITEM, JSON.stringify(cloud));
   const session = await storeSignIn(sessions, tokens);
-  return { kind: "signed-in", email: session.email ?? args.email, userId };
+  await storeKeyId(store, keyId);
+  return { email: session.email, userId };
 }
 
 /**
  * Sign this phone out: locally at once, and at the pool as soon as it answers.
  * The phone's library stays; it stops syncing.
  */
-export async function signOutPhone(store: SecureStore, fetchImpl?: typeof fetch): Promise<RevocationOutcome> {
+export async function signOutPhone(
+  store: SecureStore,
+  attestedKey: AttestedKeyNative | null,
+  fetchImpl?: typeof fetch,
+): Promise<RevocationOutcome> {
+  // The key goes first: it is worthless without a live token, but a phone
+  // signed out should hold nothing that speaks for it.
+  await forgetAttestedKey(store, attestedKey);
   const sessions = createSessionStore(store);
   const session = await sessions.read();
   const cloud = await loadSessionCloud(store);

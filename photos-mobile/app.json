@@ -2,6 +2,7 @@
   "expo": {
     "name": "Starkeep Photos",
     "slug": "starkeep-photos",
+    "scheme": "starkeep-photos",
     "version": "0.0.1",
     "orientation": "default",
     "userInterfaceStyle": "automatic",

@@ -5,18 +5,13 @@ import { FORCE_REMOTE } from "./lib/data-source-context";
 
 /**
  * Photos' sign-in page, mounted by `src/main.tsx` for the `/sign-in` client
- * route. The app owns the route, the markup and the copy; the
- * platform owns everything the form talks to. This is one of the handful of
+ * route. The app owns the route, the markup and the copy; the platform owns
+ * the sign-in itself, on the managed login page. This is one of the handful of
  * paths the manifest declares public, so it is reachable by someone who has no
  * session yet — which is the only reason it exists.
  *
- * `onSignedIn` is not optional here in practice. Without it the form falls back
- * to `window.location.reload()`, which was right when it rendered *inside* the
- * app shell — reloading re-rendered the app, now authenticated. On a page of its
- * own, reloading re-renders the sign-in page, so a person signs in successfully,
- * gets both cookies, and lands back on the form with nothing to say why. Sending
- * them to the app root is the whole difference between a working sign-in and one
- * that silently loops.
+ * The sign-in returns to the app root, not to this page: landing back here
+ * would show the button again to a person who has just signed in.
  */
 export function SignInPage() {
   const restoring = useRestoredSession();
@@ -29,13 +24,15 @@ export function SignInPage() {
             Checking for an existing session…
           </div>
         )}
-        <SignInForm onSignedIn={() => window.location.assign(APP_HOME)} />
+        <SignInForm returnPath={RETURN_PATH} />
       </div>
     </div>
   );
 }
 
 const APP_HOME = BASE_PATH || "/";
+/** The app root, with the trailing slash the platform's return check expects. */
+const RETURN_PATH = `${BASE_PATH}/`;
 
 /**
  * A browser holding a live session but no live token lands here without ever
@@ -51,10 +48,10 @@ const APP_HOME = BASE_PATH || "/";
  * reached from a page like this one. Asking for a password instead would be
  * asking for something the browser already has.
  *
- * The form renders underneath while this runs rather than behind a spinner: a
+ * The button renders underneath while this runs rather than behind a spinner: a
  * person with no session at all is the other case, and making them wait on a
- * network round trip to see the fields would trade their whole first visit for
- * this one's.
+ * network round trip to see it would trade their whole first visit for this
+ * one's.
  *
  * Only the cloud build does any of this. A local build has no user pool, so
  * the route can only answer 503, and there is no gateway sending anyone here
@@ -85,7 +82,7 @@ function useRestoredSession(): boolean {
         }
       } catch {
         // A refresh that cannot complete is not evidence of anything. Show the
-        // form and let a real sign-in report the truth.
+        // button and let a real sign-in report the truth.
       }
       if (!cancelled) setRestoring(false);
     })();
@@ -99,7 +96,7 @@ function useRestoredSession(): boolean {
 
 // One bounce, not a loop. If the app root sends the browser straight back here
 // after a refresh reported success, refreshing again would produce the same
-// success and the same bounce forever. The second visit shows the form.
+// success and the same bounce forever. The second visit shows the button.
 const BOUNCE_KEY = "starkeep:signInBounce";
 const BOUNCE_WINDOW_MS = 15_000;
 

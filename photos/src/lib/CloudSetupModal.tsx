@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { fetchRuntimeConfig } from "./runtime-config";
-import { withBasePath } from "./base-path";
+import { BASE_PATH, withBasePath } from "./base-path";
 import { SignInForm } from "./SignInForm";
 
 export function CloudSetupModal({ onClose }: { onClose: () => void }) {
@@ -31,17 +31,19 @@ export function CloudSetupModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   const handleDisconnect = () => {
-    // Clearing localStorage is no longer enough — and the keys it used to
-    // clear no longer exist. The session lives in HttpOnly cookies, so only
-    // the server can end it.
+    // The session lives in HttpOnly cookies, so only the server can end it.
+    // The app's route clears them and names the platform's sign-out page,
+    // which ends the managed login session too; without that visit the next
+    // "Sign in" would skip the password.
     void fetch(withBasePath("/api/session/sign-out"), {
       method: "POST",
       credentials: "same-origin",
     })
-      .catch(() => {})
-      .finally(() => {
-        localStorage.setItem("starkeep:dataSource", "local");
-        window.location.reload();
+      .then((r) => r.json() as Promise<{ signOutUrl?: string }>)
+      .catch(() => ({}) as { signOutUrl?: string })
+      .then((body) => {
+        if (body.signOutUrl) window.location.assign(body.signOutUrl);
+        else window.location.reload();
       });
   };
 
@@ -124,7 +126,12 @@ export function CloudSetupModal({ onClose }: { onClose: () => void }) {
         )}
 
         {showSignIn && (
-          <SignInForm onBack={() => setShowSignIn(false)} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setShowSignIn(false)} style={btnStyle}>
+              Back
+            </button>
+            <SignInForm returnPath={currentAppPath()} />
+          </div>
         )}
       </div>
     </div>
@@ -140,3 +147,13 @@ const btnStyle: React.CSSProperties = {
   cursor: "pointer",
   fontSize: 13,
 };
+
+/**
+ * Where a sign-in started here returns to: the page the person is on, which
+ * lies under the app's mount in the cloud build, the only build with this
+ * dialog.
+ */
+function currentAppPath(): string {
+  const here = `${window.location.pathname}${window.location.search}`;
+  return here.startsWith(`${BASE_PATH}/`) ? here : `${BASE_PATH}/`;
+}

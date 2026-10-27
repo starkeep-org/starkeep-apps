@@ -62,6 +62,10 @@ async function mount(SignInPage: () => React.ReactElement): Promise<HTMLElement>
   return container;
 }
 
+function signInButton(container: HTMLElement): HTMLButtonElement | undefined {
+  return [...container.querySelectorAll("button")].find((b) => b.textContent === "Sign in");
+}
+
 beforeEach(() => {
   sessionStorage.clear();
 });
@@ -89,7 +93,7 @@ describe("in the cloud build", () => {
     expect(nav.replaced).toEqual(["/apps/photos"]);
   });
 
-  it("shows the form when there is no session to restore", async () => {
+  it("shows the sign-in button when there is no session to restore", async () => {
     const nav = captureNavigation();
     fetchReturning(401, { error: "Not authenticated" });
     const { SignInPage } = await loadPage({ cloud: true });
@@ -97,11 +101,11 @@ describe("in the cloud build", () => {
     const container = await mount(SignInPage);
 
     expect(nav.replaced).toEqual([]);
-    expect(container.querySelectorAll("input")).toHaveLength(2);
+    expect(signInButton(container)).toBeTruthy();
     expect(container.textContent).not.toContain("Checking for an existing session");
   });
 
-  it("shows the form when the refresh call cannot complete", async () => {
+  it("shows the sign-in button when the refresh call cannot complete", async () => {
     // A network blip is not evidence of being signed out, and a page stuck on
     // "checking" would be a dead end of its own.
     const nav = captureNavigation();
@@ -111,12 +115,26 @@ describe("in the cloud build", () => {
     const container = await mount(SignInPage);
 
     expect(nav.replaced).toEqual([]);
-    expect(container.querySelectorAll("input")).toHaveLength(2);
+    expect(signInButton(container)).toBeTruthy();
+  });
+
+  it("sends the browser to the platform's sign-in page, never asking for a password itself", async () => {
+    const nav = captureNavigation();
+    fetchReturning(401, { error: "Not authenticated" });
+    const { SignInPage } = await loadPage({ cloud: true });
+
+    const container = await mount(SignInPage);
+    expect(container.querySelectorAll("input")).toHaveLength(0);
+    await act(async () => signInButton(container)!.click());
+
+    // At the origin root, outside the app's mount: the platform's route, not
+    // the app's. It returns to the app root.
+    expect(nav.assigned).toEqual(["/auth/start?app=photos&return=%2Fapps%2Fphotos%2F"]);
   });
 
   it("bounces once, not forever", async () => {
     // If the app root sends the browser straight back here, refreshing again
-    // would succeed again and bounce again. The second visit shows the form.
+    // would succeed again and bounce again. The second visit shows the button.
     const first = captureNavigation();
     fetchReturning(200, { signedIn: true });
     const { SignInPage } = await loadPage({ cloud: true });
@@ -143,6 +161,6 @@ describe("in the local build", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(nav.replaced).toEqual([]);
-    expect(container.querySelectorAll("input")).toHaveLength(2);
+    expect(signInButton(container)).toBeTruthy();
   });
 });

@@ -1,203 +1,40 @@
-import { useEffect, useRef, useState } from "react";
-import { withBasePath } from "./base-path";
+import { signInAddress } from "@starkeep/app-client/session-cookies";
 
 interface SignInFormProps {
-  onBack?: () => void;
-  onSignedIn?: () => void;
+  /** Where the browser returns once signed in. Must lie under the app's mount. */
+  returnPath: string;
 }
 
 /**
- * The sign-in form. It posts to Photos' own server and does nothing else — no
- * Cognito client, no pool config to fetch, no token to store. What comes back
- * is a pair of HttpOnly cookies this code cannot read, which is the property
- * that makes an XSS here worth much less than it used to be.
+ * The sign-in control: one button to the platform's sign-in page.
+ *
+ * Photos never sees a password. The button goes to the platform's
+ * `/auth/start`, which sends the browser to Cognito's managed login page; the
+ * page takes the password, handles a first sign-in's new password and
+ * "Forgot password", and the platform's `/auth/callback` sets Photos' session
+ * cookies and returns the browser to `returnPath`.
+ *
+ * `/auth/start` lives at the origin root, outside Photos' mount, so the
+ * address deliberately does not go through `withBasePath`.
  */
-interface SessionResponse {
-  signedIn?: boolean;
-  challenge?: string;
-  session?: string;
-  error?: string;
-}
-
-async function post(action: string, body: unknown): Promise<SessionResponse> {
-  const res = await fetch(withBasePath(`/api/session/${action}`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    credentials: "same-origin",
-  });
-  const parsed = (await res.json().catch(() => ({}))) as SessionResponse;
-  if (!res.ok) throw new Error(parsed.error ?? `Sign-in failed (${res.status})`);
-  return parsed;
-}
-
-export function SignInForm({ onBack, onSignedIn }: SignInFormProps) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [session, setSession] = useState<string | null>(null);
-  const [signingIn, setSigningIn] = useState(false);
-  const [signInError, setSignInError] = useState<string | null>(null);
-
-  const emailRef = useRef<HTMLInputElement>(null);
-  const passwordRef = useRef<HTMLInputElement>(null);
-
-  // Adopt whatever the fields already hold when React attaches.
-  //
-  // These inputs are server-rendered, so there is a window between the HTML
-  // arriving and this component hydrating in which a person can type into
-  // them. Text typed in that window lands in the DOM and nowhere else: React
-  // then attaches with empty state, the submit button — which enables on that
-  // state — stays disabled, and retyping does not recover it, because every
-  // later keystroke lands on a React that has already decided the field is
-  // empty. The result is a form that shows the person their own password and
-  // refuses to submit it, with nothing on screen to say why. Reading the DOM
-  // once at mount closes that window. It also picks up a browser autofill,
-  // which desynchronises in exactly the same way.
-  useEffect(() => {
-    const filledEmail = emailRef.current?.value;
-    if (filledEmail) setEmail(filledEmail);
-    const filledPassword = passwordRef.current?.value;
-    if (filledPassword) setPassword(filledPassword);
-  }, []);
-
-  const finishSignIn = async () => {
-    // This form signs in to the cloud session only. The local data server
-    // signs itself in to sync from admin-web's "This machine" section, with
-    // its own client; nothing here hands it a token.
-    localStorage.setItem("starkeep:dataSource", "remote");
-    if (onSignedIn) {
-      onSignedIn();
-    } else {
-      window.location.reload();
-    }
-  };
-
-  const handleSignIn = async () => {
-    if (!email || !password) return;
-    setSigningIn(true);
-    setSignInError(null);
-    try {
-      const result = await post("sign-in", { email, password });
-      if (result.challenge === "NEW_PASSWORD_REQUIRED") {
-        setSession(result.session ?? null);
-      } else {
-        await finishSignIn();
-      }
-    } catch (err) {
-      setSignInError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  const handleNewPassword = async () => {
-    if (!session) return;
-    setSigningIn(true);
-    setSignInError(null);
-    try {
-      await post("new-password", { session, email, newPassword });
-      await finishSignIn();
-    } catch (err) {
-      setSignInError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
+export function SignInForm({ returnPath }: SignInFormProps) {
   return (
-    <>
-      {session ? (
-        <>
-          <div style={{ fontSize: 13, color: "#ccc", marginBottom: 16 }}>
-            Set a new permanent password to continue.
-          </div>
-          <label style={labelStyle}>New password</label>
-          <input
-            type="password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            style={inputStyle}
-            autoFocus
-          />
-          {signInError && <div style={{ fontSize: 12, color: "#f88", marginBottom: 8 }}>{signInError}</div>}
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setSession(null)} style={btnStyle}>Back</button>
-            <button
-              onClick={() => void handleNewPassword()}
-              disabled={signingIn || !newPassword}
-              style={{ ...btnStyle, background: "rgba(80,180,80,0.15)", borderColor: "rgba(80,180,80,0.4)" }}
-            >
-              {signingIn ? "Setting password…" : "Set password"}
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <label style={labelStyle}>Email</label>
-          <input
-            ref={emailRef}
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={inputStyle}
-            autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter") void handleSignIn(); }}
-          />
-          <label style={labelStyle}>Password</label>
-          <input
-            ref={passwordRef}
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={inputStyle}
-            onKeyDown={(e) => { if (e.key === "Enter") void handleSignIn(); }}
-          />
-          {signInError && <div style={{ fontSize: 12, color: "#f88", marginBottom: 8 }}>{signInError}</div>}
-          <div style={{ display: "flex", gap: 8 }}>
-            {onBack && (
-              <button onClick={onBack} style={btnStyle}>Back</button>
-            )}
-            <button
-              onClick={() => void handleSignIn()}
-              disabled={signingIn || !email || !password}
-              style={{ ...btnStyle, background: "rgba(80,140,255,0.15)", borderColor: "rgba(80,140,255,0.4)" }}
-            >
-              {signingIn ? "Signing in…" : "Sign in"}
-            </button>
-          </div>
-        </>
-      )}
-    </>
+    <button
+      type="button"
+      onClick={() => window.location.assign(signInAddress("photos", returnPath))}
+      style={btnStyle}
+    >
+      Sign in
+    </button>
   );
 }
 
 const btnStyle: React.CSSProperties = {
-  background: "rgba(255,255,255,0.07)",
-  border: "1px solid rgba(255,255,255,0.15)",
+  background: "rgba(80,140,255,0.15)",
+  border: "1px solid rgba(80,140,255,0.4)",
   color: "#ccc",
   borderRadius: 4,
   padding: "7px 14px",
   cursor: "pointer",
   fontSize: 13,
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 12,
-  color: "#888",
-  marginBottom: 4,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.15)",
-  borderRadius: 4,
-  color: "#e0e0e0",
-  padding: "8px 10px",
-  fontSize: 13,
-  marginBottom: 12,
-  boxSizing: "border-box",
-  outline: "none",
 };

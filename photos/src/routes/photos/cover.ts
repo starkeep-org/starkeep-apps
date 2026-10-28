@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
+import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
 
 const COVER_SUBKEY = "cover";
 const MAX_COVER_BYTES = 20_000_000;
@@ -15,34 +15,29 @@ const MAX_COVER_BYTES = 20_000_000;
  * storage key and the two-step upload are platform details mediated here.
  */
 
-function notInstalled(): Response {
-  return Response.json(
-    { error: "photos has not been installed locally — run install from admin-web first" },
-    { status: 503 },
-  );
-}
-
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
 /** Current cover download URL, or `{ url: null }` when none is set. */
-export async function GET(): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
-  const upstream = await signedFetch(creds, `/app-data/files/${COVER_SUBKEY}`);
-  if (upstream.status === 404) return Response.json({ url: null });
+export async function GET(req: Request): Promise<Response> {
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
+  const upstream = await authorized.fetch(`/app-data/files/${COVER_SUBKEY}`);
+  if (upstream.status === 404) {
+    return withRefreshedSession(Response.json({ url: null }), authorized.refreshedCookie);
+  }
   if (!upstream.ok) {
     return Response.json({ url: null }, { status: upstream.status });
   }
   const { url } = (await upstream.json()) as { url: string };
-  return Response.json({ url });
+  return withRefreshedSession(Response.json({ url }), authorized.refreshedCookie);
 }
 
 /** Set the cover image. Body: raw image bytes; Content-Type is the mime type. */
 export async function PUT(req: Request): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
 
   const mimeType = (req.headers.get("content-type") ?? "application/octet-stream")
     .split(";")[0]!
@@ -58,7 +53,7 @@ export async function PUT(req: Request): Promise<Response> {
   // 1. Presign — the platform builds the storage key from appId + subKey and
   //    pins the hash, so the store keeps a whole-file SHA-256 for the cover.
   const contentHash = sha256Hex(bytes);
-  const presignRes = await signedFetch(creds, `/app-data/files/presign`, {
+  const presignRes = await authorized.fetch(`/app-data/files/presign`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ subKey: COVER_SUBKEY, contentType: mimeType, contentHash }),
@@ -91,7 +86,7 @@ export async function PUT(req: Request): Promise<Response> {
 
   // 3. Register the index row so the file is visible to existence checks and
   //    cross-channel sync (the platform never held the bytes).
-  const registered = await signedFetch(creds, `/app-data/files/${COVER_SUBKEY}/record`, {
+  const registered = await authorized.fetch(`/app-data/files/${COVER_SUBKEY}/record`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -105,13 +100,13 @@ export async function PUT(req: Request): Promise<Response> {
     return Response.json({ error: detail || "Failed to register cover" }, { status: 502 });
   }
 
-  return Response.json({ ok: true });
+  return withRefreshedSession(Response.json({ ok: true }), authorized.refreshedCookie);
 }
 
 /** Remove the cover image. */
-export async function DELETE(): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
-  await signedFetch(creds, `/app-data/files/${COVER_SUBKEY}`, { method: "DELETE" });
-  return Response.json({ ok: true });
+export async function DELETE(req: Request): Promise<Response> {
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
+  await authorized.fetch(`/app-data/files/${COVER_SUBKEY}`, { method: "DELETE" });
+  return withRefreshedSession(Response.json({ ok: true }), authorized.refreshedCookie);
 }

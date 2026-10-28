@@ -1,19 +1,12 @@
 import { createHash } from "node:crypto";
-import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
+import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
 import { photoRecordToAppImage } from "@/lib/photoRecordToAppImage";
 import type { PhotoRecord } from "@/lib/data-server-client";
 import { PHOTOS_LABEL_KEYS } from "@/photos-lib";
 
-function notInstalled(): Response {
-  return Response.json(
-    { error: "photos has not been installed locally — run install from admin-web first" },
-    { status: 503 },
-  );
-}
-
 export async function POST(req: Request): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
 
   const body = (await req.json().catch(() => null)) as {
     sourceImageId?: string;
@@ -26,14 +19,14 @@ export async function POST(req: Request): Promise<Response> {
   const { sourceImageId, cropRect } = body;
 
   // Fetch the source record to get its filename and mime type.
-  const recordRes = await signedFetch(creds, `/data/records/${sourceImageId}`);
+  const recordRes = await authorized.fetch(`/data/records/${sourceImageId}`);
   if (!recordRes.ok) {
     return Response.json({ error: "Source record not found" }, { status: 404 });
   }
   const { record: sourceRecord } = (await recordRes.json()) as { record: PhotoRecord };
 
   // Get a download URL for the source file.
-  const fileUrlRes = await signedFetch(creds, `/data/records/${sourceImageId}/file-url`);
+  const fileUrlRes = await authorized.fetch(`/data/records/${sourceImageId}/file-url`);
   if (!fileUrlRes.ok) {
     return Response.json({ error: "Failed to get source file URL" }, { status: 502 });
   }
@@ -64,7 +57,7 @@ export async function POST(req: Request): Promise<Response> {
 
   // The data server builds the key from the category and the hash, under the
   // library's user.
-  const presignRes = await signedFetch(creds, "/files/presign", {
+  const presignRes = await authorized.fetch("/files/presign", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type: "image", contentHash, contentType: mimeType }),
@@ -87,7 +80,7 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  const createRes = await signedFetch(creds, "/data/records", {
+  const createRes = await authorized.fetch("/data/records", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -112,7 +105,7 @@ export async function POST(req: Request): Promise<Response> {
   const { record } = (await createRes.json()) as { record: PhotoRecord };
 
   // Write dimensions into shared image metadata.
-  const metaRes = await signedFetch(creds, `/data/records/${record.id}/metadata`, {
+  const metaRes = await authorized.fetch(`/data/records/${record.id}/metadata`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -124,5 +117,8 @@ export async function POST(req: Request): Promise<Response> {
     ? { recordId: record.id, width: cropRect.width, height: cropRect.height }
     : null;
 
-  return Response.json({ image: photoRecordToAppImage(record, photoMeta) }, { status: 201 });
+  return withRefreshedSession(
+    Response.json({ image: photoRecordToAppImage(record, photoMeta) }, { status: 201 }),
+    authorized.refreshedCookie,
+  );
 }

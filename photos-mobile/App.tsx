@@ -24,6 +24,13 @@ import { closeNodeForReset } from "./src/work/node-handle";
  * signed-out phone is a perfectly good Starkeep node that happens to be the
  * only one that knows what it holds.
  *
+ * ## The first import asks first, and is still not a gate
+ *
+ * A fresh library offers sign-in before its first import, because a library
+ * that imports before its first pull writes over the records the person's
+ * other devices made. The same screen offers "Import without signing in", so
+ * nothing a person holds is ever behind a sign-in. See `src/media/import-gate.ts`.
+ *
  * ## What that leaves the shell doing
  *
  * Choosing between two screens, neither of which is a precondition for the

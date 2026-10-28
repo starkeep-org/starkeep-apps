@@ -673,6 +673,7 @@ export function importDepsFor(node: MobileNode, clock: HLCClock): ImportDeps {
   }
   const videoPosters = videoPosterDepsFor(node, clock);
   return {
+    mayImport: () => node.importGate() === "open",
     media: deviceMedia,
     aliases: node.mediaAliases,
     database: node.databaseAdapter,

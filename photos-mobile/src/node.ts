@@ -90,6 +90,7 @@ import {
   type SyncTrigger,
 } from "./work/sync-trace";
 import { createChannelSyncStateStore } from "./work/channel-sync-state";
+import { createImportGateStore, importGateOf, type ImportGate } from "./media/import-gate";
 import { createCaptionStore, type CaptionStore } from "./photos/captions";
 
 /**
@@ -325,6 +326,14 @@ export interface MobileNode {
    * Photos channel has completed a pull. See `photos/captions.ts`.
    */
   readonly captions: CaptionStore;
+  /**
+   * Whether this library may import from the camera roll yet. A fresh library
+   * waits for a sign-in and the first pull's rows, or for the person's choice
+   * to import without waiting. See `media/import-gate.ts`.
+   */
+  importGate(): ImportGate;
+  /** Record the person's choice to import without waiting for the first pull. Opens the gate. */
+  importWithoutPull(): void;
   /**
    * The engine's uploader, behind this node's library binding, or null with no
    * cloud.
@@ -697,6 +706,7 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     syncState,
     PHOTOS_APP_ID,
   );
+  const importGateStore = createImportGateStore(databaseAdapter.getRawDatabase());
   const photosChannel = options.cloud?.photos;
   const photosEngine = photosChannel
     ? createSyncEngine({
@@ -886,6 +896,14 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     engine,
     photosEngine,
     captions,
+    importGate: () =>
+      importGateOf({
+        imported: (mediaAliases?.listAfter(null, 1).length ?? 0) > 0,
+        hasCloud: engine !== null,
+        drivePulled: importGateStore.drivePulled(),
+        importWithoutPull: importGateStore.importWithoutPull(),
+      }),
+    importWithoutPull: () => importGateStore.chooseImportWithoutPull(),
     uploads,
     userId: () => userSegment,
     residency,
@@ -904,7 +922,9 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     exchange: async () =>
       engine ? serialized(async () => {
         await ensureBound();
-        return engine.exchange().then(afterRound);
+        const round = await engine.exchange();
+        if (!round.hasMore) importGateStore.markDrivePulled();
+        return afterRound(round);
       }) : null,
     sync: async (syncOptions) => {
       if (!engine) return null;
@@ -919,6 +939,11 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
             const result = await engine.sync({
               ...engineOptions,
               onRound: (round, rounds) => {
+                // The rows a fresh library's import waits for have all arrived
+                // once the cloud has no more to send. Files keep downloading
+                // after this, against their own watermark, and the import does
+                // not need them. See `media/import-gate.ts`.
+                if (!round.hasMore) importGateStore.markDrivePulled();
                 // The trace must never cost a sync its round: a write that fails
                 // is a lost line of diagnostics, not a failed upload.
                 try {

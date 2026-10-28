@@ -6,10 +6,12 @@
  * for the open record, the shared rows built from it, then Type and Content
  * hash, and nothing from a read for a record the sheet has since moved past.
  * The last case pins Delete: confirmed, it closes the sheet and then deletes.
+ * The caption cases pin "Edit caption": the field it opens, Save and Cancel,
+ * and the disabled state before the Photos channel has pulled.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { Alert, Text } from "react-native";
-import { photoInfoRows } from "@starkeep/photos-info";
+import { MAX_CAPTION_LENGTH, photoInfoRows } from "@starkeep/photos-info";
 import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
 import { infoFields } from "../src/ui/info-fields";
 import { PhotoInfoSheet } from "../src/ui/PhotoInfoSheet";
@@ -108,5 +110,104 @@ describe("the info sheet", () => {
     expect(calls).toEqual(["close", "delete"]);
     expect(onDelete).toHaveBeenCalledWith(record);
     alert.mockRestore();
+  });
+});
+
+describe("the caption in the info sheet", () => {
+  function fakeCaptions(initial: string | null, blocked: string | null = null) {
+    let stored = initial;
+    return {
+      get: jest.fn(async () => stored),
+      set: jest.fn(async (_id: string, text: string) => {
+        stored = text === "" ? null : text;
+        return stored;
+      }),
+      editBlockedReason: jest.fn(() => blocked),
+    };
+  }
+
+  function sheet(record: DataRecord, captions: ReturnType<typeof fakeCaptions>, onCaptionChange = jest.fn()) {
+    return (
+      <PhotoInfoSheet
+        record={record}
+        readInfo={async () => null}
+        onDelete={jest.fn(async () => undefined)}
+        captions={captions}
+        onCaptionChange={onCaptionChange}
+        onClose={jest.fn()}
+      />
+    );
+  }
+
+  it("shows the caption, and Edit caption opens a field prefilled with it that saves", async () => {
+    const record = photoRecord();
+    const captions = fakeCaptions("A cat");
+    const onCaptionChange = jest.fn();
+    render(sheet(record, captions, onCaptionChange));
+    await settle();
+    expect(captions.get).toHaveBeenCalledWith(record.id);
+    expect(screen.getByText("A cat")).toBeTruthy();
+
+    fireEvent.press(screen.getByLabelText("Edit caption"));
+    const field = screen.getByLabelText("Caption");
+    expect(field.props.value).toBe("A cat");
+
+    fireEvent.changeText(field, "A sleeping cat");
+    await act(async () => fireEvent.press(screen.getByLabelText("Save")));
+    expect(captions.set).toHaveBeenCalledWith(record.id, "A sleeping cat");
+    expect(onCaptionChange).toHaveBeenCalledWith(record.id, "A sleeping cat");
+    expect(screen.queryByLabelText("Caption")).toBeNull();
+    expect(screen.getByText("A sleeping cat")).toBeTruthy();
+  });
+
+  it("Cancel leaves the caption as it was", async () => {
+    const captions = fakeCaptions("A cat");
+    render(sheet(photoRecord(), captions));
+    await settle();
+    fireEvent.press(screen.getByLabelText("Edit caption"));
+    fireEvent.changeText(screen.getByLabelText("Caption"), "Something else");
+    fireEvent.press(screen.getByLabelText("Cancel"));
+    expect(captions.set).not.toHaveBeenCalled();
+    expect(screen.getByText("A cat")).toBeTruthy();
+  });
+
+  it("disables Edit caption until the Photos channel has pulled, and says why", async () => {
+    const captions = fakeCaptions(null, "Captions can be edited once this phone has synced them.");
+    render(sheet(photoRecord(), captions));
+    await settle();
+    const edit = screen.getByLabelText("Edit caption");
+    expect(edit.props.accessibilityState).toEqual(expect.objectContaining({ disabled: true }));
+    fireEvent.press(edit);
+    expect(screen.queryByLabelText("Caption")).toBeNull();
+    expect(screen.getByText("Captions can be edited once this phone has synced them.")).toBeTruthy();
+  });
+
+  it("says why a save failed and keeps the draft open", async () => {
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => undefined);
+    const record = photoRecord();
+    const captions = fakeCaptions("A cat");
+    captions.set.mockRejectedValueOnce(new Error("Captions can be edited once this phone has synced them."));
+    const onCaptionChange = jest.fn();
+    render(sheet(record, captions, onCaptionChange));
+    await settle();
+
+    fireEvent.press(screen.getByLabelText("Edit caption"));
+    fireEvent.changeText(screen.getByLabelText("Caption"), "A sleeping cat");
+    await act(async () => fireEvent.press(screen.getByLabelText("Save")));
+
+    expect(alert).toHaveBeenCalledWith(
+      "Could not save the caption",
+      "Captions can be edited once this phone has synced them.",
+    );
+    expect(screen.getByLabelText("Caption").props.value).toBe("A sleeping cat");
+    expect(onCaptionChange).not.toHaveBeenCalled();
+    alert.mockRestore();
+  });
+
+  it("limits the field to the shared caption length", async () => {
+    render(sheet(photoRecord(), fakeCaptions(null)));
+    await settle();
+    fireEvent.press(screen.getByLabelText("Edit caption"));
+    expect(screen.getByLabelText("Caption").props.maxLength).toBe(MAX_CAPTION_LENGTH);
   });
 });

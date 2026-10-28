@@ -105,6 +105,7 @@ export function HomeScreen({ onConnect }: Props) {
       onOpenMotion: library.openMotion,
       onReadInfo: library.readInfo,
       onDelete: library.deleteRecord,
+      captions: library.captions,
       onLoadMore: loadMoreQuietly,
     },
     library.items,

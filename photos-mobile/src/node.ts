@@ -27,7 +27,18 @@
  */
 
 import { createHLCClock } from "@starkeep/protocol-primitives";
-import { boundUserId, libraryUserSegment, SqliteDatabaseAdapter, type SqliteDriver } from "@starkeep/storage-sqlite";
+import {
+  boundUserId,
+  libraryUserSegment,
+  registerAppSyncableNamespace,
+  SqliteAppSyncableApplier,
+  SqliteAppSyncableNamespaceStore,
+  SqliteDatabaseAdapter,
+  type AppSyncableDeclaration,
+  type SqliteDriver,
+} from "@starkeep/storage-sqlite";
+import { createAppSpecificFactory } from "@starkeep/shared-space-api";
+import { PHOTOS_APP_ID, photosSyncableSchema } from "@starkeep/photos-info";
 import {
   createLibrarySettings,
   createSqliteDeploymentSettingsCache,
@@ -78,6 +89,8 @@ import {
   type SyncTraceRound,
   type SyncTrigger,
 } from "./work/sync-trace";
+import { createChannelSyncStateStore } from "./work/channel-sync-state";
+import { createCaptionStore, type CaptionStore } from "./photos/captions";
 
 /**
  * Byte budget for one exchange round's downloads on a phone, and for one
@@ -166,6 +179,15 @@ export interface MobileNodeOptions {
      * it cannot be learned yet.
      */
     readonly readSyncUser: () => Promise<{ readonly userId: string | null }>;
+    /**
+     * Photos' own channel, `<cloud>/apps/photos`, which carries its private
+     * rows: captions, titles and date overrides. Absent, the node syncs the
+     * Drive channel alone.
+     */
+    readonly photos?: {
+      readonly transport: SyncTransport;
+      readonly remoteObjectStorage: ObjectStorageAdapter;
+    };
   };
   /**
    * The platform's whole-and-parts file hasher. "Free up space" proves a large
@@ -294,6 +316,16 @@ export interface MobileNode {
    */
   readonly engine: SyncEngine | null;
   /**
+   * The engine on Photos' own channel, which carries its private rows, or null
+   * when the cloud supplied no such channel. See {@link syncPhotos}.
+   */
+  readonly photosEngine: SyncEngine | null;
+  /**
+   * Photos' captions on this phone. Readable on every node; editable once the
+   * Photos channel has completed a pull. See `photos/captions.ts`.
+   */
+  readonly captions: CaptionStore;
+  /**
    * The engine's uploader, behind this node's library binding, or null with no
    * cloud.
    *
@@ -346,6 +378,16 @@ export interface MobileNode {
    * `trigger`. See {@link syncTrace}.
    */
   sync(options?: SyncOptions & { readonly trigger?: SyncTrigger }): Promise<SyncResult | null>;
+  /**
+   * Sync Photos' own channel alone, until drained. Rows only: the channel
+   * downloads no private files, so it may run on any network.
+   *
+   * {@link sync} runs it after the Drive channel; this runs it without the
+   * Drive channel, for a metered network and for a caption just saved. Its own
+   * engine, so it serializes against itself and not against Drive's rounds.
+   * Resolves null on a node with no Photos channel.
+   */
+  syncPhotos(options?: SyncOptions & { readonly trigger?: SyncTrigger }): Promise<SyncResult | null>;
   /**
    * The most recent sync rounds this node ran, newest first. See
    * `work/sync-trace.ts`.
@@ -496,6 +538,18 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
   });
   await databaseAdapter.init();
 
+  // Photos' private tables, from the manifest the web app installs with, so the
+  // phone and the desktop sync into identical tables. Idempotent, so every
+  // launch runs it, and a column the manifest gains arrives with the build.
+  // Created with or without a cloud: a phone signed out still reads captions
+  // it synced before.
+  registerAppSyncableNamespace(
+    databaseAdapter.getRawDatabase(),
+    PHOTOS_APP_ID,
+    // The manifest validator checks the column types when the app installs.
+    photosSyncableSchema as AppSyncableDeclaration,
+  );
+
   // The alias table is created before anything else touches object storage,
   // because from here on `localObjectStorage` *is* the overlay and every
   // `has()` on it may consult the table.
@@ -629,6 +683,45 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       })
     : null;
 
+  // Photos' own channel: its private rows, and none of the shared records,
+  // which travel on the Drive channel alone. Scoped to Photos' namespace, as
+  // the desktop scopes each of its per-app engines.
+  const photosNamespaces = new SqliteAppSyncableNamespaceStore(databaseAdapter.getRawDatabase());
+  const photosOnly = {
+    get: (appId: string) => (appId === PHOTOS_APP_ID ? photosNamespaces.get(appId) : null),
+    list: () => photosNamespaces.list().filter((ns) => ns.appId === PHOTOS_APP_ID),
+  };
+  const photosApplier = new SqliteAppSyncableApplier(databaseAdapter.getRawDatabase(), photosOnly);
+  const photosSyncState = createChannelSyncStateStore(
+    databaseAdapter.getRawDatabase(),
+    syncState,
+    PHOTOS_APP_ID,
+  );
+  const photosChannel = options.cloud?.photos;
+  const photosEngine = photosChannel
+    ? createSyncEngine({
+        localDatabaseAdapter: databaseAdapter,
+        localObjectStorage,
+        remoteObjectStorage: photosChannel.remoteObjectStorage,
+        transport: photosChannel.transport,
+        clock,
+        syncState: photosSyncState,
+        syncSharedRecords: false,
+        maxBytes: MOBILE_MAX_BYTES,
+        maxItems: MOBILE_MAX_ITEMS,
+        transferConcurrency: MOBILE_TRANSFER_CONCURRENCY,
+        // Rows only. Photos declares private files, but nothing on the phone
+        // reads one, and declining every file is what lets this channel run
+        // over cellular (decision 6). A declined file still applies its row.
+        residency: { decide: () => ({ decision: "elide", reason: "above-ceiling" }) },
+        uploadQueue: createSqliteUploadQueueStore({
+          db: databaseAdapter.getRawDatabase(),
+          channel: PHOTOS_APP_ID,
+        }),
+        appSyncableSource: { namespaces: photosOnly, applier: photosApplier },
+      })
+    : null;
+
   /**
    * Read the deployment's settings again after each round, so a change made in
    * admin-web reaches this phone's stamps by the next round. A failed read
@@ -702,17 +795,65 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     return binding;
   }
 
-  let engineLock: Promise<unknown> = Promise.resolve();
-  function serialized<T>(body: () => Promise<T>): Promise<T> {
-    // `then(body, body)` rather than `then(body)`: a rejected predecessor must
-    // still hand the queue on, or one failed round wedges the node.
-    const next = engineLock.then(body, body);
-    engineLock = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
+  /** One operation at a time on one engine, through `lock`. */
+  function queue(): <T>(body: () => Promise<T>) => Promise<T> {
+    let lock: Promise<unknown> = Promise.resolve();
+    return (body) => {
+      // `then(body, body)` rather than `then(body)`: a rejected predecessor
+      // must still hand the queue on, or one failed round wedges the node.
+      const next = lock.then(body, body);
+      lock = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    };
   }
+  const serialized = queue();
+  // The Photos channel's own queue: its sync state is its own, so its rounds
+  // never race Drive's state, and a caption save need not wait for a drain of
+  // the photo library.
+  const serializedPhotos = queue();
+
+  /**
+   * Sync the Photos channel until drained, and record its first completed
+   * pull. See {@link MobileNode.syncPhotos}.
+   */
+  async function syncPhotos(
+    syncOptions?: SyncOptions & { readonly trigger?: SyncTrigger },
+  ): Promise<SyncResult | null> {
+    if (!photosEngine) return null;
+    const { trigger = "button", ...engineOptions } = syncOptions ?? {};
+    return serializedPhotos(async () => {
+      await ensureBound();
+      const result = await photosEngine.sync(engineOptions);
+      console.log(
+        `[sync] channel=${PHOTOS_APP_ID} trigger=${trigger} rounds=${result.rounds} ` +
+          `applied=${result.applied} shipped=${result.shipped} complete=${result.complete}`,
+      );
+      if (result.complete) photosSyncState.markPulled();
+      return result;
+    });
+  }
+
+  const captions = createCaptionStore({
+    view: createAppSpecificFactory({
+      namespace: photosOnly,
+      applier: photosApplier,
+      fileStorage: localObjectStorage,
+      clock,
+      userId: () => userSegment,
+    })({ subjectType: "app", subjectId: PHOTOS_APP_ID }),
+    hasCloud: photosEngine !== null,
+    pulled: () => photosSyncState.pulled(),
+    // A saved caption ships at once, on any network. A failure leaves it for
+    // the next sync, which ships every row this node has not.
+    onWrite: () => {
+      void syncPhotos({ trigger: "caption" }).catch((err: unknown) => {
+        console.warn(`[sync] could not ship a caption yet: ${String(err)}`);
+      });
+    },
+  });
 
   const uploads: MobileUploads | null = engine
     ? {
@@ -743,6 +884,8 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
     fullDerivationCursor,
     motionIndex,
     engine,
+    photosEngine,
+    captions,
     uploads,
     userId: () => userSegment,
     residency,
@@ -769,31 +912,47 @@ export async function createMobileNode(options: MobileNodeOptions): Promise<Mobi
       const syncId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const syncStartedAt = Date.now();
       let roundStartedAt = syncStartedAt;
-      return serialized(async () => {
-        try {
-          await ensureBound();
-          const result = await engine.sync({
-            ...engineOptions,
-            onRound: (round, rounds) => {
-              // The trace must never cost a sync its round: a write that fails
-              // is a lost line of diagnostics, not a failed upload.
-              try {
-                syncTrace.recordRound(syncId, trigger, rounds, roundStartedAt, round);
-              } catch (err) {
-                console.warn(`[sync] could not record a round in the trace: ${String(err)}`);
-              }
-              roundStartedAt = Date.now();
-              engineOptions.onRound?.(round, rounds);
-            },
+      try {
+        return await serialized(async () => {
+          try {
+            await ensureBound();
+            const result = await engine.sync({
+              ...engineOptions,
+              onRound: (round, rounds) => {
+                // The trace must never cost a sync its round: a write that fails
+                // is a lost line of diagnostics, not a failed upload.
+                try {
+                  syncTrace.recordRound(syncId, trigger, rounds, roundStartedAt, round);
+                } catch (err) {
+                  console.warn(`[sync] could not record a round in the trace: ${String(err)}`);
+                }
+                roundStartedAt = Date.now();
+                engineOptions.onRound?.(round, rounds);
+              },
+            });
+            finishTrace(syncId, trigger, syncStartedAt, stopReasonOf(result, engineOptions.signal?.aborted ?? false));
+            return afterRound(result);
+          } catch (err) {
+            finishTrace(syncId, trigger, syncStartedAt, stopReasonOf(null, false, err));
+            throw err;
+          }
+        });
+      } finally {
+        // Drive's channel first, because photos matter more than captions, and
+        // then Photos' own. A failure on the Photos channel is logged and never
+        // fails the sync: the result is Drive's.
+        if (!(engineOptions.signal?.aborted ?? false)) {
+          await syncPhotos({
+            trigger,
+            ...(engineOptions.signal ? { signal: engineOptions.signal } : {}),
+          }).catch((err: unknown) => {
+            console.warn(`[sync] the Photos channel's sync failed: ${String(err)}`);
           });
-          finishTrace(syncId, trigger, syncStartedAt, stopReasonOf(result, engineOptions.signal?.aborted ?? false));
-          return afterRound(result);
-        } catch (err) {
-          finishTrace(syncId, trigger, syncStartedAt, stopReasonOf(null, false, err));
-          throw err;
         }
-      });
+      }
     },
+
+    syncPhotos,
 
     syncTrace: (limit) => {
       try {

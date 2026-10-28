@@ -14,6 +14,7 @@ import {
   FOREGROUND_SYNC_INTERVAL_MS,
   MEDIA_CHANGE_DEBOUNCE_MS,
   mayAutoSync,
+  photosChannelOnly,
   uploadsMayRun,
   type Timers,
 } from "../src/work/foreground-sync";
@@ -68,6 +69,24 @@ describe("mayAutoSync", () => {
     expect(mayAutoSync({ nodeReady: true, hasCloud: false, device: WIFI })).toBe(false);
     expect(mayAutoSync({ nodeReady: false, hasCloud: true, device: WIFI })).toBe(false);
     expect(mayAutoSync({ nodeReady: true, hasCloud: true, device: null })).toBe(false);
+  });
+});
+
+describe("photosChannelOnly", () => {
+  it("runs Photos' own channel alone on a metered connection", () => {
+    const metered = { ...WIFI, isUnmetered: false };
+    expect(photosChannelOnly({ nodeReady: true, hasCloud: true, device: metered })).toBe(true);
+  });
+
+  it("leaves both channels to the ordinary sync on Wi-Fi", () => {
+    expect(photosChannelOnly({ nodeReady: true, hasCloud: true, device: WIFI })).toBe(false);
+  });
+
+  it("runs nothing on a node not ready, with no cloud or with unknown conditions", () => {
+    const metered = { ...WIFI, isUnmetered: false };
+    expect(photosChannelOnly({ nodeReady: false, hasCloud: true, device: metered })).toBe(false);
+    expect(photosChannelOnly({ nodeReady: true, hasCloud: false, device: metered })).toBe(false);
+    expect(photosChannelOnly({ nodeReady: true, hasCloud: true, device: null })).toBe(false);
   });
 });
 

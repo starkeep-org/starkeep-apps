@@ -1,6 +1,5 @@
 import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
-
-const MAX_CAPTION_LENGTH = 2000;
+import { MAX_CAPTION_LENGTH } from "@starkeep/photos-info";
 
 /**
  * Photos-owned caption API. The browser only sees `{caption}` shaped requests;

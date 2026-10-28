@@ -58,6 +58,7 @@ import {
   type SessionCloud,
   type SignInOutcome,
 } from "./auth/session";
+import { PHOTOS_APP_ID } from "@starkeep/photos-info";
 import type { CloudConnection } from "./auth/connection";
 import { createRequestSigner } from "./auth/attested-key";
 import StarkeepAttestedKey from "../modules/starkeep-attested-key";
@@ -504,14 +505,17 @@ function boundedFetch(): typeof fetch {
 }
 
 /**
- * The Drive channel for a signed-in phone: every data-plane request carries the
- * mobile-apps client's ID token and a signature by this app's attested key,
- * which is what the cloud's mobile branch accepts. The cloud resolves Photos
- * from the key and scopes the exchange to Photos' types. Both go only to the
- * channel's own URL; presigned S3 and CloudFront URLs never see either.
+ * The channels for a signed-in phone: Drive's and Photos' own. Every
+ * data-plane request carries the mobile-apps client's ID token and a signature
+ * by this app's attested key, which is what the cloud's mobile branch accepts.
+ * The cloud resolves Photos from the key: it scopes Drive's exchange to Photos'
+ * types, and admits Photos' own channel and no other app's. Both headers go
+ * only to the channel's own URL; presigned S3 and CloudFront URLs never see
+ * either.
  */
 function sessionChannel(cloud: SessionCloud) {
-  const channelUrl = `${cloud.baseUrl.replace(/\/+$/, "")}/apps/${DRIVE_APP_ID}`;
+  const baseUrl = cloud.baseUrl.replace(/\/+$/, "");
+  const channelUrl = `${baseUrl}/apps/${DRIVE_APP_ID}`;
   const tokens = createCloudTokenSource({
     client: cognitoFor(cloud),
     store: createSessionStore(SecureStore),
@@ -519,21 +523,36 @@ function sessionChannel(cloud: SessionCloud) {
     // hears of it and reopens the node without a cloud.
     onRejected: notifySessionRejected,
   });
-  const fetchImpl = withUserToken(
-    withMobileKeySignature(
-      boundedFetch(),
-      channelUrl,
-      createRequestSigner(SecureStore, StarkeepAttestedKey, sha256Raw),
-    ),
-    channelUrl,
-    tokens,
-  );
-  return driveChannel(channelUrl, fetchImpl, () => ({}), async () => {
+  const signer = createRequestSigner(SecureStore, StarkeepAttestedKey, sha256Raw);
+  // The key signs with the app id the channel's URL names.
+  const channelFetch = (url: string) =>
+    withUserToken(withMobileKeySignature(boundedFetch(), url, signer), url, tokens);
+  const drive = driveChannel(channelUrl, channelFetch(channelUrl), () => ({}), async () => {
     // The user the library binds to is the signed-in token's own.
     const token = await tokens.current();
     if (!token) throw new SignedOutError();
     return { userId: idTokenClaims(token).sub };
   });
+  return { ...drive, photos: photosChannel(`${baseUrl}/apps/${PHOTOS_APP_ID}`, channelFetch) };
+}
+
+/**
+ * Photos' own channel: its private rows, which the web app keeps beside the
+ * photographs — captions, titles and date overrides. A second engine against a
+ * second base URL, like each of the desktop's per-app channels. It moves no
+ * files to this phone; see `createMobileNode`.
+ */
+function photosChannel(channelUrl: string, channelFetch: (url: string) => typeof fetch) {
+  const fetchImpl = channelFetch(channelUrl);
+  const signRequest = () => ({});
+  return {
+    transport: createHttpSyncTransport({ baseUrl: channelUrl, signRequest, fetch: fetchImpl }),
+    remoteObjectStorage: new HttpObjectStorageAdapter({
+      baseUrl: `${channelUrl}/files`,
+      signRequest,
+      fetch: fetchImpl,
+    }),
+  };
 }
 
 /**
@@ -543,7 +562,7 @@ function sessionChannel(cloud: SessionCloud) {
  * `data-roles-and-permissions.md` routes *all* shared-record sync through the
  * always-on User-Data-Owner channel, and the photographs are shared records.
  * The `photos` channel carries app-specific rows — captions — and is a second
- * engine against a second base URL, not needed to answer "did my photos sync".
+ * engine against a second base URL; see {@link photosChannel}.
  *
  * **Configured only once the phone is signed in.** The sign-in names the
  * cloud's address, so a signed-out phone has no cloud to name, and the screen

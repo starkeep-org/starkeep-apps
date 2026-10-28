@@ -319,13 +319,22 @@ async function runJob(
     }
 
     // Uploads left the round for the engine's uploader, which `push-blobs`
-    // drains below. The round still downloads stand-ins, so it keeps the
-    // unmetered gate for now: a phone that only ever sees cellular exchanges
-    // no metadata in the background. Letting rows sync on cellular is a
-    // separate change.
+    // drains below. The Drive channel's round still downloads stand-ins, so it
+    // keeps the unmetered gate: on a metered connection only Photos' own
+    // channel runs, whose rows are small and which downloads no files
+    // (decision 6 of plan-mobile-private-channel-and-captions-2026-10-27.md).
+    // Todo #69 may later let Drive's rows through too.
     case "sync-metadata": {
       if (!canRun(jobSpec("push-blobs"), deps.device)) {
-        return "skipped — sync downloads stand-ins too, and this connection is metered";
+        const photos = await node.syncPhotos({
+          signal: shareOf(options, now, SYNC_DEADLINE_SHARE),
+          trigger: "background",
+        });
+        if (photos === null) return "skipped — sync downloads stand-ins too, and this connection is metered";
+        return (
+          `metered: Photos channel only, rounds=${photos.rounds} applied=${photos.applied} ` +
+          `shipped=${photos.shipped} complete=${photos.complete}`
+        );
       }
       // The share exists so the jobs after sync still get a window. See
       // SYNC_DEADLINE_SHARE.

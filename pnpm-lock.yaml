@@ -35,8 +35,8 @@ importers:
         specifier: ^1.19.17
         version: 1.19.17(hono@4.13.7)
       '@starkeep/app-client':
-        specifier: 0.9.1
-        version: 0.9.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.10.0
+        version: 0.10.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       '@starkeep/photos-info':
         specifier: workspace:*
         version: link:../packages/photos-info
@@ -69,8 +69,8 @@ importers:
         specifier: ^1.51.1
         version: 1.60.0
       '@starkeep/admin-manifest':
-        specifier: ^0.6.0
-        version: 0.6.0(typescript@5.9.3)
+        specifier: ^0.7.0
+        version: 0.7.0(typescript@5.9.3)
       '@starkeep/e2e':
         specifier: link:../../starkeep-core/e2e
         version: link:../../starkeep-core/e2e
@@ -129,17 +129,20 @@ importers:
         specifier: workspace:*
         version: link:../packages/photos-ladder
       '@starkeep/protocol-primitives':
-        specifier: ^0.6.0
-        version: 0.6.0(typescript@5.9.3)
-      '@starkeep/storage-adapter':
         specifier: ^0.7.0
         version: 0.7.0(typescript@5.9.3)
+      '@starkeep/shared-space-api':
+        specifier: ^0.6.2
+        version: 0.6.2(typescript@5.9.3)
+      '@starkeep/storage-adapter':
+        specifier: ^0.7.1
+        version: 0.7.1(typescript@5.9.3)
       '@starkeep/storage-sqlite':
-        specifier: ^0.5.3
-        version: 0.5.3(typescript@5.9.3)
+        specifier: ^0.6.0
+        version: 0.6.0(typescript@5.9.3)
       '@starkeep/sync-engine':
-        specifier: ^0.9.0
-        version: 0.9.0(typescript@5.9.3)
+        specifier: ^0.9.1
+        version: 0.9.1(typescript@5.9.3)
       expo:
         specifier: ^57.0.9
         version: 57.0.9(@babel/core@7.29.7)(@expo/dom-webview@57.0.1)(react-dom@19.2.7(react@19.2.7))(react-native@0.86.2(@babel/core@7.29.7)(@react-native/jest-preset@0.86.2(@babel/core@7.29.7)(react@19.2.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
@@ -241,8 +244,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1065.0
       '@starkeep/app-client':
-        specifier: 0.9.1
-        version: 0.9.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.10.0
+        version: 0.10.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       pg:
         specifier: ^8.13.0
         version: 8.21.0
@@ -2318,11 +2321,11 @@ packages:
     resolution: {integrity: sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A==}
     engines: {node: '>=14.0.0'}
 
-  '@starkeep/admin-manifest@0.6.0':
-    resolution: {integrity: sha512-NUxZhp9pR86Xb0n0q+J7P5KIuUMkWFA9Oh6qaLPcH2iMXnaCNU1gVfd4aV3gdNaNVDD4so39y/Ha8OYKsOs/Zg==}
+  '@starkeep/admin-manifest@0.7.0':
+    resolution: {integrity: sha512-FsMGeCrzS1mcoLC9HNHrTVMv0i5iGa4VhYKlisgZ9kSmi2Eke3pquSK9zc5gUOfDtGe1AiLJKJ54AyXhrrtZ7w==}
 
-  '@starkeep/app-client@0.9.1':
-    resolution: {integrity: sha512-8Uog5GZ1187g/ovNOHznwYebWUkpxcp1HHFBZSeEHRKZYI/R/ZwzmgD4jIytBdgQZpFZ3SvBP2QMHLAmbegK5g==}
+  '@starkeep/app-client@0.10.0':
+    resolution: {integrity: sha512-wK6FU/FHjZC+s2KgNDGLVf8Jqo0lYr4YI8Ejhf1DOMX6BImgOYutlzT9lAC2a6o2bdgxkkdHXGfGVXYi+8rsdg==}
     peerDependencies:
       '@hono/node-server': ^1.19.0
       hono: ^4.12.0
@@ -2332,23 +2335,20 @@ packages:
       hono:
         optional: true
 
-  '@starkeep/protocol-primitives@0.5.0':
-    resolution: {integrity: sha512-aLKJTWOS8IdYtKPtRR0Yv+S7/eXxrLm00fI4EsgVqlt8xG+Lef6lP4abBbVdcsXC1VwbihFaLpFpb5YL3+Hwig==}
+  '@starkeep/protocol-primitives@0.7.0':
+    resolution: {integrity: sha512-7rXslqY2nNhVkC25BarqEZLybR1hY0XoID/880ka229+F+gbBswqwbiGjVgAkcedwquLdxFi3p9pFVUqQUHvLQ==}
 
-  '@starkeep/protocol-primitives@0.6.0':
-    resolution: {integrity: sha512-XxPxolUPT575Vq5vam0NwoNgoXVkJQw4twbjful+I+NgQLmtBixfEpr6/ODvTQgrvVRLJVN2bxJrDXJ0JLdmkg==}
+  '@starkeep/shared-space-api@0.6.2':
+    resolution: {integrity: sha512-CN9GMV4QkyjbU/89DFtSSgkmt92Bt4v2apxrVWGlRfxbvb2lez2V/7kRQhizOUcgYTX8aFaULbLQN0xWxedlDA==}
 
-  '@starkeep/shared-space-api@0.6.1':
-    resolution: {integrity: sha512-AUmHdAuyVPJXJ+Fh50lhSMKPYGsjHjeOL2H6GczOWVxrDmAIhy39e871Fimcil8FnXtJGC3XAGleG0k2umkAlQ==}
+  '@starkeep/storage-adapter@0.7.1':
+    resolution: {integrity: sha512-ZEhWg4qsmC8qgwwYNNXHWgH5wHocR8TIY8hLLnM+zZhNQTVPeXOy+qsyzLhDzMYkjNskiJFOtdh2VE7h+xSnBw==}
 
-  '@starkeep/storage-adapter@0.7.0':
-    resolution: {integrity: sha512-eYm2cr2l0EWJkdPwMOwQIgow4JEizVEEBzrBek8qIbFAv3h9CxQ4YEAqMsVq1g09t/J/6NBvP/5x+wWKGnvK6w==}
+  '@starkeep/storage-sqlite@0.6.0':
+    resolution: {integrity: sha512-my97gS8qXt7CaUIMFcuauyaJd1z0Rd/xDQ8XjD2KaxDVbDejWSdT3pZSHT0hJyg1DOIkhhrxkIWVgYrqXmyRhA==}
 
-  '@starkeep/storage-sqlite@0.5.3':
-    resolution: {integrity: sha512-g8FklKLk3XomuPvlUgoOhg/Ho8W2Dkg3Lg2Z8xTHn/Xw8dfOM5rrksUdNOhYVRSSgMtvWK0BnKv65Aj1Qc4Kew==}
-
-  '@starkeep/sync-engine@0.9.0':
-    resolution: {integrity: sha512-y+Fiv/RgQA/jHWbcXn+rB5wPgGe0zQ/BknDdN/bHv0DTVpIYjYlnEEZi7gcE7ir20KPz2Gc6zzww+wZ8cjfn1Q==}
+  '@starkeep/sync-engine@0.9.1':
+    resolution: {integrity: sha512-U7FZSfQ6WYxmX2PI3E8QcKH3S5pHkDXUgPhqI0gQKoa03oTfXqIoOLDaLVfnSlSEE/wedHUs3Xe3MGeG4aGJTQ==}
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -7599,14 +7599,14 @@ snapshots:
       '@smithy/util-buffer-from': 2.2.0
       tslib: 2.8.1
 
-  '@starkeep/admin-manifest@0.6.0(typescript@5.9.3)':
+  '@starkeep/admin-manifest@0.7.0(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.5.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.7.0(typescript@5.9.3)
       zod: 3.25.76
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/app-client@0.9.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
+  '@starkeep/app-client@0.10.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
     dependencies:
       '@aws-sdk/client-ssm': 3.1116.0
       dotenv: 17.4.2
@@ -7614,7 +7614,7 @@ snapshots:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       hono: 4.13.7
 
-  '@starkeep/protocol-primitives@0.5.0(typescript@5.9.3)':
+  '@starkeep/protocol-primitives@0.7.0(typescript@5.9.3)':
     dependencies:
       '@noble/hashes': 1.8.0
       ulidx: 2.4.1
@@ -7622,43 +7622,35 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/protocol-primitives@0.6.0(typescript@5.9.3)':
+  '@starkeep/shared-space-api@0.6.2(typescript@5.9.3)':
     dependencies:
-      '@noble/hashes': 1.8.0
-      ulidx: 2.4.1
-      valibot: 1.5.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.7.0(typescript@5.9.3)
+      '@starkeep/storage-adapter': 0.7.1(typescript@5.9.3)
+      '@starkeep/sync-engine': 0.9.1(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/shared-space-api@0.6.1(typescript@5.9.3)':
+  '@starkeep/storage-adapter@0.7.1(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
-      '@starkeep/storage-adapter': 0.7.0(typescript@5.9.3)
-      '@starkeep/sync-engine': 0.9.0(typescript@5.9.3)
-    transitivePeerDependencies:
-      - typescript
-
-  '@starkeep/storage-adapter@0.7.0(typescript@5.9.3)':
-    dependencies:
-      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.7.0(typescript@5.9.3)
       js-sha256: 1.0.0
       kysely: 0.28.17
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/storage-sqlite@0.5.3(typescript@5.9.3)':
+  '@starkeep/storage-sqlite@0.6.0(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
-      '@starkeep/shared-space-api': 0.6.1(typescript@5.9.3)
-      '@starkeep/storage-adapter': 0.7.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.7.0(typescript@5.9.3)
+      '@starkeep/shared-space-api': 0.6.2(typescript@5.9.3)
+      '@starkeep/storage-adapter': 0.7.1(typescript@5.9.3)
       kysely: 0.28.17
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/sync-engine@0.9.0(typescript@5.9.3)':
+  '@starkeep/sync-engine@0.9.1(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.6.0(typescript@5.9.3)
-      '@starkeep/storage-adapter': 0.7.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.7.0(typescript@5.9.3)
+      '@starkeep/storage-adapter': 0.7.1(typescript@5.9.3)
       kysely: 0.28.17
     transitivePeerDependencies:
       - typescript

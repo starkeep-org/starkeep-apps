@@ -102,7 +102,17 @@ describe("in the cloud build", () => {
 
     expect(nav.replaced).toEqual([]);
     expect(signInButton(container)).toBeTruthy();
-    expect(container.textContent).not.toContain("Checking for an existing session");
+  });
+
+  it("shows the button and no status line while the refresh is in flight", async () => {
+    captureNavigation();
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const { SignInPage } = await loadPage({ cloud: true });
+
+    const container = await mount(SignInPage);
+
+    expect(signInButton(container)).toBeTruthy();
+    expect(container.textContent).not.toMatch(/checking/i);
   });
 
   it("shows the sign-in button when the refresh call cannot complete", async () => {

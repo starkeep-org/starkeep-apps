@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { SignInForm } from "./lib/SignInForm";
 import { BASE_PATH, withBasePath } from "./lib/base-path";
 import { FORCE_REMOTE } from "./lib/data-source-context";
@@ -14,16 +14,11 @@ import { FORCE_REMOTE } from "./lib/data-source-context";
  * would show the button again to a person who has just signed in.
  */
 export function SignInPage() {
-  const restoring = useRestoredSession();
+  useRestoredSession();
   return (
     <div style={fullScreenStyle}>
       <div style={cardStyle}>
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 20 }}>Sign in to Photos</div>
-        {restoring && (
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>
-            Checking for an existing session…
-          </div>
-        )}
         <SignInForm returnPath={RETURN_PATH} />
       </div>
     </div>
@@ -48,24 +43,20 @@ const RETURN_PATH = `${BASE_PATH}/`;
  * reached from a page like this one. Asking for a password instead would be
  * asking for something the browser already has.
  *
- * The button renders underneath while this runs rather than behind a spinner: a
- * person with no session at all is the other case, and making them wait on a
- * network round trip to see it would trade their whole first visit for this
- * one's.
+ * The button renders at once, with no spinner and no status line: a person with
+ * no session at all is the other case, and making them wait on a network round
+ * trip to see it would trade their whole first visit for this one's. A line
+ * saying the check is running told nobody anything. A signed-out visitor saw it
+ * flash, and a signed-in one left before reading it.
  *
  * Only the cloud build does any of this. A local build has no user pool, so
  * the route can only answer 503, and there is no gateway sending anyone here
  * with an expired token in the first place.
  */
-function useRestoredSession(): boolean {
-  const [restoring, setRestoring] = useState(FORCE_REMOTE);
-
+function useRestoredSession(): void {
   useEffect(() => {
     if (!FORCE_REMOTE) return;
-    if (bouncedRecently()) {
-      setRestoring(false);
-      return;
-    }
+    if (bouncedRecently()) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -84,14 +75,11 @@ function useRestoredSession(): boolean {
         // A refresh that cannot complete is not evidence of anything. Show the
         // button and let a real sign-in report the truth.
       }
-      if (!cancelled) setRestoring(false);
     })();
     return () => {
       cancelled = true;
     };
   }, []);
-
-  return restoring;
 }
 
 // One bounce, not a loop. If the app root sends the browser straight back here

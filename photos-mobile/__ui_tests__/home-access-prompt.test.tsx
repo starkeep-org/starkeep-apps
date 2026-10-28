@@ -46,6 +46,8 @@ function workWith(mediaAccess: MediaAccess | null): ForegroundWork {
     catchUpNow: jest.fn(async () => undefined),
     mediaAccess,
     requestMediaAccess: jest.fn(async () => undefined),
+    importGate: "open",
+    importWithoutPull: jest.fn(),
   };
 }
 

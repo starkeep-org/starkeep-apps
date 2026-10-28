@@ -67,7 +67,12 @@ import {
   type ImportCursorStore,
 } from "./import-cursor";
 import type { MediaAliasStore } from "./media-alias";
-import { publishVideoPosters, writeVideoFacts, type VideoPosterDeps } from "../photos/video-posters";
+import {
+  publishVideoPosters,
+  writeVideoFacts,
+  type VideoContainerFacts,
+  type VideoPosterDeps,
+} from "../photos/video-posters";
 import { findMotionPhotoVideo } from "./motion-photo";
 import { readImageExif } from "./exif";
 import type { MotionIndexStore } from "./motion-index";
@@ -121,6 +126,12 @@ export type HashBytes = (bytes: Uint8Array) => Promise<string>;
 export type HashUri = (uri: string) => Promise<{ hex: string; sizeBytes: number }>;
 
 export interface ImportDeps {
+  /**
+   * Whether this library may import yet. False holds every pass, whoever
+   * started it: the screen, the background window or the null-modified sweep.
+   * Absent, import always runs. See `media/import-gate.ts`.
+   */
+  readonly mayImport?: () => boolean;
   readonly media: DeviceMediaModule;
   readonly aliases: MediaAliasStore;
   readonly database: DatabaseAdapter;
@@ -306,7 +317,7 @@ export interface ImportFailure {
 export interface ImportOutcome {
   readonly scanned: number;
   readonly imported: number;
-  /** Already imported and unchanged. */
+  /** Already imported and unchanged, or already a record another node or an earlier install made. */
   readonly skipped: number;
   /** Considered and could not be read — counted, never thrown. */
   readonly failed: number;
@@ -314,6 +325,9 @@ export interface ImportOutcome {
   readonly failures: readonly ImportFailure[];
   readonly records: readonly DataRecord[];
 }
+
+/** What a pass the import gate held reports: it looked at nothing. */
+const HELD: ImportOutcome = { scanned: 0, imported: 0, skipped: 0, failed: 0, failures: [], records: [] };
 
 /**
  * The largest asset this loop will read into memory.
@@ -379,6 +393,9 @@ export async function importDeviceMedia(
   deps: ImportDeps,
   options: ImportOptions,
 ): Promise<ImportOutcome> {
+  // Before anything else, the watermark and the Motion Photo marker included:
+  // a held pass must leave the library exactly as a pass that never ran.
+  if (deps.mayImport?.() === false) return HELD;
   const now = deps.now ?? Date.now;
   const originAppId = options.originAppId ?? "photos";
   // **By modification time, not creation time**, and the difference is the
@@ -491,6 +508,11 @@ export async function importDeviceMedia(
       await yieldToUi();
 
       const record = await importOne(deps, item, { originAppId, nowMs: now() });
+      if ("existing" in record) {
+        skipped += 1;
+        markDone(item);
+        continue;
+      }
       if ("reason" in record) {
         fail(item, record.reason);
         // **The watermark moves past a failure**, and the alternative was worse.
@@ -605,6 +627,7 @@ export async function importNullModified(
   deps: ImportDeps,
   options: ImportOptions,
 ): Promise<ImportOutcome> {
+  if (deps.mayImport?.() === false) return HELD;
   const now = deps.now ?? Date.now;
   const originAppId = options.originAppId ?? "photos";
 
@@ -638,6 +661,10 @@ export async function importNullModified(
       }
       await yieldToUi();
       const record = await importOne(deps, item, { originAppId, nowMs: now() });
+      if ("existing" in record) {
+        skipped += 1;
+        continue;
+      }
       if ("reason" in record) {
         failures.push({ assetId: item.id, filename: item.filename, reason: record.reason });
         continue;
@@ -693,7 +720,11 @@ async function importOne(
   deps: ImportDeps,
   item: DeviceMediaItem,
   context: { readonly originAppId: string; readonly nowMs: number },
-): Promise<({ record: DataRecord } & Omit<ImportProgress, "done" | "total" | "filename">) | { reason: string }> {
+): Promise<
+  | ({ record: DataRecord } & Omit<ImportProgress, "done" | "total" | "filename">)
+  | { existing: DataRecord }
+  | { reason: string }
+> {
   // Every read below goes through this one URI, and the alias records it, so
   // the hash, the upload and any later read all see the same bytes.
   const uri = deps.readUriFor?.(item.uri) ?? item.uri;
@@ -734,9 +765,16 @@ async function importOne(
     deps.clock,
   );
 
-  // Alias first. See the two-phase note in this file's header — this order is
-  // the one whose interrupted state is recoverable.
-  deps.aliases.add({
+  // **A record that already exists is kept, deleted or not.** The id is
+  // content-addressed, so a file another node imported, or this node imported
+  // before a reset, mints the id of the row already stored. Writing the fresh
+  // row over it would win everywhere under its newer clock: the original
+  // `created_at` and `node_id` gone, a stamped threshold and fidelity cleared,
+  // and a photograph deleted in Starkeep brought back. Only the alias is this
+  // node's to add, so the bytes are readable here and the next sweep skips the
+  // asset. The backfills fill any metadata column the stored row still lacks.
+  const existing = await deps.database.get(record.id);
+  const alias = {
     objectStorageKey,
     recordId: record.id,
     contentUri: uri,
@@ -745,15 +783,50 @@ async function importOne(
     contentType: null,
     modificationTimeMs: item.modifiedAt,
     addedAtMs: context.nowMs,
-  });
+  };
+  if (existing) {
+    deps.aliases.add(alias);
+    indexMotion(deps, objectStorageKey, type, item, digest.bytes);
+    return { existing };
+  }
 
-  await writeMediaMetadata(deps, record.id, type, item, digest.bytes);
+  // Before the metadata, because a video's dimensions come from it. See
+  // `writeMediaMetadata`.
+  const videoFacts =
+    deps.videoPosters && typeCategory(type) === "video"
+      ? await readVideoFacts(deps.videoPosters, item, uri)
+      : null;
+
+  // Alias first. See the two-phase note in this file's header — this order is
+  // the one whose interrupted state is recoverable.
+  deps.aliases.add(alias);
+
+  await writeMediaMetadata(deps, record.id, type, item, digest.bytes, videoFacts);
   indexMotion(deps, objectStorageKey, type, item, digest.bytes);
   await deps.database.put(record);
-  if (deps.videoPosters && typeCategory(type) === "video") {
-    await writeVideoExtras(deps.videoPosters, record, type, uri);
+  if (deps.videoPosters && videoFacts) {
+    await writeVideoExtras(deps.videoPosters, record, type, uri, videoFacts);
   }
   return { record, sizeBytes: digest.sizeBytes, readMs: digest.readMs, hashMs: digest.hashMs };
+}
+
+/**
+ * A video's container facts, or null when the retriever cannot open the clip.
+ *
+ * Never fails the import, for the reason `writeVideoExtras` gives: a clip the
+ * retriever cannot open is still a video worth having.
+ */
+async function readVideoFacts(
+  posters: VideoPosterDeps,
+  item: DeviceMediaItem,
+  uri: string,
+): Promise<VideoContainerFacts | null> {
+  try {
+    return await posters.readFacts(uri);
+  } catch (err) {
+    console.warn(`[posters] ${item.filename ?? item.id}: ${String(err)}`);
+    return null;
+  }
 }
 
 /**
@@ -769,9 +842,9 @@ async function writeVideoExtras(
   record: DataRecord,
   type: string,
   uri: string,
+  facts: VideoContainerFacts,
 ): Promise<void> {
   try {
-    const facts = await posters.readFacts(uri);
     await writeVideoFacts(posters.database, record.id, type, facts, undefined);
     await publishVideoPosters(posters, record, uri, facts);
   } catch (err) {
@@ -1431,6 +1504,18 @@ export async function backfillThumbHashes(
  * The header's own `PixelXDimension` wins when present, because it cannot
  * disagree with the orientation written next to it.
  *
+ * ## A video's dimensions are its display size
+ *
+ * A video's metadata has no orientation column, so its width and height must
+ * already describe the picture. Every other node writes it that way: the
+ * desktop's ffprobe applies the display matrix (`photos-lib/video/probe.ts`).
+ * The media store's numbers are the encoded frame, so a portrait clip stored
+ * as 1920×1080 with a 90° rotation wrote a landscape box over the desktop's
+ * correct 1080×1920. The container facts the retriever reads already turn the
+ * stored size by the rotation, so they win for a video. The media store's
+ * numbers remain the fallback for a binary with no retriever and a clip it
+ * cannot open.
+ *
  * `duration_ms` is written, because it is a genuine fact about a video's bytes
  * and the media store reports it on the row this loop already reads. Without it
  * no record can answer how long a clip runs, and a library tile has to say
@@ -1443,6 +1528,8 @@ async function writeMediaMetadata(
   item: DeviceMediaItem,
   /** Null for an asset hashed by {@link ImportDeps.hashUri}, which is never a still. */
   bytes: Uint8Array | null,
+  /** A video's container facts, when the retriever could read them. */
+  videoFacts: VideoContainerFacts | null = null,
 ): Promise<void> {
   // The category decides what is worth measuring below; the write itself is
   // labelled with the record's own type. Every adapter now routes a
@@ -1468,11 +1555,13 @@ async function writeMediaMetadata(
   // can only fail.
   const exif = category === "image" && bytes ? readImageExif(bytes) : null;
 
-  // The header's dimensions when it has them, the media store's otherwise. The
-  // pair is still all-or-nothing: a width with no height cannot be ordered and
-  // would look like a known value to every reader.
-  const width = exif?.width ?? item.width;
-  const height = exif?.height ?? item.height;
+  // The header's dimensions when it has them, a video's display size when the
+  // retriever read one, and the media store's otherwise. The pair is still
+  // all-or-nothing: a width with no height cannot be ordered and would look
+  // like a known value to every reader.
+  const display = videoFacts && videoFacts.width > 0 && videoFacts.height > 0 ? videoFacts : null;
+  const width = exif?.width ?? display?.width ?? item.width;
+  const height = exif?.height ?? display?.height ?? item.height;
   if (typeof width === "number" && typeof height === "number" && width > 0 && height > 0) {
     row["width"] = width;
     row["height"] = height;

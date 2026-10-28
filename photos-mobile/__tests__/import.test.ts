@@ -251,6 +251,33 @@ describe("importDeviceMedia", () => {
   });
 });
 
+describe("a pass the import gate holds", () => {
+  // A fresh library waits for its first pull, or for the person's choice to
+  // import without signing in. See `media/import-gate.ts`.
+  it("imports nothing and moves no watermark", async () => {
+    const cursor = fakeCursor(500_000);
+    const outcome = await importDeviceMedia(
+      { ...deps(), importCursor: cursor.store, mayImport: () => false },
+      { limit: 10 },
+    );
+
+    expect(outcome).toMatchObject({ scanned: 0, imported: 0, skipped: 0, failed: 0 });
+    expect(cursor.value).toBe(500_000);
+    expect(aliases.byAssetId(URI_1)).toBeNull();
+    expect((await database.query({ limit: 10 })).records).toEqual([]);
+  });
+
+  it("holds the null-modified sweep too", async () => {
+    const d = { ...deps([asset({ id: URI_1, modificationTime: null })]), mayImport: () => false };
+    expect((await importNullModified(d, { limit: 10 })).imported).toBe(0);
+  });
+
+  it("imports once the gate opens", async () => {
+    const outcome = await importDeviceMedia({ ...deps(), mayImport: () => true }, { limit: 10 });
+    expect(outcome.imported).toBe(1);
+  });
+});
+
 describe("re-import", () => {
   it("skips an asset that is already imported and unchanged", async () => {
     await importDeviceMedia(deps(), { limit: 10 });
@@ -268,6 +295,60 @@ describe("re-import", () => {
     await database.delete(id, createHLCClock({ nodeId: "web" }).now());
 
     const second = await importDeviceMedia(deps(), { limit: 10 });
+
+    expect(second.imported).toBe(0);
+    expect((await database.get(id))?.deletedAt).not.toBeNull();
+  });
+
+  // A library reset clears the alias table, so nothing marks the asset as
+  // imported. The record itself is already stored — another node made it, or
+  // this phone did before the reset — and the re-import mints its id.
+  it("keeps a record that is already stored, after a reset", async () => {
+    const first = await importDeviceMedia(deps(), { limit: 10 });
+    const imported = first.records[0]!;
+    // Another node's creation time and stamps, under an older clock than the
+    // re-import will hold.
+    const stored = {
+      ...imported,
+      createdAt: createHLCClock({ nodeId: "desktop", wallClockFunction: () => 1_600_000_000_000 }).now(),
+      canonicalThreshold: 4800,
+      fidelity: 20_000,
+      version: 3,
+    };
+    await database.put(stored);
+    aliases = createSqliteMediaAliasStore({ db: rawDb() });
+
+    const second = await importDeviceMedia(
+      { ...deps(), clock: createHLCClock({ nodeId: "phone-after-reset" }) },
+      { limit: 10 },
+    );
+
+    expect(second.imported).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(await database.get(imported.id)).toMatchObject({
+      createdAt: stored.createdAt,
+      canonicalThreshold: 4800,
+      fidelity: 20_000,
+      version: 3,
+      updatedAt: stored.updatedAt,
+    });
+    // The alias is this node's to add, so the bytes are readable here and the
+    // next sweep skips the asset without hashing it.
+    expect(aliases.get(imported.objectStorageKey)?.recordId).toBe(imported.id);
+    const third = await importDeviceMedia(deps(), { limit: 10 });
+    expect(third.skipped).toBe(1);
+  });
+
+  it("does not bring back an asset deleted in Starkeep, after a reset", async () => {
+    const first = await importDeviceMedia(deps(), { limit: 10 });
+    const id = first.records[0]!.id;
+    await database.delete(id, createHLCClock({ nodeId: "web" }).now());
+    aliases = createSqliteMediaAliasStore({ db: rawDb() });
+
+    const second = await importDeviceMedia(
+      { ...deps(), clock: createHLCClock({ nodeId: "phone-after-reset" }) },
+      { limit: 10 },
+    );
 
     expect(second.imported).toBe(0);
     expect((await database.get(id))?.deletedAt).not.toBeNull();
@@ -488,6 +569,30 @@ describe("assets hashed by the native streaming digest", () => {
         "video-poster-720p_VID_0001.jpg",
         "video-poster-thumb_VID_0001.jpg",
       ]);
+    });
+
+    // The media store's width and height are the encoded frame. A portrait
+    // clip is stored landscape with a 90° rotation, and video metadata has no
+    // orientation column, so the row must carry the size it displays at.
+    it("writes a rotated clip's display size, not the media store's encoded size", async () => {
+      const { deps: videoPosters } = posterDeps({
+        readFacts: async () => ({
+          durationMs: 20_770,
+          width: 1080,
+          height: 1920,
+          capturedAt: null,
+          gpsLat: null,
+          gpsLon: null,
+        }),
+      });
+      const encoded = asset({ ...video, width: 1920, height: 1080 });
+      const outcome = await importDeviceMedia(
+        { ...deps([encoded]), hashUri: fakeHashUri, videoPosters },
+        { limit: 10 },
+      );
+      const record = outcome.records[0]!;
+      const row = (await database.getMetadataByIds("video", [record.id])).get(record.id);
+      expect([row?.["width"], row?.["height"]]).toEqual([1080, 1920]);
     });
 
     it("still imports a video whose posters cannot be made", async () => {
@@ -1080,7 +1185,9 @@ describe("importing where no JS timer will ever fire", () => {
       asset({ id: URI_1, modificationTime: 1_000_000 }),
       asset({ id: "content://media/external/images/media/10", modificationTime: 2_000_000 }),
     ];
-    putAsset("content://media/external/images/media/10", PHOTO);
+    // Bytes of its own: the same bytes under the same name are the same record,
+    // and the second asset would count as already stored.
+    putAsset("content://media/external/images/media/10", PHOTO.map((byte) => byte ^ 0xff));
     const cursor = fakeCursor(500_000);
 
     const outcome = await importDeviceMedia(

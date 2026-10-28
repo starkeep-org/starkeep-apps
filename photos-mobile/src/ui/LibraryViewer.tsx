@@ -63,7 +63,8 @@ import { useVideoPlayer, VideoView } from "expo-video";
 import { Image } from "expo-image";
 import type { DataRecord, MetadataRow } from "@starkeep/protocol-primitives";
 import type { LibraryItem } from "../library";
-import type { Dimensions as Box } from "../photos/render-target";
+import { VIEWER_BAR_HEIGHT, type Dimensions as Box } from "../photos/render-target";
+import type { CaptionStore } from "../photos/captions";
 import type { OpenMotionPhoto } from "../media/motion-photo-playback";
 import { styles } from "./theme";
 import { isVideo } from "./format";
@@ -114,6 +115,7 @@ export function LibraryViewer({
   onOpenMotion,
   onReadInfo,
   onDelete,
+  captions = null,
   onClose,
 }: {
   /** The page the grid is drawing, in the grid's order. */
@@ -141,6 +143,8 @@ export function LibraryViewer({
   readonly onOpenMotion: (item: LibraryItem) => Promise<OpenMotionPhoto | null>;
   readonly onReadInfo: (record: DataRecord) => Promise<MetadataRow | null>;
   readonly onDelete: (record: DataRecord) => Promise<void>;
+  /** Photos' captions on this phone, or null before the node is ready. */
+  readonly captions?: CaptionStore | null;
   readonly onClose: () => void;
 }) {
   /**
@@ -179,6 +183,34 @@ export function LibraryViewer({
     );
   }, []);
   const stopMotion = useCallback(() => setPlayingMotion(false), []);
+
+  /**
+   * The open record's caption, read when the viewer lands on it, and replaced
+   * when the info sheet saves a new one. Keyed by record, so a read that lands
+   * after a swipe never captions the next photograph.
+   */
+  const [caption, setCaption] = useState<{ readonly id: string; readonly text: string | null } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (openId === null || captions === null) return;
+    let cancelled = false;
+    captions
+      .get(openId)
+      .then((text) => {
+        if (!cancelled) setCaption({ id: openId, text });
+      })
+      .catch(() => {
+        // No caption shown. The photograph is what this screen is for.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [openId, captions]);
+  const onCaptionChange = useCallback(
+    (id: string, text: string | null) => setCaption({ id, text }),
+    [],
+  );
 
   const index = openId === null ? -1 : items.findIndex((item) => item.record.id === openId);
 
@@ -375,6 +407,27 @@ export function LibraryViewer({
         </View>
       )}
       {landscape ? null : <View style={{ height: insets.bottom }} />}
+      {/* The open photograph's caption, over the bottom of the stage and above
+          the footer, so it takes no room from the picture. Part of the chrome:
+          it fades with the controls when a tap clears the screen. */}
+      {caption?.id === current.record.id && caption.text ? (
+        <View
+          style={[
+            styles.viewerCaption,
+            fade,
+            {
+              bottom: landscape ? insets.bottom + 16 : VIEWER_BAR_HEIGHT + insets.bottom + 8,
+              left: 16 + insets.left,
+              right: 16 + insets.right,
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <Text style={styles.viewerCaptionText} numberOfLines={4}>
+            {caption.text}
+          </Text>
+        </View>
+      ) : null}
       {/* The one control landscape keeps, bare over the photograph. */}
       {landscape && controlsVisible ? (
         <View style={[styles.viewerFloatingBack, { left: 4 + insets.left }]}>{back}</View>
@@ -383,6 +436,8 @@ export function LibraryViewer({
         record={infoRecord}
         readInfo={onReadInfo}
         onDelete={onDelete}
+        captions={captions}
+        onCaptionChange={onCaptionChange}
         onClose={() => setInfoRecord(null)}
       />
     </View>

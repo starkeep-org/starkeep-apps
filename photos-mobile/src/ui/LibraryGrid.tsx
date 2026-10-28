@@ -61,6 +61,7 @@ import { libraryTileSize, styles } from "./theme";
 import { MotionBadge } from "./MotionBadge";
 import { VideoBadge } from "./VideoBadge";
 import { LibraryViewer } from "./LibraryViewer";
+import type { CaptionStore } from "../photos/captions";
 import { isVideo } from "./format";
 import { perf } from "./perf";
 
@@ -126,6 +127,8 @@ export interface ViewerHost {
   readonly onReadInfo: (record: DataRecord) => Promise<MetadataRow | null>;
   /** Delete the record everywhere, from the info sheet. See `useLibrary().deleteRecord`. */
   readonly onDelete: (record: DataRecord) => Promise<void>;
+  /** Photos' captions, for the viewer and its info sheet. See `useLibrary().captions`. */
+  readonly captions?: CaptionStore | null;
   /** Load the next page, because a swipe came to rest near the end of this one. */
   readonly onLoadMore: () => void;
 }
@@ -331,6 +334,7 @@ export function useLibraryViewer(
     onOpenMotion,
     onReadInfo,
     onDelete,
+    captions = null,
     onLoadMore,
   }: ViewerHost,
   items: readonly LibraryItem[],
@@ -609,6 +613,7 @@ export function useLibraryViewer(
       onOpenMotion={onOpenMotion}
       onReadInfo={onReadInfo}
       onDelete={onDelete}
+      captions={captions}
       onClose={close}
     />
   );

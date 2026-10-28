@@ -39,6 +39,14 @@ function fakeNode(over: Partial<MobileNode> = {}): MobileNode {
       complete: true,
       stalled: false,
     })),
+    syncPhotos: vi.fn(async () => ({
+      rounds: 1,
+      applied: 2,
+      shipped: 0,
+      elided: 0,
+      complete: true,
+      stalled: false,
+    })),
     scanForAcquirable: vi.fn(async () => ({ queued: 3, complete: true })),
     acquireQueued: vi.fn(async () => ({ landed: 0, bytesLanded: 0, dropped: 0, failed: 0 })),
     ...over,
@@ -125,12 +133,29 @@ describe("uploads", () => {
 });
 
 describe("the metered connection", () => {
-  it("holds sync back entirely, because the round downloads stand-ins", async () => {
+  it("holds the Drive channel back, because its round downloads stand-ins, and syncs Photos' own", async () => {
     const d = deps({ device: device({ isUnmetered: false }) });
     const report = await runWorkTick(d, far());
     expect(d.node.sync).not.toHaveBeenCalled();
-    expect(find(report, "sync-metadata").detail).toContain("metered");
+    expect(d.node.syncPhotos).toHaveBeenCalledWith(
+      expect.objectContaining({ trigger: "background" }),
+    );
+    expect(find(report, "sync-metadata").detail).toContain("metered: Photos channel only");
     expect(find(report, "push-blobs").detail).toBe("connection is metered");
+  });
+
+  it("says why nothing synced on a node with no Photos channel", async () => {
+    const node = fakeNode({ syncPhotos: vi.fn(async () => null) });
+    const report = await runWorkTick(deps({ node, device: device({ isUnmetered: false }) }), far());
+    expect(node.sync).not.toHaveBeenCalled();
+    expect(find(report, "sync-metadata").detail).toContain("this connection is metered");
+  });
+
+  it("syncs both channels on an unmetered connection, through sync alone", async () => {
+    const d = deps();
+    await runWorkTick(d, far());
+    expect(d.node.sync).toHaveBeenCalledTimes(1);
+    expect(d.node.syncPhotos).not.toHaveBeenCalled();
   });
 
   it("still runs the jobs that cost nothing to a data plan", async () => {

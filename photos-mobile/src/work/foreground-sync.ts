@@ -24,7 +24,9 @@
  * (decision 3 of `plan-sync-latency-fixes-2026-10-14.md`): `MobileNode.sync()`
  * moves originals as well as rows, and an original over cellular is the one
  * thing on this device that costs a person money. "Sync now" stays the
- * unconstrained override. Background windows are untouched.
+ * unconstrained override. Background windows are untouched. On a metered
+ * connection an automatic sync runs Photos' own channel alone; see
+ * {@link photosChannelOnly}.
  */
 
 import { canRun, jobSpec, type DeviceState } from "./job-graph";
@@ -68,6 +70,21 @@ export function mayAutoSync(state: AutoSyncState): boolean {
     state.hasCloud &&
     state.device !== null &&
     canRun(jobSpec("push-blobs"), state.device)
+  );
+}
+
+/**
+ * Whether an automatic sync must run Photos' own channel alone: a node with a
+ * cloud, on a metered connection. That channel moves small rows and downloads
+ * no files, so it syncs on any network, while the Drive channel keeps the
+ * Wi-Fi rule (decision 6 of `plan-mobile-private-channel-and-captions-2026-10-27.md`).
+ */
+export function photosChannelOnly(state: AutoSyncState): boolean {
+  return (
+    state.nodeReady &&
+    state.hasCloud &&
+    state.device !== null &&
+    !canRun(jobSpec("push-blobs"), state.device)
   );
 }
 

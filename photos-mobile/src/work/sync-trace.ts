@@ -43,7 +43,9 @@ export type SyncTrigger =
   | "timer"
   | "media-change"
   | "button"
-  | "background";
+  | "background"
+  // A caption just saved, shipped on Photos' own channel.
+  | "caption";
 
 export interface SyncTraceRound {
   readonly syncId: string;

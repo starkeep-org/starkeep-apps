@@ -25,6 +25,7 @@ import {
   createForegroundSyncLoop,
   createSyncFollowUp,
   mayAutoSync,
+  photosChannelOnly,
   uploadsMayRun,
 } from "../work/foreground-sync";
 import type { SyncTrigger } from "../work/sync-trace";
@@ -288,6 +289,22 @@ export function useForegroundWork(
   }, [node]);
 
   /**
+   * Photos' own channel alone, for a metered connection: captions and the
+   * other private rows, and none of the Drive channel's downloads. See
+   * `photosChannelOnly`. Its engine queues its own syncs, so a call while one
+   * runs waits rather than racing it.
+   */
+  const syncPhotosAlone = useCallback(
+    (trigger: SyncTrigger) => {
+      if (node.status !== "ready") return;
+      void node.node.syncPhotos({ trigger }).catch((err: unknown) => {
+        console.warn(`[sync] the Photos channel's sync failed: ${String(err)}`);
+      });
+    },
+    [node],
+  );
+
+  /**
    * A sync nobody tapped for: a timer tick, a photograph just taken. Kept to
    * the catch-up's rule — never over a metered connection — because the sync
    * downloads stand-ins. See `mayAutoSync`.
@@ -295,15 +312,16 @@ export function useForegroundWork(
   const autoSync = useCallback(
     async (trigger: SyncTrigger) => {
       const conditions = await readRealDeviceState().catch(() => null);
-      const allowed = mayAutoSync({
+      const state = {
         nodeReady: node.status === "ready",
         hasCloud: node.status === "ready" && node.node.engine !== null,
         device: conditions,
-      });
-      if (allowed) runSync(trigger);
+      };
+      if (mayAutoSync(state)) runSync(trigger);
+      else if (photosChannelOnly(state)) syncPhotosAlone(trigger);
       if (trigger === "timer") await updateUploads();
     },
-    [node, runSync, updateUploads],
+    [node, runSync, syncPhotosAlone, updateUploads],
   );
 
   /**
@@ -366,6 +384,18 @@ export function useForegroundWork(
         lastRunMs: force ? null : catchUpAt.current,
         nowMs: Date.now(),
       });
+      // On a metered connection the Drive channel waits for Wi-Fi, and Photos'
+      // own channel runs alone.
+      if (
+        !plan.sync &&
+        photosChannelOnly({
+          nodeReady: node.status === "ready",
+          hasCloud: node.status === "ready" && node.node.engine !== null,
+          device: conditions,
+        })
+      ) {
+        syncPhotosAlone("open");
+      }
       if (!plan.import && !plan.sync) {
         // Nothing ran, so nothing is recorded and nothing is said. The interval
         // guard must not be armed by a pass that declined everything, or a node
@@ -444,7 +474,7 @@ export function useForegroundWork(
     } finally {
       catchingUpRef.current = false;
     }
-  }, [node, library, runSync]);
+  }, [node, library, runSync, syncPhotosAlone]);
 
   /**
    * The latest {@link runCatchUp}, reachable from the subscription below.

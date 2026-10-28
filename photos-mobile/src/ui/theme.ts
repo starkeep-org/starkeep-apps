@@ -293,6 +293,25 @@ export const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.55)",
   },
   viewerStallText: { color: "#fff", fontSize: 13 },
+  /**
+   * The open photograph's caption, over the bottom of the stage. Absolute so it
+   * takes no room from the picture, whose box the stage arithmetic fixed; the
+   * viewer sets `bottom`, `left` and `right` from the insets.
+   */
+  viewerCaption: {
+    position: "absolute",
+    alignItems: "center",
+  },
+  viewerCaptionText: {
+    color: "#fff",
+    fontSize: 15,
+    textAlign: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "rgba(0, 0, 0, 0.45)",
+  },
   /** The info sheet: a panel rising from the bottom over a dimmed viewer. */
   sheetBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
   sheet: {
@@ -323,6 +342,14 @@ export const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
   sheetDeleteLabel: { color: colors.danger, fontSize: 15, fontWeight: "600" },
+  /** The caption block at the top of the info sheet. */
+  sheetCaption: { gap: 8, paddingVertical: 8 },
+  sheetCaptionText: { color: colors.text, fontSize: 15 },
+  sheetEditCaption: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8 },
+  sheetEditCaptionLabel: { color: colors.accent, fontSize: 15, fontWeight: "600" },
+  captionInput: { minHeight: 96, textAlignVertical: "top" },
+  sheetCaptionActions: { flexDirection: "row", justifyContent: "flex-end", gap: 12 },
+  sheetCaptionAction: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8 },
 
   row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
   /** A row of mutually exclusive choices, such as the photo ceiling. */

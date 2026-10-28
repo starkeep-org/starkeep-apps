@@ -37,6 +37,7 @@ import { THUMB_HASH_BACKFILL_LIMIT } from "../media/thumb-hash";
 import type { NodeIdentity } from "../node-identity";
 import type { CloudConnection } from "../auth/connection";
 import type { MobileNode, StorageReport } from "../node";
+import type { CaptionStore } from "../photos/captions";
 import {
   backfillImageExifFor,
   backfillVideoPostersFor,
@@ -446,6 +447,11 @@ export interface LibraryState {
    * or of a type with no metadata table.
    */
   readInfo: (record: DataRecord) => Promise<MetadataRow | null>;
+  /**
+   * Photos' captions on this phone, for the viewer and its info sheet, or null
+   * before the node is ready. See `photos/captions.ts`.
+   */
+  captions: CaptionStore | null;
   /**
    * Delete a library item in Starkeep, then offer Android's trash for its
    * camera-roll file. The grid reloads before the trash dialog opens, so the
@@ -1365,6 +1371,7 @@ export function useLibrary(node: NodeState): LibraryState {
     sweepNullModified,
     openMotion,
     readInfo,
+    captions: ready?.node.captions ?? null,
     deleteRecord,
     fetchBlob,
     fetchRendition,

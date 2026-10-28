@@ -117,3 +117,6 @@ const ORIENTATION_LABELS: Record<number, string> = {
 export function formatOrientation(orientation: number): string {
   return ORIENTATION_LABELS[orientation] ?? `Unknown (${orientation})`;
 }
+
+export { photosSyncableSchema, type SyncableColumn, type SyncableSchema } from "./syncable-schema";
+export { CAPTIONS_TABLE, MAX_CAPTION_LENGTH, PHOTOS_APP_ID, captionValue } from "./captions";

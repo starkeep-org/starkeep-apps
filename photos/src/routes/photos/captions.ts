@@ -1,4 +1,4 @@
-import { loadAppCredentials, signedFetch } from "@starkeep/app-client";
+import { authorizePhotosRoute, withRefreshedSession } from "@/lib/photos-route-server";
 import { MAX_CAPTION_LENGTH } from "@starkeep/photos-info";
 
 /**
@@ -14,30 +14,26 @@ function badRequest(message: string): Response {
   return Response.json({ error: message }, { status: 400 });
 }
 
-function notInstalled(): Response {
-  return Response.json(
-    { error: "photos has not been installed locally — run install from admin-web first" },
-    { status: 503 },
-  );
-}
-
-export async function GET(_req: Request, id: string): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
+export async function GET(req: Request, id: string): Promise<Response> {
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
   // Filters live under `where` as JSON. One row is expected, so the page is
   // asked for explicitly rather than left to the server's default.
   const q = new URLSearchParams({ where: JSON.stringify({ record_id: id }), limit: "1" });
-  const upstream = await signedFetch(creds, `/app-data/db/image_enriched?${q.toString()}`);
+  const upstream = await authorized.fetch(`/app-data/db/image_enriched?${q.toString()}`);
   if (!upstream.ok) {
     return Response.json({ caption: null }, { status: upstream.status });
   }
   const { rows } = (await upstream.json()) as { rows?: Array<{ caption?: string | null }> };
-  return Response.json({ caption: rows?.[0]?.caption ?? null });
+  return withRefreshedSession(
+    Response.json({ caption: rows?.[0]?.caption ?? null }),
+    authorized.refreshedCookie,
+  );
 }
 
 export async function PUT(req: Request, id: string): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
   const body = (await req.json().catch(() => null)) as { caption?: unknown } | null;
   if (!body || typeof body.caption !== "string") {
     return badRequest("caption (string) is required");
@@ -55,7 +51,7 @@ export async function PUT(req: Request, id: string): Promise<Response> {
   // LWW conflict resolution always fires, and the ON CONFLICT SET clause only
   // covers columns present in the row (record_id, caption) — title and
   // date_taken_override are left untouched on existing rows.
-  const insertRes = await signedFetch(creds, "/app-data/db/image_enriched", {
+  const insertRes = await authorized.fetch("/app-data/db/image_enriched", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ row: { record_id: id, caption: captionValue } }),
@@ -65,16 +61,19 @@ export async function PUT(req: Request, id: string): Promise<Response> {
     return Response.json({ error: errBody || "Failed to save caption" }, { status: 502 });
   }
 
-  return Response.json({ caption: captionValue });
+  return withRefreshedSession(
+    Response.json({ caption: captionValue }),
+    authorized.refreshedCookie,
+  );
 }
 
-export async function DELETE(_req: Request, id: string): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
-  await signedFetch(creds, "/app-data/db/image_enriched", {
+export async function DELETE(req: Request, id: string): Promise<Response> {
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
+  await authorized.fetch("/app-data/db/image_enriched", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ row: { record_id: id, caption: null } }),
   });
-  return Response.json({ caption: null });
+  return withRefreshedSession(Response.json({ caption: null }), authorized.refreshedCookie);
 }

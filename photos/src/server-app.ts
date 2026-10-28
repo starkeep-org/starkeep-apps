@@ -141,13 +141,13 @@ app.get("/api/photos/library", (c) => library.GET(c.req.raw));
 app.post("/api/photos/renditions", (c) => renditions.POST(c.req.raw));
 app.post("/api/photos/crop", (c) => crop.POST(c.req.raw));
 
-app.get("/api/photos/cover", () => cover.GET());
+app.get("/api/photos/cover", (c) => cover.GET(c.req.raw));
 app.put("/api/photos/cover", (c) => cover.PUT(c.req.raw));
-app.delete("/api/photos/cover", () => cover.DELETE());
+app.delete("/api/photos/cover", (c) => cover.DELETE(c.req.raw));
 
-app.get("/api/photos/style-graphic", () => styleGraphic.GET());
+app.get("/api/photos/style-graphic", (c) => styleGraphic.GET(c.req.raw));
 app.put("/api/photos/style-graphic", (c) => styleGraphic.PUT(c.req.raw));
-app.delete("/api/photos/style-graphic", () => styleGraphic.DELETE());
+app.delete("/api/photos/style-graphic", (c) => styleGraphic.DELETE(c.req.raw));
 
 // Registered ahead of `/api/photos/:id` so a literal segment is never eaten by
 // the parameter. Hono matches in registration order, and `captions` is the one

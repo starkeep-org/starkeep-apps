@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ff4a7d"/><stop offset="0.5" stop-color="#33aaff"/><stop offset="1" stop-color="#c24dff"/>
+      <stop offset="0" stop-color="#ffd23f"/><stop offset="0.5" stop-color="#ff8a3d"/><stop offset="1" stop-color="#ff5069"/>
     </linearGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0.6" y2="0.6">
       <stop offset="0" stop-color="#fff" stop-opacity="0.45"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
@@ -9,7 +9,7 @@
     <clipPath id="clip"><path d="M 17.50 22.20 L 18.61 1.00 L 36.42 12.56 L 56.93 7.07 L 51.44 27.58 L 63.00 45.39 L 41.80 46.50 L 28.43 63.00 L 20.82 43.18 L 1.00 35.57 Z"/></clipPath>
     <filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.5"/></filter>
   </defs>
-  <g transform="translate(512 512) scale(12) translate(-32 -32)">
+  <g transform="translate(512 512) rotate(14) scale(12.82) translate(-33.59 -30.41)">
     <path d="M 17.50 22.20 L 18.61 1.00 L 36.42 12.56 L 56.93 7.07 L 51.44 27.58 L 63.00 45.39 L 41.80 46.50 L 28.43 63.00 L 20.82 43.18 L 1.00 35.57 Z" fill="url(#g)" opacity="0.55" filter="url(#blur)"/>
     <path d="M 17.50 22.20 L 18.61 1.00 L 36.42 12.56 L 56.93 7.07 L 51.44 27.58 L 63.00 45.39 L 41.80 46.50 L 28.43 63.00 L 20.82 43.18 L 1.00 35.57 Z" fill="url(#g)"/>
     <rect x="0" y="0" width="64" height="64" fill="url(#sheen)" clip-path="url(#clip)"/>

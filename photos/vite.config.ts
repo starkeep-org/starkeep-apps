@@ -38,7 +38,9 @@ const isCloudBuild = process.env.STARKEEP_FORCE_REMOTE === "true";
 
 // Above Vite's default browser baseline, and stated in all three places it is
 // asked for — `build.target` alone leaves dependency pre-bundling in
-// development on the default, which is a separate esbuild pass.
+// development on the default, which is a separate Rolldown pass. Vite 8
+// silently ignores the old `optimizeDeps.esbuildOptions.target`, so the
+// pre-bundle target lives under `rolldownOptions.transform`.
 const BROWSER_TARGET = "es2022";
 
 export default defineConfig({
@@ -56,8 +58,8 @@ export default defineConfig({
       process.env.STARKEEP_FORCE_REMOTE ?? "",
     ),
   },
-  esbuild: { target: BROWSER_TARGET },
-  optimizeDeps: { esbuildOptions: { target: BROWSER_TARGET } },
+  oxc: { target: BROWSER_TARGET },
+  optimizeDeps: { rolldownOptions: { transform: { target: BROWSER_TARGET } } },
   build: {
     outDir: "dist",
     emptyOutDir: true,

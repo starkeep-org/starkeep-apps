@@ -11,8 +11,6 @@ This repository holds the first-party apps that run on [Starkeep](https://github
 | `packages/photos-info/`   | The rows of a photo's info panel and their formatting, shared by both Photos apps.                                                                                              |
 | `packages/photos-ladder/` | The sizes of Photos' renditions and the rule for picking one, shared by both Photos apps.                                                                                       |
 
-Photos is an example app. It shows how Starkeep apps work, and it does not yet replace a full photo library app.
-
 ## Install the apps
 
 Clone this repository beside `starkeep-core`, in the same parent folder, and install its dependencies at the root:

@@ -20,8 +20,8 @@ import {
 interface SettingsMenuProps {
   layout: ListLayoutPreferences;
   onLayoutChange: (patch: Partial<ListLayoutPreferences>) => void;
-  /** Cloud target only: opens the cloud connection panel. */
-  onOpenCloudSetup: (() => void) | null;
+  /** Cloud target only: ends the browser's session. */
+  onSignOut: (() => void) | null;
   /** Local target only: opens on-device face recognition. */
   onOpenFaces: (() => void) | null;
 }
@@ -29,7 +29,7 @@ interface SettingsMenuProps {
 export function SettingsMenu({
   layout,
   onLayoutChange,
-  onOpenCloudSetup,
+  onSignOut,
   onOpenFaces,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
@@ -133,32 +133,33 @@ export function SettingsMenu({
             <CoverImageControls />
           </Section>
 
-          {(onOpenFaces || onOpenCloudSetup) && (
+          {onOpenFaces && (
             <Section title="Library">
-              {onOpenFaces && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    onOpenFaces();
-                  }}
-                  style={menuButtonStyle}
-                >
-                  On-device face recognition
-                </button>
-              )}
-              {onOpenCloudSetup && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    onOpenCloudSetup();
-                  }}
-                  style={menuButtonStyle}
-                >
-                  Cloud setup
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onOpenFaces();
+                }}
+                style={menuButtonStyle}
+              >
+                On-device face recognition
+              </button>
+            </Section>
+          )}
+
+          {onSignOut && (
+            <Section title="Account">
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onSignOut();
+                }}
+                style={menuButtonStyle}
+              >
+                Sign out
+              </button>
             </Section>
           )}
         </div>

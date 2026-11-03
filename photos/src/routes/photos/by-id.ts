@@ -1,21 +1,18 @@
-import { type AppCredentials, loadAppCredentials, signedFetch } from "@starkeep/app-client";
+import {
+  type AuthorizedPhotosFetch,
+  authorizePhotosRoute,
+  withRefreshedSession,
+} from "@/lib/photos-route-server";
 import { photoRecordToAppImage } from "@/lib/photoRecordToAppImage";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "@/lib/data-server-client";
 
-function notInstalled(): Response {
-  return Response.json(
-    { error: "photos has not been installed locally — run install from admin-web first" },
-    { status: 503 },
-  );
-}
-
 async function fetchAssembledImage(
-  creds: AppCredentials,
+  call: AuthorizedPhotosFetch["fetch"],
   id: string,
 ) {
   const [recordRes, metaRes] = await Promise.all([
-    signedFetch(creds, `/data/records/${id}`),
-    signedFetch(creds, `/data/records/${id}/metadata/image`),
+    call(`/data/records/${id}`),
+    call(`/data/records/${id}/metadata/image`),
   ]);
 
   if (!recordRes.ok) return null;
@@ -28,7 +25,7 @@ async function fetchAssembledImage(
   let enriched: ImageEnriched | null = null;
   if (record.parent_id === null) {
     const q = new URLSearchParams({ where: JSON.stringify({ record_id: id }), limit: "1" });
-    const umRes = await signedFetch(creds, `/app-data/db/image_enriched?${q.toString()}`);
+    const umRes = await call(`/app-data/db/image_enriched?${q.toString()}`);
     if (umRes.ok) {
       const { rows } = (await umRes.json()) as { rows?: ImageEnriched[] };
       enriched = rows?.[0] ?? null;
@@ -38,17 +35,17 @@ async function fetchAssembledImage(
   return photoRecordToAppImage(record, metadata, enriched);
 }
 
-export async function GET(_req: Request, id: string): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
-  const image = await fetchAssembledImage(creds, id);
+export async function GET(req: Request, id: string): Promise<Response> {
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
+  const image = await fetchAssembledImage(authorized.fetch, id);
   if (!image) return Response.json({ error: "Not found" }, { status: 404 });
-  return Response.json({ image });
+  return withRefreshedSession(Response.json({ image }), authorized.refreshedCookie);
 }
 
 export async function PATCH(req: Request, id: string): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
 
   const body = (await req.json().catch(() => null)) as {
     title?: string | null;
@@ -64,16 +61,16 @@ export async function PATCH(req: Request, id: string): Promise<Response> {
     if (title !== undefined) row.title = title;
     if (dateTakenOverride !== undefined) row.date_taken_override = dateTakenOverride;
     if (caption !== undefined) row.caption = caption === "" ? null : caption;
-    await signedFetch(creds, "/app-data/db/image_enriched", {
+    await authorized.fetch("/app-data/db/image_enriched", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ row }),
     });
   }
 
-  const image = await fetchAssembledImage(creds, id);
+  const image = await fetchAssembledImage(authorized.fetch, id);
   if (!image) return Response.json({ error: "Not found" }, { status: 404 });
-  return Response.json({ image });
+  return withRefreshedSession(Response.json({ image }), authorized.refreshedCookie);
 }
 
 /**
@@ -93,17 +90,17 @@ export async function PATCH(req: Request, id: string): Promise<Response> {
  * the person is concerned, and the orphan is recoverable through the delete feed —
  * `deleted=only&updated_after=` names exactly the records whose rows to drop.
  */
-export async function DELETE(_req: Request, id: string): Promise<Response> {
-  const creds = await loadAppCredentials("photos");
-  if (!creds) return notInstalled();
+export async function DELETE(req: Request, id: string): Promise<Response> {
+  const authorized = await authorizePhotosRoute(req);
+  if (authorized instanceof Response) return authorized;
 
-  const deleteRes = await signedFetch(creds, `/data/records/${id}`, { method: "DELETE" });
+  const deleteRes = await authorized.fetch(`/data/records/${id}`, { method: "DELETE" });
   if (!deleteRes.ok) {
     const errBody = await deleteRes.text().catch(() => "");
     return Response.json({ error: `Delete failed: ${errBody}` }, { status: deleteRes.status });
   }
 
-  const rowRes = await signedFetch(creds, "/app-data/db/image_enriched", {
+  const rowRes = await authorized.fetch("/app-data/db/image_enriched", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ where: { record_id: id } }),
@@ -115,5 +112,5 @@ export async function DELETE(_req: Request, id: string): Promise<Response> {
     );
   }
 
-  return Response.json({ ok: true });
+  return withRefreshedSession(Response.json({ ok: true }), authorized.refreshedCookie);
 }

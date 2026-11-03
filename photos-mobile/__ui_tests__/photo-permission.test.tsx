@@ -43,7 +43,7 @@ const requestPermissions = deviceMedia.requestPermissions as jest.Mock;
 /** A node with no cloud, so a catch-up imports and never syncs. */
 const READY = {
   status: "ready",
-  node: { engine: null, uploads: null },
+  node: { engine: null, uploads: null, importGate: () => "open", importWithoutPull: () => undefined },
   identity: {},
   clock: {},
   connection: null,
@@ -180,6 +180,99 @@ describe("the photo permission", () => {
 
     expect(requestPermissions).toHaveBeenCalledTimes(2);
     expect(result.current.mediaAccess).toBe("granted");
+    expect(library.importQuietly).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a fresh library", () => {
+  /** A node whose library has not imported yet, with no cloud. */
+  function freshNode() {
+    let gate: "sign-in" | "open" = "sign-in";
+    return {
+      status: "ready",
+      node: {
+        engine: null,
+        uploads: null,
+        importGate: () => gate,
+        importWithoutPull: () => {
+          gate = "open";
+        },
+      },
+      identity: {},
+      clock: {},
+      connection: null,
+    } as unknown as NodeState;
+  }
+
+  // The dialog would ask for something the first-run screen cannot use yet.
+  it("does not ask for the photos until the person chooses", async () => {
+    getPermissions.mockResolvedValue(DENIED);
+    requestPermissions.mockResolvedValue(GRANTED);
+    const { result } = renderWork(freshNode());
+    await settle();
+
+    expect(result.current.importGate).toBe("sign-in");
+    expect(requestPermissions).not.toHaveBeenCalled();
+  });
+
+  it("asks once and imports when the person imports without signing in", async () => {
+    let granted = false;
+    getPermissions.mockImplementation(async () => (granted ? GRANTED : DENIED));
+    requestPermissions.mockImplementation(async () => {
+      granted = true;
+      return GRANTED;
+    });
+    const { result, library } = renderWork(freshNode());
+    await settle();
+
+    act(() => result.current.importWithoutPull());
+    await settle();
+
+    expect(result.current.importGate).toBe("open");
+    expect(requestPermissions).toHaveBeenCalledTimes(1);
+    expect(library.importQuietly).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a signed-in fresh library", () => {
+  // The first sync drains the cloud's rows in its first round and then goes on
+  // downloading files. The import must start then, not when the files finish.
+  it("asks and imports when a round drains the rows, while the sync goes on", async () => {
+    let gate: "first-pull" | "open" = "first-pull";
+    const node = {
+      status: "ready",
+      node: {
+        engine: {},
+        uploads: null,
+        importGate: () => gate,
+        importWithoutPull: () => undefined,
+        syncPhotos: jest.fn(async () => null),
+        sync: jest.fn(
+          (options: { onRound?: (round: { hasMore: boolean }, rounds: number) => void }) => {
+            gate = "open";
+            options.onRound?.({ hasMore: false }, 1);
+            // Still downloading files.
+            return new Promise(() => undefined);
+          },
+        ),
+      },
+      identity: {},
+      clock: {},
+      connection: null,
+    } as unknown as NodeState;
+    let granted = false;
+    getPermissions.mockImplementation(async () => (granted ? GRANTED : DENIED));
+    requestPermissions.mockImplementation(async () => {
+      granted = true;
+      return GRANTED;
+    });
+
+    const { result, library } = renderWork(node);
+    await settle();
+
+    expect(result.current.importGate).toBe("open");
+    expect(result.current.syncing).toBe(true);
+    expect(requestPermissions).toHaveBeenCalledTimes(1);
     expect(library.importQuietly).toHaveBeenCalledTimes(1);
   });
 });

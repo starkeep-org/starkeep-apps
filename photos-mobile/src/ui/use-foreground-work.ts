@@ -20,6 +20,7 @@ import { deviceMedia, mediaLocationGranted } from "../platform";
 import { shouldAskForMediaLocation } from "../media/original-uri";
 import { describeAccess, nextAccessStep, type MediaAccess } from "../media/device-library";
 import { planCatchUp } from "../work/foreground-catchup";
+import type { ImportGate } from "../media/import-gate";
 import {
   createDebouncer,
   createForegroundSyncLoop,
@@ -59,6 +60,17 @@ export interface ForegroundWork {
    * show one, the app's system settings page when it will not.
    */
   requestMediaAccess: () => Promise<void>;
+  /**
+   * Whether this library may import yet, or null before the node opens. A
+   * fresh library waits for a sign-in and the first pull's rows, or for the
+   * person's choice to import without waiting. See `media/import-gate.ts`.
+   */
+  readonly importGate: ImportGate | null;
+  /**
+   * Import without waiting for the first pull: the escape hatch on the
+   * first-run screen, and on the screen that waits for the pull.
+   */
+  importWithoutPull: () => void;
 }
 
 export function useForegroundWork(
@@ -68,6 +80,11 @@ export function useForegroundWork(
 ): ForegroundWork {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  /**
+   * See {@link ForegroundWork.importGate}. Read again after each round, because
+   * the first pull's rows can drain long before its files finish downloading.
+   */
+  const [importGate, setImportGate] = useState<ImportGate | null>(null);
   /**
    * Aborts the running sync when this screen goes away or the app leaves the
    * foreground.
@@ -173,6 +190,9 @@ export function useForegroundWork(
         trigger,
         signal: abort.signal,
         onRound: (result, rounds) => {
+          // The round that drains the cloud's rows opens a fresh library's
+          // import, while this sync keeps downloading files.
+          if (!result.hasMore) setImportGate(node.node.importGate());
           // Per round, because the totals cannot answer the
           // question that matters here. `blocked` says something
           // this round *selected* could not be moved — a blob that
@@ -247,6 +267,8 @@ export function useForegroundWork(
       .finally(() => {
         syncingRef.current = false;
         setSyncing(false);
+        // A completed first pull opens a fresh library's import.
+        setImportGate(node.node.importGate());
         // A sync asked for while this one ran. Not after the app has left the
         // foreground: the waiting request was for an open app, and the
         // background windows have their own sync.
@@ -483,9 +505,9 @@ export function useForegroundWork(
    * running sync: re-subscribing whenever the callback's identity changed would
    * abort the very sync this is meant to keep alive, on every render.
    */
-  const runCatchUpRef = useRef<(() => void) | null>(null);
+  const runCatchUpRef = useRef<((options?: { force?: boolean }) => void) | null>(null);
   useEffect(() => {
-    runCatchUpRef.current = () => void runCatchUp();
+    runCatchUpRef.current = (options) => void runCatchUp(options);
   }, [runCatchUp]);
 
   /** The latest {@link autoSync} and {@link onMediaChange}, for the same reason. */
@@ -563,6 +585,17 @@ export function useForegroundWork(
    * needs it most, which is the one where nobody backgrounds the app at all.
    */
   const nodeReady = node.status === "ready";
+  const readImportGate = useCallback(() => {
+    setImportGate(node.status === "ready" ? node.node.importGate() : null);
+  }, [node]);
+  useEffect(() => {
+    readImportGate();
+  }, [readImportGate]);
+  const importWithoutPull = useCallback(() => {
+    if (node.status !== "ready") return;
+    node.node.importWithoutPull();
+    readImportGate();
+  }, [node, readImportGate]);
   const [mediaAccess, setMediaAccess] = useState<MediaAccess | null>(null);
   /** Whether this launch has shown the system dialog, so it shows at most once. */
   const askedForMedia = useRef(false);
@@ -582,9 +615,26 @@ export function useForegroundWork(
    * waits to be told to look has asked for nothing and explained nothing.
    * Asked once per launch at most; a refusal leaves the grid's own prompt,
    * which asks again only when tapped.
+   *
+   * **Not before the import gate opens.** A fresh library imports nothing until
+   * the person signs in and the first pull's rows arrive, or chooses to import
+   * without waiting, so a permission dialog before then would ask for
+   * something the screen cannot use yet. The pass still runs while the gate
+   * is closed, because its sync half is the first pull. The pass that follows
+   * the gate opening skips the interval guard: the first pull's own pass has
+   * just armed it, and the import is what the person is waiting for.
+   *
+   * The gate usually opens in the middle of the first sync, which goes on
+   * downloading files after the rows drain. A catch-up declines while a sync
+   * runs, so the import then takes the camera-roll-change path, which imports
+   * beside a running sync and queues the sync after it.
    */
   useEffect(() => {
-    if (!nodeReady) return;
+    if (!nodeReady || importGate === null) return;
+    if (importGate !== "open") {
+      runCatchUpRef.current?.();
+      return;
+    }
     void (async () => {
       const permission = await readMediaAccess();
       const access = permission ? describeAccess(permission) : null;
@@ -611,18 +661,24 @@ export function useForegroundWork(
           `[import] media-location permission ${mediaLocationGranted() ? "granted" : "still not granted"}`,
         );
       }
-      runCatchUpRef.current?.();
+      if (syncingRef.current) void onMediaChangeRef.current?.();
+      else runCatchUpRef.current?.({ force: true });
     })();
-  }, [nodeReady, readMediaAccess]);
+  }, [nodeReady, importGate, readMediaAccess]);
 
   // A person who granted access in the system settings comes back through the
   // foreground, and the grid's prompt should go when they do.
+  //
+  // A background window's sync can complete the first pull too, and the screen
+  // should open the import when the person comes back.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") void readMediaAccess();
+      if (state !== "active") return;
+      readImportGate();
+      void readMediaAccess();
     });
     return () => subscription.remove();
-  }, [readMediaAccess]);
+  }, [readMediaAccess, readImportGate]);
 
   const requestMediaAccess = useCallback(async () => {
     if (nextAccessStep(mediaAccess, "prompt", askedForMedia.current) === "open-settings") {
@@ -679,5 +735,7 @@ export function useForegroundWork(
     catchUpNow,
     mediaAccess,
     requestMediaAccess,
+    importGate,
+    importWithoutPull,
   };
 }

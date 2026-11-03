@@ -8,7 +8,7 @@
  * variant: a rung that is here, a rung that is coming, and a rung that is never
  * coming from this node. Each needs different pixels and a different action.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { render, screen, act, cleanup, fireEvent } from "@testing-library/react";
 import { PhotoThumbnail } from "../src/photos-ui/components/grid/photo-thumbnail";
 import { PhotoUrlProvider } from "../src/photos-ui/context/photo-url-context";
@@ -104,7 +104,7 @@ function appImage(over: Partial<AppImage> = {}): AppImage {
 }
 
 /** Stands in for the original's own bytes, so a test can prove nothing asked. */
-let getFullSizeSrc: ReturnType<typeof vi.fn>;
+let getFullSizeSrc: Mock<(imageId: string) => string | null>;
 
 function renderTile(image: AppImage) {
   return render(
@@ -130,7 +130,7 @@ async function show(image: AppImage, served: RenditionChoice | null = null) {
   });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
+let fetchMock: Mock<(url: string, init?: RequestInit) => Promise<Response>>;
 
 beforeEach(() => {
   FakeIntersectionObserver.instances = [];

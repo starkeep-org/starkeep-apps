@@ -2,9 +2,16 @@
  * The app. Not a screen you reach by signing in — the one you land on.
  *
  * Everything here works with no session and no network. Signing in is offered
- * from Settings rather than demanded up front, because a sign-in buys sync and
- * nothing else. A signed-out device is a whole Starkeep node; it is simply the
- * only one that knows what it holds.
+ * from Settings rather than demanded, because a sign-in buys sync and nothing
+ * else. A signed-out device is a whole Starkeep node; it is simply the only one
+ * that knows what it holds.
+ *
+ * ## The first-run screen
+ *
+ * A fresh library asks to sign in before its first import, because importing
+ * before the first pull writes over the records other devices made. The
+ * screen offers "Import without signing in" too, so a phone that never syncs
+ * still works, and a dialog says what that risks. See `media/import-gate.ts`.
  *
  * ## What is on the screen
  *
@@ -20,6 +27,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   Pressable,
@@ -173,6 +181,79 @@ export function HomeScreen({ onConnect }: Props) {
 
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
+  const { importWithoutPull } = work;
+  const confirmImportWithoutAccount = useCallback(() => {
+    Alert.alert(
+      "Import without signing in?",
+      "Sign in first if you have used Starkeep on another device or in an earlier install of this app. " +
+        "A phone that imports first and signs in later can bring back photos you deleted, " +
+        "and can overwrite details your other devices recorded.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Import", onPress: importWithoutPull },
+      ],
+    );
+  }, [importWithoutPull]);
+  const confirmImportBeforeSync = useCallback(() => {
+    Alert.alert(
+      "Import before your library arrives?",
+      "Your library tells this phone which of its photos your other devices already hold, " +
+        "and which ones you deleted. Importing before it arrives can bring back photos you deleted, " +
+        "and can overwrite details your other devices recorded.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Import", onPress: importWithoutPull },
+      ],
+    );
+  }, [importWithoutPull]);
+
+  /**
+   * Signed in, and waiting for the first pull's rows. Photos from the cloud
+   * arrive in the grid meanwhile, and the camera roll's do not, so the screen
+   * says why. Automatic syncs wait for Wi-Fi, so the button lets a person
+   * spend their own data now. A phone that cannot reach the cloud would hold
+   * the import forever, so the escape hatch is here too, behind its own
+   * confirmation.
+   */
+  const firstPullNotice =
+    work.importGate === "first-pull" ? (
+      <View style={[styles.listGutter, { gap: 10, paddingVertical: 16 }]}>
+        <Text style={styles.muted}>
+          {work.syncing
+            ? "Syncing your library. The photos on this phone appear once your library arrives."
+            : "The photos on this phone appear once your library arrives from the cloud."}
+        </Text>
+        {work.syncing ? (
+          <ActivityIndicator color={colors.muted} />
+        ) : (
+          <Pressable onPress={work.syncNow} style={styles.button}>
+            <Text style={styles.buttonLabel}>Sync now</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={confirmImportBeforeSync} style={{ alignSelf: "center", paddingVertical: 8 }}>
+          <Text style={styles.linkLabel}>Import without waiting</Text>
+        </Pressable>
+      </View>
+    ) : null;
+
+  const signInFirst =
+    work.importGate === "sign-in" ? (
+      <View style={[styles.content, { flex: 1, paddingBottom: insets.bottom + 8 }]}>
+        <View style={styles.centered}>
+          <Text style={[styles.body, { textAlign: "center" }]}>
+            Sign in to sync this phone with your Starkeep library. The photos on this phone appear
+            once your library arrives.
+          </Text>
+          <Pressable onPress={onConnect} style={styles.button}>
+            <Text style={styles.buttonLabel}>Sign in to Starkeep Cloud</Text>
+          </Pressable>
+        </View>
+        <Pressable onPress={confirmImportWithoutAccount} style={{ alignSelf: "center", paddingVertical: 8 }}>
+          <Text style={styles.linkLabel}>Import without signing in</Text>
+        </Pressable>
+      </View>
+    ) : null;
+
   return (
     <View style={styles.safe}>
       {landscape ? null : (
@@ -184,54 +265,56 @@ export function HomeScreen({ onConnect }: Props) {
           Paging the library and virtualizing it are one change rather than
           two — a paginated grid that never releases a tile is worse than the
           ceiling it replaces. */}
-      <FlatList
-        data={rows}
-        keyExtractor={libraryRowKey}
-        renderItem={renderRow}
-        contentContainerStyle={{
-          paddingTop: landscape ? insets.top : 0,
-          paddingBottom: insets.bottom + GRID_GAP,
-          paddingLeft: landscape ? insets.left : 0,
-          paddingRight: landscape ? insets.right : 0,
-        }}
-        ListHeaderComponent={accessPrompt}
-        ListEmptyComponent={empty}
-        // Only a spinner while the next page loads. Nothing else sits below the
-        // grid, so the end of the content is the end of the tiles and
-        // `onEndReached` fires when somebody actually reaches it.
-        ListFooterComponent={
-          library.loadingMore ? (
-            <ActivityIndicator color={colors.muted} style={{ marginVertical: 16 }} />
-          ) : null
-        }
-        onEndReachedThreshold={0.5}
-        onEndReached={loadMoreQuietly}
-        // Roughly two screens of tiles resident. Enough that a flick does not
-        // outrun the renderer, few enough that the decoded bitmaps stay bounded
-        // no matter how far the library is scrolled.
-        windowSize={5}
-        initialNumToRender={7}
-        maxToRenderPerBatch={6}
-        // **No `removeClippedSubviews`.** It detaches an item's native views
-        // while the item stays mounted, which on Android is half of the blank
-        // rectangle somebody sees scrolling back over pictures they were just
-        // looking at. `windowSize` already bounds how many rows are resident,
-        // and it bounds it by unmounting, which releases the bitmaps.
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            tintColor="#888"
-            onRefresh={() => {
-              setRefreshing(true);
-              // The spinner waits for the grid only. The catch-up imports,
-              // syncs and derives, which can take far longer than a pull should
-              // hold the spinner; the grid reloads again as its work lands.
-              void work.catchUpNow();
-              void library.reload().finally(() => setRefreshing(false));
-            }}
-          />
-        }
-      />
+      {signInFirst ?? (
+        <FlatList
+          data={rows}
+          keyExtractor={libraryRowKey}
+          renderItem={renderRow}
+          contentContainerStyle={{
+            paddingTop: landscape ? insets.top : 0,
+            paddingBottom: insets.bottom + GRID_GAP,
+            paddingLeft: landscape ? insets.left : 0,
+            paddingRight: landscape ? insets.right : 0,
+          }}
+          ListHeaderComponent={firstPullNotice ?? accessPrompt}
+          ListEmptyComponent={empty}
+          // Only a spinner while the next page loads. Nothing else sits below the
+          // grid, so the end of the content is the end of the tiles and
+          // `onEndReached` fires when somebody actually reaches it.
+          ListFooterComponent={
+            library.loadingMore ? (
+              <ActivityIndicator color={colors.muted} style={{ marginVertical: 16 }} />
+            ) : null
+          }
+          onEndReachedThreshold={0.5}
+          onEndReached={loadMoreQuietly}
+          // Roughly two screens of tiles resident. Enough that a flick does not
+          // outrun the renderer, few enough that the decoded bitmaps stay bounded
+          // no matter how far the library is scrolled.
+          windowSize={5}
+          initialNumToRender={7}
+          maxToRenderPerBatch={6}
+          // **No `removeClippedSubviews`.** It detaches an item's native views
+          // while the item stays mounted, which on Android is half of the blank
+          // rectangle somebody sees scrolling back over pictures they were just
+          // looking at. `windowSize` already bounds how many rows are resident,
+          // and it bounds it by unmounting, which releases the bitmaps.
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              tintColor="#888"
+              onRefresh={() => {
+                setRefreshing(true);
+                // The spinner waits for the grid only. The catch-up imports,
+                // syncs and derives, which can take far longer than a pull should
+                // hold the spinner; the grid reloads again as its work lands.
+                void work.catchUpNow();
+                void library.reload().finally(() => setRefreshing(false));
+              }}
+            />
+          }
+        />
+      )}
       {viewer.element}
       {settingsOpen ? (
         <SettingsScreen

@@ -14,9 +14,9 @@ import { addPhotoFromPath, deletePhoto, getPhotoFileUrls } from "./src/lib/data-
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
-import { CloudSetupModal } from "./src/lib/CloudSetupModal";
 import { CoverImageBanner, CoverImageProvider } from "./src/lib/CoverImage";
 import { SettingsMenu } from "./src/lib/SettingsMenu";
+import { signOut } from "./src/lib/sign-out";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
 import { useListLayoutPreferences } from "./src/lib/list-layout-preferences";
@@ -75,7 +75,6 @@ function PhotosAppInner() {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [showCloudSetup, setShowCloudSetup] = useState(false);
   // Mounted unconditionally: both panels return null when the vision routes
   // answer 501, so the local/remote decision stays server-side rather than
   // being re-derived from the build flag here.
@@ -245,7 +244,7 @@ function PhotosAppInner() {
             <SettingsMenu
               layout={layout}
               onLayoutChange={setLayout}
-              onOpenCloudSetup={FORCE_REMOTE ? () => setShowCloudSetup(true) : null}
+              onSignOut={FORCE_REMOTE ? () => void signOut() : null}
               onOpenFaces={FORCE_REMOTE ? null : () => setShowVision(true)}
             />
           </div>
@@ -336,10 +335,6 @@ function PhotosAppInner() {
               dispatch({ type: "SET_SELECTED_ID", id: null });
             }}
           />
-        )}
-
-        {showCloudSetup && (
-          <CloudSetupModal onClose={() => setShowCloudSetup(false)} />
         )}
 
         {showVision && (

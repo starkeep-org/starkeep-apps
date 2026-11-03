@@ -19,7 +19,7 @@ import { configDefaults, defineConfig } from "vitest/config";
  * `pnpm build` and `pnpm derive:build-worker`.
  */
 export default defineConfig({
-  esbuild: { jsx: "automatic" },
+  oxc: { jsx: { runtime: "automatic" } },
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },

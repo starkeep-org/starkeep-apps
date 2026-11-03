@@ -1,6 +1,6 @@
 # Starkeep apps
 
-This repository holds the first-party apps that run on [Starkeep](https://github.com/starkeep-org/starkeep-core). Each app installs through the same path as a third-party app and depends only on the published `@starkeep/*` packages.
+This repository holds the first-party apps that run on [Starkeep](https://github.com/starkeep-org/starkeep-core). Each app installs through the same path as a third-party app. Each app gets the Starkeep platform from the published `@starkeep/*` packages.
 
 ## What Photos does
 
@@ -28,49 +28,23 @@ To add photos, use a watched folder from the Admin app, or install the mobile ap
 
 ## Install the apps
 
-Clone this repository beside `starkeep-core` (recommended under the same parent folder), and install its dependencies at the root:
+Clone this repository into the same parent folder as `starkeep-core`, and keep the folder name `starkeep-apps`. Then install its dependencies at the root:
 
 ```bash
 pnpm install
 ```
 
-Starkeep's admin app starts locally installed apps straight from this checkout, and scans this checkout for apps by default.
+Starkeep's admin app starts locally installed apps straight from this checkout. The admin app scans a `starkeep-apps` folder beside `starkeep-core` for apps by default. For a checkout in any other place, click **Discover apps** in the admin app's header and add the checkout's folder.
 
 Follow the [Get Started](https://github.com/starkeep-org/starkeep-core#get-started) guide in `starkeep-core`'s README. The guide installs Photos on your computer and then in the cloud.
 
 ## Build Photos Mobile
 
-Photos Mobile syncs with a Starkeep cloud, so finish [Part B](https://github.com/starkeep-org/starkeep-core#part-b-deploy-starkeep-to-your-aws-account) of the Get Started guide first. 
-
-1. **Register the mobile app in the cloud.** In admin-web's **Cloud** section, **Install Photos in cloud** registers both the web app and the mobile app. To sync a phone without the cloud web app, choose **Register the Photos mobile app only** from the Photos card's menu instead.
-2. **Generate the Android project.** The Android project is generated from `app.json` and is not committed:
-
-   ```bash
-   pnpm --filter @starkeep/photos-mobile prebuild
-   ```
-
-3. **Build the app:**
-
-   ```bash
-   cd photos-mobile/android
-   ./gradlew assembleRelease
-   ```
-
-4. **Install the app on the phone** over USB:
-
-   ```bash
-   adb install -r app/build/outputs/apk/release/app-release.apk
-   ```
-
-5. **Sign in.** Open Starkeep Photos on the phone and enter the address from the **Cloud address** line in admin-web's **Cloud** section. The app opens the Starkeep sign-in page in the phone's browser. Sign in with your Starkeep account.
-
-The phone then shows its own photos and videos, uploads them to the cloud, and shows the photos that synced from your other devices. The phone holds only the file types that Photos may read.
-
-The build is signed with Expo's public debug key, which the Photos manifest declares. Anyone can build an app that the cloud accepts as Photos, so treat the current build as a development build.
+Photos Mobile is the Android app. [Build the APK from source](https://github.com/starkeep-org/starkeep-core#build-the-apk-from-source-optional) in `starkeep-core`'s README lists the prerequisites and the build steps. [Part C: install the Photos mobile app](https://github.com/starkeep-org/starkeep-core#part-c-install-the-photos-mobile-app) covers registering the app in the cloud and signing in on the phone.
 
 ## Write your own app
 
-An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app, using Photos as the worked example.
+An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app.
 
 To make admin-web find your app, click **Discover apps** in admin-web's header and add the folder that contains your app's folder.
 

@@ -39,7 +39,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { matchRoute, resolveHandlerRoutes, type AppComputeHandler } from "@starkeep/admin-manifest";
 import { app } from "@/server-app";
-import { CLIENT_ROUTES } from "@/client-routes";
+import { isClientRoute } from "@/client-serving";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -157,7 +157,7 @@ describe("the router and the manifest agree", () => {
       const probe = path.endsWith("/*") ? `${path.slice(0, -2)}/probe` : path;
       const mounted =
         // A client route is answered from disk by the adapter, ahead of the app.
-        CLIENT_ROUTES.includes(probe as (typeof CLIENT_ROUTES)[number]) ||
+        isClientRoute(probe) ||
         app.routes.some(
           (r) => r.path === probe || (r.path.endsWith("/*") && probe.startsWith(r.path.slice(0, -1))),
         );

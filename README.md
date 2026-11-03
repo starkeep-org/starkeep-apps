@@ -4,7 +4,7 @@ This repository holds the first-party apps that run on [Starkeep](https://github
 
 ## What Photos does
 
-Photos shows the photos and videos in your Starkeep storage as one library. Photos does not keep a separate copy of your media, rather the app uses Starkeep's common shared storage that Starkeep apps can see (if they have permission to access photos and videos).
+Photos shows the photos and videos in your Starkeep storage as one library. Photos does not keep a separate copy of your media. Instead, the app uses Starkeep's common shared storage that Starkeep apps can see, if they have permission to access photos and videos.
 
 - Open a photo to see it full size, play a video, or read the camera, date and location details.
 - Write a caption on any photo. Captions sync to your other devices.

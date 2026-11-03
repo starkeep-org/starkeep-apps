@@ -2,6 +2,25 @@
 
 This repository holds the first-party apps that run on [Starkeep](https://github.com/starkeep-org/starkeep-core). Each app installs through the same path as a third-party app and depends only on the published `@starkeep/*` packages.
 
+## What Photos does
+
+Photos shows the photos and videos in your Starkeep storage as one library, grouped by date. Photos does not keep a separate copy. The app reads the same files that other Starkeep apps can see.
+
+- Open a photo to see it full size, play a video, or read the camera, date and location details.
+- Write a caption on any photo. Captions sync to your other devices.
+- Turn on face recognition to find and name the people in your photos. Face recognition runs only on your computer, and its results never leave it.
+
+Photos makes smaller copies of each photo and video so that the library loads quickly. The originals stay unchanged.
+
+## Photos on the web
+
+The web app runs in two places, and both serve the same build:
+
+- **On your computer.** Admin-web starts Photos from this checkout. The app shows the files in the folders that the data server watches, and the app prepares new files in the background.
+- **In the cloud.** Photos runs in your own AWS account, and you open it from any browser. Sign in with your Starkeep account to see the photos that synced from your devices. Face recognition is not available in the cloud.
+
+The web app does not upload photos. To add photos, copy them into a watched folder or sync them from your phone with Photos Mobile.
+
 ## What is here
 
 | Folder                    | What it is                                                                                                                                                                      |
@@ -21,11 +40,11 @@ pnpm install
 
 Admin-web starts locally installed apps straight from this checkout, so the dependencies must be present before an app can start. Admin-web also scans this checkout for apps by default.
 
-Then follow [`getting-started.md`](https://github.com/starkeep-org/starkeep-core/blob/main/getting-started.md) in `starkeep-core`. The guide installs Photos on your computer and then in the cloud.
+Then follow the [Get Started](https://github.com/starkeep-org/starkeep-core#get-started) guide in `starkeep-core`'s README. The guide installs Photos on your computer and then in the cloud.
 
 ## Install Photos Mobile
 
-Photos Mobile syncs with a Starkeep cloud, so finish Part B of the getting-started guide first. You also need the Android SDK, a JDK and a phone with USB debugging turned on.
+Photos Mobile syncs with a Starkeep cloud, so finish [Part B](https://github.com/starkeep-org/starkeep-core#part-b-deploy-starkeep-to-your-aws-account) of the Get Started guide first. You also need the Android SDK, a JDK and a phone with USB debugging turned on.
 
 1. **Register the mobile app in the cloud.** In admin-web's **Cloud** section, **Install Photos in cloud** registers both the web app and the mobile app. To sync a phone without the cloud web app, choose **Register the Photos mobile app only** from the Photos card's menu instead.
 2. **Generate the Android project.** The Android project is generated from `app.json` and is not committed:
@@ -55,7 +74,7 @@ The build is signed with Expo's public debug key, which the Photos manifest decl
 
 ## Write your own app
 
-An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/authoring-an-app.md) in `starkeep-core` walks through the parts of an app, using Photos as the worked example.
+An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app, using Photos as the worked example.
 
 To make admin-web find your app, click **Discover apps** in admin-web's header and add the folder that contains your app's folder.
 

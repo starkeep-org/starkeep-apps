@@ -3,6 +3,8 @@
   "name": "starkeep-workspace",
   "scripts": {
     "check:links": "node scripts/check-core-links.mjs",
+    "check:icons": "node scripts/icons.mjs --check",
+    "icons": "node scripts/icons.mjs",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm check:links && pnpm -r test",
     "test:integration": "pnpm -r test:integration"
@@ -29,5 +31,8 @@
       "nanoid@3": "^3.3.18",
       "postcss": "^8.5.23"
     }
+  },
+  "devDependencies": {
+    "sharp": "^0.35.5"
   }
 }

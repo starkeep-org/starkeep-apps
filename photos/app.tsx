@@ -19,6 +19,7 @@ import { SettingsMenu } from "./src/lib/SettingsMenu";
 import { signOut } from "./src/lib/sign-out";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
+import { usePhotoRoute } from "./src/lib/photo-route";
 import { useListLayoutPreferences } from "./src/lib/list-layout-preferences";
 import { useNarrowViewport, usePrefersReducedMotion } from "./src/lib/use-narrow-viewport";
 import { useHideOnScrollDown } from "./src/lib/use-hide-on-scroll-down";
@@ -88,6 +89,7 @@ function PhotosAppInner() {
   const headerHidden = useHideOnScrollDown(narrow);
   const reducedMotion = usePrefersReducedMotion();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { photoId, open, step, close } = usePhotoRoute();
 
   // Build the display list. Renditions never appear here in their own right:
   // the library query excludes them server-side by label, so every record in
@@ -115,9 +117,7 @@ function PhotosAppInner() {
 
   // The grid displays originals, so the clicked tile already *is* the record
   // the viewer wants. There is no thumbnail-to-parent hop to make.
-  const selectedIndex = state.selectedId
-    ? displayImages.findIndex((img) => img.id === state.selectedId)
-    : -1;
+  const selectedIndex = photoId ? displayImages.findIndex((img) => img.id === photoId) : -1;
   const selectedImage = selectedIndex >= 0 ? displayImages[selectedIndex] : null;
   // The viewer steps through the same list the grid shows, in the same order, so
   // the arrow keys land on the tile beside the one that was opened.
@@ -134,6 +134,14 @@ function PhotosAppInner() {
     onPolicies: (policies) => dispatch({ type: "SET_POLICIES", policies }),
     refreshActiveResolutions: () => resolutionCache.refreshPending(),
   });
+
+  // A photo the URL names and the library does not hold: a link to an unknown
+  // id, or a photo deleted on another device while it was open. The library
+  // loads in full, so once it has loaded, absent means gone. Before then a
+  // link waits for its photo to arrive.
+  useEffect(() => {
+    if (photoId !== null && state.loaded && selectedIndex < 0) close();
+  }, [photoId, state.loaded, selectedIndex, close]);
 
   useEffect(() => {
     resolutionCache.retainRecords(new Set(originals.map((image) => image.id)));
@@ -309,7 +317,7 @@ function PhotosAppInner() {
           loaded={state.loaded}
           hasMore={false}
           onLoadMore={() => {}}
-          onSelect={(id) => dispatch({ type: "SET_SELECTED_ID", id })}
+          onSelect={open}
           rowHeight={layout.rowHeight}
           groupByDate={layout.groupByDate}
           edgeToEdge={narrow}
@@ -318,13 +326,9 @@ function PhotosAppInner() {
         {selectedImage && (
           <PhotoViewer
             image={selectedImage}
-            onClose={() => dispatch({ type: "SET_SELECTED_ID", id: null })}
-            onPrevious={
-              previousImage
-                ? () => dispatch({ type: "SET_SELECTED_ID", id: previousImage.id })
-                : undefined
-            }
-            onNext={nextImage ? () => dispatch({ type: "SET_SELECTED_ID", id: nextImage.id }) : undefined}
+            onClose={close}
+            onPrevious={previousImage ? () => step(previousImage.id) : undefined}
+            onNext={nextImage ? () => step(nextImage.id) : undefined}
             // The viewer owns the confirmation and the refusal message; the library
             // state is this component's, like every other dispatch here. The grid
             // drops the row without refetching, which is what `OPTIMISTIC_DELETE`
@@ -332,7 +336,7 @@ function PhotosAppInner() {
             onDelete={async () => {
               await deletePhoto(selectedImage.id);
               dispatch({ type: "OPTIMISTIC_DELETE", id: selectedImage.id });
-              dispatch({ type: "SET_SELECTED_ID", id: null });
+              close();
             }}
           />
         )}

@@ -9,14 +9,12 @@ type PhotoAction =
   | { type: "OPTIMISTIC_UPDATE"; image: AppImage }
   | { type: "OPTIMISTIC_DELETE"; id: string }
   | { type: "REMOVE_IMAGES"; ids: string[] }
-  | { type: "SET_SELECTED_ID"; id: string | null }
   | { type: "SET_NEXT_CURSOR"; cursor: string | null }
   | { type: "SET_LOADING"; loading: boolean }
   | { type: "SET_POLICIES"; policies: RenditionPolicies };
 
 interface PhotoState {
   images: AppImage[];
-  selectedId: string | null;
   nextCursor: string | null;
   loading: boolean;
   /**
@@ -51,17 +49,12 @@ export function photoReducer(state: PhotoState, action: PhotoAction): PhotoState
     case "OPTIMISTIC_DELETE":
       return { ...state, images: state.images.filter((img) => img.id !== action.id) };
     case "REMOVE_IMAGES": {
-      // Records deleted elsewhere. The viewer closes if it was showing one.
+      // Records deleted elsewhere. The open photo lives in the URL, and
+      // `app.tsx` closes the viewer when the photo it names leaves the list.
       const gone = new Set(action.ids);
       if (!state.images.some((img) => gone.has(img.id))) return state;
-      return {
-        ...state,
-        images: state.images.filter((img) => !gone.has(img.id)),
-        selectedId: state.selectedId !== null && gone.has(state.selectedId) ? null : state.selectedId,
-      };
+      return { ...state, images: state.images.filter((img) => !gone.has(img.id)) };
     }
-    case "SET_SELECTED_ID":
-      return { ...state, selectedId: action.id };
     case "SET_NEXT_CURSOR":
       return { ...state, nextCursor: action.cursor };
     case "SET_LOADING":
@@ -83,7 +76,6 @@ const PhotoContext = createContext<PhotoContextValue | null>(null);
 export function PhotoProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(photoReducer, {
     images: [],
-    selectedId: null,
     nextCursor: null,
     // An app that has not asked the server anything yet is loading, not empty.
     // Starting false meant the grid's `images.length === 0 && !loading` branch

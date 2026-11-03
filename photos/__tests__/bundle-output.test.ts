@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CLIENT_ROUTES } from "@/client-routes";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BASE = "/apps/photos";
@@ -36,6 +37,8 @@ const manifest = JSON.parse(
 };
 const staticPaths =
   manifest.infraRequirements.compute.handlers.find((h) => h.name === "static")!.staticAssetPaths!;
+
+const clientRoutes: readonly string[] = CLIENT_ROUTES;
 
 let shell = "";
 
@@ -108,15 +111,16 @@ describe("the shell the cloud bundle ships", () => {
 
   it("has something to answer every path the manifest serves from disk", () => {
     for (const path of staticPaths) {
-      if (path.endsWith("/*")) {
-        // A glob is satisfied by the build emitting anything under it.
+      if (clientRoutes.includes(path)) {
+        // A client route, literal or glob, is answered with the shell itself.
+        expect(existsSync(join(OUT, "index.html")), `${path} has no shell to answer it`).toBe(true);
+      } else {
+        // Any other entry is an asset prefix, satisfied by the build emitting
+        // anything under it.
         expect(
           shellUrls().some((u) => u.startsWith(`${BASE}${path.slice(0, -1)}`)),
           `${path} is declared but the build emitted nothing under it`,
         ).toBe(true);
-      } else {
-        // A literal path is a client route, answered with the shell itself.
-        expect(existsSync(join(OUT, "index.html")), `${path} has no shell to answer it`).toBe(true);
       }
     }
   });

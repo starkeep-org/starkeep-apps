@@ -1,7 +1,9 @@
 /**
  * The browser entry point.
  *
- * Photos has two shell paths and no router. `app/page.tsx` used to reach the
+ * Photos mounts one of two components and has no router. `/sign-in` gets the
+ * sign-in page; `/` and `/photo/<id>` both get the app, which reads the open
+ * photo from the URL itself (`src/lib/photo-route.ts`). `app/page.tsx` used to reach the
  * app through `next/dynamic` with `ssr: false`, which existed to keep a
  * browser-only tree out of a server render; there is no server render now, so
  * the import is direct and the app is the bundle's entry rather than a chunk

@@ -75,6 +75,13 @@ describe("the two surfaces agree on which paths are the client's", () => {
     expect(isClientRoute("/albums")).toBe(false);
     expect(isClientRoute("/sign-in/extra")).toBe(false);
   });
+
+  it("answers a photo's own path with the shell", () => {
+    // `/photo/*` is the one glob among the client routes, so a literal match
+    // alone would refuse every photo link.
+    expect(isClientRoute("/photo/0b6f1c2e-photo")).toBe(true);
+    expect(isClientRoute("/photo")).toBe(false);
+  });
 });
 
 describe("the browser's own routing decision", () => {

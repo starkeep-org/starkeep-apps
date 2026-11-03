@@ -17,10 +17,14 @@
  * catch-all and takes the authorizer off the data proxy — the exact inversion
  * the 2026-08-23 postmortem was written about.
  *
- * Two entries, and no router. Photos is one screen plus a sign-in page, so the
- * whole routing decision is which of two components to mount; pulling in a
- * router to express that would add a dependency to say `if`.
+ * No router. Photos is one screen plus a sign-in page, so the whole routing
+ * decision is which of two components to mount; pulling in a router to express
+ * that would add a dependency to say `if`. `/photo/*` is the same screen with
+ * one photo open over the grid, which `src/lib/photo-route.ts` reads.
  */
-export const CLIENT_ROUTES = ["/", "/sign-in"] as const;
+export const CLIENT_ROUTES = ["/", "/sign-in", "/photo/*"] as const;
 
 export const SIGN_IN_ROUTE = "/sign-in";
+
+/** `/photo/<id>`: the grid with that photo open in the viewer. */
+export const PHOTO_ROUTE_PREFIX = "/photo/";

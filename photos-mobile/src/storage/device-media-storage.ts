@@ -4,7 +4,7 @@
  * ## What this is for
  *
  * Import aliases a record's blob to the MediaStore asset that already holds
- * those bytes instead of copying them (`import-loop-design.md` §2). This
+ * those bytes instead of copying them (`media/media-alias.ts`). This
  * adapter is what makes that invisible to everything above it: it wraps the
  * node's real object store and consults the alias table first, so a key whose
  * bytes are a `content://` asset answers `has`, `stat` and `getStream` exactly

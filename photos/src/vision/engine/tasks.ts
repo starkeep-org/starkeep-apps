@@ -1,9 +1,9 @@
 /**
  * The vision task registry.
  *
- * One entry today. It exists in this shape because the follow-on tasks —
- * objects (RT-DETR) and scene (CLIP), plan §7 — differ from faces only in which
- * models they load and what they write; the scan loop, the sidecar-as-
+ * One entry today. It exists in this shape because the candidate follow-on
+ * tasks — objects (RT-DETR) and scene (CLIP), neither built — differ from
+ * faces only in which models they load and what they write; the scan loop, the sidecar-as-
  * processed-marker, and the per-task progress counters are identical. Keeping
  * that seam here is what makes them additive instead of a second scan pass.
  *
@@ -24,7 +24,7 @@ export interface VisionTask {
   isProcessed(recordId: string): boolean;
   /**
    * Run the task and persist its sidecar. Takes decoded bytes, never storage —
-   * the property that keeps the engine extractable (plan §9).
+   * the property that keeps the engine extractable.
    */
   run(recordId: string, bytes: Uint8Array): Promise<void>;
 }

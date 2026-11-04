@@ -3,7 +3,8 @@
  *
  * `$STARKEEP_DIR/app-local/photos/vision/` — deliberately outside both homes
  * the platform gives an app, because both of those sync unconditionally and
- * none of this may leave the device (face-recognition-plan.md §3). The
+ * none of this may leave the device (`photos/README.md`, "Where the state
+ * lives"). The
  * convention is named in core's `system-design.md` under "No platform-managed
  * scratch space"; the platform does not create, enumerate, or clean it up, so
  * an uninstall leaves it behind.

@@ -1,5 +1,5 @@
 /**
- * The import loop (`import-loop-design.md` §1–2).
+ * The import loop (`src/media/import.ts`).
  *
  * What this is really testing is a claim about *absence*: that importing a
  * 3 MB photo writes a record, writes an alias, and writes no bytes anywhere.

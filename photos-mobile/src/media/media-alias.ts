@@ -32,9 +32,9 @@
  *
  * An authority on whether bytes exist. It records where to *look*; the media
  * store decides what is actually there, and an alias that no longer resolves
- * demotes its record to `staged` rather than being treated as a blob. See
- * `import-loop-design.md` §2.4 — a stale alias reporting `resident` is how a
- * node comes to believe in a byte that is gone.
+ * demotes its record to `staged` rather than being treated as a blob. A stale
+ * alias reporting `resident` is how a node comes to believe in a byte that is
+ * gone.
  */
 
 import type { StarkeepId } from "@starkeep/protocol-primitives";

@@ -1,7 +1,7 @@
 /**
  * The on-device guard every `/api/vision/*` route runs first.
  *
- * Face recognition is local-only, full stop (plan §3): no vision state on the
+ * Face recognition is local-only, full stop: no vision state on the
  * sync plane, no biometric data leaving the device, no cloud inference. A
  * cloud-served Photos has no `app-local/` directory to read, no models, and no
  * business running inference on someone else's hardware — so these routes
@@ -11,8 +11,7 @@
  * Two independent signals, because either one alone is a single point of
  * failure:
  *   - `STARKEEP_APP_CLIENT_MODE=cloud` is what @starkeep/app-client itself uses
- *     to decide it is signing for a remote data server — the literal condition
- *     the plan names;
+ *     to decide it is signing for a remote data server;
  *   - `STARKEEP_FORCE_REMOTE` is baked in by `infra/build-bundle.ts`, so a
  *     cloud *build* refuses even if its runtime env is misconfigured.
  */

@@ -208,7 +208,7 @@ export interface MobileNodeOptions {
    *
    * Supplying this turns on aliasing: import records a photo without copying
    * its bytes, and the blob for such a record resolves to the MediaStore asset
-   * that already holds them (`import-loop-design.md` §2). Absent — on a laptop,
+   * that already holds them (`media/media-alias.ts`). Absent — on a laptop,
    * or in a test that does not care — the node behaves exactly as before.
    *
    * The wrapping happens *here* rather than at the app's edge because the alias

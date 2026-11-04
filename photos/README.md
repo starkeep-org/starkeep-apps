@@ -92,7 +92,7 @@ publishes two record labels:
 Neither is published for a photo with no faces. Turning the setting off retracts
 what was published. Note that publishing makes the people in your library
 enumerable by any app that can read your images, which is why it is an explicit
-opt-in — see `starkeep-core/multi-value-labels.md`.
+opt-in.
 
 **Both keys are new in the manifest, so Photos must be re-installed** before the
 data server will accept writes to them: the installer reconciles the label-key

@@ -11,7 +11,7 @@
  * true.
  *
  * It also takes decoded bytes rather than reaching for storage itself, which is
- * what would make it extractable as a standalone package later (plan §9).
+ * what would make it extractable as a standalone package later.
  */
 
 import type { InferenceSession, Tensor } from "onnxruntime-node";

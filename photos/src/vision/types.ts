@@ -55,7 +55,7 @@ export interface Person {
   /**
    * Running mean of the cluster's face embeddings, L2-normalized, base64
    * float32. Kept here rather than recomputed from sidecars so assignment is
-   * O(n·k) — the whole reason clustering is incremental (plan §4).
+   * O(n·k) — the whole reason clustering is incremental.
    */
   centroid: string;
   /** How many faces the centroid averages. Needed to update it in place. */
@@ -116,11 +116,10 @@ export interface VisionConfig {
 
 /**
  * Off by default, and `publishLabels` doubly so: publishing makes the names
- * queryable by any app holding an image read grant, which is a real disclosure
- * (see `starkeep-core/multi-value-labels.md`, "Privacy note").
+ * queryable by any app holding an image read grant, which is a real disclosure.
  *
  * `objects` and `scene` are deliberately absent — their tasks are not built, and
- * a toggle for something that does nothing is worse than no toggle (plan §7).
+ * a toggle for something that does nothing is worse than no toggle.
  */
 export function defaultVisionConfig(): VisionConfig {
   return { faces: { enabled: false, threshold: 0.45, publishLabels: false } };

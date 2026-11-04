@@ -7,12 +7,11 @@
  * record's bytes already are. It does **not** copy the bytes. The MediaStore
  * asset is the local copy, on the argument that a photos app which silently
  * doubles a 60 GB camera roll on an 8 GB device has misunderstood its job. See
- * `import-loop-design.md` §1–2 and `media-alias.ts`.
+ * `media-alias.ts`.
  *
- * It also does not derive renditions. That is `derive-ladder`, it is gated on
- * this node having a session, and the reasoning is §3.2 of the same document:
- * before there is anywhere to send them, the device's own grid renders from
- * MediaStore and nothing reads a rendition.
+ * It also does not derive renditions. That is `photos/derive-ladder.ts`, which
+ * sweeps the aliased originals as background work and derives a single record
+ * on demand when a surface cannot paint it.
  *
  * ## The unavoidable cost
  *

@@ -2,9 +2,8 @@
  * SCRFD post-processing: nine output tensors → boxes, scores, and five
  * landmarks per face.
  *
- * There is no npm package that does this (the reason plan §3 calls the engine
- * the risky step), so it is written out here against the reference
- * implementation's shape — `insightface/detection/scrfd`, mirrored in
+ * There is no npm package that does this, so it is written out here against
+ * the reference implementation's shape — `insightface/detection/scrfd`, mirrored in
  * `insightface/python-package/insightface/model_zoo/scrfd.py`.
  *
  * The three facts the whole file rests on:

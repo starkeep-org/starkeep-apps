@@ -5,7 +5,7 @@
  * deliberately narrow: **names and a count, never vectors or boxes.** It is also
  * off by default — making names queryable lets any app with an image read grant
  * enumerate the people in the library, which is why `publishLabels` is an
- * explicit opt-in (`starkeep-core/multi-value-labels.md`, "Privacy note").
+ * explicit opt-in.
  *
  * Two keys, because they mean different things:
  *

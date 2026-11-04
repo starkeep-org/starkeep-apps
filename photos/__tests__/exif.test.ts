@@ -1,6 +1,6 @@
 /**
  * Tier-0 tests for the EXIF pipeline: the pure helpers in exif-generator and
- * the byte-level extraction in exif-reader. (Platform test plan §7b.)
+ * the byte-level extraction in exif-reader.
  */
 import { describe, it, expect } from "vitest";
 import exifr from "exifr";

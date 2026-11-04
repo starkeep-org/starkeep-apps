@@ -1,5 +1,5 @@
 /**
- * Object storage that reads the device's camera roll (`import-loop-design.md` §2).
+ * Object storage that reads the device's camera roll (`src/storage/device-media-storage.ts`).
  *
  * The two assertions this file exists for are the destructive ones — that
  * `delete()` on an aliased key does not delete the user's photograph, and that

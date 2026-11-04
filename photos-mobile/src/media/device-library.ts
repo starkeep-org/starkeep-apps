@@ -72,7 +72,7 @@ export interface AssetMetadataLike {
    * When the media store last saw these bytes change.
    *
    * Carried because import aliases a record's blob to this asset rather than
-   * copying it (see `import-loop-design.md` §2), which makes "are these still
+   * copying it (see `media-alias.ts`), which makes "are these still
    * the bytes we hashed" a question the node has to be able to ask. The media
    * store is the only place that can answer it: a `content://` URI resolves to
    * a `ContentProviderFile`, whose `lastModified()` is unconditionally `null`.

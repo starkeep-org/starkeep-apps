@@ -22,11 +22,9 @@
  * issued to it, and anything that trusted it would be trusting a string a
  * handset made up about itself.
  *
- * The thing that will eventually authenticate this device is the per-device key
- * of todo #51 (`import-loop-design.md` §5.2, option A). When that exists, this
- * id is a reasonable *subject* for it to be registered against — one durable
- * name for the device, established before there was anything to sign with —
- * but the key is what proves the claim, and this is only the claim.
+ * What authenticates this phone is the person's ID token and a signature by
+ * the attested Keystore key on every data-plane request — see
+ * `auth/session.ts` and `auth/attested-key.ts`. Neither one carries this id.
  */
 
 import type { ExpoFileSystem } from "./storage/expo-object-storage";

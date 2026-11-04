@@ -17,10 +17,8 @@
  * ## The tiles are tappable, which they were not before
  *
  * A grid of photographs that does nothing when touched reads as broken — every
- * other photo app on the device opens the picture. So a tile opens a viewer.
- * The viewer renders the original, which is fine at one-photo-at-a-time and is
- * exactly what `import-loop-design.md` §3.2 says renditions are not needed for
- * yet.
+ * other photo app on the device opens the picture. So a tile opens a viewer,
+ * `LibraryViewer`, which paints the rung the stage wants.
  *
  * ## Three things the viewer can be showing
  *

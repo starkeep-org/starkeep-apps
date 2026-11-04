@@ -242,8 +242,9 @@ export class ExpoObjectStorageAdapter implements ObjectStorageAdapter {
    *
    * This is what lets a transfer hand the object to a native uploader instead
    * of pulling it through the JS heap — see
-   * `ObjectStorageAdapter.localFileUriFor` for the negotiation and
-   * `native-blob-transfer-plan.md` for why a phone cannot afford the heap.
+   * `ObjectStorageAdapter.localFileUriFor` for the negotiation. A phone cannot
+   * afford the heap: pushing a 24.5 MB video through `fetch` buffered it whole,
+   * three times over, and crashed the app.
    *
    * Existence is checked rather than assumed, because returning a URI for a key
    * this node does not hold would send the uploader at a missing file — the

@@ -7,8 +7,8 @@
  * accept an aliased original as a blob this node holds, with no change to the
  * engine at all?**
  *
- * That claim is the reason `import-loop-design.md` §2 is a paragraph rather than
- * a project. `residencyOf` derives residency from `localStorage.has(key)`, so
+ * That claim is why aliasing needed no change to the sync engine.
+ * `residencyOf` derives residency from `localStorage.has(key)`, so
  * an alias that answers `has()` should be `resident` through the ordinary path
  * and push like anything else. If that were wrong, the alternative is teaching
  * the engine what a camera roll is — which is the fork the whole mobile

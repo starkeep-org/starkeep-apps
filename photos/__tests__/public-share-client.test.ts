@@ -30,7 +30,7 @@ describe("the public viewer's request", () => {
         calls.push(init ?? {});
         return new Response(JSON.stringify(body), { status });
       }) as unknown as typeof fetch;
-    const page = { title: "Summer", items: [], nextCursor: null, truncated: false };
+    const page = { title: "Summer", source: "label", items: [], nextCursor: null, truncated: false };
     expect(await fetchPublicPage(TOKEN, null, answer(200, page))).toEqual({ ok: true, page });
     expect(calls[0]).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
     expect(await fetchPublicPage(TOKEN, null, answer(410))).toEqual({ ok: false, reason: "expired" });

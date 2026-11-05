@@ -48,10 +48,13 @@ export async function changeAlbumMembers(
   await call(`/api/albums/${id}/members`, { method: "POST", body: JSON.stringify(change) });
 }
 
-/** A public link to an album, as the owner sees it. */
+/** A public link to an album or to one photo, as the owner sees it. */
 export interface PublicLink {
   readonly id: string;
-  readonly albumId: string;
+  /** Set for an album's link, null for a photo's. */
+  readonly albumId: string | null;
+  /** Set for a photo's link, null for an album's. */
+  readonly photoId: string | null;
   readonly linkToken: string;
   readonly title: string;
   readonly createdAtMs: number;
@@ -89,11 +92,9 @@ export async function listPublicLinks(): Promise<PublicLinksState> {
   return call<PublicLinksState>("/api/public-links");
 }
 
-export async function createPublicLink(input: {
-  albumId: string;
-  title: string;
-  lifetime: LinkLifetime;
-}): Promise<PublicLink> {
+export async function createPublicLink(
+  input: ({ albumId: string } | { photoId: string }) & { title: string; lifetime: LinkLifetime },
+): Promise<PublicLink> {
   return (
     await call<{ link: PublicLink }>("/api/public-links", {
       method: "POST",

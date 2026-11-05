@@ -56,7 +56,7 @@ function appImage(): AppImage {
   };
 }
 
-async function open(options: { onDelete?: () => Promise<void> } = {}) {
+async function open(options: { onDelete?: () => Promise<void>; onShareLink?: () => void } = {}) {
   const rendered = render(
     <RenditionResolutionProvider policies={policies}>
       <PhotoUrlProvider getThumbnailSrc={() => null} getFullSizeSrc={() => null}>
@@ -64,6 +64,7 @@ async function open(options: { onDelete?: () => Promise<void> } = {}) {
           image={appImage()}
           onClose={() => {}}
           {...(options.onDelete ? { onDelete: options.onDelete } : {})}
+          {...(options.onShareLink ? { onShareLink: options.onShareLink } : {})}
         />
       </PhotoUrlProvider>
     </RenditionResolutionProvider>,
@@ -157,5 +158,17 @@ describe("the delete control", () => {
     await act(async () => {
       release!();
     });
+  });
+});
+
+describe("the share-link control", () => {
+  it("is absent when no caller offers a link, and opens the caller's dialog when one does", async () => {
+    await open();
+    expect(screen.queryByRole("button", { name: "Share link…" })).toBeNull();
+    cleanup();
+    const onShareLink = vi.fn();
+    await open({ onShareLink });
+    fireEvent.click(screen.getByRole("button", { name: "Share link…" }));
+    expect(onShareLink).toHaveBeenCalledOnce();
   });
 });

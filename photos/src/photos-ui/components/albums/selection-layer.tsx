@@ -15,6 +15,7 @@ export function SelectionLayer({
   album,
   albums,
   onShareAlbum,
+  onSharePhoto,
 }: {
   shownIds: ReadonlySet<string>;
   /** The open album, or null in the library. */
@@ -22,6 +23,8 @@ export function SelectionLayer({
   albums: AlbumsState;
   /** Open the public-link dialog for an album just made from the selection. */
   onShareAlbum: (album: Album) => void;
+  /** Open the public-link dialog for one photo, when the selection is one photo. */
+  onSharePhoto: (photoId: string) => void;
 }) {
   const selection = useSelection()!;
   const [picker, setPicker] = useState<null | "add" | "share">(null);
@@ -78,6 +81,12 @@ export function SelectionLayer({
         onSetCover={() => void run(() => albums.setCover(album!, ids[0]!))}
         onShare={() => {
           setError(null);
+          // One photo is shared as itself. More are shared by making an album.
+          if (ids.length === 1) {
+            onSharePhoto(ids[0]!);
+            selection.clear();
+            return;
+          }
           setPicker("share");
         }}
         onClear={selection.clear}

@@ -6,11 +6,12 @@ import { isAlbumId, normalizeAlbumTitle } from "@/photos-lib/albums";
 import { PHOTOS_LABEL_KEYS } from "@/photos-lib/labels";
 
 /**
- * Public links to albums: thin mediations of the platform's public-share
- * routes, scoped to Photos' `album` label.
+ * Public links to albums and to single photos: thin mediations of the
+ * platform's public-share routes. An album's link is a label share of Photos'
+ * `album` label; a photo's link is a record share of the photo's record.
  *
- *   GET    /api/public-links                    this person's links, by album
- *   POST   /api/public-links  { albumId, title, lifetime }
+ *   GET    /api/public-links                    this person's links, by album or photo
+ *   POST   /api/public-links  { albumId | photoId, title, lifetime }
  *   PATCH  /api/public-links/:id  { title?, lifetime?, rotateLink? }
  *   DELETE /api/public-links/:id                stop sharing
  *
@@ -22,7 +23,8 @@ import { PHOTOS_LABEL_KEYS } from "@/photos-lib/labels";
  *
  * The platform owns every rule that matters — who may create a link, what a
  * visitor sees, the lifetimes — and checks them on each call. What this adds
- * is the album: the browser names an album, never a label.
+ * is the album or the photo: the browser names one of them, never a label or
+ * a source. Every Photos link serves stand-ins, which the platform enforces.
  */
 
 const CLOUD = () => process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
@@ -60,18 +62,23 @@ function viewerBaseUrl(): string | null {
 interface PlatformShare {
   id: string;
   linkToken: string;
-  labelKey: string;
-  labelValue: string;
+  source: { kind: "label"; key: string; value: string } | { kind: "record"; recordId: string };
   title: string;
   createdAtMs: number;
   expiresAtMs: number | null;
 }
 
-/** A platform share as the browser sees it: the album, not the label. */
+/** Whether a share is one of Photos' own kinds: an album's or a photo's. */
+function isPhotosLink(share: PlatformShare): boolean {
+  return share.source.kind === "record" || share.source.key === PHOTOS_LABEL_KEYS.album;
+}
+
+/** A platform share as the browser sees it: the album or the photo, not the source. */
 function linkView(share: PlatformShare) {
   return {
     id: share.id,
-    albumId: share.labelValue,
+    albumId: share.source.kind === "label" ? share.source.value : null,
+    photoId: share.source.kind === "record" ? share.source.recordId : null,
     linkToken: share.linkToken,
     title: share.title,
     createdAtMs: share.createdAtMs,
@@ -106,7 +113,7 @@ export async function GET(req: Request): Promise<Response> {
       available: true,
       mayPublish: body.mayPublish,
       viewerBaseUrl: viewerBaseUrl(),
-      links: body.publicShares.filter((s) => s.labelKey === PHOTOS_LABEL_KEYS.album).map(linkView),
+      links: body.publicShares.filter(isPhotosLink).map(linkView),
     }),
     authorized.refreshedCookie,
   );
@@ -117,21 +124,25 @@ export async function POST(req: Request): Promise<Response> {
   if (authorized instanceof Response) return authorized;
   const body = (await req.json().catch(() => null)) as {
     albumId?: unknown;
+    photoId?: unknown;
     title?: unknown;
     lifetime?: unknown;
   } | null;
-  if (!isAlbumId(body?.albumId)) return Response.json({ error: "albumId is required" }, { status: 400 });
+  let source: PlatformShare["source"];
+  if (isAlbumId(body?.albumId)) {
+    source = { kind: "label", key: PHOTOS_LABEL_KEYS.album, value: body!.albumId };
+  } else if (typeof body?.photoId === "string" && body.photoId.length > 0) {
+    // The platform checks that the photo is this person's, parentless and live.
+    source = { kind: "record", recordId: body.photoId };
+  } else {
+    return Response.json({ error: "albumId or photoId is required" }, { status: 400 });
+  }
   const title = normalizeAlbumTitle(body?.title);
   if (title === null) return Response.json({ error: "title must be 1 to 200 characters" }, { status: 400 });
   const res = await authorized.fetch("/data/public-shares", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      labelKey: PHOTOS_LABEL_KEYS.album,
-      labelValue: body!.albumId,
-      title,
-      lifetime: body?.lifetime,
-    }),
+    body: JSON.stringify({ source, title, lifetime: body?.lifetime }),
   });
   if (!res.ok) return passError(res);
   const { publicShare } = (await res.json()) as { publicShare: PlatformShare };

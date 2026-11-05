@@ -29,29 +29,36 @@ export interface PublicLinkActions {
   stop: (link: PublicLink) => Promise<void>;
 }
 
+/** What a link shows: an album, or one photo. */
+export type LinkSubject =
+  | { readonly kind: "album"; readonly album: Album }
+  | { readonly kind: "photo"; readonly photoId: string; readonly name: string };
+
 /**
- * One album's public link: create it, or copy, change, replace or stop it.
+ * One album's or one photo's public link: create it, or copy, change, replace
+ * or stop it.
  *
  * Links live in the cloud, so on the desktop the dialog needs this computer to
  * be signed in and online. When it is not, the dialog says why and offers to
  * try again.
  */
 export function PublicLinkDialog({
-  album,
+  subject,
   state,
   link,
   actions,
   onRetry,
   onClose,
 }: {
-  album: Album;
+  subject: LinkSubject;
   state: PublicLinksState | null;
   link: PublicLink | null;
   actions: PublicLinkActions;
   onRetry: () => Promise<void>;
   onClose: () => void;
 }) {
-  const [title, setTitle] = useState(album.title);
+  const name = subject.kind === "album" ? subject.album.title : subject.name;
+  const [title, setTitle] = useState(name);
   const [lifetime, setLifetime] = useState<LinkLifetime>(DEFAULT_LINK_LIFETIME);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +78,9 @@ export function PublicLinkDialog({
 
   const disclosure = (
     <p style={{ margin: 0, color: "#aaa" }}>
-      Anyone with the link can see this album, including photos you add later.
+      {subject.kind === "album"
+        ? "Anyone with the link can see this album, including photos you add later."
+        : "Anyone with the link can see this photo."}
     </p>
   );
 
@@ -150,7 +159,11 @@ export function PublicLinkDialog({
             style={buttonStyle}
             disabled={busy}
             onClick={() => {
-              if (confirm("Replace the link? The current link stops working, and the album is shared at a new one.")) {
+              if (
+                confirm(
+                  `Replace the link? The current link stops working, and the ${subject.kind} is shared at a new one.`,
+                )
+              ) {
                 void run(() => actions.replace(link));
               }
             }}
@@ -219,7 +232,7 @@ export function PublicLinkDialog({
   }
 
   return (
-    <Modal title={`Public link: ${album.title}`} onClose={onClose}>
+    <Modal title={`Public link: ${name}`} onClose={onClose}>
       {body}
       {error ? (
         <p role="alert" style={{ margin: 0, color: "#f88", fontSize: 13 }}>

@@ -154,29 +154,62 @@ describe("albums", () => {
 describe("public links", () => {
   it("are made by local Photos through the same platform routes, which the data server forwards", async () => {
     answers.push(() => ({
-      publicShare: { id: SHARE, linkToken: "t".repeat(22), labelKey: "album", labelValue: ID, title: "Summer" },
+      publicShare: { id: SHARE, linkToken: "t".repeat(22), source: { kind: "label", key: "album", value: ID }, title: "Summer" },
     }));
     const res = await send("POST", "/api/public-links", { albumId: ID, title: "Summer" });
     expect(res.status).toBe(201);
     expect(calls[0]).toMatchObject({
       path: "/data/public-shares",
       method: "POST",
-      body: { labelKey: "album", labelValue: ID, title: "Summer" },
+      body: { source: { kind: "label", key: "album", value: ID }, title: "Summer" },
     });
 
     answers.push(() => ({
       publicShares: [
-        { id: SHARE, linkToken: "t".repeat(22), labelKey: "album", labelValue: ID, title: "Summer" },
-        { id: "other", linkToken: "u".repeat(22), labelKey: "faces", labelValue: "Alice", title: "x" },
+        { id: SHARE, linkToken: "t".repeat(22), source: { kind: "label", key: "album", value: ID }, title: "Summer" },
+        {
+          id: "other",
+          linkToken: "u".repeat(22),
+          source: { kind: "label", key: "faces", value: "Alice" },
+          title: "x",
+        },
+        { id: "one", linkToken: "v".repeat(22), source: { kind: "record", recordId: "r1" }, title: "Beach" },
       ],
       mayPublish: true,
     }));
     const listed = (await (await send("GET", "/api/public-links")).json()) as {
       available: boolean;
-      links: Array<{ albumId: string }>;
+      links: Array<{ albumId: string | null; photoId: string | null }>;
     };
     expect(listed.available).toBe(true);
-    expect(listed.links.map((l) => l.albumId)).toEqual([ID]);
+    expect(listed.links.map((l) => [l.albumId, l.photoId])).toEqual([
+      [ID, null],
+      [null, "r1"],
+    ]);
+  });
+
+  it("are made for one photo as a record share, which serves its stand-in", async () => {
+    answers.push(() => ({
+      publicShare: { id: SHARE, linkToken: "t".repeat(22), source: { kind: "record", recordId: "r1" }, title: "Beach" },
+    }));
+    const res = await send("POST", "/api/public-links", { photoId: "r1", title: "Beach" });
+    expect(res.status).toBe(201);
+    // No `serves`: the platform's default is the stand-in, and Photos may ask for nothing else.
+    expect(calls[0]).toMatchObject({
+      path: "/data/public-shares",
+      method: "POST",
+      body: { source: { kind: "record", recordId: "r1" }, title: "Beach" },
+    });
+    expect(calls[0]!.body).not.toHaveProperty("serves");
+    expect(((await res.json()) as { link: { photoId: string; albumId: null } }).link).toMatchObject({
+      photoId: "r1",
+      albumId: null,
+    });
+  });
+
+  it("need an album or a photo", async () => {
+    expect((await send("POST", "/api/public-links", { title: "Summer" })).status).toBe(400);
+    expect(calls).toEqual([]);
   });
 
   it("say why there are none when this computer cannot reach the cloud", async () => {
@@ -206,8 +239,7 @@ describe("public links", () => {
       publicShare: {
         id: SHARE,
         linkToken: "t".repeat(22),
-        labelKey: "album",
-        labelValue: ID,
+        source: { kind: "label", key: "album", value: ID },
         title: "Summer",
         createdAtMs: 1,
         expiresAtMs: null,
@@ -218,14 +250,14 @@ describe("public links", () => {
     expect(calls[0]).toEqual({
       path: "/data/public-shares",
       method: "POST",
-      body: { labelKey: "album", labelValue: ID, title: "Summer", lifetime: "7d" },
+      body: { source: { kind: "label", key: "album", value: ID }, title: "Summer", lifetime: "7d" },
     });
     expect(((await res.json()) as { link: { albumId: string } }).link.albumId).toBe(ID);
   });
 
   it("change and stop a link by its id", async () => {
     vi.stubEnv("STARKEEP_APP_CLIENT_MODE", "cloud");
-    answers.push(() => ({ publicShare: { id: SHARE, labelValue: ID } }));
+    answers.push(() => ({ publicShare: { id: SHARE, source: { kind: "label", key: "album", value: ID } } }));
     expect((await publicLinks.PATCH(cloudRequest("PATCH", { rotateLink: true, other: 1 }), SHARE)).status).toBe(200);
     expect(calls[0]).toEqual({ path: `/data/public-shares/${SHARE}`, method: "PATCH", body: { rotateLink: true } });
     expect((await publicLinks.DELETE(cloudRequest("DELETE"), SHARE)).status).toBe(200);

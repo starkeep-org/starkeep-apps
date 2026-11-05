@@ -82,6 +82,8 @@ interface PhotoViewerProps {
    * shown, so the caller's error text is user-facing.
    */
   onDelete?: () => Promise<void>;
+  /** Open the public-link dialog for this photo, or absent to offer no link control. */
+  onShareLink?: () => void;
   /**
    * Show the photo before or after this one in the library's order, or absent at
    * that end of the list. Bound to the left and right arrow keys.
@@ -164,7 +166,7 @@ function SteadyPicture({
   );
 }
 
-export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: PhotoViewerProps) {
+export function PhotoViewer({ image, onClose, onDelete, onShareLink, onPrevious, onNext }: PhotoViewerProps) {
   const [infoVisible, setInfoVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -365,6 +367,11 @@ export function PhotoViewer({ image, onClose, onDelete, onPrevious, onNext }: Ph
       <button onClick={() => setInfoVisible(!infoVisible)} style={toggleStyle(infoVisible)}>
         Info
       </button>
+      {onShareLink && (
+        <button onClick={onShareLink} title="Make a public link to this photo" style={toggleStyle(false)}>
+          Share link…
+        </button>
+      )}
       {onDelete && (
         <button
           onClick={() => void deletePhoto()}

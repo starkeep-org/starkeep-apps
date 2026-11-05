@@ -14,10 +14,6 @@
  * rename, and cost two label rows per member for every rename. The names, the
  * cover and the creation time live in Photos' syncable `albums` table.
  *
- * Readers accept the id alone or the id followed by a hyphen and anything
- * after it, so a later move to a slug value (`<id>-summer-2026`) needs no
- * reader to change.
- *
  * See `~/projects/starkeep/proposal-public-sharing-albums-2026-11-05.md`,
  * section "Albums".
  */
@@ -26,7 +22,6 @@ import { PHOTOS_APP_ID, PHOTOS_LABEL_KEYS, type LabelledRecord } from "./labels"
 
 /** 128 random bits, as 32 lowercase hex characters. */
 const ALBUM_ID = /^[0-9a-f]{32}$/;
-const ALBUM_LABEL_VALUE = /^([0-9a-f]{32})(?:-.*)?$/s;
 
 /** The longest album title Photos stores. */
 export const ALBUM_TITLE_MAX = 200;
@@ -47,12 +42,6 @@ export function newAlbumId(random: (bytes: Uint8Array) => Uint8Array = (b) => cr
   return Array.from(random(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** The album a label value names, or null for a value that names none. */
-export function albumIdOfLabelValue(value: string | undefined): string | null {
-  const m = value === undefined ? null : ALBUM_LABEL_VALUE.exec(value);
-  return m ? m[1]! : null;
-}
-
 /**
  * The albums a record belongs to, read off Photos' own labels.
  *
@@ -64,8 +53,7 @@ export function albumIdsOf(record: LabelledRecord & { parent_id?: string | null 
   const ids = new Set<string>();
   for (const label of record.labels ?? []) {
     if (label.app_id !== PHOTOS_APP_ID || label.key !== PHOTOS_LABEL_KEYS.album) continue;
-    const id = albumIdOfLabelValue(label.value);
-    if (id) ids.add(id);
+    if (isAlbumId(label.value)) ids.add(label.value);
   }
   return [...ids];
 }

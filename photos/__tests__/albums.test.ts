@@ -2,12 +2,11 @@
  * Album membership as labels, and the album rows Photos keeps beside them.
  *
  * The rules pinned here are the ones the proposal sets: a label value names
- * an album by its random id, with an optional slug after a hyphen; only an
- * original belongs to an album; and a deleted or malformed row is no album.
+ * an album by its random id and nothing else; only an original belongs to an
+ * album; and a deleted or malformed row is no album.
  */
 import { describe, expect, it } from "vitest";
 import {
-  albumIdOfLabelValue,
   albumIdsOf,
   albumsFromRows,
   chunk,
@@ -28,18 +27,17 @@ describe("album ids", () => {
     expect(newAlbumId((b) => b.fill(255))).toBe("f".repeat(32));
   });
 
-  it("read from a label value as the id alone or a slug after it", () => {
-    expect(albumIdOfLabelValue(ID)).toBe(ID);
-    expect(albumIdOfLabelValue(`${ID}-summer-vacation-2026`)).toBe(ID);
-    expect(albumIdOfLabelValue(`${ID}summer`)).toBeNull();
-    expect(albumIdOfLabelValue("Summer")).toBeNull();
-    expect(albumIdOfLabelValue(ID.toUpperCase())).toBeNull();
-    expect(albumIdOfLabelValue(undefined)).toBeNull();
+  it("are the whole value: no slug, no name, no upper case", () => {
+    expect(isAlbumId(ID)).toBe(true);
+    expect(isAlbumId(`${ID}-summer-vacation-2026`)).toBe(false);
+    expect(isAlbumId("Summer")).toBe(false);
+    expect(isAlbumId(ID.toUpperCase())).toBe(false);
+    expect(isAlbumId(undefined)).toBe(false);
   });
 });
 
 describe("albumIdsOf", () => {
-  it("reads Photos' album labels, once per album", () => {
+  it("reads Photos' album labels, once per album, ignoring any value that is not a bare id", () => {
     expect(
       albumIdsOf({
         labels: [

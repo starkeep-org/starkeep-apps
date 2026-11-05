@@ -72,7 +72,6 @@ export {
 
 export {
   albumIdsOf,
-  albumIdOfLabelValue,
   albumsFromRows,
   coverOf,
   isAlbumId,

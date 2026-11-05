@@ -71,9 +71,7 @@ export function PublicLinkDialog({
 
   const disclosure = (
     <p style={{ margin: 0, color: "#aaa" }}>
-      Anyone with the link can see this album, including photos you add later. They see the photos
-      at screen size, without their details or location, and can save what they see. Photos added
-      on a computer or phone appear in the link once they sync.
+      Anyone with the link can see this album, including photos you add later.
     </p>
   );
 

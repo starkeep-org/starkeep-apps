@@ -30,6 +30,11 @@ export interface PublicPage {
   /** An album's link names a label; a photo's link names one record. */
   readonly source: "label" | "record";
   readonly items: readonly PublicItem[];
+  /**
+   * Members on this page with nothing to show yet, because their stand-ins
+   * have not reached the cloud.
+   */
+  readonly pending: number;
   readonly nextCursor: string | null;
   readonly truncated: boolean;
 }

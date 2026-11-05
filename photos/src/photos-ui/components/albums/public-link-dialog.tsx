@@ -35,6 +35,15 @@ export type LinkSubject =
   | { readonly kind: "photo"; readonly photoId: string; readonly name: string };
 
 /**
+ * The dialog's React key. It names the subject's kind, because the album view
+ * beside the dialog is keyed by the bare album id, and two siblings with one
+ * key leave a stale album on screen.
+ */
+export function linkDialogKey(subject: LinkSubject): string {
+  return subject.kind === "album" ? `link:album:${subject.album.id}` : `link:photo:${subject.photoId}`;
+}
+
+/**
  * One album's or one photo's public link: create it, or copy, change, replace
  * or stop it.
  *

@@ -33,4 +33,4 @@ export { SelectionProvider, useSelection, NoSelection } from "./context/selectio
 export { AlbumsView } from "./components/albums/albums-view";
 export { AlbumHeader } from "./components/albums/album-header";
 export { SelectionLayer } from "./components/albums/selection-layer";
-export { PublicLinkDialog, type LinkSubject } from "./components/albums/public-link-dialog";
+export { PublicLinkDialog, linkDialogKey, type LinkSubject } from "./components/albums/public-link-dialog";

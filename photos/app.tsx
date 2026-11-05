@@ -14,6 +14,7 @@ import {
   AlbumsView,
   AlbumHeader,
   PublicLinkDialog,
+  linkDialogKey,
   type LinkSubject,
 } from "@/photos-ui";
 import { addPhotoFromPath, deletePhoto, getPhotoFileUrls } from "./src/lib/data-server-client";
@@ -443,13 +444,7 @@ function PhotosAppInner() {
 
         {linkDialogFor ? (
           <PublicLinkDialog
-            // Prefixed: the album view beside it is keyed by the bare album
-            // id, and two siblings with one key leave a stale album on screen.
-            key={
-              linkDialogFor.kind === "album"
-                ? `link:album:${linkDialogFor.album.id}`
-                : `link:photo:${linkDialogFor.photoId}`
-            }
+            key={linkDialogKey(linkDialogFor)}
             subject={linkDialogFor}
             state={albums.links}
             link={

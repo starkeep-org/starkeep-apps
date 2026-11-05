@@ -18,6 +18,7 @@ type Load =
       title: string;
       source: "label" | "record";
       items: PublicItem[];
+      pending: number;
       nextCursor: string | null;
       truncated: boolean;
     }
@@ -51,6 +52,7 @@ export function PublicAlbumPage({ linkToken }: { linkToken: string }) {
       title: page.title,
       source: page.source,
       items: append && prev.kind === "ready" ? [...prev.items, ...page.items] : [...page.items],
+      pending: page.pending,
       nextCursor: page.nextCursor,
       truncated: page.truncated,
     }));
@@ -98,7 +100,15 @@ export function PublicAlbumPage({ linkToken }: { linkToken: string }) {
 
   if (load.source === "record") {
     const item = load.items[0];
-    if (!item) return <Shell>This link no longer shows anything.</Shell>;
+    if (!item) {
+      return (
+        <Shell>
+          {load.pending > 0
+            ? "This photo is still uploading. Try again in a few minutes."
+            : "This link no longer shows anything."}
+        </Shell>
+      );
+    }
     return <Lightbox item={item} title={load.title} />;
   }
 

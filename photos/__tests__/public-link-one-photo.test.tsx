@@ -4,7 +4,8 @@
  *
  * The owner's dialog names the photo and says what a visitor sees. The
  * visitor's page opens a one-photo link straight into the large view, with no
- * grid and no close control, and says so when the photo has gone.
+ * grid and no close control. It says so when the photo has gone, and says
+ * the photo is still uploading when its stand-in has not reached the cloud.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -64,7 +65,7 @@ const item = {
 
 describe("the visitor's page for one photo", () => {
   it("opens straight into the large view, with no grid and no close control", async () => {
-    visitorAnswers({ title: "Beach", source: "record", items: [item], nextCursor: null, truncated: false });
+    visitorAnswers({ title: "Beach", source: "record", items: [item], nextCursor: null, truncated: false, pending: 0 });
     render(<PublicAlbumPage linkToken={TOKEN} />);
     const main = await screen.findByRole("main", { name: "Beach" });
     expect(main.querySelector("img")?.getAttribute("src")).toBe(item.sizes[0]!.url);
@@ -74,13 +75,21 @@ describe("the visitor's page for one photo", () => {
   });
 
   it("says the link shows nothing once the photo has gone", async () => {
-    visitorAnswers({ title: "Beach", source: "record", items: [], nextCursor: null, truncated: false });
+    visitorAnswers({ title: "Beach", source: "record", items: [], nextCursor: null, truncated: false, pending: 0 });
     render(<PublicAlbumPage linkToken={TOKEN} />);
     expect(await screen.findByText("This link no longer shows anything.")).toBeDefined();
   });
 
+  it("says the photo is still uploading while its stand-in is on its way", async () => {
+    visitorAnswers({ title: "Beach", source: "record", items: [], nextCursor: null, truncated: false, pending: 1 });
+    render(<PublicAlbumPage linkToken={TOKEN} />);
+    expect(
+      await screen.findByText("This photo is still uploading. Try again in a few minutes."),
+    ).toBeDefined();
+  });
+
   it("keeps the grid for an album", async () => {
-    visitorAnswers({ title: "Summer", source: "label", items: [item], nextCursor: null, truncated: false });
+    visitorAnswers({ title: "Summer", source: "label", items: [item], nextCursor: null, truncated: false, pending: 0 });
     render(<PublicAlbumPage linkToken={TOKEN} />);
     expect(await screen.findByRole("heading", { name: "Summer" })).toBeDefined();
     expect(screen.getByText("1 item")).toBeDefined();

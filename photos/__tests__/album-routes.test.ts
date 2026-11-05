@@ -6,8 +6,8 @@
  *   retracted through the label routes.
  * - Deleting an album retracts every member the reverse index finds, then
  *   marks the row deleted; it never deletes a photo.
- * - A public link names the album by label, and local Photos makes none: it
- *   answers with cloud Photos' address instead, without calling upstream.
+ * - A public link names the album by label, through the same platform routes
+ *   in both modes; on the desktop the local data server forwards them.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -152,12 +152,52 @@ describe("albums", () => {
 });
 
 describe("public links", () => {
-  it("are not made by local Photos, which points at cloud Photos instead", async () => {
+  it("are made by local Photos through the same platform routes, which the data server forwards", async () => {
+    answers.push(() => ({
+      publicShare: { id: SHARE, linkToken: "t".repeat(22), labelKey: "album", labelValue: ID, title: "Summer" },
+    }));
     const res = await send("POST", "/api/public-links", { albumId: ID, title: "Summer" });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { local: boolean }).local).toBe(true);
-    expect((await send("GET", "/api/public-links")).status).toBe(200);
-    expect(calls).toEqual([]);
+    expect(res.status).toBe(201);
+    expect(calls[0]).toMatchObject({
+      path: "/data/public-shares",
+      method: "POST",
+      body: { labelKey: "album", labelValue: ID, title: "Summer" },
+    });
+
+    answers.push(() => ({
+      publicShares: [
+        { id: SHARE, linkToken: "t".repeat(22), labelKey: "album", labelValue: ID, title: "Summer" },
+        { id: "other", linkToken: "u".repeat(22), labelKey: "faces", labelValue: "Alice", title: "x" },
+      ],
+      mayPublish: true,
+    }));
+    const listed = (await (await send("GET", "/api/public-links")).json()) as {
+      available: boolean;
+      links: Array<{ albumId: string }>;
+    };
+    expect(listed.available).toBe(true);
+    expect(listed.links.map((l) => l.albumId)).toEqual([ID]);
+  });
+
+  it("say why there are none when this computer cannot reach the cloud", async () => {
+    signedFetch.mockImplementationOnce(async () =>
+      Response.json({ error: "This machine is not signed in to the cloud yet" }, { status: 503 }),
+    );
+    const res = await send("GET", "/api/public-links");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      available: false,
+      reason: "This machine is not signed in to the cloud yet",
+    });
+  });
+
+  it("pass a refused creation through with the platform's message", async () => {
+    signedFetch.mockImplementationOnce(async () =>
+      Response.json({ error: "photos was not approved to publish public links" }, { status: 403 }),
+    );
+    const res = await send("POST", "/api/public-links", { albumId: ID, title: "Summer" });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toContain("not approved");
   });
 
   it("name the album by its label in the cloud", async () => {
@@ -207,3 +247,16 @@ describe("cloudPhotosUrl", () => {
   });
 });
 
+
+describe("publicLinkUrl", () => {
+  it("points at cloud Photos from the desktop, and at this page's origin in the cloud", async () => {
+    const { publicLinkUrl } = await import("@/lib/albums-client");
+    const token = "t".repeat(22);
+    expect(publicLinkUrl(token, "https://d1.cloudfront.net/apps/photos/", "http://localhost:63069")).toBe(
+      `https://d1.cloudfront.net/apps/photos/p/${token}`,
+    );
+    expect(publicLinkUrl(token, null, "https://d1.cloudfront.net")).toMatch(
+      new RegExp(`^https://d1\\.cloudfront\\.net(/apps/photos)?/p/${token}$`),
+    );
+  });
+});

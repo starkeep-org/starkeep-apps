@@ -32,21 +32,23 @@ export interface PublicLinkActions {
 /**
  * One album's public link: create it, or copy, change, replace or stop it.
  *
- * Local Photos cannot create a link — a link is served by the cloud and made
- * from a person's session there, never by this device — so the dialog sends
- * the person to cloud Photos instead.
+ * Links live in the cloud, so on the desktop the dialog needs this computer to
+ * be signed in and online. When it is not, the dialog says why and offers to
+ * try again.
  */
 export function PublicLinkDialog({
   album,
   state,
   link,
   actions,
+  onRetry,
   onClose,
 }: {
   album: Album;
   state: PublicLinksState | null;
   link: PublicLink | null;
   actions: PublicLinkActions;
+  onRetry: () => Promise<void>;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(album.title);
@@ -70,35 +72,27 @@ export function PublicLinkDialog({
   const disclosure = (
     <p style={{ margin: 0, color: "#aaa" }}>
       Anyone with the link can see this album, including photos you add later. They see the photos
-      at screen size, without their details or location, and can save what they see.
+      at screen size, without their details or location, and can save what they see. Photos added
+      on a computer or phone appear in the link once they sync.
     </p>
   );
 
   let body: React.ReactNode;
   if (state === null) {
     body = <p style={{ margin: 0, color: "#888" }}>Loading…</p>;
-  } else if (state.local) {
+  } else if (!state.available) {
     body = (
       <>
-        <p style={{ margin: 0 }}>
-          Public links are made in cloud Photos, while you are signed in there. This computer
-          cannot make one, so that a lost device can never publish your photos.
-        </p>
-        {state.cloudPhotosUrl ? (
-          <a
-            href={state.cloudPhotosUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ ...primaryButtonStyle, textDecoration: "none", alignSelf: "flex-start" }}
-          >
-            Open cloud Photos ↗
-          </a>
-        ) : (
-          <p style={{ margin: 0, color: "#888" }}>This computer is not connected to a cloud yet.</p>
-        )}
-        <p style={{ margin: 0, color: "#888", fontSize: 13 }}>
-          The album reaches the cloud when this computer next syncs.
-        </p>
+        <p style={{ margin: 0 }}>Public links need the cloud, and Photos cannot reach it right now.</p>
+        <p style={{ margin: 0, color: "#888", fontSize: 13 }}>{state.reason}</p>
+        <button
+          type="button"
+          style={{ ...primaryButtonStyle, alignSelf: "flex-start" }}
+          disabled={busy}
+          onClick={() => void run(onRetry)}
+        >
+          Try again
+        </button>
       </>
     );
   } else if (!state.mayPublish && !link) {
@@ -109,7 +103,7 @@ export function PublicLinkDialog({
       </p>
     );
   } else if (link) {
-    const url = publicLinkUrl(link.linkToken);
+    const url = publicLinkUrl(link.linkToken, state.viewerBaseUrl);
     body = (
       <>
         {disclosure}
@@ -234,7 +228,7 @@ export function PublicLinkDialog({
           {error}
         </p>
       ) : null}
-      {link || state?.local || (state && !state.mayPublish) ? (
+      {link || (state && (!state.available || !state.mayPublish)) ? (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button type="button" style={buttonStyle} onClick={onClose}>
             Done

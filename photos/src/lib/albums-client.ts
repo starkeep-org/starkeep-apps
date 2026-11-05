@@ -71,9 +71,19 @@ export type LinkLifetime = (typeof LINK_LIFETIMES)[number]["value"];
 
 export const DEFAULT_LINK_LIFETIME: LinkLifetime = "30d";
 
+/**
+ * This person's links, or why there are none to show: a computer that is
+ * signed out or offline cannot reach the cloud, where links live.
+ * `viewerBaseUrl` is cloud Photos' address when this page is not cloud Photos.
+ */
 export type PublicLinksState =
-  | { readonly local: true; readonly cloudPhotosUrl: string | null }
-  | { readonly local: false; readonly mayPublish: boolean; readonly links: readonly PublicLink[] };
+  | { readonly available: false; readonly reason: string }
+  | {
+      readonly available: true;
+      readonly mayPublish: boolean;
+      readonly viewerBaseUrl: string | null;
+      readonly links: readonly PublicLink[];
+    };
 
 export async function listPublicLinks(): Promise<PublicLinksState> {
   return call<PublicLinksState>("/api/public-links");
@@ -108,7 +118,15 @@ export async function deletePublicLink(id: string): Promise<void> {
   await call(`/api/public-links/${id}`, { method: "DELETE" });
 }
 
-/** The URL a visitor opens: this deployment's origin, Photos' mount, `/p/<token>`. */
-export function publicLinkUrl(linkToken: string, origin: string = window.location.origin): string {
+/**
+ * The URL a visitor opens: cloud Photos' `p/<token>`. On the desktop that is
+ * `viewerBaseUrl`; in the cloud it is this page's origin and Photos' mount.
+ */
+export function publicLinkUrl(
+  linkToken: string,
+  viewerBaseUrl: string | null,
+  origin: string = window.location.origin,
+): string {
+  if (viewerBaseUrl) return `${viewerBaseUrl.replace(/\/+$/, "")}/p/${linkToken}`;
   return `${origin}${withBasePath(`/p/${linkToken}`)}`;
 }

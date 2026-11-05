@@ -14,10 +14,11 @@ import { PHOTOS_LABEL_KEYS } from "@/photos-lib/labels";
  *   PATCH  /api/public-links/:id  { title?, lifetime?, rotateLink? }
  *   DELETE /api/public-links/:id                stop sharing
  *
- * Cloud only. A public link is served by the cloud and created from a
- * person's session there, never by a device credential, so local Photos
- * answers with the address of cloud Photos instead and the dialog sends the
- * person there. Albums themselves stay local-first.
+ * The same calls in both modes. Shares live in the cloud alone: cloud Photos
+ * reaches the cloud's routes directly, and on the desktop the local data
+ * server forwards `/data/public-shares` to the cloud with this computer's
+ * sign-in. So a link needs the cloud to be reachable, while albums
+ * themselves stay local-first.
  *
  * The platform owns every rule that matters — who may create a link, what a
  * visitor sees, the lifetimes — and checks them on each call. What this adds
@@ -27,10 +28,10 @@ import { PHOTOS_LABEL_KEYS } from "@/photos-lib/labels";
 const CLOUD = () => process.env.STARKEEP_APP_CLIENT_MODE === "cloud";
 
 /**
- * Where cloud Photos lives, for local Photos to send the person to. Read from
- * the machine's own `~/.starkeep/config.json`, which holds the cloud's address
- * once the machine has one: the CloudFront address when known, else the
- * gateway's. Null on a machine with no cloud.
+ * Where cloud Photos lives, read from the machine's own
+ * `~/.starkeep/config.json`, which holds the cloud's address once the machine
+ * has one: the CloudFront address when known, else the gateway's. Null on a
+ * machine with no cloud.
  */
 export function cloudPhotosUrl(read: (path: string) => string = (p) => readFileSync(p, "utf8")): string | null {
   try {
@@ -47,11 +48,13 @@ export function cloudPhotosUrl(read: (path: string) => string = (p) => readFileS
   }
 }
 
-function localAnswer(): Response {
-  return Response.json(
-    { error: "Public links are created in cloud Photos", local: true, cloudPhotosUrl: cloudPhotosUrl() },
-    { status: 409 },
-  );
+/**
+ * Where a visitor opens a link: cloud Photos' address on the desktop, whose
+ * own origin is this computer. Null in the cloud, where the page's origin is
+ * already cloud Photos.
+ */
+function viewerBaseUrl(): string | null {
+  return CLOUD() ? null : cloudPhotosUrl();
 }
 
 interface PlatformShare {
@@ -82,16 +85,27 @@ async function passError(res: Response): Promise<Response> {
 }
 
 export async function GET(req: Request): Promise<Response> {
-  if (!CLOUD()) return Response.json({ local: true, cloudPhotosUrl: cloudPhotosUrl(), links: [] });
   const authorized = await authorizePhotosRoute(req);
   if (authorized instanceof Response) return authorized;
   const res = await authorized.fetch("/data/public-shares");
-  if (!res.ok) return passError(res);
+  if (!res.ok) {
+    // Signed out, offline, or a cloud that refused: the dialog shows why, and
+    // the albums work on without links.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    return withRefreshedSession(
+      Response.json({
+        available: false,
+        reason: body?.error ?? `Public links are unavailable (${res.status})`,
+      }),
+      authorized.refreshedCookie,
+    );
+  }
   const body = (await res.json()) as { publicShares: PlatformShare[]; mayPublish: boolean };
   return withRefreshedSession(
     Response.json({
-      local: false,
+      available: true,
       mayPublish: body.mayPublish,
+      viewerBaseUrl: viewerBaseUrl(),
       links: body.publicShares.filter((s) => s.labelKey === PHOTOS_LABEL_KEYS.album).map(linkView),
     }),
     authorized.refreshedCookie,
@@ -99,7 +113,6 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  if (!CLOUD()) return localAnswer();
   const authorized = await authorizePhotosRoute(req);
   if (authorized instanceof Response) return authorized;
   const body = (await req.json().catch(() => null)) as {
@@ -131,7 +144,6 @@ export async function POST(req: Request): Promise<Response> {
 const SHARE_ID = /^[0-9a-f-]{36}$/;
 
 export async function PATCH(req: Request, id: string): Promise<Response> {
-  if (!CLOUD()) return localAnswer();
   if (!SHARE_ID.test(id)) return Response.json({ error: "Not found" }, { status: 404 });
   const authorized = await authorizePhotosRoute(req);
   if (authorized instanceof Response) return authorized;
@@ -152,7 +164,6 @@ export async function PATCH(req: Request, id: string): Promise<Response> {
 }
 
 export async function DELETE(req: Request, id: string): Promise<Response> {
-  if (!CLOUD()) return localAnswer();
   if (!SHARE_ID.test(id)) return Response.json({ error: "Not found" }, { status: 404 });
   const authorized = await authorizePhotosRoute(req);
   if (authorized instanceof Response) return authorized;

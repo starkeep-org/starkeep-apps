@@ -28,6 +28,8 @@ export interface AlbumsState {
   loading: boolean;
   error: string | null;
   links: PublicLinksState | null;
+  /** Ask the cloud for the links again, after a sign-in or a reconnect. */
+  reloadLinks(): Promise<void>;
   /** The album's link, if it has one. One link per album. */
   linkOf(albumId: string): PublicLink | null;
   /** Albums with a link that still opens. */
@@ -50,6 +52,14 @@ export function useAlbums(onMembership: (ids: readonly string[], albumId: string
   const [error, setError] = useState<string | null>(null);
   const [links, setLinks] = useState<PublicLinksState | null>(null);
 
+  const loadLinks = useCallback(async () => {
+    try {
+      setLinks(await listPublicLinks());
+    } catch (err) {
+      setLinks({ available: false, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     listAlbums()
@@ -62,30 +72,26 @@ export function useAlbums(onMembership: (ids: readonly string[], albumId: string
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    listPublicLinks()
-      .then((state) => {
-        if (!cancelled) setLinks(state);
-      })
-      // A link list that fails leaves badges off; the dialog says why on open.
-      .catch(() => undefined);
+    // A link list that fails leaves badges off; the dialog says why on open.
+    void loadLinks();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadLinks]);
 
   const setLinkList = useCallback((update: (list: readonly PublicLink[]) => readonly PublicLink[]) => {
-    setLinks((state) => (state && !state.local ? { ...state, links: update(state.links) } : state));
+    setLinks((state) => (state?.available ? { ...state, links: update(state.links) } : state));
   }, []);
 
   const linkOf = useCallback(
-    (albumId: string) => (links && !links.local ? (links.links.find((l) => l.albumId === albumId) ?? null) : null),
+    (albumId: string) => (links?.available ? (links.links.find((l) => l.albumId === albumId) ?? null) : null),
     [links],
   );
 
   const linkedAlbumIds = useMemo(() => {
     const now = Date.now();
     return new Set(
-      links && !links.local
+      links?.available
         ? links.links.filter((l) => l.expiresAtMs === null || l.expiresAtMs > now).map((l) => l.albumId)
         : [],
     );
@@ -96,6 +102,7 @@ export function useAlbums(onMembership: (ids: readonly string[], albumId: string
     loading,
     error,
     links,
+    reloadLinks: loadLinks,
     linkOf,
     linkedAlbumIds,
     async create(title) {

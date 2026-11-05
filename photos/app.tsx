@@ -442,6 +442,7 @@ function PhotosAppInner() {
               replace: albums.replaceLink,
               stop: albums.stopLink,
             }}
+            onRetry={albums.reloadLinks}
             onClose={() => setLinkDialogFor(null)}
           />
         ) : null}

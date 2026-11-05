@@ -59,6 +59,12 @@ export interface AppImage {
   derivedKind: DerivedKind | null;
 
   /**
+   * The albums this photo belongs to, read from its `photos/album` labels.
+   * Empty for a photo in none, and for a record listed without labels.
+   */
+  albumIds?: readonly string[];
+
+  /**
    * Resolved renditions, keyed by the pixel size that was **requested**.
    *
    * The client asks the server for target long edges and looks up exactly what

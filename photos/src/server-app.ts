@@ -6,7 +6,7 @@
  * `.ts` before `.tsx`. The browser bundle would then pull in the signing proxy,
  * sharp, `onnxruntime-node` and every Node builtin behind them.
  *
- * Twenty-two handlers and one gate. Everything else a browser asks for is the
+ * Thirty-one handlers and one gate. Everything else a browser asks for is the
  * client half: `index.html` and the content-hashed bundle beside it, served
  * from disk by `createWebAppHandler` in the cloud and by `src/serve.ts`
  * locally.
@@ -32,8 +32,9 @@ import manifest from "../starkeep.manifest.json";
 import { proxy } from "./routes/local-data";
 import { routes as sessionRoutes } from "./routes/session";
 import { GET as runtimeConfig } from "./routes/runtime-config";
-import { POST as share } from "./routes/share";
 import { POST as resize } from "./routes/resize";
+import * as albums from "./routes/albums";
+import * as publicLinks from "./routes/public-links";
 import * as photoById from "./routes/photos/by-id";
 import * as captions from "./routes/photos/captions";
 import * as cover from "./routes/photos/cover";
@@ -161,7 +162,19 @@ app.patch("/api/photos/:id", (c) => photoById.PATCH(c.req.raw, c.req.param("id")
 app.delete("/api/photos/:id", (c) => photoById.DELETE(c.req.raw, c.req.param("id")));
 
 app.post("/api/resize", (c) => resize(c.req.raw));
-app.post("/api/share", () => share());
+
+// Albums and their public links. `/api/albums/:id/members` is the one
+// two-segment path under the prefix, so it is registered first.
+app.get("/api/albums", (c) => albums.GET(c.req.raw));
+app.post("/api/albums", (c) => albums.POST(c.req.raw));
+app.post("/api/albums/:id/members", (c) => albums.POST_MEMBERS(c.req.raw, c.req.param("id")));
+app.patch("/api/albums/:id", (c) => albums.PATCH(c.req.raw, c.req.param("id")));
+app.delete("/api/albums/:id", (c) => albums.DELETE(c.req.raw, c.req.param("id")));
+
+app.get("/api/public-links", (c) => publicLinks.GET(c.req.raw));
+app.post("/api/public-links", (c) => publicLinks.POST(c.req.raw));
+app.patch("/api/public-links/:id", (c) => publicLinks.PATCH(c.req.raw, c.req.param("id")));
+app.delete("/api/public-links/:id", (c) => publicLinks.DELETE(c.req.raw, c.req.param("id")));
 
 app.get("/api/derive/status", () => deriveStatus.GET());
 app.post("/api/derive/sweep", (c) => deriveSweep.POST(c.req.raw));

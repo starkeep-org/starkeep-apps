@@ -21,10 +21,15 @@
  * decision is which of two components to mount; pulling in a router to express
  * that would add a dependency to say `if`. `/photo/*` is the same screen with
  * one photo open over the grid, which `src/lib/photo-route.ts` reads.
+ * `/p/*` is a public link's viewer, for a visitor with no session; the
+ * platform's signed-out redirect leaves every app's `/p/` alone.
  */
-export const CLIENT_ROUTES = ["/", "/sign-in", "/photo/*"] as const;
+export const CLIENT_ROUTES = ["/", "/sign-in", "/photo/*", "/p/*"] as const;
 
 export const SIGN_IN_ROUTE = "/sign-in";
 
 /** `/photo/<id>`: the grid with that photo open in the viewer. */
 export const PHOTO_ROUTE_PREFIX = "/photo/";
+
+/** `/p/<linkToken>`: a public link's viewer. */
+export const PUBLIC_SHARE_ROUTE_PREFIX = "/p/";

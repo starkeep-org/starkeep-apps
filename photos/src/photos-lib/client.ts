@@ -69,3 +69,14 @@ export {
   compareCaptureOrder,
   LIBRARY_ORDER,
 } from "./capture-order";
+
+export {
+  albumIdsOf,
+  albumIdOfLabelValue,
+  albumsFromRows,
+  coverOf,
+  isAlbumId,
+  normalizeAlbumTitle,
+  ALBUM_TITLE_MAX,
+  type Album,
+} from "./albums";

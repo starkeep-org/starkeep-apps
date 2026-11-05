@@ -87,8 +87,13 @@
       {
         "key": "face-count",
         "description": "How many faces on-device detection found in this photo, as a small integer. Absent (never zero) when there are none, so ?label=photos/face-count means 'has at least one face'."
+      },
+      {
+        "key": "album",
+        "description": "An album this photo belongs to. Multi-valued: one row per album, so ?label=photos/album&labelValue=<albumId> lists an album. The value is the album's random id, never its name; names live in Photos' own albums table. Written on originals only, so a label on a stand-in, poster or crop record admits nothing. Readers match the value as the id, or as the id followed by a hyphen and anything, so a later slug form needs no change to readers."
       }
     ],
+    "publicSharing": true,
     "appSpecificSyncable": {
       "files": true,
       "tables": [
@@ -112,6 +117,36 @@
             {
               "name": "date_taken_override",
               "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "albums",
+          "columns": [
+            {
+              "name": "album_id",
+              "type": "text",
+              "primaryKey": true,
+              "notNull": true
+            },
+            {
+              "name": "title",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "cover_record_id",
+              "type": "text"
+            },
+            {
+              "name": "created_at_ms",
+              "type": "bigint",
+              "notNull": true
+            },
+            {
+              "name": "deleted",
+              "type": "boolean",
+              "notNull": true
             }
           ]
         }
@@ -143,6 +178,7 @@
             "/",
             "/sign-in",
             "/photo/*",
+            "/p/*",
             "/_immutable/*",
             "/starkeep-runtime-config",
             "/api/session/*"
@@ -151,6 +187,7 @@
             "/",
             "/sign-in",
             "/photo/*",
+            "/p/*",
             "/_immutable/*"
           ],
           "env": {

@@ -14,6 +14,8 @@ import {
 import { useInView } from "../../hooks/use-in-view";
 import { useDevicePixelRatio } from "../../hooks/use-element-size";
 import { useSteadySrc } from "../../hooks/use-steady-src";
+import { useLongPress } from "../../hooks/use-long-press";
+import { useSelection } from "../../context/selection-context";
 
 /**
  * Below this, serving a record's own bytes into a tile is not worth a round
@@ -189,12 +191,35 @@ export function PhotoThumbnail({
   // that is not being sought.
   const loading = !undecodable && !imageShown && inView;
 
+  // Selection. With a selection under way a click toggles the tile instead of
+  // opening it; a long press starts one on touch, and the hover checkbox on a
+  // mouse. Outside any selection provider the tile opens as it always did.
+  const selection = useSelection();
+  const selected = selection?.isSelected(image.id) ?? false;
+  const [hovered, setHovered] = useState(false);
+  const longPress = useLongPress(selection ? () => selection.pressAndHold(image.id) : null);
+  const showCheckbox = selection !== null && (hovered || selection.selecting);
+
   return (
     <div
       ref={containerRef}
       data-testid="photo-tile"
       data-record-id={image.id}
-      onClick={() => onSelect(image.id)}
+      data-selected={selected || undefined}
+      {...longPress.handlers}
+      onPointerEnter={(e) => {
+        if (e.pointerType === "mouse") setHovered(true);
+      }}
+      onPointerLeave={() => setHovered(false)}
+      onClick={(e) => {
+        if (longPress.consumeClick()) return;
+        if (selection?.selecting) selection.choose(image.id, e.shiftKey);
+        else onSelect(image.id);
+      }}
+      // A held touch would otherwise raise the browser's own image menu.
+      onContextMenu={(e) => {
+        if (selection) e.preventDefault();
+      }}
       style={{
         width,
         height,
@@ -207,6 +232,9 @@ export function PhotoThumbnail({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        userSelect: "none",
+        WebkitTouchCallout: "none",
+        WebkitUserSelect: "none",
       }}
     >
       {undecodable ? (
@@ -262,7 +290,84 @@ export function PhotoThumbnail({
       ) : null}
       {loading ? <LoadingSpinner /> : null}
       {video ? <PlayBadge tileShortEdge={Math.min(width, height)} /> : null}
+      {selected ? <SelectedFrame /> : null}
+      {showCheckbox ? (
+        <SelectCheckbox
+          checked={selected}
+          label={image.originalFilename}
+          onToggle={(extend) => selection!.choose(image.id, extend)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/** The ring a selected tile wears, inset so the row's gaps stay even. */
+function SelectedFrame() {
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: "absolute",
+        inset: 0,
+        boxShadow: "inset 0 0 0 3px #4c9aff",
+        background: "rgba(76,154,255,0.18)",
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+/**
+ * The tile's checkbox, in the upper left corner: shown on hover with a mouse,
+ * and on every tile while a selection is under way. Its own click never opens
+ * the photo.
+ */
+function SelectCheckbox({
+  checked,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  label: string;
+  onToggle: (extend: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={`Select ${label}`}
+      data-testid="tile-select"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(e.shiftKey);
+      }}
+      style={{
+        position: "absolute",
+        top: 6,
+        left: 6,
+        width: 22,
+        height: 22,
+        borderRadius: "50%",
+        border: "2px solid #fff",
+        background: checked ? "#4c9aff" : "rgba(0,0,0,0.35)",
+        color: "#fff",
+        padding: 0,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 0 2px rgba(0,0,0,0.6)",
+      }}
+    >
+      {checked ? (
+        <svg viewBox="0 0 16 16" width={12} height={12} aria-hidden>
+          <path d="M3 8.5 L6.5 12 L13 4.5" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
+        </svg>
+      ) : null}
+    </button>
   );
 }
 

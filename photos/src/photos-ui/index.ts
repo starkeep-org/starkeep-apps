@@ -27,3 +27,10 @@ export { PhotoInfoPanel } from "./components/viewer/photo-info-panel";
 export { VisionPanel } from "./components/vision/vision-panel";
 export { PeopleView } from "./components/vision/people-view";
 export { FaceOverlay } from "./components/vision/face-overlay";
+
+// Albums and selection
+export { SelectionProvider, useSelection, NoSelection } from "./context/selection-context";
+export { AlbumsView } from "./components/albums/albums-view";
+export { AlbumHeader } from "./components/albums/album-header";
+export { SelectionLayer } from "./components/albums/selection-layer";
+export { PublicLinkDialog } from "./components/albums/public-link-dialog";

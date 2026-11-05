@@ -145,7 +145,15 @@ const ROUTES: ReadonlyArray<[string, string]> = [
   ["PATCH", "/api/photos/rec1"],
   ["DELETE", "/api/photos/rec1"],
   ["POST", "/api/resize"],
-  ["POST", "/api/share"],
+  ["GET", "/api/albums"],
+  ["POST", "/api/albums"],
+  ["PATCH", "/api/albums/rec1"],
+  ["DELETE", "/api/albums/rec1"],
+  ["POST", "/api/albums/rec1/members"],
+  ["GET", "/api/public-links"],
+  ["POST", "/api/public-links"],
+  ["PATCH", "/api/public-links/rec1"],
+  ["DELETE", "/api/public-links/rec1"],
   ["GET", "/api/derive/status"],
   ["POST", "/api/derive/sweep"],
   ["GET", "/api/vision/config"],
@@ -184,6 +192,7 @@ describe("every declared route reaches a handler", () => {
       ROUTES.map(([, path]) =>
         path
           .replace(/\/rec1$/, "/:id")
+          .replace(/\/rec1\//, "/:id/")
           .replace(/^\/api\/local-data\/.*/, "/api/local-data/*"),
       ),
     );

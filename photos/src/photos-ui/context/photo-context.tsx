@@ -11,7 +11,9 @@ type PhotoAction =
   | { type: "REMOVE_IMAGES"; ids: string[] }
   | { type: "SET_NEXT_CURSOR"; cursor: string | null }
   | { type: "SET_LOADING"; loading: boolean }
-  | { type: "SET_POLICIES"; policies: RenditionPolicies };
+  | { type: "SET_POLICIES"; policies: RenditionPolicies }
+  | { type: "SET_ALBUM_MEMBERSHIP"; ids: readonly string[]; albumId: string; member: boolean }
+  | { type: "FORGET_ALBUM"; albumId: string };
 
 interface PhotoState {
   images: AppImage[];
@@ -61,6 +63,34 @@ export function photoReducer(state: PhotoState, action: PhotoAction): PhotoState
       return { ...state, loading: action.loading };
     case "SET_POLICIES":
       return { ...state, policies: action.policies };
+    case "SET_ALBUM_MEMBERSHIP": {
+      // The label write has already succeeded. The library delta follows
+      // record changes, not label changes, so the list is updated here rather
+      // than waiting for a reload to read the new labels.
+      const ids = new Set(action.ids);
+      return {
+        ...state,
+        images: state.images.map((img) => {
+          if (!ids.has(img.id)) return img;
+          const current = img.albumIds ?? [];
+          const has = current.includes(action.albumId);
+          if (has === action.member) return img;
+          const albumIds = action.member
+            ? [...current, action.albumId]
+            : current.filter((id) => id !== action.albumId);
+          return { ...img, albumIds };
+        }),
+      };
+    }
+    case "FORGET_ALBUM":
+      return {
+        ...state,
+        images: state.images.map((img) =>
+          img.albumIds?.includes(action.albumId)
+            ? { ...img, albumIds: img.albumIds.filter((id) => id !== action.albumId) }
+            : img,
+        ),
+      };
     default:
       return state;
   }

@@ -79,6 +79,13 @@ export const PHOTOS_LABEL_KEYS = {
    * kind of evidence produced it.
    */
   livePhoto: "live-photo",
+  /**
+   * An album the photo belongs to. One row per album, valued with the album's
+   * random id rather than its name, so a rename touches one row of the
+   * `albums` table instead of every member. Written on originals only. See
+   * `albums.ts`.
+   */
+  album: "album",
 } as const;
 
 /**

@@ -1,5 +1,5 @@
 import type { AppImage } from "@/photos-lib/client";
-import { derivedKindOf } from "@/photos-lib/client";
+import { albumIdsOf, derivedKindOf } from "@/photos-lib/client";
 import type { PhotoRecord, PhotoMetadataRow, ImageEnriched } from "./data-server-client";
 
 export function photoRecordToAppImage(
@@ -21,6 +21,7 @@ export function photoRecordToAppImage(
     updatedAt: record.updated_at,
     parentId: record.parent_id,
     derivedKind: derivedKindOf(record),
+    albumIds: albumIdsOf(record),
     // Passed through verbatim: the server resolved these, keyed by the sizes
     // this client asked for. Re-keying them by anything else here would put a
     // size-class assumption back into the consumer.

@@ -9,6 +9,11 @@ import {
   PeopleView,
   RenditionResolutionProvider,
   useRenditionResolutionCache,
+  SelectionProvider,
+  SelectionLayer,
+  AlbumsView,
+  AlbumHeader,
+  PublicLinkDialog,
 } from "@/photos-ui";
 import { addPhotoFromPath, deletePhoto, getPhotoFileUrls } from "./src/lib/data-server-client";
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
@@ -23,7 +28,8 @@ import { usePhotoRoute } from "./src/lib/photo-route";
 import { useListLayoutPreferences } from "./src/lib/list-layout-preferences";
 import { useNarrowViewport, usePrefersReducedMotion } from "./src/lib/use-narrow-viewport";
 import { useHideOnScrollDown } from "./src/lib/use-hide-on-scroll-down";
-import { compareCaptureOrder } from "@/photos-lib/client";
+import { compareCaptureOrder, type Album } from "@/photos-lib/client";
+import { useAlbums } from "./src/lib/use-albums";
 
 
 function useFullSizeUrlCache() {
@@ -63,6 +69,13 @@ function useFullSizeUrlCache() {
   );
 }
 
+
+/**
+ * Which screen the shell shows. The library and the albums are tabs; an album
+ * is the library grid narrowed to its members. Kept in state rather than the
+ * URL: the open photo is the one thing a link names.
+ */
+type View = { kind: "library" } | { kind: "albums" } | { kind: "album"; id: string };
 
 const IMAGE_EXTENSIONS: Record<string, string> = {
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
@@ -113,17 +126,46 @@ function PhotosAppInner() {
   // UPSERT_IMAGES appends merged records to the end of the list, and
   // `dateTakenOverride` lives in Photos' own syncable table where the records
   // query cannot reach it. See `photos-lib/capture-order.ts`.
-  const displayImages = [...originals].sort(compareCaptureOrder);
+  const libraryImages = React.useMemo(
+    () => state.images.filter((img) => img.parentId === null).sort(compareCaptureOrder),
+    [state.images],
+  );
+
+  const [view, setView] = useState<View>({ kind: "library" });
+  const albums = useAlbums(
+    (ids, albumId, member) => dispatch({ type: "SET_ALBUM_MEMBERSHIP", ids, albumId, member }),
+    (albumId) => dispatch({ type: "FORGET_ALBUM", albumId }),
+  );
+  const [linkDialogFor, setLinkDialogFor] = useState<Album | null>(null);
+  const openAlbum = view.kind === "album" ? (albums.albums.find((a) => a.id === view.id) ?? null) : null;
+  const membersOf = useCallback(
+    (albumId: string) => libraryImages.filter((img) => img.albumIds?.includes(albumId)),
+    [libraryImages],
+  );
+
+  // The grid shows the library, or one album's members in the library's order.
+  const displayImages = openAlbum ? membersOf(openAlbum.id) : libraryImages;
+  const shownIds = React.useMemo(() => displayImages.map((img) => img.id), [displayImages]);
+  const shownIdSet = React.useMemo(() => new Set(shownIds), [shownIds]);
+
+  // An album deleted elsewhere, or by this page, leaves for the albums tab.
+  useEffect(() => {
+    if (view.kind === "album" && !albums.loading && !openAlbum) setView({ kind: "albums" });
+  }, [view, albums.loading, openAlbum]);
 
   // The grid displays originals, so the clicked tile already *is* the record
   // the viewer wants. There is no thumbnail-to-parent hop to make.
   const selectedIndex = photoId ? displayImages.findIndex((img) => img.id === photoId) : -1;
-  const selectedImage = selectedIndex >= 0 ? displayImages[selectedIndex] : null;
+  // A photo opened by a link, or outside the open album, still opens over
+  // the library.
+  const linkedIndex = photoId && selectedIndex < 0 ? libraryImages.findIndex((img) => img.id === photoId) : -1;
+  const stepList = selectedIndex >= 0 ? displayImages : libraryImages;
+  const stepIndex = selectedIndex >= 0 ? selectedIndex : linkedIndex;
+  const selectedImage = stepIndex >= 0 ? stepList[stepIndex] : null;
   // The viewer steps through the same list the grid shows, in the same order, so
   // the arrow keys land on the tile beside the one that was opened.
-  const previousImage = selectedIndex > 0 ? displayImages[selectedIndex - 1] : null;
-  const nextImage =
-    selectedIndex >= 0 && selectedIndex < displayImages.length - 1 ? displayImages[selectedIndex + 1] : null;
+  const previousImage = stepIndex > 0 ? stepList[stepIndex - 1] : null;
+  const nextImage = stepIndex >= 0 && stepIndex < stepList.length - 1 ? stepList[stepIndex + 1] : null;
 
   const freshness = usePhotoFreshness({
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
@@ -140,8 +182,8 @@ function PhotosAppInner() {
   // loads in full, so once it has loaded, absent means gone. Before then a
   // link waits for its photo to arrive.
   useEffect(() => {
-    if (photoId !== null && state.loaded && selectedIndex < 0) close();
-  }, [photoId, state.loaded, selectedIndex, close]);
+    if (photoId !== null && state.loaded && stepIndex < 0) close();
+  }, [photoId, state.loaded, stepIndex, close]);
 
   useEffect(() => {
     resolutionCache.retainRecords(new Set(originals.map((image) => image.id)));
@@ -232,7 +274,26 @@ function PhotosAppInner() {
             transition: reducedMotion ? undefined : "transform 220ms ease",
           }}
         >
-          <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Photos</span>
+          {/* The two tabs stand in for the title: the app's name is the
+              library tab, so the header gains no width at phone size. */}
+          <nav aria-label="Views" style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+            <button
+              type="button"
+              aria-current={view.kind === "library" ? "page" : undefined}
+              onClick={() => setView({ kind: "library" })}
+              style={tabStyle(view.kind === "library")}
+            >
+              Photos
+            </button>
+            <button
+              type="button"
+              aria-current={view.kind !== "library" ? "page" : undefined}
+              onClick={() => setView({ kind: "albums" })}
+              style={tabStyle(view.kind !== "library")}
+            >
+              Albums
+            </button>
+          </nav>
 
           {/* Three things, at every width. Everything else lives behind the
               gear, because a phone-width header cannot hold more than this and
@@ -309,19 +370,81 @@ function PhotosAppInner() {
           </div>
         )}
 
-        <CoverImageBanner />
+        {view.kind === "library" ? <CoverImageBanner /> : null}
 
-        <PhotoGrid
-          images={displayImages}
-          loading={state.loading}
-          loaded={state.loaded}
-          hasMore={false}
-          onLoadMore={() => {}}
-          onSelect={open}
-          rowHeight={layout.rowHeight}
-          groupByDate={layout.groupByDate}
-          edgeToEdge={narrow}
-        />
+        {view.kind === "albums" ? (
+          <AlbumsView
+            albums={albums.albums}
+            membersOf={membersOf}
+            linkedAlbumIds={albums.linkedAlbumIds}
+            loading={albums.loading}
+            error={albums.error}
+            onOpen={(album) => setView({ kind: "album", id: album.id })}
+            onCreate={async (title) => {
+              const album = await albums.create(title);
+              setView({ kind: "album", id: album.id });
+            }}
+          />
+        ) : (
+          <SelectionProvider key={openAlbum?.id ?? "library"} order={shownIds}>
+            {openAlbum ? (
+              <AlbumHeader
+                key={openAlbum.id}
+                album={openAlbum}
+                count={displayImages.length}
+                linked={albums.linkedAlbumIds.has(openAlbum.id)}
+                onBack={() => setView({ kind: "albums" })}
+                onRename={(title) => albums.rename(openAlbum, title)}
+                onDelete={async () => {
+                  await albums.remove(openAlbum);
+                  setView({ kind: "albums" });
+                }}
+                onPublicLink={() => setLinkDialogFor(openAlbum)}
+              />
+            ) : null}
+            {openAlbum && displayImages.length === 0 && state.loaded ? (
+              <p style={{ padding: "24px 16px", color: "#888", margin: 0 }}>
+                This album is empty. Select photos in the library and choose "Add to album…".
+              </p>
+            ) : (
+              <PhotoGrid
+                images={displayImages}
+                loading={state.loading}
+                loaded={state.loaded}
+                hasMore={false}
+                onLoadMore={() => {}}
+                onSelect={open}
+                rowHeight={layout.rowHeight}
+                groupByDate={layout.groupByDate}
+                edgeToEdge={narrow}
+              />
+            )}
+            <SelectionLayer
+              shownIds={shownIdSet}
+              album={openAlbum}
+              albums={albums}
+              onShareAlbum={(album) => {
+                setView({ kind: "album", id: album.id });
+                setLinkDialogFor(album);
+              }}
+            />
+          </SelectionProvider>
+        )}
+
+        {linkDialogFor ? (
+          <PublicLinkDialog
+            album={linkDialogFor}
+            state={albums.links}
+            link={albums.linkOf(linkDialogFor.id)}
+            actions={{
+              create: (input) => albums.createLink(linkDialogFor, input),
+              changeLifetime: albums.changeLinkLifetime,
+              replace: albums.replaceLink,
+              stop: albums.stopLink,
+            }}
+            onClose={() => setLinkDialogFor(null)}
+          />
+        ) : null}
 
         {selectedImage && (
           <PhotoViewer
@@ -378,6 +501,19 @@ function ResolutionBoundary() {
       </CoverImageProvider>
     </RenditionResolutionProvider>
   );
+}
+
+function tabStyle(active: boolean): React.CSSProperties {
+  return {
+    background: "none",
+    border: "none",
+    padding: 0,
+    cursor: "pointer",
+    fontWeight: 700,
+    fontSize: 17,
+    letterSpacing: "-0.02em",
+    color: active ? "#fff" : "#777",
+  };
 }
 
 const toolbarButtonStyle: React.CSSProperties = {

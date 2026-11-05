@@ -443,7 +443,13 @@ function PhotosAppInner() {
 
         {linkDialogFor ? (
           <PublicLinkDialog
-            key={linkDialogFor.kind === "album" ? linkDialogFor.album.id : linkDialogFor.photoId}
+            // Prefixed: the album view beside it is keyed by the bare album
+            // id, and two siblings with one key leave a stale album on screen.
+            key={
+              linkDialogFor.kind === "album"
+                ? `link:album:${linkDialogFor.album.id}`
+                : `link:photo:${linkDialogFor.photoId}`
+            }
             subject={linkDialogFor}
             state={albums.links}
             link={

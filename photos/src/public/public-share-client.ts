@@ -27,6 +27,8 @@ export interface PublicItem {
 
 export interface PublicPage {
   readonly title: string;
+  /** An album's link names a label; a photo's link names one record. */
+  readonly source: "label" | "record";
   readonly items: readonly PublicItem[];
   readonly nextCursor: string | null;
   readonly truncated: boolean;

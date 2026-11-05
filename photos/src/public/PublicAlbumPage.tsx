@@ -13,12 +13,20 @@ const GAP = 4;
 
 type Load =
   | { kind: "loading" }
-  | { kind: "ready"; title: string; items: PublicItem[]; nextCursor: string | null; truncated: boolean }
+  | {
+      kind: "ready";
+      title: string;
+      source: "label" | "record";
+      items: PublicItem[];
+      nextCursor: string | null;
+      truncated: boolean;
+    }
   | { kind: "failed"; reason: "expired" | "gone" | "failed" };
 
 /**
  * What a visitor of a public link sees: the album's title and its photos,
- * nothing else.
+ * nothing else. A link to one photo opens straight into the large view, with
+ * no grid.
  *
  * No sign-in, no menus, no dates, no captions, no download button. A photo
  * opens large on a click and a video plays its stand-in. The platform decides
@@ -41,6 +49,7 @@ export function PublicAlbumPage({ linkToken }: { linkToken: string }) {
     setLoad((prev) => ({
       kind: "ready",
       title: page.title,
+      source: page.source,
       items: append && prev.kind === "ready" ? [...prev.items, ...page.items] : [...page.items],
       nextCursor: page.nextCursor,
       truncated: page.truncated,
@@ -85,6 +94,12 @@ export function PublicAlbumPage({ linkToken }: { linkToken: string }) {
             : "This album could not be loaded. Try again in a moment."}
       </Shell>
     );
+  }
+
+  if (load.source === "record") {
+    const item = load.items[0];
+    if (!item) return <Shell>This link no longer shows anything.</Shell>;
+    return <Lightbox item={item} title={load.title} />;
   }
 
   const rows =
@@ -208,21 +223,28 @@ function PlayMark() {
   );
 }
 
-/** One item, as large as the screen allows. Arrow keys step, Escape closes. */
+/**
+ * One item, as large as the screen allows. Arrow keys step, Escape closes.
+ *
+ * Without `onClose` it is the whole page of a one-photo link: no close
+ * control, and the title in the corner.
+ */
 function Lightbox({
   item,
+  title,
   onClose,
   onPrevious,
   onNext,
 }: {
   item: PublicItem;
-  onClose: () => void;
+  title?: string;
+  onClose?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onClose?.();
       if (e.key === "ArrowLeft") onPrevious?.();
       if (e.key === "ArrowRight") onNext?.();
     };
@@ -246,9 +268,8 @@ function Lightbox({
   };
   return (
     <div
-      role="dialog"
-      aria-modal
-      aria-label="Photo"
+      {...(onClose ? { role: "dialog", "aria-modal": true } : { role: "main" })}
+      aria-label={title ?? "Photo"}
       onClick={onClose}
       style={{
         position: "fixed",
@@ -281,14 +302,32 @@ function Lightbox({
           style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
         />
       ) : null}
-      <button
-        type="button"
-        aria-label="Close"
-        onClick={onClose}
-        style={{ ...nav, top: 16, right: 16, transform: "none", width: 44, height: 44, fontSize: 22 }}
-      >
-        ×
-      </button>
+      {title ? (
+        <h1
+          style={{
+            position: "absolute",
+            top: 16,
+            left: 20,
+            margin: 0,
+            fontSize: 16,
+            fontWeight: 500,
+            color: "#ddd",
+            fontFamily: "sans-serif",
+          }}
+        >
+          {title}
+        </h1>
+      ) : null}
+      {onClose ? (
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={onClose}
+          style={{ ...nav, top: 16, right: 16, transform: "none", width: 44, height: 44, fontSize: 22 }}
+        >
+          ×
+        </button>
+      ) : null}
       {onPrevious ? (
         <button
           type="button"

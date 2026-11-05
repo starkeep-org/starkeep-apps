@@ -32,6 +32,8 @@ export interface AlbumsState {
   reloadLinks(): Promise<void>;
   /** The album's link, if it has one. One link per album. */
   linkOf(albumId: string): PublicLink | null;
+  /** The photo's own link, if it has one. One link per photo. */
+  photoLinkOf(photoId: string): PublicLink | null;
   /** Albums with a link that still opens. */
   linkedAlbumIds: ReadonlySet<string>;
   create(title: string): Promise<Album>;
@@ -41,6 +43,7 @@ export interface AlbumsState {
   addMembers(album: Album, ids: readonly string[]): Promise<void>;
   removeMembers(album: Album, ids: readonly string[]): Promise<void>;
   createLink(album: Album, input: { title: string; lifetime: LinkLifetime }): Promise<void>;
+  createPhotoLink(photoId: string, input: { title: string; lifetime: LinkLifetime }): Promise<void>;
   changeLinkLifetime(link: PublicLink, lifetime: LinkLifetime): Promise<void>;
   replaceLink(link: PublicLink): Promise<void>;
   stopLink(link: PublicLink): Promise<void>;
@@ -88,11 +91,18 @@ export function useAlbums(onMembership: (ids: readonly string[], albumId: string
     [links],
   );
 
+  const photoLinkOf = useCallback(
+    (photoId: string) => (links?.available ? (links.links.find((l) => l.photoId === photoId) ?? null) : null),
+    [links],
+  );
+
   const linkedAlbumIds = useMemo(() => {
     const now = Date.now();
     return new Set(
       links?.available
-        ? links.links.filter((l) => l.expiresAtMs === null || l.expiresAtMs > now).map((l) => l.albumId)
+        ? links.links
+            .filter((l) => l.expiresAtMs === null || l.expiresAtMs > now)
+            .flatMap((l) => (l.albumId === null ? [] : [l.albumId]))
         : [],
     );
   }, [links]);
@@ -104,6 +114,7 @@ export function useAlbums(onMembership: (ids: readonly string[], albumId: string
     links,
     reloadLinks: loadLinks,
     linkOf,
+    photoLinkOf,
     linkedAlbumIds,
     async create(title) {
       const album = await createAlbum(title);
@@ -139,6 +150,10 @@ export function useAlbums(onMembership: (ids: readonly string[], albumId: string
     },
     async createLink(album, input) {
       const link = await createPublicLink({ albumId: album.id, ...input });
+      setLinkList((list) => [...list, link]);
+    },
+    async createPhotoLink(photoId, input) {
+      const link = await createPublicLink({ photoId, ...input });
       setLinkList((list) => [...list, link]);
     },
     async changeLinkLifetime(link, lifetime) {

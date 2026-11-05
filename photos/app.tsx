@@ -14,6 +14,7 @@ import {
   AlbumsView,
   AlbumHeader,
   PublicLinkDialog,
+  type LinkSubject,
 } from "@/photos-ui";
 import { addPhotoFromPath, deletePhoto, getPhotoFileUrls } from "./src/lib/data-server-client";
 import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
@@ -136,7 +137,15 @@ function PhotosAppInner() {
     (ids, albumId, member) => dispatch({ type: "SET_ALBUM_MEMBERSHIP", ids, albumId, member }),
     (albumId) => dispatch({ type: "FORGET_ALBUM", albumId }),
   );
-  const [linkDialogFor, setLinkDialogFor] = useState<Album | null>(null);
+  const [linkDialogFor, setLinkDialogFor] = useState<LinkSubject | null>(null);
+  const photoSubject = useCallback(
+    (photoId: string): LinkSubject => ({
+      kind: "photo",
+      photoId,
+      name: libraryImages.find((img) => img.id === photoId)?.originalFilename ?? "Photo",
+    }),
+    [libraryImages],
+  );
   const openAlbum = view.kind === "album" ? (albums.albums.find((a) => a.id === view.id) ?? null) : null;
   const membersOf = useCallback(
     (albumId: string) => libraryImages.filter((img) => img.albumIds?.includes(albumId)),
@@ -399,7 +408,7 @@ function PhotosAppInner() {
                   await albums.remove(openAlbum);
                   setView({ kind: "albums" });
                 }}
-                onPublicLink={() => setLinkDialogFor(openAlbum)}
+                onPublicLink={() => setLinkDialogFor({ kind: "album", album: openAlbum })}
               />
             ) : null}
             {openAlbum && displayImages.length === 0 && state.loaded ? (
@@ -425,19 +434,28 @@ function PhotosAppInner() {
               albums={albums}
               onShareAlbum={(album) => {
                 setView({ kind: "album", id: album.id });
-                setLinkDialogFor(album);
+                setLinkDialogFor({ kind: "album", album });
               }}
+              onSharePhoto={(photoId) => setLinkDialogFor(photoSubject(photoId))}
             />
           </SelectionProvider>
         )}
 
         {linkDialogFor ? (
           <PublicLinkDialog
-            album={linkDialogFor}
+            key={linkDialogFor.kind === "album" ? linkDialogFor.album.id : linkDialogFor.photoId}
+            subject={linkDialogFor}
             state={albums.links}
-            link={albums.linkOf(linkDialogFor.id)}
+            link={
+              linkDialogFor.kind === "album"
+                ? albums.linkOf(linkDialogFor.album.id)
+                : albums.photoLinkOf(linkDialogFor.photoId)
+            }
             actions={{
-              create: (input) => albums.createLink(linkDialogFor, input),
+              create: (input) =>
+                linkDialogFor.kind === "album"
+                  ? albums.createLink(linkDialogFor.album, input)
+                  : albums.createPhotoLink(linkDialogFor.photoId, input),
               changeLifetime: albums.changeLinkLifetime,
               replace: albums.replaceLink,
               stop: albums.stopLink,
@@ -451,6 +469,7 @@ function PhotosAppInner() {
           <PhotoViewer
             image={selectedImage}
             onClose={close}
+            onShareLink={() => setLinkDialogFor(photoSubject(selectedImage.id))}
             onPrevious={previousImage ? () => step(previousImage.id) : undefined}
             onNext={nextImage ? () => step(nextImage.id) : undefined}
             // The viewer owns the confirmation and the refusal message; the library

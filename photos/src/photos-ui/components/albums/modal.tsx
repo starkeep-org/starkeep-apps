@@ -3,6 +3,10 @@ import React, { useEffect } from "react";
 /**
  * The dark dialog shell the album and public-link dialogs share: a backdrop
  * that closes on click and on Escape, and a panel that does not.
+ *
+ * It sits above the photo viewer, which opens the public-link dialog for the
+ * photo on screen. Escape is taken in the capture phase and stopped, so it
+ * closes the dialog and leaves the viewer open beneath it.
  */
 export function Modal({
   title,
@@ -15,10 +19,12 @@ export function Modal({
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
   return (
@@ -27,7 +33,7 @@ export function Modal({
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 300,
+        zIndex: 1100,
         background: "rgba(0,0,0,0.7)",
         display: "flex",
         alignItems: "center",

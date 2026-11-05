@@ -96,6 +96,26 @@ describe("album membership", () => {
 });
 
 describe("albums", () => {
+  it("lists albums page by page, within the data server's 500-row limit", async () => {
+    const row = (album_id: string, title: string) => ({ album_id, title, cover_record_id: null, created_at_ms: 1, deleted: false });
+    answers.push(() => ({ rows: [row(ID, "One")], page_token: "next" }));
+    answers.push(() => ({ rows: [row("5de58a3c4d2a33014de58a3c4d2a3301", "Two")], page_token: null }));
+    const res = await send("GET", "/api/albums");
+    expect(res.status).toBe(200);
+    const { albums } = (await res.json()) as { albums: Array<{ title: string }> };
+    expect(albums.map((a) => a.title).sort()).toEqual(["One", "Two"]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.path).toBe("/app-data/db/albums?limit=500");
+    expect(calls[1]!.path).toBe("/app-data/db/albums?limit=500&page_token=next");
+  });
+
+  it("answers 502 with the data server's message when the read is refused", async () => {
+    signedFetch.mockImplementationOnce(async () => Response.json({ error: "limit must be at most 500" }, { status: 400 }));
+    const res = await send("GET", "/api/albums");
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("limit must be at most 500");
+  });
+
   it("creates an album as a row with a random id and no members", async () => {
     const res = await send("POST", "/api/albums", { title: "  Summer " });
     expect(res.status).toBe(201);

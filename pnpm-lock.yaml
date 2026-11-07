@@ -88,12 +88,6 @@ importers:
       '@starkeep/admin-manifest':
         specifier: ^0.8.0
         version: 0.8.0(typescript@5.9.3)
-      '@starkeep/e2e':
-        specifier: link:../../starkeep-core/e2e
-        version: link:../../starkeep-core/e2e
-      '@starkeep/e2e-aws':
-        specifier: link:../../starkeep-core/e2e-aws
-        version: link:../../starkeep-core/e2e-aws
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

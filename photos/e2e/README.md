@@ -1,7 +1,7 @@
 # Photos e2e — and how to test an app on the Starkeep platform
 
-Two Playwright suites, both against a real local platform booted from the
-sibling `starkeep-core` checkout:
+Two Playwright suites, both against a real local platform booted from a
+`starkeep-core` checkout:
 
 - **`photos-app.spec.ts`** asserts **photos' own behavior**: metadata
   extraction, the derived rendition ladder, the shared-vs-app-private data
@@ -20,8 +20,13 @@ belongs here.
 
 ## How it works (the worked example)
 
-- `@starkeep/e2e` is a `link:` dependency on the sibling `starkeep-core/e2e`
-  checkout. It exports the harness: `startPlatformStack` boots a throwaway
+- `@starkeep/e2e` comes from a starkeep-core checkout, and no `package.json`
+  names it. `scripts/link-core-harness.mjs` at the repository root runs before
+  every e2e command, finds core and links the harness into
+  `node_modules/@starkeep/`. It looks in `STARKEEP_CORE_DIR` first, then at the
+  `starkeep-core` beside this repository. It stops with one message naming the
+  path it tried when neither holds a checkout with dependencies installed. The
+  harness exports: `startPlatformStack` boots a throwaway
   local-data-server + admin-web; `installAppViaAdmin` /
   `startAppDaemonViaAdmin` run this app through the *real* platform APIs
   (manifest scan, consent gate, localRun spawn).
@@ -36,8 +41,8 @@ belongs here.
   `tiffWithExif` from `__tests__/tiff-fixture.ts`) so byte-identity and EXIF
   contents are deterministic and no binaries live in the repo.
 
-Run with `pnpm test:e2e` (needs the sibling `starkeep-core` checkout set up with
-`pnpm install`). Unit tests (`pnpm test`) need no platform at all. The tier-3
+Run with `pnpm test:e2e`. It needs a `starkeep-core` checkout set up with
+`pnpm install`, beside this repository or named by `STARKEEP_CORE_DIR`. Unit tests (`pnpm test`) need no platform at all. The tier-3
 cloud journey is separate — see `e2e-aws/README.md`.
 
 ## Gotchas

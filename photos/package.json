@@ -14,10 +14,10 @@
     "derive:build-worker": "tsx scripts/build-derive-worker.ts",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:e2e": "playwright test -c e2e/playwright.config.ts",
-    "test:aws": "vitest run -c e2e-aws/vitest.config.ts",
+    "test:e2e": "node ../scripts/link-core-harness.mjs && playwright test -c e2e/playwright.config.ts",
+    "test:aws": "node ../scripts/link-core-harness.mjs && vitest run -c e2e-aws/vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
+    "typecheck:e2e": "node ../scripts/link-core-harness.mjs && tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
@@ -35,8 +35,6 @@
   "devDependencies": {
     "@playwright/test": "^1.51.1",
     "@starkeep/admin-manifest": "^0.8.0",
-    "@starkeep/e2e": "link:../../starkeep-core/e2e",
-    "@starkeep/e2e-aws": "link:../../starkeep-core/e2e-aws",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.4.0",
     "@types/react": "^19.0.0",

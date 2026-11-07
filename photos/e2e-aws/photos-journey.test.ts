@@ -9,9 +9,9 @@
  * and its dimensions, and that the cloud grid paints a rendition rather than
  * the original.
  *
- * The journey comes from `@starkeep/e2e-aws`, a `link:` dependency on the
- * sibling starkeep-core checkout — the same arrangement `@starkeep/e2e` uses at
- * tier 2. Core runs the identical journey against its own Probe fixture, so the
+ * The journey comes from `@starkeep/e2e-aws`, which
+ * `scripts/link-core-harness.mjs` links from a starkeep-core checkout before
+ * the run — the same arrangement `@starkeep/e2e` uses at tier 2. Core runs the identical journey against its own Probe fixture, so the
  * platform assertions hold in a deployment that has no Photos; what lives here
  * is what needs Photos to be true.
  *

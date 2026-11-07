@@ -7,8 +7,9 @@ Photos to be true.
 STARKEEP_AWS_TESTS=1 pnpm test:aws
 ```
 
-Inert without `STARKEEP_AWS_TESTS=1`, like core's. Needs the sibling
-`starkeep-core` checkout set up (`pnpm install` there), Playwright's Chromium
+Inert without `STARKEEP_AWS_TESTS=1`, like core's. Needs a `starkeep-core`
+checkout set up (`pnpm install` there), beside this repository or named by
+`STARKEEP_CORE_DIR`, Playwright's Chromium
 (`pnpm exec playwright install chromium`), and AWS credentials in the ambient
 profile.
 
@@ -23,8 +24,9 @@ not block a run — but it only knows about servers this suite started, so a
 
 ## How the split works
 
-The journey comes from `@starkeep/e2e-aws`, a `link:` dependency on the sibling
-starkeep-core checkout — the same arrangement `@starkeep/e2e` uses at tier 2.
+The journey comes from `@starkeep/e2e-aws`, which `scripts/link-core-harness.mjs`
+links from the starkeep-core checkout before the run — the same arrangement
+`@starkeep/e2e` uses at tier 2.
 `defineCloudJourney` registers the platform steps (bootstrap,
 cloud-data-server, Drive, install, sync, labels, the data plane, the session
 gate, the browser upload, CloudFront, uninstall), and this file supplies:

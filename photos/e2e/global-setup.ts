@@ -5,8 +5,9 @@ import { startPlatformStack } from "@starkeep/e2e";
 
 /**
  * Boot the real platform once for the run: local-data-server + admin-web from
- * the sibling starkeep-core checkout (via the @starkeep/e2e harness, a link:
- * dependency). This repo's root is the app parent dir, so admin-web discovers
+ * a starkeep-core checkout, through the @starkeep/e2e harness that
+ * `scripts/link-core-harness.mjs` linked (STARKEEP_CORE_DIR, or the sibling
+ * starkeep-core). This repo's root is the app parent dir, so admin-web discovers
  * the photos app exactly as it would on an operator's machine.
  *
  * Drive's UI is booted because the platform-flows suite reads cross-app

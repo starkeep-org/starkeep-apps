@@ -14,14 +14,14 @@
  * Developing against an unpublished core still works in an uncommitted working
  * tree, through the opt-in loop described in photos-mobile/metro.config.js.
  *
- * Allowed: the private e2e harnesses, which boot the platform from core source
- * and are never published. Their suites need a core checkout regardless.
+ * No exception remains. The private e2e harnesses, which boot the platform
+ * from core source, are linked at test time by `scripts/link-core-harness.mjs`
+ * rather than declared in any package.json.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 
-const ALLOWED = new Set(["@starkeep/e2e", "@starkeep/e2e-aws"]);
 const DEP_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
@@ -44,7 +44,7 @@ for (const manifest of manifests) {
   const pkg = JSON.parse(readFileSync(resolve(root, manifest), "utf8"));
   for (const field of DEP_FIELDS) {
     for (const [name, spec] of Object.entries(pkg[field] ?? {})) {
-      if (!ALLOWED.has(name) && outsideRepo(manifest, spec)) {
+      if (outsideRepo(manifest, spec)) {
         problems.push(`${manifest}: ${field}.${name} = "${spec}"`);
       }
     }

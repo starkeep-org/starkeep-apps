@@ -1,6 +1,8 @@
 {
   // Isolated typecheck for the e2e suites. They import the @starkeep/e2e and
-  // @starkeep/e2e-aws harnesses (link: into live starkeep-core source).
+  // @starkeep/e2e-aws harnesses, which `scripts/link-core-harness.mjs` links
+  // from a starkeep-core checkout (STARKEEP_CORE_DIR, or the sibling
+  // starkeep-core) before this check runs.
   // Checked on their own they pass; folded into the main program
   // (tsconfig.json) the live-core source they pull in is checked against this
   // app's *published* @starkeep deps and trips the version skew. So the specs

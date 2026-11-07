@@ -1,6 +1,8 @@
 # Starkeep apps
 
-This repository holds the first-party apps that run on [Starkeep](https://github.com/starkeep-org/starkeep-core). Each app installs through the same path as a third-party app. Each app gets the Starkeep platform from the published `@starkeep/*` packages.
+This repository holds the Photos product, which runs on [Starkeep](https://github.com/starkeep-org/starkeep-core): Photos for the browser, Photos Mobile, and the two packages they share. Photos installs through the same path as a third-party app, and gets the Starkeep platform from the published `@starkeep/*` packages.
+
+The repository as a whole is the unit to copy. Photos' web and mobile apps depend on the shared packages through the workspace, so the `photos/` folder alone does not install. To start an app from Photos, copy the whole repository.
 
 ## What Photos does
 
@@ -44,7 +46,7 @@ Photos Mobile is the Android app. [Build the APK from source](https://github.com
 
 ## Write your own app
 
-An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app.
+An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app. To start one, copy [`examples/example-app`](https://github.com/starkeep-org/starkeep-core/tree/main/examples/example-app) from `starkeep-core`, a small app that performs every app-facing data operation.
 
 To make admin-web find your app, click **Discover apps** in admin-web's header and add the folder that contains your app's folder.
 
@@ -57,6 +59,8 @@ pnpm test
 ```
 
 The command first runs `pnpm check:links`, which fails on any committed `link:` or `file:` path into `starkeep-core`, and then runs each app's own tests. Run `pnpm typecheck` to check the types. `pnpm test:integration` runs the slower suites that start processes or open sockets.
+
+Photos' end-to-end suites, `pnpm test:e2e` and `pnpm test:aws` in `photos/`, boot a platform from a `starkeep-core` checkout. `scripts/link-core-harness.mjs` finds the checkout before each run, in `STARKEEP_CORE_DIR` or as the `starkeep-core` beside this repository, and links core's test harness. See [`photos/e2e/README.md`](photos/e2e/README.md).
 
 ## Develop against an unreleased core
 

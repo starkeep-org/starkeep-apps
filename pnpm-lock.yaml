@@ -52,8 +52,8 @@ importers:
         specifier: ^1.19.17
         version: 1.19.17(hono@4.13.7)
       '@starkeep/app-client':
-        specifier: 0.10.0
-        version: 0.10.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.10.1
+        version: 0.10.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       '@starkeep/photos-info':
         specifier: workspace:*
         version: link:../packages/photos-info
@@ -261,8 +261,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1065.0
       '@starkeep/app-client':
-        specifier: 0.10.0
-        version: 0.10.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.10.1
+        version: 0.10.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       pg:
         specifier: ^8.13.0
         version: 8.21.0
@@ -1782,6 +1782,9 @@ packages:
   '@smithy/core@3.33.3':
     resolution: {integrity: sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg==}
     engines: {node: '>=18.0.0'}
+    deprecated: |-
+      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
+        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.3.8':
     resolution: {integrity: sha512-5cAM+KZC02sTqDt6NaLXyu50M/GNMd1eTzDVR8Lb0BBsVtu7RWHo47VPPEEv1vt3Yub6uzr+M5FHC+GtoT0USg==}
@@ -1838,8 +1841,8 @@ packages:
   '@starkeep/admin-manifest@0.8.0':
     resolution: {integrity: sha512-OfsvYmmlYYQbMbdGgja/T8yLE5oPC/wF8yyBp0bFc3VefCduzF2OwF3f9Ipe2g1gPluG3a8MiyBG02mSC/IxcQ==}
 
-  '@starkeep/app-client@0.10.0':
-    resolution: {integrity: sha512-wK6FU/FHjZC+s2KgNDGLVf8Jqo0lYr4YI8Ejhf1DOMX6BImgOYutlzT9lAC2a6o2bdgxkkdHXGfGVXYi+8rsdg==}
+  '@starkeep/app-client@0.10.1':
+    resolution: {integrity: sha512-g6vJVYyTG47dWP7edrl0jncHuH6Hauqu5PtX8/+bGc2LpTtWQ1LAzIK5vK69RTT2m88B4KURdcGsMIcIGM8PZQ==}
     peerDependencies:
       '@hono/node-server': ^1.19.0
       hono: ^4.12.0
@@ -6736,7 +6739,7 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/app-client@0.10.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
+  '@starkeep/app-client@0.10.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
     dependencies:
       '@aws-sdk/client-ssm': 3.1116.0
       dotenv: 17.4.2

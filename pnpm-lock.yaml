@@ -52,8 +52,8 @@ importers:
         specifier: ^1.19.17
         version: 1.19.17(hono@4.13.7)
       '@starkeep/app-client':
-        specifier: 0.10.1
-        version: 0.10.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.10.2
+        version: 0.10.2(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       '@starkeep/photos-info':
         specifier: workspace:*
         version: link:../packages/photos-info
@@ -261,8 +261,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1065.0
       '@starkeep/app-client':
-        specifier: 0.10.1
-        version: 0.10.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.10.2
+        version: 0.10.2(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       pg:
         specifier: ^8.13.0
         version: 8.21.0
@@ -1841,8 +1841,8 @@ packages:
   '@starkeep/admin-manifest@0.8.0':
     resolution: {integrity: sha512-OfsvYmmlYYQbMbdGgja/T8yLE5oPC/wF8yyBp0bFc3VefCduzF2OwF3f9Ipe2g1gPluG3a8MiyBG02mSC/IxcQ==}
 
-  '@starkeep/app-client@0.10.1':
-    resolution: {integrity: sha512-g6vJVYyTG47dWP7edrl0jncHuH6Hauqu5PtX8/+bGc2LpTtWQ1LAzIK5vK69RTT2m88B4KURdcGsMIcIGM8PZQ==}
+  '@starkeep/app-client@0.10.2':
+    resolution: {integrity: sha512-ll7oHQdgxoUw8Q7UgaEefM9kWxNAeQGxWfWlXXIMywsIdJJV0MXWXBVVAPqncGcgb0J6YHjm6lSmenHfuterFA==}
     peerDependencies:
       '@hono/node-server': ^1.19.0
       hono: ^4.12.0
@@ -6739,7 +6739,7 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/app-client@0.10.1(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
+  '@starkeep/app-client@0.10.2(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
     dependencies:
       '@aws-sdk/client-ssm': 3.1116.0
       dotenv: 17.4.2

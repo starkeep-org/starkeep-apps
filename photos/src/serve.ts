@@ -33,6 +33,7 @@ import { getRequestListener } from "@hono/node-server";
 import { app, isServerPath } from "./server-app.js";
 import { isClientRoute, isFile, resolveClientRequest, SHELL } from "./client-serving.js";
 import { startIngestWatchIfLocal } from "./ingest-watch-start.js";
+import { localRefusal } from "./local-guard.js";
 
 const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -81,20 +82,10 @@ function distIsStale(): boolean {
  * the library for any caller. Binding every interface let any device on the
  * LAN read it (found 2026-10-24).
  *
- * The bind keeps other devices out. The `Host` check keeps out a DNS-rebinding
- * page in this machine's own browser, the same way the local data server does;
- * starkeep-core's `apps/local-data-server/loopback-host.ts` explains why. A
- * request with no `Host` did not come from a browser and passes.
+ * The bind keeps other devices out. `local-guard.ts` keeps out other pages in
+ * this machine's own browser.
  */
 const LISTEN_HOST = "127.0.0.1";
-const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
-function isLoopbackHost(host: string | undefined): boolean {
-  if (host === undefined) return true;
-  const lower = host.trim().toLowerCase();
-  const end = lower.startsWith("[") ? lower.indexOf("]") + 1 : lower.indexOf(":");
-  return LOOPBACK_HOSTNAMES.has(end > 0 ? lower.slice(0, end) : lower);
-}
 
 function portFromArgv(argv: string[]): number {
   // `-p` as well as `--port`: the manifest's `portFlag` is `-p`, which is what
@@ -178,9 +169,10 @@ async function main(): Promise<void> {
   }
 
   const server = createServer((req, res) => {
-    if (!isLoopbackHost(req.headers.host)) {
+    const refusal = localRefusal(req);
+    if (refusal) {
       res.writeHead(403, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "Photos answers on its loopback address only" }));
+      res.end(JSON.stringify({ error: refusal }));
       return;
     }
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;

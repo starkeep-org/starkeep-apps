@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
-    "@starkeep/app-client": "0.10.1",
+    "@starkeep/app-client": "0.10.2",
     "@starkeep/photos-info": "workspace:*",
     "@starkeep/photos-ladder": "workspace:*",
     "exifr": "^7.1.3",

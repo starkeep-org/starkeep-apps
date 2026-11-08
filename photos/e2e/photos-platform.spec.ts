@@ -104,13 +104,18 @@ test("install photos through the admin consent flow", async ({ page }) => {
 
   // Scoped to the grant row rather than to the dialog. Photos requests two
   // grants — images and video — so each badge text appears twice, and asking
-  // the dialog for "records: read + write" is ambiguous. Asking the *image*
+  // the dialog for "files: read + write" is ambiguous. Asking the *image*
   // row is also the sharper claim: it says which grant carries which
   // permission, instead of that some grant somewhere does.
-  const imageGrant = consent.locator("li").filter({ hasText: /image\/jpeg, image\/png/ });
+  const imageGrant = consent.locator("li").filter({ hasText: "Images" });
   await expect(imageGrant).toBeVisible();
-  await expect(imageGrant.getByText("records: read + write")).toBeVisible();
+  await expect(imageGrant.getByText("files: read + write")).toBeVisible();
   await expect(imageGrant.getByText("metadata: read + write")).toBeVisible();
+  // The type list starts collapsed. Its subtypes appear in the manifest's own
+  // order, so this asserts the declared list reached the dialog rather than
+  // that some list did.
+  await imageGrant.getByRole("button", { name: "17 types" }).click();
+  await expect(imageGrant.getByText(/^jpeg, png, gif, webp/)).toBeVisible();
 
   await page.getByRole("button", { name: "Approve & Install" }).click();
   // `exact`, and that is load-bearing rather than tidy: Playwright's string

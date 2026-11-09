@@ -46,7 +46,7 @@ Photos Mobile is the Android app. [Build the APK from source](https://github.com
 
 ## Write your own app
 
-An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app. To start one, copy [`examples/example-app`](https://github.com/starkeep-org/starkeep-core/tree/main/examples/example-app) from `starkeep-core`, a small app that performs every app-facing data operation.
+An app is any folder that holds a `starkeep.manifest.json`, sits inside a folder that admin-web scans, and depends on the published `@starkeep/*` packages. [`authoring-an-app.md`](https://github.com/starkeep-org/starkeep-core/blob/main/docs/authoring-an-app.md) in `starkeep-core` walks through the parts of an app. To start one, copy [`example-app`](https://github.com/starkeep-org/starkeep-core/tree/main/example-app) from `starkeep-core`, a small app that performs every app-facing data operation.
 
 To make admin-web find your app, click **Discover apps** in admin-web's header and add the folder that contains your app's folder.
 

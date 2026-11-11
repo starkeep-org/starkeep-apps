@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.51.1",
-    "@starkeep/admin-manifest": "^0.8.0",
+    "@starkeep/admin-manifest": "^0.9.0",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.4.0",
     "@types/react": "^19.0.0",

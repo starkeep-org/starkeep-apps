@@ -86,8 +86,8 @@ importers:
         specifier: ^1.51.1
         version: 1.60.0
       '@starkeep/admin-manifest':
-        specifier: ^0.8.0
-        version: 0.8.0(typescript@5.9.3)
+        specifier: ^0.9.0
+        version: 0.9.0(typescript@5.9.3)
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -1832,8 +1832,8 @@ packages:
     resolution: {integrity: sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A==}
     engines: {node: '>=14.0.0'}
 
-  '@starkeep/admin-manifest@0.8.0':
-    resolution: {integrity: sha512-OfsvYmmlYYQbMbdGgja/T8yLE5oPC/wF8yyBp0bFc3VefCduzF2OwF3f9Ipe2g1gPluG3a8MiyBG02mSC/IxcQ==}
+  '@starkeep/admin-manifest@0.9.0':
+    resolution: {integrity: sha512-7uo7WMg0/016PWJUQsHKlbfiFYdtFRLFqQBzCK7n6pZbHkCvDsy5iuomymBMi934jZ7M3I3TcY1OWcDe1K1SJg==}
 
   '@starkeep/app-client@0.10.2':
     resolution: {integrity: sha512-ll7oHQdgxoUw8Q7UgaEefM9kWxNAeQGxWfWlXXIMywsIdJJV0MXWXBVVAPqncGcgb0J6YHjm6lSmenHfuterFA==}
@@ -1846,11 +1846,11 @@ packages:
       hono:
         optional: true
 
+  '@starkeep/protocol-primitives@0.10.0':
+    resolution: {integrity: sha512-e+s0YfACJeW3z1D6PSYQjG0nRjI+Dlx7HhlG+D7xa3BYQsXHMEjSeSVhQXQ3DIpSTZcXRgpmgv9fY8f9n7Pu9w==}
+
   '@starkeep/protocol-primitives@0.7.0':
     resolution: {integrity: sha512-7rXslqY2nNhVkC25BarqEZLybR1hY0XoID/880ka229+F+gbBswqwbiGjVgAkcedwquLdxFi3p9pFVUqQUHvLQ==}
-
-  '@starkeep/protocol-primitives@0.8.0':
-    resolution: {integrity: sha512-RZXSqYEjkYV+W1Q2SRjKdbpn1IxeZVof3ToDRsHakZE77COlj+jQwQ8PgmTgrgDlcnHQg6fYByajxHfSJ2U1WQ==}
 
   '@starkeep/shared-space-api@0.7.0':
     resolution: {integrity: sha512-RFbpRDAnFhCm5EbOHpTXPneZkUqfYS+QnaUVjVSowNFUTe2uxHph7QubeEH0ioQj/7hyC64sYfMr+09UrHrc9g==}
@@ -6726,9 +6726,9 @@ snapshots:
       '@smithy/util-buffer-from': 2.2.0
       tslib: 2.8.1
 
-  '@starkeep/admin-manifest@0.8.0(typescript@5.9.3)':
+  '@starkeep/admin-manifest@0.9.0(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.8.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.10.0(typescript@5.9.3)
       zod: 3.25.76
     transitivePeerDependencies:
       - typescript
@@ -6741,19 +6741,19 @@ snapshots:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       hono: 4.13.7
 
+  '@starkeep/protocol-primitives@0.10.0(typescript@5.9.3)':
+    dependencies:
+      '@noble/hashes': 1.8.0
+      ulidx: 2.4.1
+      valibot: 1.5.0(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
+
   '@starkeep/protocol-primitives@0.7.0(typescript@6.0.3)':
     dependencies:
       '@noble/hashes': 1.8.0
       ulidx: 2.4.1
       valibot: 1.5.0(typescript@6.0.3)
-    transitivePeerDependencies:
-      - typescript
-
-  '@starkeep/protocol-primitives@0.8.0(typescript@5.9.3)':
-    dependencies:
-      '@noble/hashes': 1.8.0
-      ulidx: 2.4.1
-      valibot: 1.5.0(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 

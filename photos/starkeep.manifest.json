@@ -190,7 +190,7 @@
             "/p/*",
             "/_immutable/*"
           ],
-          "assetsDir": "assets",
+          "bundleAssetsDir": "assets",
           "env": {
             "STARKEEP_API_GATEWAY_URL": "",
             "STARKEEP_USER_POOL_ID": "",

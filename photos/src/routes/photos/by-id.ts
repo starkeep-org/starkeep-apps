@@ -87,8 +87,9 @@ export async function PATCH(req: Request, id: string): Promise<Response> {
  * delete were refused.
  *
  * Most photographs have no `image_enriched` row, and the data server answers 404
- * when no live row holds the key. That answer means the row was never there to
- * orphan, so the route treats it as done.
+ * with `skipped: "missing"` when no live row holds the key. That answer means the
+ * row was never there to orphan, so the route treats it as done. Any other 404,
+ * such as for a misrouted path, still warns.
  *
  * A failed row delete does not fail the request. The photograph is gone as far as
  * the person is concerned, and the orphan is recoverable through the delete feed —
@@ -109,7 +110,7 @@ export async function DELETE(req: Request, id: string): Promise<Response> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ where: { record_id: id } }),
   }).catch(() => null);
-  if (!rowRes?.ok && rowRes?.status !== 404) {
+  if (!rowRes?.ok && !(await isMissingRow(rowRes))) {
     console.warn(
       `[photos] deleted record ${id} but could not drop its image_enriched row` +
         `${rowRes ? ` (${rowRes.status})` : ""}; it will be orphaned until a reconcile`,
@@ -117,4 +118,11 @@ export async function DELETE(req: Request, id: string): Promise<Response> {
   }
 
   return withRefreshedSession(Response.json({ ok: true }), authorized.refreshedCookie);
+}
+
+/** Whether the data server answered that no live row holds the key. */
+async function isMissingRow(res: Response | null): Promise<boolean> {
+  if (res?.status !== 404) return false;
+  const body = (await res.json().catch(() => null)) as { skipped?: unknown } | null;
+  return body?.skipped === "missing";
 }

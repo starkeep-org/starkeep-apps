@@ -294,12 +294,12 @@ describe("the runtime config's caching", () => {
 });
 
 describe("deleting a photograph", () => {
-  /** Answers the record delete 200, and the `image_enriched` delete with `rowStatus`. */
-  function answerRowDeleteWith(rowStatus: number): void {
+  /** Answers the record delete 200, and the `image_enriched` delete with `status` and `body`. */
+  function answerRowDeleteWith(status: number, body: Record<string, unknown>): void {
     signedFetch.mockImplementation(async (_creds: unknown, path: string) => {
-      const status = path.startsWith("/app-data/db/image_enriched") ? rowStatus : 200;
-      return new Response(JSON.stringify({ changes: status === 200 ? 1 : 0 }), {
-        status,
+      const isRow = path.startsWith("/app-data/db/image_enriched");
+      return new Response(JSON.stringify(isRow ? body : { changes: 1 }), {
+        status: isRow ? status : 200,
         headers: { "Content-Type": "application/json" },
       });
     });
@@ -307,8 +307,12 @@ describe("deleting a photograph", () => {
 
   it("drops the row quietly when the data server has no row to drop", async () => {
     // Most photographs never gain an `image_enriched` row, and the data server
-    // answers 404 when no live row holds the key. Nothing was orphaned.
-    answerRowDeleteWith(404);
+    // answers 404 with `skipped: "missing"` when no live row holds the key.
+    answerRowDeleteWith(404, {
+      error: "No live row holds that key",
+      changes: 0,
+      skipped: "missing",
+    });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = await send("DELETE", "/api/photos/rec1");
     expect(res.status).toBe(200);
@@ -317,8 +321,17 @@ describe("deleting a photograph", () => {
     warn.mockRestore();
   });
 
+  it("warns of an orphan on a 404 that names no missing row", async () => {
+    // A misrouted path also answers 404, and the row may still be there.
+    answerRowDeleteWith(404, { error: "Not found" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await send("DELETE", "/api/photos/rec1");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("image_enriched row (404)"));
+    warn.mockRestore();
+  });
+
   it("warns of an orphan when the row delete fails for another reason", async () => {
-    answerRowDeleteWith(500);
+    answerRowDeleteWith(500, { error: "boom" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = await send("DELETE", "/api/photos/rec1");
     expect(res.status).toBe(200);

@@ -86,6 +86,10 @@ export async function PATCH(req: Request, id: string): Promise<Response> {
  * nothing reads it without the record. The other order would strand an edit if the
  * delete were refused.
  *
+ * Most photographs have no `image_enriched` row, and the data server answers 404
+ * when no live row holds the key. That answer means the row was never there to
+ * orphan, so the route treats it as done.
+ *
  * A failed row delete does not fail the request. The photograph is gone as far as
  * the person is concerned, and the orphan is recoverable through the delete feed —
  * `deleted=only&updated_after=` names exactly the records whose rows to drop.
@@ -105,7 +109,7 @@ export async function DELETE(req: Request, id: string): Promise<Response> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ where: { record_id: id } }),
   }).catch(() => null);
-  if (!rowRes?.ok) {
+  if (!rowRes?.ok && rowRes?.status !== 404) {
     console.warn(
       `[photos] deleted record ${id} but could not drop its image_enriched row` +
         `${rowRes ? ` (${rowRes.status})` : ""}; it will be orphaned until a reconcile`,

@@ -292,3 +292,37 @@ describe("the runtime config's caching", () => {
     expect(res.headers.get("cache-control")).toBe("public, max-age=60, must-revalidate");
   });
 });
+
+describe("deleting a photograph", () => {
+  /** Answers the record delete 200, and the `image_enriched` delete with `rowStatus`. */
+  function answerRowDeleteWith(rowStatus: number): void {
+    signedFetch.mockImplementation(async (_creds: unknown, path: string) => {
+      const status = path.startsWith("/app-data/db/image_enriched") ? rowStatus : 200;
+      return new Response(JSON.stringify({ changes: status === 200 ? 1 : 0 }), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
+  it("drops the row quietly when the data server has no row to drop", async () => {
+    // Most photographs never gain an `image_enriched` row, and the data server
+    // answers 404 when no live row holds the key. Nothing was orphaned.
+    answerRowDeleteWith(404);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await send("DELETE", "/api/photos/rec1");
+    expect(res.status).toBe(200);
+    expect(upstreamPaths()).toEqual(["/data/records/rec1", "/app-data/db/image_enriched"]);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("warns of an orphan when the row delete fails for another reason", async () => {
+    answerRowDeleteWith(500);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await send("DELETE", "/api/photos/rec1");
+    expect(res.status).toBe(200);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("image_enriched row (500)"));
+    warn.mockRestore();
+  });
+});

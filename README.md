@@ -40,9 +40,11 @@ Starkeep's admin app starts locally installed apps straight from this checkout. 
 
 Follow the [Get Started](https://github.com/starkeep-org/starkeep-core#get-started) guide in `starkeep-core`'s README. The guide installs Photos on your computer and then in the cloud.
 
+To bring an existing checkout up to date, follow [Upgrade Starkeep](https://github.com/starkeep-org/starkeep-core#upgrade-starkeep) in `starkeep-core`'s README. To install Photos without Admin's web page, follow [From the terminal](https://github.com/starkeep-org/starkeep-core#from-the-terminal).
+
 ## Build Photos Mobile
 
-Photos Mobile is the Android app. [Build the APK from source](https://github.com/starkeep-org/starkeep-core#build-the-apk-from-source-optional) in `starkeep-core`'s README lists the prerequisites and the build steps. [Part C: install the Photos mobile app](https://github.com/starkeep-org/starkeep-core#part-c-install-the-photos-mobile-app) covers registering the app in the cloud and signing in on the phone.
+Photos Mobile is the Android app. [Build the APK from source](https://github.com/starkeep-org/starkeep-core#build-the-apk-from-source-optional) in `starkeep-core`'s README lists the prerequisites and the build steps. [Install the Photos mobile app](https://github.com/starkeep-org/starkeep-core#install-the-photos-mobile-app) covers registering the app in the cloud and signing in on the phone.
 
 ## Write your own app
 

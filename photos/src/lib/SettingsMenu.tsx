@@ -24,13 +24,25 @@ interface SettingsMenuProps {
   onSignOut: (() => void) | null;
   /** Local target only: opens on-device face recognition. */
   onOpenFaces: (() => void) | null;
+  /**
+   * Local target only: Admin's Storage page. Admin runs only on the operator's
+   * computer, so the cloud build names the place in text and links nowhere.
+   */
+  adminStorageUrl: string | null;
 }
+
+/**
+ * Admin's Storage page at Admin's default address. An operator who moves Admin
+ * with STARKEEP_ADMIN_PORT still has the text directions beside the link.
+ */
+export const LOCAL_ADMIN_STORAGE_URL = "http://localhost:3000/storage";
 
 export function SettingsMenu({
   layout,
   onLayoutChange,
   onSignOut,
   onOpenFaces,
+  adminStorageUrl,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -64,7 +76,9 @@ export function SettingsMenu({
         aria-haspopup="menu"
         title="Settings"
         style={{
-          background: open ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
+          background: open
+            ? "rgba(255,255,255,0.15)"
+            : "rgba(255,255,255,0.08)",
           border: "1px solid rgba(255,255,255,0.15)",
           color: "#ddd",
           borderRadius: 4,
@@ -109,10 +123,19 @@ export function SettingsMenu({
                   max={ROW_HEIGHT_MAX}
                   step={ROW_HEIGHT_STEP}
                   value={layout.rowHeight}
-                  onChange={(e) => onLayoutChange({ rowHeight: Number(e.target.value) })}
+                  onChange={(e) =>
+                    onLayoutChange({ rowHeight: Number(e.target.value) })
+                  }
                   style={{ width: 120, accentColor: "#888" }}
                 />
-                <span style={{ color: "#777", fontSize: 12, minWidth: 38, textAlign: "right" }}>
+                <span
+                  style={{
+                    color: "#777",
+                    fontSize: 12,
+                    minWidth: 38,
+                    textAlign: "right",
+                  }}
+                >
                   {layout.rowHeight}px
                 </span>
               </span>
@@ -123,7 +146,9 @@ export function SettingsMenu({
               <input
                 type="checkbox"
                 checked={layout.groupByDate}
-                onChange={(e) => onLayoutChange({ groupByDate: e.target.checked })}
+                onChange={(e) =>
+                  onLayoutChange({ groupByDate: e.target.checked })
+                }
                 style={{ accentColor: "#888" }}
               />
             </label>
@@ -148,6 +173,34 @@ export function SettingsMenu({
             </Section>
           )}
 
+          {/* The archive quality is a library-wide setting that Admin owns,
+              because Deep Archive is a core data concern. Photos only points
+              to it, since the install dialog showed it beside Photos. */}
+          <Section title="Archive quality">
+            <p
+              style={{
+                color: "#bbb",
+                fontSize: 13,
+                margin: 0,
+                lineHeight: 1.4,
+              }}
+            >
+              The quality kept when originals archive covers your whole Starkeep
+              library, so Admin owns the setting. Change the setting in Admin →
+              Data Server card menu → Storage.
+            </p>
+            {adminStorageUrl && (
+              <a
+                href={adminStorageUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ ...menuButtonStyle, textDecoration: "none" }}
+              >
+                Open Admin's Storage page ↗
+              </a>
+            )}
+          </Section>
+
           {onSignOut && (
             <Section title="Account">
               <button
@@ -168,7 +221,13 @@ export function SettingsMenu({
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div

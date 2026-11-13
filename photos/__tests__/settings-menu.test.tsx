@@ -10,7 +10,9 @@ import { createRoot } from "react-dom/client";
  * another name.
  */
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 // The cover-image controls need their provider and have nothing to do with this.
 vi.mock("../src/lib/CoverImage", () => ({ CoverImageControls: () => null }));
@@ -29,12 +31,21 @@ async function openMenu(element: React.ReactElement): Promise<HTMLElement> {
   await act(async () => {
     createRoot(container).render(element);
   });
-  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!.click());
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!
+      .click(),
+  );
   return container;
 }
 
-function button(container: HTMLElement, label: string): HTMLButtonElement | undefined {
-  return [...container.querySelectorAll("button")].find((b) => b.textContent === label);
+function button(
+  container: HTMLElement,
+  label: string,
+): HTMLButtonElement | undefined {
+  return [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === label,
+  );
 }
 
 const layout = { rowHeight: 200, groupByDate: true };
@@ -50,7 +61,13 @@ describe("the gear menu's sign-out", () => {
     const { SettingsMenu } = await loadMenu();
     const onSignOut = vi.fn();
     const container = await openMenu(
-      <SettingsMenu layout={layout} onLayoutChange={vi.fn()} onSignOut={onSignOut} onOpenFaces={null} />,
+      <SettingsMenu
+        layout={layout}
+        onLayoutChange={vi.fn()}
+        onSignOut={onSignOut}
+        onOpenFaces={null}
+        adminStorageUrl={null}
+      />,
     );
     expect(button(container, "Cloud setup")).toBeUndefined();
     await act(async () => button(container, "Sign out")!.click());
@@ -60,7 +77,13 @@ describe("the gear menu's sign-out", () => {
   it("offers no Sign out in the local build", async () => {
     const { SettingsMenu } = await loadMenu();
     const container = await openMenu(
-      <SettingsMenu layout={layout} onLayoutChange={vi.fn()} onSignOut={null} onOpenFaces={vi.fn()} />,
+      <SettingsMenu
+        layout={layout}
+        onLayoutChange={vi.fn()}
+        onSignOut={null}
+        onOpenFaces={vi.fn()}
+        adminStorageUrl={null}
+      />,
     );
     expect(button(container, "Sign out")).toBeUndefined();
     expect(button(container, "On-device face recognition")).toBeTruthy();
@@ -85,5 +108,44 @@ describe("the gear menu's sign-out", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(assigned).toEqual(["https://auth.example/logout?client_id=c"]);
+  });
+});
+
+describe("the gear menu's archive-quality pointer", () => {
+  it("names Admin's Storage page in text, and links to it in the local build", async () => {
+    const { SettingsMenu } = await loadMenu();
+    const container = await openMenu(
+      <SettingsMenu
+        layout={layout}
+        onLayoutChange={vi.fn()}
+        onSignOut={null}
+        onOpenFaces={vi.fn()}
+        adminStorageUrl="http://localhost:3000/storage"
+      />,
+    );
+    expect(container.textContent).toContain(
+      "Admin → Data Server card menu → Storage",
+    );
+    const link = container.querySelector<HTMLAnchorElement>(
+      "a[href='http://localhost:3000/storage']",
+    );
+    expect(link?.textContent).toContain("Storage page");
+  });
+
+  it("names the page in text only in the cloud build, where Admin is out of reach", async () => {
+    const { SettingsMenu } = await loadMenu();
+    const container = await openMenu(
+      <SettingsMenu
+        layout={layout}
+        onLayoutChange={vi.fn()}
+        onSignOut={vi.fn()}
+        onOpenFaces={null}
+        adminStorageUrl={null}
+      />,
+    );
+    expect(container.textContent).toContain(
+      "Admin → Data Server card menu → Storage",
+    );
+    expect(container.querySelector("a")).toBeNull();
   });
 });

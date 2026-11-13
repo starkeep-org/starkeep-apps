@@ -17,22 +17,31 @@ import {
   linkDialogKey,
   type LinkSubject,
 } from "@/photos-ui";
-import { addPhotoFromPath, deletePhoto, getPhotoFileUrls } from "./src/lib/data-server-client";
-import { createUrlBatchLoader, type UrlBatchLoader } from "./src/lib/url-batch-loader";
+import {
+  addPhotoFromPath,
+  deletePhoto,
+  getPhotoFileUrls,
+} from "./src/lib/data-server-client";
+import {
+  createUrlBatchLoader,
+  type UrlBatchLoader,
+} from "./src/lib/url-batch-loader";
 import { FORCE_REMOTE } from "./src/lib/data-source-context";
 import { AuthGate } from "./src/lib/AuthGate";
 import { CoverImageBanner, CoverImageProvider } from "./src/lib/CoverImage";
-import { SettingsMenu } from "./src/lib/SettingsMenu";
+import { LOCAL_ADMIN_STORAGE_URL, SettingsMenu } from "./src/lib/SettingsMenu";
 import { signOut } from "./src/lib/sign-out";
 import { photoRecordToAppImage } from "./src/lib/photoRecordToAppImage";
 import { usePhotoFreshness } from "./src/lib/usePhotoFreshness";
 import { usePhotoRoute } from "./src/lib/photo-route";
 import { useListLayoutPreferences } from "./src/lib/list-layout-preferences";
-import { useNarrowViewport, usePrefersReducedMotion } from "./src/lib/use-narrow-viewport";
+import {
+  useNarrowViewport,
+  usePrefersReducedMotion,
+} from "./src/lib/use-narrow-viewport";
 import { useHideOnScrollDown } from "./src/lib/use-hide-on-scroll-down";
 import { compareCaptureOrder, type Album } from "@/photos-lib/client";
 import { useAlbums } from "./src/lib/use-albums";
-
 
 function useFullSizeUrlCache() {
   const [urlMap, setUrlMap] = useState<ReadonlyMap<string, string>>(new Map());
@@ -71,18 +80,24 @@ function useFullSizeUrlCache() {
   );
 }
 
-
 /**
  * Which screen the shell shows. The library and the albums are tabs; an album
  * is the library grid narrowed to its members. Kept in state rather than the
  * URL: the open photo is the one thing a link names.
  */
-type View = { kind: "library" } | { kind: "albums" } | { kind: "album"; id: string };
+type View =
+  { kind: "library" } | { kind: "albums" } | { kind: "album"; id: string };
 
 const IMAGE_EXTENSIONS: Record<string, string> = {
-  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
-  gif: "image/gif", webp: "image/webp", heic: "image/heic",
-  heif: "image/heif", avif: "image/avif", tiff: "image/tiff",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+  avif: "image/avif",
+  tiff: "image/tiff",
 };
 
 function PhotosAppInner() {
@@ -129,13 +144,17 @@ function PhotosAppInner() {
   // `dateTakenOverride` lives in Photos' own syncable table where the records
   // query cannot reach it. See `photos-lib/capture-order.ts`.
   const libraryImages = React.useMemo(
-    () => state.images.filter((img) => img.parentId === null).sort(compareCaptureOrder),
+    () =>
+      state.images
+        .filter((img) => img.parentId === null)
+        .sort(compareCaptureOrder),
     [state.images],
   );
 
   const [view, setView] = useState<View>({ kind: "library" });
   const albums = useAlbums(
-    (ids, albumId, member) => dispatch({ type: "SET_ALBUM_MEMBERSHIP", ids, albumId, member }),
+    (ids, albumId, member) =>
+      dispatch({ type: "SET_ALBUM_MEMBERSHIP", ids, albumId, member }),
     (albumId) => dispatch({ type: "FORGET_ALBUM", albumId }),
   );
   const [linkDialogFor, setLinkDialogFor] = useState<LinkSubject | null>(null);
@@ -143,39 +162,57 @@ function PhotosAppInner() {
     (photoId: string): LinkSubject => ({
       kind: "photo",
       photoId,
-      name: libraryImages.find((img) => img.id === photoId)?.originalFilename ?? "Photo",
+      name:
+        libraryImages.find((img) => img.id === photoId)?.originalFilename ??
+        "Photo",
     }),
     [libraryImages],
   );
-  const openAlbum = view.kind === "album" ? (albums.albums.find((a) => a.id === view.id) ?? null) : null;
+  const openAlbum =
+    view.kind === "album"
+      ? (albums.albums.find((a) => a.id === view.id) ?? null)
+      : null;
   const membersOf = useCallback(
-    (albumId: string) => libraryImages.filter((img) => img.albumIds?.includes(albumId)),
+    (albumId: string) =>
+      libraryImages.filter((img) => img.albumIds?.includes(albumId)),
     [libraryImages],
   );
 
   // The grid shows the library, or one album's members in the library's order.
   const displayImages = openAlbum ? membersOf(openAlbum.id) : libraryImages;
-  const shownIds = React.useMemo(() => displayImages.map((img) => img.id), [displayImages]);
+  const shownIds = React.useMemo(
+    () => displayImages.map((img) => img.id),
+    [displayImages],
+  );
   const shownIdSet = React.useMemo(() => new Set(shownIds), [shownIds]);
 
   // An album deleted elsewhere, or by this page, leaves for the albums tab.
   useEffect(() => {
-    if (view.kind === "album" && !albums.loading && !openAlbum) setView({ kind: "albums" });
+    if (view.kind === "album" && !albums.loading && !openAlbum)
+      setView({ kind: "albums" });
   }, [view, albums.loading, openAlbum]);
 
   // The grid displays originals, so the clicked tile already *is* the record
   // the viewer wants. There is no thumbnail-to-parent hop to make.
-  const selectedIndex = photoId ? displayImages.findIndex((img) => img.id === photoId) : -1;
+  const selectedIndex = photoId
+    ? displayImages.findIndex((img) => img.id === photoId)
+    : -1;
   // A photo opened by a link, or outside the open album, still opens over
   // the library.
-  const linkedIndex = photoId && selectedIndex < 0 ? libraryImages.findIndex((img) => img.id === photoId) : -1;
+  const linkedIndex =
+    photoId && selectedIndex < 0
+      ? libraryImages.findIndex((img) => img.id === photoId)
+      : -1;
   const stepList = selectedIndex >= 0 ? displayImages : libraryImages;
   const stepIndex = selectedIndex >= 0 ? selectedIndex : linkedIndex;
   const selectedImage = stepIndex >= 0 ? stepList[stepIndex] : null;
   // The viewer steps through the same list the grid shows, in the same order, so
   // the arrow keys land on the tile beside the one that was opened.
   const previousImage = stepIndex > 0 ? stepList[stepIndex - 1] : null;
-  const nextImage = stepIndex >= 0 && stepIndex < stepList.length - 1 ? stepList[stepIndex + 1] : null;
+  const nextImage =
+    stepIndex >= 0 && stepIndex < stepList.length - 1
+      ? stepList[stepIndex + 1]
+      : null;
 
   const freshness = usePhotoFreshness({
     onInitialLoad: (images) => dispatch({ type: "SET_IMAGES", images }),
@@ -206,17 +243,28 @@ function PhotosAppInner() {
     try {
       const fileName = file.name;
       const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-      const mimeType = IMAGE_EXTENSIONS[ext] ?? file.type ?? "application/octet-stream";
+      const mimeType =
+        IMAGE_EXTENSIONS[ext] ?? file.type ?? "application/octet-stream";
 
       const buf = await file.arrayBuffer();
       const fileBytes = new Uint8Array(buf);
-      const { record, deduped } = await addPhotoFromPath(fileName, fileBytes, mimeType, fileName);
+      const { record, deduped } = await addPhotoFromPath(
+        fileName,
+        fileBytes,
+        mimeType,
+        fileName,
+      );
       // UPSERT (not APPEND) so a dedup hit — which returns the already-listed
       // record — doesn't add a duplicate row to the grid.
-      dispatch({ type: "UPSERT_IMAGES", images: [photoRecordToAppImage(record, null)] });
+      dispatch({
+        type: "UPSERT_IMAGES",
+        images: [photoRecordToAppImage(record, null)],
+      });
 
       if (deduped) {
-        setNotice(`"${fileName}" is already in your photos — nothing was added.`);
+        setNotice(
+          `"${fileName}" is already in your photos — nothing was added.`,
+        );
       }
       // Re-read the record through Photos' library route so it carries an
       // explicit rendition decision. Locally, the supervised sweep owns the
@@ -244,7 +292,10 @@ function PhotosAppInner() {
   const getFullSizeSrc = useFullSizeUrlCache();
 
   return (
-    <PhotoUrlProvider getThumbnailSrc={getFullSizeSrc} getFullSizeSrc={getFullSizeSrc}>
+    <PhotoUrlProvider
+      getThumbnailSrc={getFullSizeSrc}
+      getFullSizeSrc={getFullSizeSrc}
+    >
       <div
         style={{
           minHeight: "100vh",
@@ -257,7 +308,9 @@ function PhotosAppInner() {
         <input
           ref={fileInputRef}
           type="file"
-          accept={Object.keys(IMAGE_EXTENSIONS).map((e) => `.${e}`).join(",")}
+          accept={Object.keys(IMAGE_EXTENSIONS)
+            .map((e) => `.${e}`)
+            .join(",")}
           style={{ display: "none" }}
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -286,7 +339,10 @@ function PhotosAppInner() {
         >
           {/* The two tabs stand in for the title: the app's name is the
               library tab, so the header gains no width at phone size. */}
-          <nav aria-label="Views" style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+          <nav
+            aria-label="Views"
+            style={{ display: "flex", alignItems: "baseline", gap: 14 }}
+          >
             <button
               type="button"
               aria-current={view.kind === "library" ? "page" : undefined}
@@ -313,11 +369,18 @@ function PhotosAppInner() {
             <button
               onClick={handleAddClick}
               disabled={adding}
-              style={{ ...toolbarButtonStyle, background: "rgba(255,255,255,0.15)" }}
+              style={{
+                ...toolbarButtonStyle,
+                background: "rgba(255,255,255,0.15)",
+              }}
             >
               {adding
-                ? (FORCE_REMOTE ? "Uploading…" : "Adding…")
-                : (FORCE_REMOTE ? "Upload Photo" : "Add Photo")}
+                ? FORCE_REMOTE
+                  ? "Uploading…"
+                  : "Adding…"
+                : FORCE_REMOTE
+                  ? "Upload Photo"
+                  : "Add Photo"}
             </button>
 
             <SettingsMenu
@@ -325,6 +388,7 @@ function PhotosAppInner() {
               onLayoutChange={setLayout}
               onSignOut={FORCE_REMOTE ? () => void signOut() : null}
               onOpenFaces={FORCE_REMOTE ? null : () => setShowVision(true)}
+              adminStorageUrl={FORCE_REMOTE ? null : LOCAL_ADMIN_STORAGE_URL}
             />
           </div>
         </div>
@@ -409,12 +473,15 @@ function PhotosAppInner() {
                   await albums.remove(openAlbum);
                   setView({ kind: "albums" });
                 }}
-                onPublicLink={() => setLinkDialogFor({ kind: "album", album: openAlbum })}
+                onPublicLink={() =>
+                  setLinkDialogFor({ kind: "album", album: openAlbum })
+                }
               />
             ) : null}
             {openAlbum && displayImages.length === 0 && state.loaded ? (
               <p style={{ padding: "24px 16px", color: "#888", margin: 0 }}>
-                This album is empty. Select photos in the library and choose "Add to album…".
+                This album is empty. Select photos in the library and choose
+                "Add to album…".
               </p>
             ) : (
               <PhotoGrid
@@ -437,7 +504,9 @@ function PhotosAppInner() {
                 setView({ kind: "album", id: album.id });
                 setLinkDialogFor({ kind: "album", album });
               }}
-              onSharePhoto={(photoId) => setLinkDialogFor(photoSubject(photoId))}
+              onSharePhoto={(photoId) =>
+                setLinkDialogFor(photoSubject(photoId))
+              }
             />
           </SelectionProvider>
         )}
@@ -471,7 +540,9 @@ function PhotosAppInner() {
             image={selectedImage}
             onClose={close}
             onShareLink={() => setLinkDialogFor(photoSubject(selectedImage.id))}
-            onPrevious={previousImage ? () => step(previousImage.id) : undefined}
+            onPrevious={
+              previousImage ? () => step(previousImage.id) : undefined
+            }
             onNext={nextImage ? () => step(nextImage.id) : undefined}
             // The viewer owns the confirmation and the refusal message; the library
             // state is this component's, like every other dispatch here. The grid

@@ -44,7 +44,7 @@ To bring an existing checkout up to date, follow [Upgrade Starkeep](https://gith
 
 ## Build Photos Mobile
 
-Photos Mobile is the Android app. [Build the APK from source](https://github.com/starkeep-org/starkeep-core#build-the-apk-from-source-optional) in `starkeep-core`'s README lists the prerequisites and the build steps. [Part C: install the Photos mobile app](https://github.com/starkeep-org/starkeep-core#part-c-install-the-photos-mobile-app) covers registering the app in the cloud and signing in on the phone.
+Photos Mobile is the Android app. [Build the APK from source](https://github.com/starkeep-org/starkeep-core#build-the-apk-from-source-optional) in `starkeep-core`'s README lists the prerequisites and the build steps. [Install the Photos mobile app](https://github.com/starkeep-org/starkeep-core#install-the-photos-mobile-app) covers registering the app in the cloud and signing in on the phone.
 
 ## Write your own app
 

@@ -32,7 +32,7 @@ await build({
   outfile: OUT_FILE,
   bundle: true,
   platform: "node",
-  target: "node22",
+  target: "node24",
   format: "esm",
   sourcemap: true,
   // Native modules cannot be bundled, and @starkeep/app-client reads credentials

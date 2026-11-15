@@ -9,6 +9,9 @@
     "test": "pnpm check:links && pnpm -r test",
     "test:integration": "pnpm -r test:integration"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "onlyBuiltDependencies": [

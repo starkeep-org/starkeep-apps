@@ -240,7 +240,7 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
       outfile: join(staging, "index.mjs"),
       bundle: true,
       platform: "node",
-      target: "node22",
+      target: "node24",
       format: "esm",
       external: ["node:*", "sharp", "onnxruntime-node"],
       banner: {
@@ -270,7 +270,7 @@ async function buildPhotosBundle(appBasePath: string, distZip: string): Promise<
       entryPoints: [join(INFRA_DIR, "src", "resize-handler.ts")],
       bundle: true,
       platform: "node",
-      target: "node22",
+      target: "node24",
       format: "cjs",
       outdir: handlersDir,
       external: ["sharp"],

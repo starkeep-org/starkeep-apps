@@ -4,12 +4,18 @@ Photos' run of the platform's cloud journey, plus the assertions that need
 Photos to be true.
 
 ```bash
+echo 'STARKEEP_AWS_E2E_REGION=us-west-2' >> ../.env.local   # once, from photos/
 STARKEEP_AWS_TESTS=1 pnpm test:aws
 ```
 
-Inert without `STARKEEP_AWS_TESTS=1`, like core's. Needs a `starkeep-core`
-checkout set up (`pnpm install` there), beside this repository or named by
-`STARKEEP_CORE_DIR`, Playwright's Chromium
+Inert without `STARKEEP_AWS_TESTS=1`, like core's. An enabled run also needs
+`STARKEEP_AWS_E2E_REGION`, the region of the test stack, and fails before any
+AWS call without it. Choose a region that none of your live deployments use.
+The suite reads `.env.local` at the root of this repository, so set the region
+there once. Core's `e2e-aws/README.md` explains the choice.
+
+Needs a `starkeep-core` checkout set up (`pnpm install` there), beside this
+repository or named by `STARKEEP_CORE_DIR`, Playwright's Chromium
 (`pnpm exec playwright install chromium`), and AWS credentials in the ambient
 profile.
 

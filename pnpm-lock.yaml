@@ -52,8 +52,8 @@ importers:
         specifier: ^1.19.17
         version: 1.19.17(hono@4.13.7)
       '@starkeep/app-client':
-        specifier: 0.10.2
-        version: 0.10.2(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.12.0
+        version: 0.12.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       '@starkeep/photos-info':
         specifier: workspace:*
         version: link:../packages/photos-info
@@ -86,8 +86,8 @@ importers:
         specifier: ^1.51.1
         version: 1.60.0
       '@starkeep/admin-manifest':
-        specifier: ^0.9.0
-        version: 0.9.0(typescript@5.9.3)
+        specifier: ^0.10.0
+        version: 0.10.0(typescript@5.9.3)
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -255,8 +255,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1065.0
       '@starkeep/app-client':
-        specifier: 0.10.2
-        version: 0.10.2(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
+        specifier: 0.12.0
+        version: 0.12.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)
       pg:
         specifier: ^8.13.0
         version: 8.21.0
@@ -1832,11 +1832,11 @@ packages:
     resolution: {integrity: sha512-R8Rdn8Hy72KKcebgLiv8jQcQkXoLMOGGv5uI1/k0l+snqkOzQ1R0ChUBCxWMlBsFMekWjq0wRudIweFs7sKT5A==}
     engines: {node: '>=14.0.0'}
 
-  '@starkeep/admin-manifest@0.9.0':
-    resolution: {integrity: sha512-7uo7WMg0/016PWJUQsHKlbfiFYdtFRLFqQBzCK7n6pZbHkCvDsy5iuomymBMi934jZ7M3I3TcY1OWcDe1K1SJg==}
+  '@starkeep/admin-manifest@0.10.0':
+    resolution: {integrity: sha512-WpbRd5KL07Wap1c6VyUPZdfYZTlT5p1+ld9d8Zl3fTEgh5K6eb6o7lca7FevX1EhoTdF6rWry7mSjd8lWvTNBA==}
 
-  '@starkeep/app-client@0.10.2':
-    resolution: {integrity: sha512-ll7oHQdgxoUw8Q7UgaEefM9kWxNAeQGxWfWlXXIMywsIdJJV0MXWXBVVAPqncGcgb0J6YHjm6lSmenHfuterFA==}
+  '@starkeep/app-client@0.12.0':
+    resolution: {integrity: sha512-pQ1QD0J49DinkTC85/7ZjilE9i6dDOcjyUlOK10uhFjizg84vHNgOj6pDEPTA9oeoOyOfIqcJlHefspZKvhjOw==}
     peerDependencies:
       '@hono/node-server': ^1.19.0
       hono: ^4.12.0
@@ -1846,8 +1846,8 @@ packages:
       hono:
         optional: true
 
-  '@starkeep/protocol-primitives@0.10.0':
-    resolution: {integrity: sha512-e+s0YfACJeW3z1D6PSYQjG0nRjI+Dlx7HhlG+D7xa3BYQsXHMEjSeSVhQXQ3DIpSTZcXRgpmgv9fY8f9n7Pu9w==}
+  '@starkeep/protocol-primitives@0.11.0':
+    resolution: {integrity: sha512-I+uok6Gjydd8dzk0t6RhhH+ZCxWZl4fWH6zJQNldAfz2OxXFwddOYmuYQi29YIpl24LMQnzPCYrCtb96zJK1SA==}
 
   '@starkeep/protocol-primitives@0.7.0':
     resolution: {integrity: sha512-7rXslqY2nNhVkC25BarqEZLybR1hY0XoID/880ka229+F+gbBswqwbiGjVgAkcedwquLdxFi3p9pFVUqQUHvLQ==}
@@ -6723,14 +6723,14 @@ snapshots:
       '@smithy/util-buffer-from': 2.2.0
       tslib: 2.8.1
 
-  '@starkeep/admin-manifest@0.9.0(typescript@5.9.3)':
+  '@starkeep/admin-manifest@0.10.0(typescript@5.9.3)':
     dependencies:
-      '@starkeep/protocol-primitives': 0.10.0(typescript@5.9.3)
+      '@starkeep/protocol-primitives': 0.11.0(typescript@5.9.3)
       zod: 3.25.76
     transitivePeerDependencies:
       - typescript
 
-  '@starkeep/app-client@0.10.2(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
+  '@starkeep/app-client@0.12.0(@hono/node-server@1.19.17(hono@4.13.7))(hono@4.13.7)':
     dependencies:
       '@aws-sdk/client-ssm': 3.1116.0
       dotenv: 17.4.2
@@ -6738,7 +6738,7 @@ snapshots:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       hono: 4.13.7
 
-  '@starkeep/protocol-primitives@0.10.0(typescript@5.9.3)':
+  '@starkeep/protocol-primitives@0.11.0(typescript@5.9.3)':
     dependencies:
       '@noble/hashes': 1.8.0
       ulidx: 2.4.1
